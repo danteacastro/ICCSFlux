@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node/Dashboard
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+*.env
+
+# Data files (keep structure but not data)
+data/*.csv
+data/*.json
+data/*.parquet
+!data/.gitkeep
+
+# Logs
+logs/*.log
+logs/*.txt
+!logs/.gitkeep
+
+# Service logs and recordings
+services/daq_service/logs/*.csv
+services/daq_service/logs/*.log
+!services/daq_service/logs/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials/Secrets
+credentials*.json
+*_secret*
+*.pem
+*.key

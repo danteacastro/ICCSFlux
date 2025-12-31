@@ -1,0 +1,10 @@
+# NISystem DAQ Service Requirements
+
+# MQTT client
+paho-mqtt>=1.6.0
+
+# NI DAQmx Python bindings (optional - only needed for real hardware)
+# nidaqmx>=0.9.0
+
+# Utilities
+python-dateutil>=2.8.0

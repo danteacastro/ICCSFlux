@@ -1,0 +1,62 @@
+name: industrial-datascience
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+  - pip
+
+  # Data Science Essentials
+  - numpy
+  - pandas
+  - scipy
+  - statsmodels
+
+  # Visualization
+  - matplotlib
+  - seaborn
+  - plotly
+
+  # Machine Learning
+  - scikit-learn
+  - xgboost
+
+  # Jupyter
+  - jupyter
+  - jupyterlab
+  - notebook
+  - ipykernel
+
+  # Data handling
+  - openpyxl
+  - xlrd
+  - sqlalchemy
+
+  # Utilities
+  - tqdm
+  - requests
+
+  # Industrial Communication Protocols
+  - pyserial          # Serial communication
+  - python-snap7      # Siemens S7 PLCs (bonus)
+
+  # Pip-only packages (not on conda)
+  - pip:
+    # National Instruments
+    - nidaqmx         # NI DAQmx for data acquisition
+    - nifpga          # NI FPGA interface
+    - nimodinst       # NI module discovery
+    - nivisa          # NI VISA for instrument control
+    - pyvisa          # Generic VISA interface
+    - pyvisa-py       # Pure Python VISA backend
+
+    # Allen-Bradley / Rockwell (EtherNet/IP)
+    - pycomm3         # Allen-Bradley PLC communication (ControlLogix, CompactLogix, MicroLogix)
+
+    # Schneider Electric (Modbus)
+    - pymodbus        # Modbus TCP/RTU for Schneider PLCs (M340, M580, etc.)
+
+    # OPC UA (universal industrial protocol)
+    - opcua           # OPC UA client/server
+    - asyncua         # Async OPC UA client/server
