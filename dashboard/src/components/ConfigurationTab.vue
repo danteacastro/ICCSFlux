@@ -224,7 +224,9 @@ function getDefaultUnit(channelType: ChannelType): string {
     resistance: 'Ω',
     digital_input: '',
     digital_output: '',
-    analog_output: 'V'
+    analog_output: 'V',
+    modbus_register: '',
+    modbus_coil: ''
   }
   return units[channelType] || ''
 }
@@ -386,6 +388,7 @@ const channelTypeTabs = [
   { id: 'strain', label: 'STRAIN/BRIDGE', icon: '⚖' },
   { id: 'iepe', label: 'IEPE/ACCEL', icon: '〰' },
   { id: 'resistance', label: 'RESISTANCE', icon: 'Ω' },
+  { id: 'modbus', label: 'MODBUS', icon: '🔌' },
 ]
 
 const activeTypeTab = ref('all')
@@ -409,6 +412,11 @@ const filteredChannels = computed(() => {
       channels = channels.filter(([_, ch]) =>
         ch.channel_type === 'analog_output' &&
         ch.ao_range?.includes('mA')
+      )
+    } else if (activeTypeTab.value === 'modbus') {
+      // Modbus tab shows both modbus_register and modbus_coil types
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
       )
     } else {
       channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
@@ -493,6 +501,8 @@ function formatChannelType(type: ChannelType): string {
     digital_input: 'DI',
     digital_output: 'DO',
     analog_output: 'AO',
+    modbus_register: 'MB',
+    modbus_coil: 'MBC',
   }
   return typeMap[type] || type
 }
@@ -2459,6 +2469,86 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </template>
 
+            <!-- Modbus Register settings -->
+            <template v-if="editingConfig.config.channel_type === 'modbus_register'">
+              <div class="config-section">
+                <h4>Modbus Settings</h4>
+                <div class="form-row">
+                  <label>Register Type</label>
+                  <select v-model="editingConfig.config.modbus_register_type">
+                    <option value="holding">Holding Register (R/W)</option>
+                    <option value="input">Input Register (R)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Register Address</label>
+                  <input type="number" v-model="editingConfig.config.modbus_address" min="0" max="65535" />
+                </div>
+                <div class="form-row">
+                  <label>Data Type</label>
+                  <select v-model="editingConfig.config.modbus_data_type">
+                    <option value="int16">Int16 (1 register)</option>
+                    <option value="uint16">UInt16 (1 register)</option>
+                    <option value="int32">Int32 (2 registers)</option>
+                    <option value="uint32">UInt32 (2 registers)</option>
+                    <option value="float32">Float32 (2 registers)</option>
+                    <option value="float64">Float64 (4 registers)</option>
+                  </select>
+                </div>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Byte Order</label>
+                    <select v-model="editingConfig.config.modbus_byte_order">
+                      <option value="big">Big Endian</option>
+                      <option value="little">Little Endian</option>
+                    </select>
+                  </div>
+                  <div class="form-row half">
+                    <label>Word Order</label>
+                    <select v-model="editingConfig.config.modbus_word_order">
+                      <option value="big">Big (Normal)</option>
+                      <option value="little">Little (Swapped)</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Scale Factor</label>
+                    <input type="number" v-model="editingConfig.config.modbus_scale" step="any" />
+                  </div>
+                  <div class="form-row half">
+                    <label>Offset</label>
+                    <input type="number" v-model="editingConfig.config.modbus_offset" step="any" />
+                  </div>
+                </div>
+                <div class="form-hint">Value = Raw * Scale + Offset</div>
+              </div>
+            </template>
+
+            <!-- Modbus Coil settings -->
+            <template v-if="editingConfig.config.channel_type === 'modbus_coil'">
+              <div class="config-section">
+                <h4>Modbus Coil Settings</h4>
+                <div class="form-row">
+                  <label>Coil Type</label>
+                  <select v-model="editingConfig.config.modbus_register_type">
+                    <option value="coil">Coil (R/W)</option>
+                    <option value="discrete">Discrete Input (R)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Coil Address</label>
+                  <input type="number" v-model="editingConfig.config.modbus_address" min="0" max="65535" />
+                </div>
+                <div class="form-row checkbox-row">
+                  <label>
+                    <input type="checkbox" v-model="editingConfig.config.invert" />
+                    Invert Logic
+                  </label>
+                </div>
+              </div>
+            </template>
+
             <!-- Alarm Settings -->
             <div class="config-section">
               <h4>Alarms & Limits</h4>
@@ -2684,6 +2774,8 @@ watch(() => Object.keys(store.channels), () => {
                 <option value="digital_input">Digital Input</option>
                 <option value="digital_output">Digital Output</option>
                 <option value="analog_output">Analog Output</option>
+                <option value="modbus_register">Modbus Register</option>
+                <option value="modbus_coil">Modbus Coil</option>
               </select>
             </div>
 
