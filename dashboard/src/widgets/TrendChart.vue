@@ -1,13 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import uPlot, { type AlignedData } from 'uplot'
 import 'uplot/dist/uPlot.min.css'
+import type { ChartUpdateMode, ChartToolMode, ChartPlotStyle, ChartYAxis, ChartCursor } from '../types'
 
 const props = defineProps<{
   widgetId: string
   channels: string[]
-  timeRange?: number  // seconds
+  timeRange?: number        // seconds (X-axis range)
+  label?: string            // Custom title (defaults to "Trend")
+  // LabVIEW-style features
+  historySize?: number      // Max points to keep (default 1024)
+  updateMode?: ChartUpdateMode  // strip, scope, sweep
+  // Y-axis settings
+  yAxisAuto?: boolean       // Auto-scale Y axis (default true)
+  yAxisMin?: number         // Manual Y min
+  yAxisMax?: number         // Manual Y max
+  yAxes?: ChartYAxis[]      // Multiple Y-axis config
+  // Display options
+  showGrid?: boolean        // Show grid lines (default true)
+  showLegend?: boolean      // Show legend (default true)
+  showScrollbar?: boolean   // Show X-axis scrollbar
+  showDigitalDisplay?: boolean  // Show current values in header
+  stackPlots?: boolean      // Stack vs overlay
+  // Plot styling
+  plotStyles?: ChartPlotStyle[]
+  // Cursors
+  cursors?: ChartCursor[]
 }>()
 
 const emit = defineEmits<{
@@ -19,51 +39,175 @@ const store = useDashboardStore()
 const chartContainer = ref<HTMLDivElement | null>(null)
 let chart: uPlot | null = null
 
+// Tool mode state
+const toolMode = ref<ChartToolMode>('none')
+const isPaused = ref(false)
+const scrollPosition = ref(1)  // 0-1, where 1 = live (rightmost)
+
+// View range for zoom/pan (in seconds from now)
+const viewStart = ref(0)
+const viewEnd = ref(props.timeRange || 300)
+
+// Cursor state
+const activeCursors = ref<{ id: string; x: number; values: { channel: string; value: number | null }[] }[]>([])
+
 // Data buffer: [timestamps, ...channelData]
 const dataBuffer = ref<(number | null)[][]>([[]])
-const maxPoints = 500
+const maxPoints = computed(() => props.historySize || 1024)
 
-// Channel colors
-const colors = [
+// Sweep mode position tracking
+const sweepPosition = ref(0)
+
+// Default channel colors
+const defaultColors = [
   '#22c55e', '#3b82f6', '#f59e0b', '#ef4444',
-  '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
+  '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16',
+  '#a855f7', '#14b8a6', '#f97316', '#6366f1'
 ]
 
-// Computed current values for custom legend
+// Get color for a channel
+function getChannelColor(channel: string, index: number): string {
+  const style = props.plotStyles?.find(s => s.channel === channel)
+  if (style?.color) return style.color
+  return defaultColors[index % defaultColors.length] ?? '#22c55e'
+}
+
+// Get line width for a channel
+function getChannelLineWidth(channel: string): number {
+  const style = props.plotStyles?.find(s => s.channel === channel)
+  return style?.lineWidth || 1.5
+}
+
+// Check if channel is visible
+function isChannelVisible(channel: string): boolean {
+  const style = props.plotStyles?.find(s => s.channel === channel)
+  return style?.visible !== false
+}
+
+// Computed current values for legend
 const currentValues = computed(() => {
-  return props.channels.map(ch => {
+  return props.channels.map((ch, idx) => {
     const data = store.values[ch]
     const config = store.channels[ch]
     return {
+      channel: ch,
       name: config?.display_name || ch,
       value: data?.value,
       unit: config?.unit || '',
-      color: colors[props.channels.indexOf(ch) % colors.length]
+      color: getChannelColor(ch, idx),
+      visible: isChannelVisible(ch)
     }
   })
+})
+
+// Digital display values (for header)
+const digitalDisplayValues = computed(() => {
+  if (!props.showDigitalDisplay) return []
+  return currentValues.value.filter(v => v.visible).slice(0, 4)  // Max 4 in header
 })
 
 function initChart() {
   if (!chartContainer.value) return
 
   const rect = chartContainer.value.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return
 
   // Initialize data with empty arrays
   dataBuffer.value = [[], ...props.channels.map(() => [])]
+  sweepPosition.value = 0
 
   const series: uPlot.Series[] = [
     { label: 'Time' },
-    ...props.channels.map((ch, i) => ({
-      label: store.channels[ch]?.display_name || ch,
-      stroke: colors[i % colors.length],
-      width: 1.5,
-      // Custom value formatter for legend
-      value: (_self: uPlot, rawValue: number | null) => {
-        if (rawValue === null || rawValue === undefined) return '--'
-        return rawValue.toFixed(2)
+    ...props.channels.map((ch, i) => {
+      const visible = isChannelVisible(ch)
+      return {
+        label: store.channels[ch]?.display_name || ch,
+        stroke: getChannelColor(ch, i),
+        width: getChannelLineWidth(ch),
+        show: visible,
+        spanGaps: true,
+        value: (_self: uPlot, rawValue: number | null) => {
+          if (rawValue === null || rawValue === undefined) return '--'
+          return rawValue.toFixed(2)
+        }
       }
-    }))
+    })
   ]
+
+  const showGrid = props.showGrid !== false
+  const gridStyle = showGrid ? { stroke: '#333', width: 1 } : { show: false }
+
+  // Build Y-axis config
+  const yAxisAuto = props.yAxisAuto !== false
+
+  // Support for multiple Y-axes
+  const axes: uPlot.Axis[] = [
+    // X-axis
+    {
+      stroke: '#666',
+      grid: gridStyle as any,
+      ticks: { stroke: '#444', width: 1 },
+      font: '10px sans-serif',
+      labelFont: '10px sans-serif',
+      values: (_self: uPlot, splits: number[]) => {
+        return splits.map(v => {
+          const d = new Date(v * 1000)
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        })
+      }
+    },
+    // Primary Y-axis (left)
+    {
+      stroke: '#666',
+      grid: gridStyle as any,
+      ticks: { stroke: '#444', width: 1 },
+      font: '10px sans-serif',
+      labelFont: '10px sans-serif',
+      size: 50,
+      side: 3,  // left
+    }
+  ]
+
+  // Add secondary Y-axis if configured
+  if (props.yAxes && props.yAxes.length > 1) {
+    const rightAxis = props.yAxes.find(a => a.position === 'right')
+    if (rightAxis) {
+      axes.push({
+        stroke: rightAxis.color || '#666',
+        grid: { show: false },
+        ticks: { stroke: '#444', width: 1 },
+        font: '10px sans-serif',
+        labelFont: '10px sans-serif',
+        size: 50,
+        side: 1,  // right
+        scale: 'y2'
+      })
+    }
+  }
+
+  // Build scales
+  const scales: uPlot.Scales = {
+    x: { time: true }
+  }
+
+  if (yAxisAuto) {
+    scales.y = { auto: true }
+  } else {
+    scales.y = {
+      auto: false,
+      range: [props.yAxisMin ?? 0, props.yAxisMax ?? 100]
+    }
+  }
+
+  // Secondary Y scale if needed
+  if (props.yAxes && props.yAxes.length > 1) {
+    const rightAxis = props.yAxes.find(a => a.position === 'right')
+    if (rightAxis) {
+      scales.y2 = rightAxis.auto
+        ? { auto: true }
+        : { auto: false, range: [rightAxis.min, rightAxis.max] }
+    }
+  }
 
   const opts: uPlot.Options = {
     width: rect.width,
@@ -71,72 +215,134 @@ function initChart() {
     class: 'trend-chart',
     cursor: {
       show: true,
-      drag: { x: true, y: false }
-    },
-    scales: {
-      x: {
-        time: true,
+      drag: {
+        x: toolMode.value === 'zoom',
+        y: false
       },
-      y: {
-        auto: true,
+      sync: {
+        key: props.widgetId,
       }
     },
-    axes: [
-      {
-        stroke: '#666',
-        grid: { stroke: '#333', width: 1 },
-        ticks: { stroke: '#444', width: 1 },
-        font: '10px sans-serif',
-        labelFont: '10px sans-serif',
-        // Custom time formatter
-        values: (_self: uPlot, splits: number[]) => {
-          return splits.map(v => {
-            const d = new Date(v * 1000)
-            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-          })
+    hooks: {
+      setSelect: [
+        (u) => {
+          if (toolMode.value === 'zoom' && u.select.width > 0) {
+            const left = u.posToVal(u.select.left, 'x')
+            const right = u.posToVal(u.select.left + u.select.width, 'x')
+            viewStart.value = left
+            viewEnd.value = right
+            isPaused.value = true
+            u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false)
+          }
         }
-      },
-      {
-        stroke: '#666',
-        grid: { stroke: '#333', width: 1 },
-        ticks: { stroke: '#444', width: 1 },
-        font: '10px sans-serif',
-        labelFont: '10px sans-serif',
-        size: 50,
-      }
-    ],
+      ],
+      setCursor: [
+        (u) => {
+          if (toolMode.value === 'cursor' && u.cursor.idx !== null && u.cursor.idx !== undefined) {
+            updateCursorValues(u)
+          }
+        }
+      ]
+    },
+    scales,
+    axes,
     series,
-    legend: {
-      show: false,  // We'll use custom legend
-    }
+    legend: { show: false }
   }
 
   chart = new uPlot(opts, dataBuffer.value as AlignedData, chartContainer.value)
 }
 
-function updateData() {
-  const now = Date.now() / 1000  // uPlot uses seconds
-  const cutoff = now - (props.timeRange || 300)
-  const buffer = dataBuffer.value
+function updateCursorValues(u: uPlot) {
+  if (!u.cursor.idx) return
 
-  // Only add data if we have valid channels
+  const idx = u.cursor.idx
+  const timestamp = dataBuffer.value[0]?.[idx]
+  if (!timestamp) return
+
+  const values = props.channels.map((ch, i) => ({
+    channel: ch,
+    value: dataBuffer.value[i + 1]?.[idx] ?? null
+  }))
+
+  // Update or create cursor
+  if (activeCursors.value.length === 0) {
+    activeCursors.value.push({ id: 'main', x: timestamp, values })
+  } else {
+    activeCursors.value[0] = { id: 'main', x: timestamp, values }
+  }
+}
+
+function updateData() {
+  if (isPaused.value) return
+
+  const now = Date.now() / 1000
+  const buffer = dataBuffer.value
+  const mode = props.updateMode || 'strip'
+  const timeRange = props.timeRange || 300
+
   if (props.channels.length === 0) return
 
   // Add new point
   buffer[0]?.push(now)
-
   props.channels.forEach((ch, i) => {
     const value = store.values[ch]?.value ?? null
     buffer[i + 1]?.push(value)
   })
 
-  // Trim old data
-  while (buffer[0] && buffer[0].length > 0 && (buffer[0][0] ?? 0) < cutoff) {
-    buffer.forEach(arr => arr?.shift())
+  // Handle different update modes
+  if (mode === 'strip') {
+    // Strip chart: scroll continuously, trim old data
+    const cutoff = now - timeRange
+    while (buffer[0] && buffer[0].length > 0 && (buffer[0][0] ?? 0) < cutoff) {
+      buffer.forEach(arr => arr?.shift())
+    }
+  } else if (mode === 'scope') {
+    // Scope chart: clear when reaching end, restart from left
+    if (buffer[0] && buffer[0].length > 0) {
+      const elapsed = now - (buffer[0][0] ?? now)
+      if (elapsed >= timeRange) {
+        // Clear and restart
+        const firstChannel = props.channels[0]
+        const firstValue = firstChannel ? store.values[firstChannel]?.value ?? null : null
+        dataBuffer.value = [[now], ...props.channels.map(() => [firstValue])]
+        return
+      }
+    }
+  } else if (mode === 'sweep') {
+    // Sweep chart: overwrite old data with sweep line
+    const pointsPerRange = Math.floor(timeRange * 10)  // ~10 points per second
+    if (buffer[0] && buffer[0].length >= pointsPerRange) {
+      // Wrap around
+      const sweepIdx = sweepPosition.value % pointsPerRange
+      buffer[0][sweepIdx] = now
+      props.channels.forEach((ch, i) => {
+        const arr = buffer[i + 1]
+        if (arr) {
+          arr[sweepIdx] = store.values[ch]?.value ?? null
+        }
+      })
+      sweepPosition.value++
+
+      // Sort for proper display
+      const timestamps = buffer[0]
+      if (timestamps && timestamps.length > 0) {
+        const indices = timestamps.map((_, i) => i)
+        indices.sort((a, b) => (timestamps[a] ?? 0) - (timestamps[b] ?? 0))
+
+        buffer[0] = indices.map(i => timestamps[i] ?? null)
+        props.channels.forEach((_, ci) => {
+          const channelData = buffer[ci + 1]
+          if (channelData) {
+            buffer[ci + 1] = indices.map(i => channelData[i] ?? null)
+          }
+        })
+      }
+    }
   }
 
   // Limit max points
-  while (buffer[0] && buffer[0].length > maxPoints) {
+  while (buffer[0] && buffer[0].length > maxPoints.value) {
     buffer.forEach(arr => arr?.shift())
   }
 
@@ -149,20 +355,75 @@ function updateData() {
 function handleResize() {
   if (!chart || !chartContainer.value) return
   const rect = chartContainer.value.getBoundingClientRect()
-  // Use full container height since legend is outside the container now
-  chart.setSize({ width: rect.width, height: Math.max(50, rect.height) })
+  if (rect.width > 0 && rect.height > 0) {
+    chart.setSize({ width: rect.width, height: Math.max(50, rect.height) })
+  }
+}
+
+// Tool actions
+function setToolMode(mode: ChartToolMode) {
+  toolMode.value = toolMode.value === mode ? 'none' : mode
+  if (chart) {
+    chart.cursor.drag!.x = mode === 'zoom'
+  }
+}
+
+function togglePause() {
+  isPaused.value = !isPaused.value
+  if (!isPaused.value) {
+    // Reset to live view
+    viewStart.value = 0
+    viewEnd.value = props.timeRange || 300
+    scrollPosition.value = 1
+  }
+}
+
+function zoomIn() {
+  const range = viewEnd.value - viewStart.value
+  const center = (viewStart.value + viewEnd.value) / 2
+  const newRange = range * 0.5
+  viewStart.value = center - newRange / 2
+  viewEnd.value = center + newRange / 2
+  isPaused.value = true
+}
+
+function zoomOut() {
+  const range = viewEnd.value - viewStart.value
+  const center = (viewStart.value + viewEnd.value) / 2
+  const newRange = Math.min(range * 2, props.timeRange || 300)
+  viewStart.value = center - newRange / 2
+  viewEnd.value = center + newRange / 2
+}
+
+function resetZoom() {
+  viewStart.value = 0
+  viewEnd.value = props.timeRange || 300
+  isPaused.value = false
+  scrollPosition.value = 1
+}
+
+// Future: Add persistent cursors (would need to save to widget config)
+// function addCursor() { ... }
+
+// Scrollbar handling
+function onScroll(e: Event) {
+  const target = e.target as HTMLInputElement
+  scrollPosition.value = parseFloat(target.value)
+  if (scrollPosition.value < 1) {
+    isPaused.value = true
+  }
 }
 
 let updateInterval: number | null = null
 let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
-  initChart()
+  nextTick(() => {
+    initChart()
+  })
 
-  // Update every 100ms
   updateInterval = window.setInterval(updateData, 100)
 
-  // Handle resize
   if (chartContainer.value) {
     resizeObserver = new ResizeObserver(handleResize)
     resizeObserver.observe(chartContainer.value)
@@ -175,47 +436,193 @@ onUnmounted(() => {
   if (chart) chart.destroy()
 })
 
-// Reinit chart when channels change
-watch(() => props.channels, () => {
+// Reinit chart when config changes
+watch(() => [props.channels, props.plotStyles], () => {
   if (chart) {
     chart.destroy()
-    initChart()
+    nextTick(() => initChart())
   }
 }, { deep: true })
 
-// Clear chart data when store values are cleared (e.g., when acquisition stops)
+watch(
+  () => [props.yAxisAuto, props.yAxisMin, props.yAxisMax, props.showGrid, props.updateMode, props.yAxes],
+  () => {
+    if (chart) {
+      chart.destroy()
+      nextTick(() => initChart())
+    }
+  },
+  { deep: true }
+)
+
+// Clear chart data when acquisition stops
 watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
-  // If values were cleared (went from having values to having none)
   if (oldLen > 0 && newLen === 0) {
-    // Clear the data buffer
     dataBuffer.value = [[], ...props.channels.map(() => [])]
+    sweepPosition.value = 0
     if (chart) {
       chart.setData(dataBuffer.value as AlignedData)
     }
   }
 })
+
+// Toggle channel visibility
+function toggleChannelVisibility(channel: string) {
+  // This would update plotStyles - for now just re-render
+  if (chart) {
+    const seriesIdx = props.channels.indexOf(channel) + 1
+    if (seriesIdx > 0 && chart.series[seriesIdx]) {
+      chart.setSeries(seriesIdx, { show: !chart.series[seriesIdx].show })
+    }
+  }
+}
 </script>
 
 <template>
-  <div class="trend-chart-widget">
+  <div class="trend-chart-widget" :class="{ 'stacked': stackPlots }">
+    <!-- Chart Header with Title and Tools -->
     <div class="chart-header">
-      <span class="title">Trend</span>
-      <button class="config-btn" @click="emit('configure')" title="Configure channels">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-        </svg>
-      </button>
+      <div class="header-left">
+        <span class="title">{{ label || 'Trend' }}</span>
+        <span v-if="updateMode && updateMode !== 'strip'" class="mode-badge">{{ updateMode.toUpperCase() }}</span>
+      </div>
+
+      <!-- Digital Display (current values in header) -->
+      <div v-if="showDigitalDisplay && digitalDisplayValues.length > 0" class="digital-display">
+        <div v-for="ch in digitalDisplayValues" :key="ch.channel" class="digital-value" :style="{ color: ch.color }">
+          <span class="dv-name">{{ ch.name }}:</span>
+          <span class="dv-val">{{ ch.value?.toFixed(2) ?? '--' }}</span>
+          <span v-if="ch.unit" class="dv-unit">{{ ch.unit }}</span>
+        </div>
+      </div>
+
+      <!-- Graph Palette (LabVIEW-style tool buttons) -->
+      <div class="graph-palette">
+        <button
+          class="tool-btn"
+          :class="{ active: toolMode === 'cursor' }"
+          @click="setToolMode('cursor')"
+          title="Cursor Tool"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="2" x2="12" y2="22"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+          </svg>
+        </button>
+        <button
+          class="tool-btn"
+          :class="{ active: toolMode === 'zoom' }"
+          @click="setToolMode('zoom')"
+          title="Zoom Tool (drag to zoom)"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            <line x1="11" y1="8" x2="11" y2="14"/>
+            <line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button
+          class="tool-btn"
+          :class="{ active: toolMode === 'pan' }"
+          @click="setToolMode('pan')"
+          title="Pan Tool"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>
+          </svg>
+        </button>
+        <div class="tool-separator"></div>
+        <button class="tool-btn" @click="zoomIn" title="Zoom In">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="11" y1="8" x2="11" y2="14"/>
+            <line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button class="tool-btn" @click="zoomOut" title="Zoom Out">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button class="tool-btn" @click="resetZoom" title="Reset Zoom">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </button>
+        <div class="tool-separator"></div>
+        <button
+          class="tool-btn"
+          :class="{ active: isPaused }"
+          @click="togglePause"
+          :title="isPaused ? 'Resume' : 'Pause'"
+        >
+          <svg v-if="!isPaused" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5,3 19,12 5,21"/>
+          </svg>
+        </button>
+        <button class="tool-btn config-btn" @click="emit('configure')" title="Configure Chart">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+        </button>
+      </div>
     </div>
+
+    <!-- Chart Container -->
     <div ref="chartContainer" class="chart-container"></div>
-    <!-- Custom legend that shows all channels -->
-    <div class="custom-legend" v-if="currentValues.length > 0">
+
+    <!-- X-Axis Scrollbar (for history navigation) -->
+    <div v-if="showScrollbar" class="scrollbar-container">
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        :value="scrollPosition"
+        @input="onScroll"
+        class="history-scrollbar"
+      />
+      <span class="scroll-label">{{ isPaused ? 'PAUSED' : 'LIVE' }}</span>
+    </div>
+
+    <!-- Cursor Values Display -->
+    <div v-if="toolMode === 'cursor' && activeCursors.length > 0" class="cursor-display">
+      <div v-for="cursor in activeCursors" :key="cursor.id" class="cursor-values">
+        <span class="cursor-time">
+          {{ new Date(cursor.x * 1000).toLocaleTimeString() }}
+        </span>
+        <div class="cursor-readings">
+          <span
+            v-for="(cv, idx) in cursor.values"
+            :key="cv.channel"
+            class="cursor-reading"
+            :style="{ color: getChannelColor(cv.channel, idx) }"
+          >
+            {{ store.channels[cv.channel]?.display_name || cv.channel }}:
+            {{ cv.value?.toFixed(2) ?? '--' }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Legend with visibility toggles -->
+    <div class="custom-legend" v-if="showLegend !== false && currentValues.length > 0">
       <div
-        v-for="(ch, idx) in currentValues"
-        :key="idx"
+        v-for="ch in currentValues"
+        :key="ch.channel"
         class="legend-item"
+        :class="{ hidden: !ch.visible }"
+        @click="toggleChannelVisibility(ch.channel)"
       >
-        <span class="legend-color" :style="{ background: ch.color }"></span>
+        <span class="legend-color" :style="{ background: ch.visible ? ch.color : '#444' }"></span>
         <span class="legend-name">{{ ch.name }}</span>
         <span class="legend-value" :class="{ 'no-data': ch.value === undefined || ch.value === null }">
           {{ ch.value !== undefined && ch.value !== null ? ch.value.toFixed(2) : '--' }}
@@ -223,7 +630,8 @@ watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
         </span>
       </div>
     </div>
-    <div v-else class="no-channels">
+
+    <div v-else-if="currentValues.length === 0" class="no-channels">
       No channels selected. Click configure to add channels.
     </div>
   </div>
@@ -247,6 +655,14 @@ watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border-color, #2a2a4a);
   flex-shrink: 0;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .title {
@@ -256,26 +672,152 @@ watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
   text-transform: uppercase;
 }
 
-.config-btn {
+.mode-badge {
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #3b82f6;
+  color: #fff;
+}
+
+/* Digital Display */
+.digital-display {
+  display: flex;
+  gap: 12px;
+  font-size: 0.7rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.digital-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.dv-name {
+  opacity: 0.7;
+}
+
+.dv-val {
+  font-weight: 600;
+}
+
+.dv-unit {
+  font-size: 0.6rem;
+  opacity: 0.6;
+}
+
+/* Graph Palette (LabVIEW-style toolbar) */
+.graph-palette {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 2px;
+}
+
+.tool-btn {
   background: transparent;
   border: none;
   color: #666;
   cursor: pointer;
-  padding: 2px;
+  padding: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 2px;
+  transition: all 0.15s;
 }
 
-.config-btn:hover {
+.tool-btn:hover {
   color: #fff;
   background: #333;
+}
+
+.tool-btn.active {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.tool-separator {
+  width: 1px;
+  height: 16px;
+  background: #2a2a4a;
+  margin: 0 2px;
 }
 
 .chart-container {
   flex: 1;
   min-height: 0;
+}
+
+/* Scrollbar */
+.scrollbar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border-color, #2a2a4a);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.history-scrollbar {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #1a1a2e;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.history-scrollbar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #3b82f6;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.scroll-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #666;
+  min-width: 45px;
+  text-align: right;
+}
+
+/* Cursor Display */
+.cursor-display {
+  padding: 4px 8px;
+  background: rgba(251, 191, 36, 0.1);
+  border-top: 1px solid #78350f;
+  font-size: 0.7rem;
+}
+
+.cursor-values {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cursor-time {
+  font-family: 'JetBrains Mono', monospace;
+  color: #fbbf24;
+}
+
+.cursor-readings {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cursor-reading {
+  font-family: 'JetBrains Mono', monospace;
 }
 
 /* Custom Legend */
@@ -297,6 +839,16 @@ watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
   gap: 4px;
   font-size: 0.7rem;
   white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.legend-item:hover {
+  opacity: 0.8;
+}
+
+.legend-item.hidden {
+  opacity: 0.4;
 }
 
 .legend-color {

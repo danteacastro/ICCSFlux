@@ -1,0 +1,130 @@
+{
+  "name": "DHW Draw Test Schedule",
+  "description": "Water heater draw test schedule matching LabVIEW configuration",
+  "scheduleEntries": [
+    {
+      "id": "draw-1",
+      "timeOfDay": "00:00:00",
+      "valve": "SV1",
+      "volumeTarget": 10.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 600,
+      "enabled": true
+    },
+    {
+      "id": "draw-2",
+      "timeOfDay": "01:00:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-3",
+      "timeOfDay": "06:00:00",
+      "valve": "SV1",
+      "volumeTarget": 10.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 600,
+      "enabled": true
+    },
+    {
+      "id": "draw-4",
+      "timeOfDay": "06:30:00",
+      "valve": "SV1",
+      "volumeTarget": 10.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 600,
+      "enabled": true
+    },
+    {
+      "id": "draw-5",
+      "timeOfDay": "07:30:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-6",
+      "timeOfDay": "08:00:00",
+      "valve": "SV1",
+      "volumeTarget": 20.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 1200,
+      "enabled": true
+    },
+    {
+      "id": "draw-7",
+      "timeOfDay": "08:30:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-8",
+      "timeOfDay": "09:00:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-9",
+      "timeOfDay": "11:00:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-10",
+      "timeOfDay": "12:00:00",
+      "valve": "SV1",
+      "volumeTarget": 3.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 180,
+      "enabled": true
+    },
+    {
+      "id": "draw-11",
+      "timeOfDay": "16:30:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    },
+    {
+      "id": "draw-12",
+      "timeOfDay": "19:00:00",
+      "valve": "SV1",
+      "volumeTarget": 5.0,
+      "volumeUnit": "gal",
+      "flowRate": 3.0,
+      "maxDuration": 300,
+      "enabled": true
+    }
+  ],
+  "flowChannel": "Ifm_tot",
+  "defaultFlowRate": 3.0,
+  "interDrawDelaySec": 60,
+  "loopContinuously": false
+}

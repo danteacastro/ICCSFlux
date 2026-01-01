@@ -1,0 +1,313 @@
+{
+  "name": "DHW Test System Layout",
+  "description": "Dashboard layout matching LabVIEW 23875 UEF-FHR interface",
+  "gridColumns": 24,
+  "rowHeight": 30,
+  "widgets": [
+    {
+      "id": "title-main",
+      "type": "title",
+      "label": "23875 UEF-FHR DHW Test System",
+      "x": 0, "y": 0, "w": 24, "h": 1,
+      "style": { "fontSize": 18, "textAlign": "center" }
+    },
+    {
+      "id": "scheduler-status",
+      "type": "scheduler_status",
+      "x": 0, "y": 1, "w": 6, "h": 8,
+      "label": "Draw Schedule"
+    },
+    {
+      "id": "chart-cht",
+      "type": "chart",
+      "label": "CHT - Temperature Profile",
+      "channels": ["TC_in", "TC_out", "Tank_1", "Tank_4", "Tank_8"],
+      "x": 6, "y": 1, "w": 9, "h": 8,
+      "timeRange": 600,
+      "yAxisAuto": true,
+      "showGrid": true,
+      "showLegend": true,
+      "showDigitalDisplay": true
+    },
+    {
+      "id": "title-totals",
+      "type": "title",
+      "label": "Totals",
+      "x": 15, "y": 1, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e40af", "textAlign": "center" }
+    },
+    {
+      "id": "numeric-ifm-tot",
+      "type": "numeric",
+      "channel": "Ifm",
+      "label": "Ifm_tot",
+      "x": 15, "y": 2, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e40af" },
+      "decimals": 2
+    },
+    {
+      "id": "numeric-ngin-tot",
+      "type": "numeric",
+      "channel": "NGin",
+      "label": "NGin_tot",
+      "x": 15, "y": 3, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e3a5f" },
+      "decimals": 2
+    },
+    {
+      "id": "title-water",
+      "type": "title",
+      "label": "Water Temps",
+      "x": 18, "y": 1, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#b45309", "textAlign": "center" }
+    },
+    {
+      "id": "numeric-tc-in",
+      "type": "numeric",
+      "channel": "TC_in",
+      "x": 18, "y": 2, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#b45309" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tc-out",
+      "type": "numeric",
+      "channel": "TC_out",
+      "x": 18, "y": 3, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#b45309" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-rtd-in",
+      "type": "numeric",
+      "channel": "RTD_in",
+      "x": 18, "y": 4, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#b45309" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-rtd-out",
+      "type": "numeric",
+      "channel": "RTD_out",
+      "x": 18, "y": 5, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#b45309" },
+      "decimals": 1
+    },
+    {
+      "id": "title-tank",
+      "type": "title",
+      "label": "Tank Temps",
+      "x": 21, "y": 1, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534", "textAlign": "center" }
+    },
+    {
+      "id": "numeric-tank1",
+      "type": "numeric",
+      "channel": "Tank_1",
+      "x": 21, "y": 2, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank2",
+      "type": "numeric",
+      "channel": "Tank_2",
+      "x": 21, "y": 3, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank3",
+      "type": "numeric",
+      "channel": "Tank_3",
+      "x": 21, "y": 4, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank4",
+      "type": "numeric",
+      "channel": "Tank_4",
+      "x": 21, "y": 5, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank5",
+      "type": "numeric",
+      "channel": "Tank_5",
+      "x": 21, "y": 6, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank6",
+      "type": "numeric",
+      "channel": "Tank_6",
+      "x": 21, "y": 7, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank7",
+      "type": "numeric",
+      "channel": "Tank_7",
+      "x": 21, "y": 8, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-tank8",
+      "type": "numeric",
+      "channel": "Tank_8",
+      "x": 21, "y": 9, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#166534" },
+      "decimals": 1
+    },
+    {
+      "id": "title-24hr",
+      "type": "title",
+      "label": "24hr Totals",
+      "x": 15, "y": 4, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e40af", "textAlign": "center" }
+    },
+    {
+      "id": "numeric-ifm-24tot",
+      "type": "numeric",
+      "channel": "Ifm",
+      "label": "Ifm_24tot",
+      "x": 15, "y": 5, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e40af" },
+      "decimals": 2
+    },
+    {
+      "id": "numeric-ngin-24tot",
+      "type": "numeric",
+      "channel": "NGin",
+      "label": "NGin_24tot",
+      "x": 15, "y": 6, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e3a5f" },
+      "decimals": 2
+    },
+    {
+      "id": "title-gas",
+      "type": "title",
+      "label": "Gas/Ambient",
+      "x": 15, "y": 7, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#7c2d12", "textAlign": "center" }
+    },
+    {
+      "id": "numeric-t-gas",
+      "type": "numeric",
+      "channel": "T_gas",
+      "x": 15, "y": 8, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#7c2d12" },
+      "decimals": 1
+    },
+    {
+      "id": "chart-flow",
+      "type": "chart",
+      "label": "Flow & Gas",
+      "channels": ["Ifm", "NGin"],
+      "x": 6, "y": 9, "w": 9, "h": 6,
+      "timeRange": 600,
+      "yAxisAuto": true,
+      "showGrid": true,
+      "showLegend": true,
+      "showDigitalDisplay": true
+    },
+    {
+      "id": "numeric-t-amb",
+      "type": "numeric",
+      "channel": "T_amb",
+      "x": 18, "y": 6, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#7c2d12" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-t-flu",
+      "type": "numeric",
+      "channel": "T_flu",
+      "x": 18, "y": 7, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#7c2d12" },
+      "decimals": 1
+    },
+    {
+      "id": "numeric-ifm",
+      "type": "numeric",
+      "channel": "Ifm",
+      "label": "Flow Rate",
+      "x": 18, "y": 8, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e3a5f" },
+      "decimals": 2
+    },
+    {
+      "id": "numeric-ngin",
+      "type": "numeric",
+      "channel": "NGin",
+      "label": "Gas Rate",
+      "x": 18, "y": 9, "w": 3, "h": 1,
+      "style": { "backgroundColor": "#1e3a5f" },
+      "decimals": 2
+    },
+    {
+      "id": "title-valves",
+      "type": "title",
+      "label": "Valves",
+      "x": 0, "y": 9, "w": 6, "h": 1,
+      "style": { "textAlign": "center" }
+    },
+    {
+      "id": "led-sol0",
+      "type": "led",
+      "channel": "Sol0",
+      "x": 0, "y": 10, "w": 2, "h": 2,
+      "style": { "onColor": "#22c55e", "offColor": "#166534" }
+    },
+    {
+      "id": "led-sol1",
+      "type": "led",
+      "channel": "Sol1",
+      "x": 2, "y": 10, "w": 2, "h": 2,
+      "style": { "onColor": "#22c55e", "offColor": "#166534" }
+    },
+    {
+      "id": "led-sol2",
+      "type": "led",
+      "channel": "Sol2",
+      "x": 4, "y": 10, "w": 2, "h": 2,
+      "style": { "onColor": "#22c55e", "offColor": "#166534" }
+    },
+    {
+      "id": "title-room",
+      "type": "title",
+      "label": "Room Environment",
+      "x": 0, "y": 12, "w": 6, "h": 1,
+      "style": { "textAlign": "center" }
+    },
+    {
+      "id": "numeric-t-rm",
+      "type": "numeric",
+      "channel": "T_rm",
+      "x": 0, "y": 13, "w": 2, "h": 1,
+      "decimals": 1
+    },
+    {
+      "id": "numeric-rh-rm",
+      "type": "numeric",
+      "channel": "RH_rm",
+      "x": 2, "y": 13, "w": 2, "h": 1,
+      "decimals": 1
+    },
+    {
+      "id": "recording-status",
+      "type": "recording_status",
+      "x": 4, "y": 13, "w": 2, "h": 2
+    },
+    {
+      "id": "system-status",
+      "type": "system_status",
+      "x": 21, "y": 10, "w": 3, "h": 5
+    }
+  ]
+}

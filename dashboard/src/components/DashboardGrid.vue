@@ -2,14 +2,22 @@
 import { computed, ref } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import { useDashboardStore } from '../stores/dashboard'
+import { useMqtt } from '../composables/useMqtt'
 import { getWidgetComponent } from '../widgets'
 import WidgetConfigModal from './WidgetConfigModal.vue'
 import type { WidgetConfig } from '../types'
 
 const store = useDashboardStore()
+const mqtt = useMqtt()
 
 // Widget config modal
 const configWidgetId = ref<string | null>(null)
+
+// Track dragging state to hide controls
+const isDragging = ref(false)
+
+// Multi-select state
+const selectedWidgets = ref<Set<string>>(new Set())
 
 function openWidgetConfig(widgetId: string) {
   configWidgetId.value = widgetId
@@ -17,6 +25,43 @@ function openWidgetConfig(widgetId: string) {
 
 function closeWidgetConfig() {
   configWidgetId.value = null
+}
+
+// Handle widget selection (for multi-select)
+function handleWidgetClick(widgetId: string, event: MouseEvent) {
+  if (!store.editMode) return
+
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    // Toggle selection
+    if (selectedWidgets.value.has(widgetId)) {
+      selectedWidgets.value.delete(widgetId)
+    } else {
+      selectedWidgets.value.add(widgetId)
+    }
+    // Force reactivity
+    selectedWidgets.value = new Set(selectedWidgets.value)
+  } else {
+    // Single click without modifier - clear selection
+    selectedWidgets.value.clear()
+  }
+}
+
+// Clear selection when exiting edit mode
+function clearSelection() {
+  selectedWidgets.value.clear()
+}
+
+// Expose for external use
+defineExpose({ clearSelection })
+
+// Handle drag start
+function onDragStart() {
+  isDragging.value = true
+}
+
+// Handle drag end
+function onDragEnd() {
+  isDragging.value = false
 }
 
 // Convert widgets to grid-layout format
@@ -59,6 +104,22 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   props.widgetId = widgetId
   props.text = widget.label
 
+  // Chart-specific props
+  if (widget.yAxisAuto !== undefined) props.yAxisAuto = widget.yAxisAuto
+  if (widget.yAxisMin !== undefined) props.yAxisMin = widget.yAxisMin
+  if (widget.yAxisMax !== undefined) props.yAxisMax = widget.yAxisMax
+  if (widget.showGrid !== undefined) props.showGrid = widget.showGrid
+  if (widget.showLegend !== undefined) props.showLegend = widget.showLegend
+  // LabVIEW-style chart props
+  if (widget.historySize !== undefined) props.historySize = widget.historySize
+  if (widget.updateMode !== undefined) props.updateMode = widget.updateMode
+  if (widget.yAxes !== undefined) props.yAxes = widget.yAxes
+  if (widget.showScrollbar !== undefined) props.showScrollbar = widget.showScrollbar
+  if (widget.showDigitalDisplay !== undefined) props.showDigitalDisplay = widget.showDigitalDisplay
+  if (widget.stackPlots !== undefined) props.stackPlots = widget.stackPlots
+  if (widget.plotStyles !== undefined) props.plotStyles = widget.plotStyles
+  if (widget.cursors !== undefined) props.cursors = widget.cursors
+
   return props
 }
 
@@ -68,10 +129,6 @@ function removeWidget(id: string) {
 
 // Chart config modal
 const selectedChart = ref<string | null>(null)
-
-function openChartConfig(widgetId: string) {
-  selectedChart.value = widgetId
-}
 
 function closeChartConfig() {
   selectedChart.value = null
@@ -84,10 +141,17 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
     store.removeChannelFromChart(chartId, channel)
   }
 }
+
+// Handle toggle switch change events for digital outputs
+function handleToggleChange(widgetId: string, value: boolean) {
+  const widget = store.widgets[widgetId]
+  if (!widget?.channel) return
+  mqtt.setOutput(widget.channel, value)
+}
 </script>
 
 <template>
-  <div class="dashboard-grid">
+  <div class="dashboard-grid" :class="{ 'is-dragging': isDragging }">
     <GridLayout
       v-model:layout="layoutItems"
       :col-num="store.gridColumns"
@@ -109,26 +173,30 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
         :i="item.i"
         :min-w="item.minW"
         :min-h="item.minH"
-        drag-allow-from=".drag-handle"
         drag-ignore-from=".no-drag"
+        @movestart="onDragStart"
+        @moveend="onDragEnd"
+        @resizestart="onDragStart"
+        @resizeend="onDragEnd"
       >
-        <div class="widget-wrapper" :class="{ 'edit-mode': store.editMode }">
-          <div v-if="store.editMode" class="widget-controls">
-            <div class="drag-handle" title="Drag to move">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/>
-                <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
-                <circle cx="5" cy="19" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
-              </svg>
-            </div>
-            <button class="config-btn no-drag" @click="openWidgetConfig(item.i)" title="Configure widget">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <div
+          class="widget-wrapper"
+          :class="{
+            'edit-mode': store.editMode,
+            'selected': selectedWidgets.has(item.i)
+          }"
+          @click="handleWidgetClick(item.i, $event)"
+        >
+          <!-- Minimal controls - only show when in edit mode and not dragging -->
+          <div v-if="store.editMode && !isDragging" class="widget-controls">
+            <button class="config-btn no-drag" @click.stop="openWidgetConfig(item.i)" title="Configure">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="3"/>
                 <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
               </svg>
             </button>
-            <button class="remove-btn no-drag" @click="removeWidget(item.i)" title="Remove widget">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <button class="remove-btn no-drag" @click.stop="removeWidget(item.i)" title="Remove">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
@@ -137,8 +205,9 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
           <component
             :is="getWidgetComponent(getWidget(item.i)?.type || 'numeric')"
             v-bind="(getWidgetProps(item.i) as any)"
-            @configure="openChartConfig(item.i)"
-            class="widget-content no-drag"
+            @configure="openWidgetConfig(item.i)"
+            @change="handleToggleChange(item.i, $event)"
+            class="widget-content"
           />
         </div>
       </GridItem>
@@ -188,42 +257,48 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
 .widget-wrapper.edit-mode {
   outline: 1px dashed #4a5568;
   outline-offset: -1px;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.widget-wrapper.edit-mode:hover {
+  outline-color: #60a5fa;
+}
+
+.widget-wrapper.selected {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: -1px;
+}
+
+/* Hide controls while dragging for cleaner UX */
+.is-dragging .widget-controls {
+  display: none !important;
 }
 
 .widget-controls {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 2px;
+  right: 2px;
   display: flex;
-  gap: 4px;
+  gap: 2px;
   z-index: 9999;
   pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.15s;
 }
 
-.drag-handle {
-  cursor: move;
-  padding: 4px 6px;
-  background: rgba(45, 55, 72, 0.95);
-  border-radius: 4px;
-  color: #a0aec0;
-  display: flex;
-  align-items: center;
-  backdrop-filter: blur(4px);
-  border: 1px solid rgba(74, 85, 104, 0.5);
-}
-
-.drag-handle:hover {
-  background: rgba(74, 85, 104, 0.95);
-  color: #fff;
+.widget-wrapper:hover .widget-controls {
+  opacity: 1;
 }
 
 .config-btn {
-  background: rgba(30, 58, 95, 0.95);
+  background: rgba(30, 58, 95, 0.9);
   border: 1px solid rgba(59, 130, 246, 0.5);
-  border-radius: 4px;
+  border-radius: 3px;
   color: #93c5fd;
   cursor: pointer;
-  padding: 4px 6px;
+  padding: 3px 5px;
   display: flex;
   align-items: center;
   backdrop-filter: blur(4px);
@@ -235,12 +310,12 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
 }
 
 .remove-btn {
-  background: rgba(116, 42, 42, 0.95);
+  background: rgba(116, 42, 42, 0.9);
   border: 1px solid rgba(155, 44, 44, 0.5);
-  border-radius: 4px;
+  border-radius: 3px;
   color: #feb2b2;
   cursor: pointer;
-  padding: 4px 6px;
+  padding: 3px 5px;
   display: flex;
   align-items: center;
   backdrop-filter: blur(4px);
@@ -253,6 +328,14 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
 
 .widget-content {
   height: 100%;
+}
+
+/* Make interactive elements inside widgets still clickable in edit mode */
+.widget-content :deep(button),
+.widget-content :deep(input),
+.widget-content :deep(select),
+.widget-content :deep(.interactive) {
+  pointer-events: auto;
 }
 
 .modal-overlay {

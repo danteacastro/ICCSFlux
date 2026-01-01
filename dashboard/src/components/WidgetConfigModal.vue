@@ -152,7 +152,11 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
             </div>
             <div class="form-group checkbox">
               <label>
-                <input type="checkbox" v-model="localWidget.showUnit" />
+                <input
+                  type="checkbox"
+                  :checked="localWidget.showUnit !== false"
+                  @change="localWidget.showUnit = ($event.target as HTMLInputElement).checked"
+                />
                 Show Unit
               </label>
             </div>
@@ -160,34 +164,140 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
 
           <!-- Chart specific -->
           <template v-if="widgetType === 'chart'">
-            <div class="form-group">
-              <label>Time Range (seconds)</label>
-              <input
-                type="number"
-                v-model.number="localWidget.timeRange"
-                min="10"
-                max="3600"
-              />
+            <!-- Update Mode (LabVIEW-style) -->
+            <div class="config-section">
+              <div class="section-header">Chart Mode</div>
+              <div class="form-group">
+                <label>Update Mode</label>
+                <select v-model="localWidget.updateMode">
+                  <option value="strip">Strip Chart (scrolling)</option>
+                  <option value="scope">Scope Chart (clear & restart)</option>
+                  <option value="sweep">Sweep Chart (moving line)</option>
+                </select>
+                <span class="hint">How data is displayed as it updates</span>
+              </div>
             </div>
-            <div class="form-group">
-              <label>Channels</label>
-              <div class="channel-checklist">
-                <label v-for="[name, config] in availableChannels" :key="name" class="channel-item">
+
+            <!-- X-Axis Settings -->
+            <div class="config-section">
+              <div class="section-header">X-Axis (Time)</div>
+              <div class="form-group">
+                <label>Time Range (seconds)</label>
+                <input
+                  type="number"
+                  v-model.number="localWidget.timeRange"
+                  min="10"
+                  max="3600"
+                />
+                <span class="hint">How much history to display</span>
+              </div>
+              <div class="form-group">
+                <label>History Buffer Size</label>
+                <input
+                  type="number"
+                  v-model.number="localWidget.historySize"
+                  min="100"
+                  max="10000"
+                  placeholder="1024"
+                />
+                <span class="hint">Max data points to keep (default 1024)</span>
+              </div>
+            </div>
+
+            <!-- Y-Axis Settings -->
+            <div class="config-section">
+              <div class="section-header">Y-Axis</div>
+              <div class="form-group checkbox">
+                <label>
                   <input
                     type="checkbox"
-                    :checked="localWidget.channels?.includes(name as string)"
-                    @change="(e) => {
-                      const checked = (e.target as HTMLInputElement).checked
-                      if (!localWidget.channels) localWidget.channels = []
-                      if (checked && !localWidget.channels.includes(name as string)) {
-                        localWidget.channels.push(name as string)
-                      } else if (!checked) {
-                        localWidget.channels = localWidget.channels.filter(c => c !== name)
-                      }
-                    }"
+                    :checked="localWidget.yAxisAuto !== false"
+                    @change="localWidget.yAxisAuto = ($event.target as HTMLInputElement).checked"
                   />
-                  <span>{{ config.display_name || name }}</span>
+                  Auto-scale
                 </label>
+              </div>
+              <template v-if="localWidget.yAxisAuto === false">
+                <div class="form-row">
+                  <div class="form-group half">
+                    <label>Min</label>
+                    <input type="number" v-model.number="localWidget.yAxisMin" step="any" />
+                  </div>
+                  <div class="form-group half">
+                    <label>Max</label>
+                    <input type="number" v-model.number="localWidget.yAxisMax" step="any" />
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Display Options -->
+            <div class="config-section">
+              <div class="section-header">Display Options</div>
+              <div class="form-group checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    :checked="localWidget.showGrid !== false"
+                    @change="localWidget.showGrid = ($event.target as HTMLInputElement).checked"
+                  />
+                  Show Grid Lines
+                </label>
+              </div>
+              <div class="form-group checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    :checked="localWidget.showLegend !== false"
+                    @change="localWidget.showLegend = ($event.target as HTMLInputElement).checked"
+                  />
+                  Show Legend
+                </label>
+              </div>
+              <div class="form-group checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="localWidget.showDigitalDisplay"
+                  />
+                  Show Digital Display
+                </label>
+                <span class="hint">Display current values in header</span>
+              </div>
+              <div class="form-group checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="localWidget.showScrollbar"
+                  />
+                  Show History Scrollbar
+                </label>
+                <span class="hint">Navigate through historical data</span>
+              </div>
+            </div>
+
+            <!-- Channels -->
+            <div class="config-section">
+              <div class="section-header">Channels</div>
+              <div class="form-group">
+                <div class="channel-checklist">
+                  <label v-for="[name, config] in availableChannels" :key="name" class="channel-item">
+                    <input
+                      type="checkbox"
+                      :checked="localWidget.channels?.includes(name as string)"
+                      @change="(e) => {
+                        const checked = (e.target as HTMLInputElement).checked
+                        if (!localWidget.channels) localWidget.channels = []
+                        if (checked && !localWidget.channels.includes(name as string)) {
+                          localWidget.channels.push(name as string)
+                        } else if (!checked) {
+                          localWidget.channels = localWidget.channels.filter(c => c !== name)
+                        }
+                      }"
+                    />
+                    <span>{{ config.display_name || name }}</span>
+                  </label>
+                </div>
               </div>
             </div>
           </template>
@@ -218,7 +328,11 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
             </div>
             <div class="form-group checkbox">
               <label>
-                <input type="checkbox" v-model="localWidget.showUnit" />
+                <input
+                  type="checkbox"
+                  :checked="localWidget.showUnit !== false"
+                  @change="localWidget.showUnit = ($event.target as HTMLInputElement).checked"
+                />
                 Show Units
               </label>
             </div>
@@ -764,5 +878,37 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
   color: #666;
   margin-top: 4px;
   font-style: italic;
+}
+
+/* Config sections for organized settings */
+.config-section {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.config-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.section-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #60a5fa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+/* Form row for side-by-side inputs */
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.form-group.half {
+  flex: 1;
+  margin-bottom: 12px;
 }
 </style>

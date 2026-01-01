@@ -39,6 +39,7 @@ export interface ChannelConfig {
   name: string
   display_name: string
   channel_type: ChannelType
+  physical_channel?: string  // NI-DAQmx hardware address (e.g., cDAQ1Mod1/ai0)
   unit: string
   group: string
   description?: string
@@ -49,6 +50,9 @@ export interface ChannelConfig {
   chartable?: boolean
   color?: string
   widget?: WidgetType
+
+  // Visibility - hidden channels still collect data but don't appear in dropdowns
+  visible?: boolean
 
   // Scaling parameters
   scale_slope?: number
@@ -76,9 +80,46 @@ export interface ChannelConfig {
   thermocouple_type?: 'J' | 'K' | 'T' | 'E' | 'N' | 'R' | 'S' | 'B'
   cjc_source?: 'internal' | 'constant' | 'channel'
 
+  // RTD-specific
+  rtd_type?: 'Pt100' | 'Pt500' | 'Pt1000' | 'custom'
+  rtd_resistance?: number      // Nominal resistance at 0°C (default 100.0)
+  rtd_wiring?: '2-wire' | '3-wire' | '4-wire'
+  rtd_current?: number         // Excitation current in Amps (default 0.001)
+
+  // Voltage-specific
+  terminal_config?: 'differential' | 'rse' | 'nrse' | 'pseudo_diff' | 'RSE' | 'DIFF' | 'NRSE' | 'PSEUDO_DIFF'
+
+  // Strain-specific
+  strain_config?: 'full-bridge' | 'half-bridge' | 'quarter-bridge'
+  strain_excitation_voltage?: number  // Bridge excitation voltage (default 2.5V)
+  strain_gage_factor?: number  // Gage factor (default 2.0)
+  strain_resistance?: number   // Nominal gage resistance in Ohms (default 350)
+
+  // IEPE-specific
+  iepe_coupling?: 'AC' | 'DC'
+  iepe_sensitivity?: number    // mV/g or mV/Pa (default 100.0)
+  iepe_current?: number        // Excitation current in Amps (default 0.004)
+
+  // Counter-specific
+  counter_mode?: 'count_edges' | 'count' | 'frequency' | 'period' | 'pulse_width'
+  edge?: 'rising' | 'falling'
+  counter_edge?: 'rising' | 'falling'  // Backend uses this name
+  pulses_per_unit?: number     // e.g., 100 pulses = 1 gallon
+  counter_reset_on_read?: boolean  // For totalizer mode
+  counter_min_freq?: number    // Minimum expected frequency in Hz (for nidaqmx)
+  counter_max_freq?: number    // Maximum expected frequency in Hz (for nidaqmx)
+
+  // Resistance-specific
+  resistance_range?: number    // Maximum expected resistance in Ohms
+  resistance_wiring?: '2-wire' | '4-wire'
+
+  // Digital I/O
+  logic_level?: '5V' | '24V'
+
   // Ranges
   voltage_range?: number
   current_range_ma?: number
+  ao_range?: string  // Analog output range (e.g., '5V', '10V', 'pm10V')
 
   // Digital I/O
   invert?: boolean
@@ -97,6 +138,7 @@ export interface ChannelConfig {
 export interface ChannelValue {
   name: string
   value: number
+  raw_value?: number  // Raw value before scaling (for voltage/current inputs)
   timestamp: number
   alarm?: boolean
   warning?: boolean
@@ -184,6 +226,39 @@ export interface WidgetStyle {
   borderColor?: string
 }
 
+// LabVIEW-style chart types
+export type ChartUpdateMode = 'strip' | 'scope' | 'sweep'
+export type ChartToolMode = 'cursor' | 'zoom' | 'pan' | 'none'
+
+export interface ChartCursor {
+  id: string
+  x: number              // X position (timestamp)
+  color: string
+  label?: string
+  locked?: boolean       // Whether cursor can be dragged
+}
+
+export interface ChartPlotStyle {
+  channel: string
+  color: string
+  lineWidth: number
+  lineStyle: 'solid' | 'dashed' | 'dotted'
+  showMarkers: boolean
+  markerStyle: 'circle' | 'square' | 'triangle' | 'diamond'
+  yAxisId: number        // Which Y-axis this trace uses (0 = left, 1 = right)
+  visible: boolean
+}
+
+export interface ChartYAxis {
+  id: number
+  label?: string
+  auto: boolean
+  min: number
+  max: number
+  position: 'left' | 'right'
+  color?: string         // Axis color (matches trace if single trace)
+}
+
 export type ButtonActionType =
   | 'mqtt_publish'      // Publish to MQTT topic
   | 'digital_output'    // Set digital output (pulse or toggle)
@@ -225,7 +300,24 @@ export interface WidgetConfig {
   minW?: number
   minH?: number
   // Chart-specific
-  timeRange?: number      // seconds
+  timeRange?: number      // seconds (X-axis range)
+  historySize?: number    // Max data points to keep (default 1024)
+  updateMode?: ChartUpdateMode  // strip, scope, sweep (default strip)
+  // Y-axis settings
+  yAxisAuto?: boolean     // Auto-scale Y axis (default true)
+  yAxisMin?: number       // Manual Y min (when yAxisAuto=false)
+  yAxisMax?: number       // Manual Y max (when yAxisAuto=false)
+  yAxes?: ChartYAxis[]    // Multiple Y-axis config
+  // Display options for chart
+  showGrid?: boolean      // Show grid lines (default true)
+  showLegend?: boolean    // Show legend (default true)
+  showScrollbar?: boolean // Show X-axis scrollbar for history
+  showDigitalDisplay?: boolean  // Show current value for each trace
+  stackPlots?: boolean    // Stack traces vertically vs overlay
+  // Plot styling per channel
+  plotStyles?: ChartPlotStyle[]
+  // Cursor configuration
+  cursors?: ChartCursor[]
   // Display options
   decimals?: number
   showUnit?: boolean
@@ -448,4 +540,128 @@ export interface InterlockStatus {
     reason: string
   }[]
   controls: InterlockControl[]
+}
+
+// ============================================
+// User Variables / Playground Types
+// ============================================
+
+export type UserVariableType =
+  | 'constant'      // Fixed value, usable in formulas (e.g., calibration factors, setpoints)
+  | 'manual'        // User sets value directly
+  | 'accumulator'   // Watches counter channel for increments
+  | 'counter'       // Edge-triggered counter
+  | 'timer'         // Elapsed time counter
+  | 'sum'           // Running sum of channel values
+  | 'average'       // Running average
+  | 'min'           // Minimum value seen
+  | 'max'           // Maximum value seen
+  | 'rolling'       // Sliding window accumulator (e.g., last 24 hours)
+  | 'expression'    // Formula-based calculation
+  | 'rate'          // Rate of change (derivative)
+  | 'runtime'       // Time above/below threshold
+  | 'dwell'         // Time in a state/condition
+  | 'conditional_average'  // Average only when condition true
+  | 'cross_channel' // Min/max/delta across multiple channels
+
+export type ResetMode =
+  | 'manual'        // Only reset manually
+  | 'time_of_day'   // Reset at specific time each day
+  | 'elapsed'       // Reset after elapsed time
+  | 'test_session'  // Reset when test session starts
+  | 'never'         // Never reset (persistent forever)
+
+export type EdgeType =
+  | 'increment'     // Counter increased by any amount
+  | 'rising'        // 0 -> 1 transition
+  | 'falling'       // 1 -> 0 transition
+  | 'both'          // Any transition
+
+export interface UserVariable {
+  id: string
+  name: string
+  displayName: string
+  variableType: UserVariableType
+  value: number
+  units: string
+  persistent: boolean
+
+  // Accumulator/Counter/Stats config
+  sourceChannel?: string      // Channel to watch
+  sourceChannels?: string[]   // Multiple channels (for cross_channel type)
+  edgeType?: EdgeType
+  scaleFactor?: number
+
+  // Reset config
+  resetMode: ResetMode
+  resetTime?: string          // HH:MM for time_of_day
+  resetElapsedS?: number      // Seconds for elapsed reset
+  lastReset?: string          // ISO timestamp
+
+  // Timer state
+  timerRunning?: boolean
+
+  // Statistics tracking
+  sampleCount?: number
+
+  // Expression/formula
+  formula?: string
+
+  // Rate of change config
+  rateWindowMs?: number       // Time window for rate calculation
+
+  // Runtime counter config
+  thresholdValue?: number     // Threshold for runtime counting
+  thresholdOperator?: '<' | '>' | '<=' | '>=' | '==' | '!='
+
+  // Conditional stats config
+  conditionChannel?: string   // Channel to check for condition
+  conditionOperator?: '<' | '>' | '<=' | '>=' | '==' | '!='
+  conditionValue?: number
+
+  // Cross-channel config
+  crossChannelOperation?: 'min' | 'max' | 'delta' | 'spread'
+
+  // Dwell time config
+  dwellCondition?: string     // Formula that returns boolean
+
+  // Rolling window config
+  rollingWindowS?: number     // Window size in seconds (default 86400 = 24 hours)
+
+  // UI state
+  lastUpdated?: number
+  formatted?: string          // Pre-formatted value (for timers)
+}
+
+export interface TestSessionConfig {
+  enableScheduler: boolean
+  startRecording: boolean
+  enableTriggers: boolean
+  resetVariables: string[]    // Variable IDs to reset on start
+  runSequenceId?: string      // Sequence to run at start
+  stopSequenceId?: string     // Sequence to run at stop
+  enableTriggerIds?: string[] // Specific triggers to enable
+  enableScheduleIds?: string[] // Specific schedules to enable
+}
+
+export interface TestSession {
+  active: boolean
+  startedAt?: string          // ISO timestamp
+  startedBy?: string
+  elapsedSeconds?: number
+  elapsedFormatted?: string   // HH:MM:SS
+  config: TestSessionConfig
+}
+
+// Variable value from backend (for MQTT subscription)
+export interface UserVariableValue {
+  name: string
+  display_name: string
+  value: number
+  units: string
+  variable_type: UserVariableType
+  last_reset?: string
+  last_update?: number
+  timer_running?: boolean
+  formatted?: string
 }

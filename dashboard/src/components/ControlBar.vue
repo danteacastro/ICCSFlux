@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
 
@@ -16,16 +16,10 @@ const emit = defineEmits<{
   (e: 'record-stop'): void
   (e: 'schedule-enable'): void
   (e: 'schedule-disable'): void
-  (e: 'load-config', name: string): void
-  (e: 'save-config', name: string): void
   (e: 'add-widget'): void
 }>()
 
 const store = useDashboardStore()
-
-const showLoadModal = ref(false)
-const showSaveModal = ref(false)
-const configName = ref('')
 
 // Recording timer display
 const recordingTime = computed(() => {
@@ -43,22 +37,6 @@ const recordingTime = computed(() => {
   }
   return '00:00:00'
 })
-
-function handleLoad() {
-  if (configName.value.trim()) {
-    emit('load-config', configName.value.trim())
-    showLoadModal.value = false
-    configName.value = ''
-  }
-}
-
-function handleSave() {
-  if (configName.value.trim()) {
-    emit('save-config', configName.value.trim())
-    showSaveModal.value = false
-    configName.value = ''
-  }
-}
 </script>
 
 <template>
@@ -112,23 +90,6 @@ function handleSave() {
       </button>
     </div>
 
-    <div class="control-group">
-      <!-- Load/Save -->
-      <button class="btn btn-secondary" @click="showLoadModal = true">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 15v4a2 2 0 002 2h14a2 2 0 002-2v-4M17 8l-5-5-5 5M12 3v12"/>
-        </svg>
-        LOAD
-      </button>
-      <button class="btn btn-secondary" @click="showSaveModal = true">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
-          <polyline points="17,21 17,13 7,13 7,21"/>
-          <polyline points="7,3 7,8 15,8"/>
-        </svg>
-        SAVE
-      </button>
-    </div>
 
     <!-- Scheduler toggle - only show when scheduler is enabled -->
     <div v-if="store.isSchedulerEnabled" class="control-group">
@@ -236,43 +197,6 @@ function handleSave() {
       </div>
     </div>
 
-    <!-- Load modal -->
-    <Teleport to="body">
-      <div v-if="showLoadModal" class="modal-overlay" @click.self="showLoadModal = false">
-        <div class="modal">
-          <h3>Load Configuration</h3>
-          <input
-            v-model="configName"
-            type="text"
-            placeholder="Configuration name..."
-            @keyup.enter="handleLoad"
-          />
-          <div class="modal-actions">
-            <button class="btn btn-secondary" @click="showLoadModal = false">Cancel</button>
-            <button class="btn btn-primary" @click="handleLoad">Load</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Save modal -->
-    <Teleport to="body">
-      <div v-if="showSaveModal" class="modal-overlay" @click.self="showSaveModal = false">
-        <div class="modal">
-          <h3>Save Configuration</h3>
-          <input
-            v-model="configName"
-            type="text"
-            placeholder="Configuration name..."
-            @keyup.enter="handleSave"
-          />
-          <div class="modal-actions">
-            <button class="btn btn-secondary" @click="showSaveModal = false">Cancel</button>
-            <button class="btn btn-primary" @click="handleSave">Save</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -280,10 +204,11 @@ function handleSave() {
 .control-bar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 8px 16px;
-  background: #0f0f1a;
-  border-top: 1px solid #2a2a4a;
+  gap: 12px;
+  padding: 0;
+  background: transparent;
+  position: relative;
+  z-index: 10;
 }
 
 .control-group {
@@ -294,11 +219,11 @@ function handleSave() {
 .btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: 5px;
+  padding: 6px 10px;
   border: none;
   border-radius: 4px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
@@ -421,8 +346,7 @@ function handleSave() {
 
 .status-group {
   display: flex;
-  gap: 12px;
-  margin-left: auto;
+  gap: 10px;
 }
 
 .status-item {
@@ -465,58 +389,10 @@ function handleSave() {
   50% { opacity: 0.7; }
 }
 
-/* Modal styles */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 16px;
-  min-width: 300px;
-}
-
-.modal h3 {
-  margin: 0 0 12px;
-  color: #fff;
-  font-size: 1rem;
-}
-
-.modal input {
-  width: 100%;
-  padding: 8px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
-  border-radius: 4px;
-  color: #fff;
-  margin-bottom: 12px;
-}
-
-.modal input:focus {
-  outline: none;
-  border-color: #3b82f6;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
 /* Safety Status Indicators */
 .safety-status-group {
   display: flex;
-  gap: 8px;
-  margin-left: auto;
-  margin-right: 16px;
+  gap: 6px;
 }
 
 .safety-indicator {

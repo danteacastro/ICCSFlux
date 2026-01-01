@@ -11,13 +11,19 @@ import type {
   Alarm,
   Transformation,
   AutomationTrigger,
-  ScriptsSubTab,
+  ScriptsSubTabExtended,
   ScriptTemplate,
   FunctionBlock,
   FunctionBlockTemplate,
-  FunctionBlockCategory
+  FunctionBlockCategory,
+  StateMachine,
+  ReportTemplate,
+  ScheduledReport,
+  Watchdog,
+  Draw,
+  DrawPattern
 } from '../types/scripts'
-import { SCRIPT_TEMPLATES as templates, FUNCTION_BLOCK_TEMPLATES } from '../types/scripts'
+import { SCRIPT_TEMPLATES as templates, FUNCTION_BLOCK_TEMPLATES, SEQUENCE_TEMPLATES } from '../types/scripts'
 
 const store = useDashboardStore()
 const scripts = useScripts()
@@ -26,16 +32,38 @@ const scripts = useScripts()
 // SUB-TAB NAVIGATION
 // =============================================================================
 
-const subTabs: { id: ScriptsSubTab; label: string; icon: string }[] = [
+const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
   { id: 'formulas', label: 'Formulas', icon: 'fx' },
   { id: 'functionBlocks', label: 'Blocks', icon: 'blocks' },
   { id: 'sequences', label: 'Sequences', icon: 'list' },
+  { id: 'drawPatterns', label: 'Draw Patterns', icon: 'valve' },
+  { id: 'stateMachines', label: 'States', icon: 'state' },
   { id: 'schedule', label: 'Schedule', icon: 'clock' },
   { id: 'alarms', label: 'Alarms', icon: 'bell' },
   { id: 'transformations', label: 'Transforms', icon: 'chart' },
   { id: 'triggers', label: 'Triggers', icon: 'zap' },
+  { id: 'watchdogs', label: 'Watchdog', icon: 'eye' },
+  { id: 'reports', label: 'Reports', icon: 'file' },
   { id: 'templates', label: 'Templates', icon: 'book' }
 ]
+
+function getTabIcon(icon: string): string {
+  const icons: Record<string, string> = {
+    'fx': 'ƒx',
+    'blocks': '🧩',
+    'list': '☰',
+    'valve': '🚿',
+    'state': '🔄',
+    'clock': '🕐',
+    'bell': '🔔',
+    'chart': '📊',
+    'zap': '⚡',
+    'eye': '👁️',
+    'file': '📄',
+    'book': '📖'
+  }
+  return icons[icon] || '•'
+}
 
 // =============================================================================
 // FORMULAS TAB STATE
@@ -66,6 +94,11 @@ const sequenceForm = ref<Partial<Sequence>>({
 const editingStepIndex = ref<number | null>(null)
 const showStepEditor = ref(false)
 const stepForm = ref<Partial<SequenceStep>>({})
+const showSequenceTemplates = ref(false)
+const showSequenceHistory = ref(false)
+const selectedSequenceForHistory = ref<string | null>(null)
+const importFileInput = ref<HTMLInputElement | null>(null)
+const newSequenceName = ref('')
 
 // =============================================================================
 // SCHEDULE TAB STATE
@@ -275,6 +308,216 @@ const filteredBlocks = computed(() => {
 })
 
 // =============================================================================
+// DRAW PATTERNS TAB STATE
+// =============================================================================
+
+const showDrawPatternEditor = ref(false)
+const editingDrawPatternId = ref<string | null>(null)
+const showDrawEditor = ref(false)
+const editingDrawIndex = ref<number | null>(null)
+
+const drawPatternForm = ref<Partial<DrawPattern>>({
+  name: '',
+  description: '',
+  flowChannel: '',
+  flowUnit: 'gal',
+  draws: [],
+  delayBetweenDraws: 5,
+  loopContinuously: false,
+  enabled: true
+})
+
+const drawForm = ref<Partial<Draw>>({
+  valve: '',
+  volumeTarget: 1.0,
+  volumeUnit: 'gal',
+  maxDuration: 300,
+  enabled: true
+})
+
+// Active draw pattern (first one or selected)
+const selectedDrawPatternId = ref<string | null>(null)
+const activeDrawPattern = computed(() => {
+  if (selectedDrawPatternId.value) {
+    return scripts.drawPatterns.value.find(p => p.id === selectedDrawPatternId.value) || null
+  }
+  return scripts.drawPatterns.value[0] || null
+})
+
+// Computed: digital output channels for valve selection
+const digitalOutputChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, config]) => config.channel_type === 'digital_output')
+    .map(([name, config]) => ({
+      name,
+      displayName: config.display_name || name
+    }))
+})
+
+// Computed: counter/flow channels for flow measurement
+const flowChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, config]) =>
+      config.channel_type === 'counter' ||
+      config.channel_type === 'voltage' ||
+      config.channel_type === 'current'
+    )
+    .map(([name, config]) => ({
+      name,
+      displayName: config.display_name || name,
+      unit: config.unit || ''
+    }))
+})
+
+// Draw Pattern CRUD
+function openDrawPatternEditor(patternId?: string) {
+  if (patternId) {
+    const pattern = scripts.drawPatterns.value.find(p => p.id === patternId)
+    if (pattern) {
+      editingDrawPatternId.value = patternId
+      drawPatternForm.value = {
+        name: pattern.name,
+        description: pattern.description,
+        flowChannel: pattern.flowChannel,
+        flowUnit: pattern.flowUnit,
+        delayBetweenDraws: pattern.delayBetweenDraws,
+        loopContinuously: pattern.loopContinuously,
+        enabled: pattern.enabled
+      }
+    }
+  } else {
+    editingDrawPatternId.value = null
+    drawPatternForm.value = {
+      name: `Draw Pattern ${scripts.drawPatterns.value.length + 1}`,
+      description: '',
+      flowChannel: flowChannels.value[0]?.name || '',
+      flowUnit: 'gal',
+      draws: [],
+      delayBetweenDraws: 5,
+      loopContinuously: false,
+      enabled: true
+    }
+  }
+  showDrawPatternEditor.value = true
+}
+
+function closeDrawPatternEditor() {
+  showDrawPatternEditor.value = false
+  editingDrawPatternId.value = null
+}
+
+function saveDrawPattern() {
+  if (editingDrawPatternId.value) {
+    scripts.updateDrawPattern(editingDrawPatternId.value, drawPatternForm.value)
+  } else {
+    const id = scripts.addDrawPattern(drawPatternForm.value as any)
+    selectedDrawPatternId.value = id
+  }
+  closeDrawPatternEditor()
+}
+
+function deleteDrawPattern(patternId: string) {
+  const pattern = scripts.drawPatterns.value.find(p => p.id === patternId)
+  if (pattern && confirm(`Delete "${pattern.name}"?`)) {
+    scripts.deleteDrawPattern(patternId)
+    if (selectedDrawPatternId.value === patternId) {
+      selectedDrawPatternId.value = null
+    }
+  }
+}
+
+// Draw CRUD within a pattern
+function openDrawEditor(index?: number) {
+  const pattern = activeDrawPattern.value
+  if (!pattern) return
+
+  if (index !== undefined) {
+    const draw = pattern.draws[index]
+    if (draw) {
+      editingDrawIndex.value = index
+      drawForm.value = {
+        valve: draw.valve,
+        volumeTarget: draw.volumeTarget,
+        volumeUnit: draw.volumeUnit,
+        maxDuration: draw.maxDuration,
+        enabled: draw.enabled
+      }
+    }
+  } else {
+    editingDrawIndex.value = null
+    drawForm.value = {
+      valve: digitalOutputChannels.value[0]?.name || '',
+      volumeTarget: 1.0,
+      volumeUnit: pattern.flowUnit || 'gal',
+      maxDuration: 300,
+      enabled: true
+    }
+  }
+  showDrawEditor.value = true
+}
+
+function closeDrawEditor() {
+  showDrawEditor.value = false
+  editingDrawIndex.value = null
+}
+
+function saveDraw() {
+  const pattern = activeDrawPattern.value
+  if (!pattern) return
+
+  if (editingDrawIndex.value !== null) {
+    const draw = pattern.draws[editingDrawIndex.value]
+    if (draw) {
+      scripts.updateDraw(pattern.id, draw.id, drawForm.value)
+    }
+  } else {
+    scripts.addDraw(pattern.id, drawForm.value as any)
+  }
+  closeDrawEditor()
+}
+
+function deleteDraw(index: number) {
+  const pattern = activeDrawPattern.value
+  if (!pattern) return
+  const draw = pattern.draws[index]
+  if (draw && confirm(`Delete draw #${draw.drawNumber}?`)) {
+    scripts.removeDraw(pattern.id, draw.id)
+  }
+}
+
+// Draw pattern helpers
+function getDrawProgress(draw: Draw): number {
+  if (draw.state !== 'active') return 0
+  if (draw.volumeTarget === 0) return 0
+  return Math.min(100, (draw.volumeDispensed / draw.volumeTarget) * 100)
+}
+
+function getDrawStateClass(state: string): string {
+  switch (state) {
+    case 'active': return 'state-active'
+    case 'completed': return 'state-completed'
+    case 'skipped': return 'state-skipped'
+    case 'error': return 'state-error'
+    default: return 'state-pending'
+  }
+}
+
+function formatDrawDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (mins === 0) return `${secs}s`
+  if (secs === 0) return `${mins}m`
+  return `${mins}m ${secs}s`
+}
+
+function formatVolume(volume: number, unit: string): string {
+  if (volume >= 1000) {
+    return `${(volume / 1000).toFixed(1)}k ${unit}`
+  }
+  return `${volume.toFixed(1)} ${unit}`
+}
+
+// =============================================================================
 // CHANNEL HELPERS
 // =============================================================================
 
@@ -291,6 +534,12 @@ const channelVariables = computed(() => {
 const outputChannels = computed(() => {
   return channelVariables.value.filter(ch =>
     ch.type === 'digital_output' || ch.type === 'analog_output'
+  )
+})
+
+const setpointChannels = computed(() => {
+  return channelVariables.value.filter(ch =>
+    ch.type === 'analog_output'
   )
 })
 
@@ -412,6 +661,88 @@ function deleteSequence(id: string) {
   }
 }
 
+// Template creation
+function createFromTemplate(templateId: string) {
+  const name = newSequenceName.value || undefined
+  const newId = scripts.createSequenceFromTemplate(templateId, name || '')
+  if (newId) {
+    scripts.addNotification('success', 'Created from Template', `Sequence created from template`)
+    showSequenceTemplates.value = false
+    newSequenceName.value = ''
+  } else {
+    scripts.addNotification('error', 'Template Error', 'Failed to create from template')
+  }
+}
+
+// Import/Export
+function triggerImportSequence() {
+  importFileInput.value?.click()
+}
+
+function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const content = e.target?.result as string
+    const result = scripts.importSequence(content)
+    if (result.success) {
+      scripts.addNotification('success', 'Import Successful', result.message)
+    } else {
+      scripts.addNotification('error', 'Import Failed', result.message)
+    }
+    input.value = ''
+  }
+  reader.readAsText(file)
+}
+
+function exportAllSequencesFile() {
+  const json = scripts.exportAllSequences()
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `sequences-${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportSingleSequence(id: string) {
+  const json = scripts.exportSequence(id)
+  if (!json) return
+
+  const seq = scripts.sequences.value.find(s => s.id === id)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${seq?.name || 'sequence'}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// History view
+function viewSequenceHistory(id: string) {
+  selectedSequenceForHistory.value = id
+  showSequenceHistory.value = true
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const secs = Math.floor(ms / 1000)
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ${secs % 60}s`
+  const hrs = Math.floor(mins / 60)
+  return `${hrs}h ${mins % 60}m`
+}
+
+function formatTimestamp(ts: number): string {
+  return new Date(ts).toLocaleString()
+}
+
 function addStep(type: SequenceStepType) {
   const step: SequenceStep = {
     id: `step-${Date.now()}`,
@@ -468,6 +799,37 @@ function addStep(type: SequenceStepType) {
         isFormula: false
       })
       break
+    case 'if':
+      Object.assign(step, {
+        condition: '',
+        ifId: `if-${Date.now()}`
+      })
+      break
+    case 'else':
+      Object.assign(step, { ifId: '' })
+      break
+    case 'endIf':
+      Object.assign(step, { ifId: '' })
+      break
+    case 'recording':
+      Object.assign(step, {
+        action: 'start',
+        filename: ''
+      })
+      break
+    case 'safetyCheck':
+      Object.assign(step, {
+        condition: '',
+        failAction: 'abort',
+        failMessage: ''
+      })
+      break
+    case 'callSequence':
+      Object.assign(step, {
+        sequenceId: '',
+        waitForCompletion: true
+      })
+      break
   }
 
   sequenceForm.value.steps = [...(sequenceForm.value.steps || []), step]
@@ -512,7 +874,19 @@ function getStepIcon(type: SequenceStepType): string {
     setVariable: '📝',
     loop: '🔄',
     endLoop: '↩️',
-    message: '💬'
+    message: '💬',
+    if: '❓',
+    else: '➡️',
+    endIf: '✓',
+    recording: '⏺️',
+    safetyCheck: '🛡️',
+    callSequence: '📞',
+    parallel: '⚡',
+    endParallel: '🔀',
+    goto: '↪️',
+    retry: '🔁',
+    endRetry: '✅',
+    callSequenceWithParams: '📲'
   }
   return icons[type] || '•'
 }
@@ -539,6 +913,22 @@ function getStepDescription(step: SequenceStep): string {
       return `End Loop`
     case 'message':
       return `Message: ${step.message || '(empty)'}`
+    case 'if':
+      return `If: ${(step as any).condition || '(no condition)'}`
+    case 'else':
+      return `Else`
+    case 'endIf':
+      return `End If`
+    case 'recording':
+      return `${(step as any).action === 'start' ? 'Start' : 'Stop'} Recording`
+    case 'safetyCheck':
+      return `Safety: ${(step as any).condition || '(no condition)'}`
+    case 'callSequence':
+      const callStep = step as any
+      const targetSeq = scripts.sequences.value.find(s => s.id === callStep.sequenceId)
+      return `Call: ${targetSeq?.name || '(select sequence)'}`
+    default:
+      return (step as any).type || 'Unknown'
   }
 }
 
@@ -607,6 +997,23 @@ function addAction() {
 
 function removeAction(index: number) {
   alarmForm.value.actions = alarmForm.value.actions?.filter((_, i) => i !== index)
+}
+
+function toggleAlarmWithConfirmation(id: string) {
+  const alarm = scripts.alarms.value.find(a => a.id === id)
+  if (!alarm) return
+
+  if (alarm.enabled) {
+    // Disabling - check if safe
+    const safety = scripts.canDisableAlarmSafely(id)
+    if (!safety.safe) {
+      if (!confirm(`Warning: ${safety.reason}\n\nAre you sure you want to disable this alarm?`)) {
+        return
+      }
+    }
+  }
+
+  scripts.updateAlarm(id, { enabled: !alarm.enabled })
 }
 
 // =============================================================================
@@ -943,6 +1350,241 @@ const templateCategories = computed(() => {
   })
   return categories
 })
+
+// =============================================================================
+// STATE MACHINE METHODS
+// =============================================================================
+
+function createStateMachine() {
+  const id = `sm-${Date.now()}`
+  const now = new Date().toISOString()
+  const initialStateId = `state-${Date.now()}-init`
+
+  const newSm: StateMachine = {
+    id,
+    name: 'New State Machine',
+    description: '',
+    enabled: true,
+    states: [
+      {
+        id: initialStateId,
+        name: 'Initial',
+        description: 'Initial state',
+        color: '#3b82f6',
+        entryActions: [],
+        exitActions: []
+      }
+    ],
+    initialStateId,
+    transitions: [],
+    currentStateId: initialStateId,
+    isRunning: false,
+    stateHistory: [],
+    createdAt: now,
+    modifiedAt: now
+  }
+
+  scripts.stateMachines.value.push(newSm)
+  saveStateMachines()
+}
+
+function editStateMachine(sm: StateMachine) {
+  // TODO: Open state machine editor modal
+  console.log('Edit state machine:', sm.id)
+}
+
+function toggleStateMachine(sm: StateMachine) {
+  sm.isRunning = !sm.isRunning
+  if (sm.isRunning) {
+    sm.stateEnteredAt = Date.now()
+  }
+  saveStateMachines()
+}
+
+function deleteStateMachine(id: string) {
+  if (confirm('Delete this state machine?')) {
+    scripts.stateMachines.value = scripts.stateMachines.value.filter(sm => sm.id !== id)
+    saveStateMachines()
+  }
+}
+
+function saveStateMachines() {
+  try {
+    localStorage.setItem('dcflux-state-machines', JSON.stringify(scripts.stateMachines.value))
+  } catch (e) {
+    console.error('Failed to save state machines:', e)
+  }
+}
+
+// =============================================================================
+// WATCHDOG METHODS
+// =============================================================================
+
+function createWatchdog() {
+  const id = `wd-${Date.now()}`
+
+  const newWd: Watchdog = {
+    id,
+    name: 'New Watchdog',
+    description: '',
+    enabled: true,
+    channels: [],
+    condition: {
+      type: 'stale_data',
+      maxStaleMs: 5000
+    },
+    actions: [],
+    autoRecover: true,
+    isTriggered: false,
+    cooldownMs: 10000
+  }
+
+  scripts.watchdogs.value.push(newWd)
+  saveWatchdogs()
+}
+
+function editWatchdog(wd: Watchdog) {
+  // TODO: Open watchdog editor modal
+  console.log('Edit watchdog:', wd.id)
+}
+
+function deleteWatchdog(id: string) {
+  if (confirm('Delete this watchdog?')) {
+    scripts.watchdogs.value = scripts.watchdogs.value.filter(wd => wd.id !== id)
+    saveWatchdogs()
+  }
+}
+
+function saveWatchdogs() {
+  try {
+    localStorage.setItem('dcflux-watchdogs', JSON.stringify(scripts.watchdogs.value))
+  } catch (e) {
+    console.error('Failed to save watchdogs:', e)
+  }
+}
+
+function formatWatchdogCondition(condition: Watchdog['condition']): string {
+  switch (condition.type) {
+    case 'stale_data':
+      return `Stale > ${(condition.maxStaleMs || 5000) / 1000}s`
+    case 'out_of_range':
+      return `Outside ${condition.minValue ?? '?'} - ${condition.maxValue ?? '?'}`
+    case 'rate_exceeded':
+      return `Rate > ${condition.maxRatePerMin ?? '?'}/min`
+    case 'stuck_value':
+      return `Stuck > ${(condition.stuckDurationMs || 60000) / 1000}s`
+    default:
+      return 'Unknown'
+  }
+}
+
+// =============================================================================
+// REPORT METHODS
+// =============================================================================
+
+function createReportTemplate() {
+  const id = `rpt-${Date.now()}`
+
+  const newTemplate: ReportTemplate = {
+    id,
+    name: 'New Report',
+    description: '',
+    format: 'pdf',
+    sections: [
+      {
+        id: `sec-${Date.now()}`,
+        type: 'summary',
+        title: 'Summary',
+        enabled: true
+      }
+    ],
+    includeHeader: true,
+    includeFooter: true,
+    period: 'last_24h'
+  }
+
+  scripts.reportTemplates.value.push(newTemplate)
+  saveReportTemplates()
+}
+
+function editReportTemplate(template: ReportTemplate) {
+  // TODO: Open report template editor modal
+  console.log('Edit report template:', template.id)
+}
+
+function deleteReportTemplate(id: string) {
+  if (confirm('Delete this report template?')) {
+    scripts.reportTemplates.value = scripts.reportTemplates.value.filter(t => t.id !== id)
+    saveReportTemplates()
+  }
+}
+
+function generateReport(template: ReportTemplate) {
+  // TODO: Implement report generation
+  console.log('Generate report from template:', template.id)
+  scripts.addNotification('info', 'Report', `Generating ${template.name}...`)
+}
+
+function saveReportTemplates() {
+  try {
+    localStorage.setItem('dcflux-report-templates', JSON.stringify(scripts.reportTemplates.value))
+  } catch (e) {
+    console.error('Failed to save report templates:', e)
+  }
+}
+
+function createScheduledReport() {
+  const id = `sr-${Date.now()}`
+
+  const newSr: ScheduledReport = {
+    id,
+    name: 'New Scheduled Report',
+    templateId: scripts.reportTemplates.value[0]?.id || '',
+    enabled: false,
+    schedule: 'daily',
+    time: '08:00'
+  }
+
+  scripts.scheduledReports.value.push(newSr)
+  saveScheduledReports()
+}
+
+function editScheduledReport(sr: ScheduledReport) {
+  // TODO: Open scheduled report editor modal
+  console.log('Edit scheduled report:', sr.id)
+}
+
+function deleteScheduledReport(id: string) {
+  if (confirm('Delete this scheduled report?')) {
+    scripts.scheduledReports.value = scripts.scheduledReports.value.filter(sr => sr.id !== id)
+    saveScheduledReports()
+  }
+}
+
+function saveScheduledReports() {
+  try {
+    localStorage.setItem('dcflux-scheduled-reports', JSON.stringify(scripts.scheduledReports.value))
+  } catch (e) {
+    console.error('Failed to save scheduled reports:', e)
+  }
+}
+
+function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): string {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+  switch (schedule) {
+    case 'daily':
+      return `Daily at ${time || '00:00'}`
+    case 'weekly':
+      return `${days[dayOfWeek || 0]} at ${time || '00:00'}`
+    case 'monthly':
+      return `Monthly at ${time || '00:00'}`
+    case 'on_recording_stop':
+      return 'When recording stops'
+    default:
+      return schedule
+  }
+}
 </script>
 
 <template>
@@ -956,7 +1598,7 @@ const templateCategories = computed(() => {
         :class="{ active: scripts.activeSubTab.value === tab.id }"
         @click="scripts.activeSubTab.value = tab.id"
       >
-        <span class="tab-icon">{{ tab.icon === 'fx' ? 'ƒx' : tab.icon === 'blocks' ? '🧩' : tab.icon === 'list' ? '☰' : tab.icon === 'bell' ? '🔔' : tab.icon === 'chart' ? '📊' : tab.icon === 'zap' ? '⚡' : '📖' }}</span>
+        <span class="tab-icon">{{ getTabIcon(tab.icon) }}</span>
         <span class="tab-label">{{ tab.label }}</span>
         <span v-if="tab.id === 'alarms' && scripts.activeAlarmIds.value.length" class="badge alarm">
           {{ scripts.activeAlarmIds.value.length }}
@@ -1348,6 +1990,15 @@ const templateCategories = computed(() => {
         <button class="btn btn-primary" @click="createSequence">
           <span class="icon">+</span> New Sequence
         </button>
+        <button class="btn btn-secondary" @click="showSequenceTemplates = true">
+          <span class="icon">📋</span> Templates
+        </button>
+        <button class="btn btn-secondary" @click="triggerImportSequence">
+          <span class="icon">📥</span> Import
+        </button>
+        <button class="btn btn-secondary" @click="exportAllSequencesFile">
+          <span class="icon">📤</span> Export All
+        </button>
         <div class="sequence-controls" v-if="scripts.runningSequence.value">
           <span class="running-label">Running: {{ scripts.runningSequence.value.name }}</span>
           <button class="btn btn-warning" @click="scripts.pauseSequence(scripts.runningSequenceId.value!)">⏸ Pause</button>
@@ -1355,6 +2006,13 @@ const templateCategories = computed(() => {
         </div>
         <div class="count">{{ scripts.sequences.value.length }} sequences</div>
       </div>
+      <input
+        ref="importFileInput"
+        type="file"
+        accept=".json"
+        style="display: none"
+        @change="handleImportFile"
+      />
 
       <div class="main-content">
         <!-- List -->
@@ -1377,7 +2035,10 @@ const templateCategories = computed(() => {
                 {{ seq.name }}
                 <span class="state-badge" :class="seq.state">{{ seq.state }}</span>
               </div>
-              <div class="item-sub">{{ seq.steps.length }} steps • {{ seq.description || 'No description' }}</div>
+              <div class="item-sub">
+                {{ seq.steps.length }} steps • {{ seq.description || 'No description' }}
+                <span v-if="seq.runCount" class="run-count">• {{ seq.runCount }} runs</span>
+              </div>
             </div>
             <div class="item-actions">
               <button
@@ -1398,6 +2059,17 @@ const templateCategories = computed(() => {
                 @click.stop="scripts.pauseSequence(seq.id)"
                 title="Pause"
               >⏸</button>
+              <button
+                class="action-btn export"
+                @click.stop="exportSingleSequence(seq.id)"
+                title="Export"
+              >📤</button>
+              <button
+                v-if="seq.runHistory?.length"
+                class="action-btn history"
+                @click.stop="viewSequenceHistory(seq.id)"
+                title="History"
+              >📜</button>
               <button class="delete-btn" @click.stop="deleteSequence(seq.id)">✕</button>
             </div>
           </div>
@@ -1455,15 +2127,41 @@ const templateCategories = computed(() => {
 
             <div class="form-group">
               <label>Add Step</label>
-              <div class="step-buttons">
-                <button class="step-type-btn" @click="addStep('ramp')">📈 Ramp</button>
-                <button class="step-type-btn" @click="addStep('soak')">⏸️ Soak</button>
-                <button class="step-type-btn" @click="addStep('wait')">⏳ Wait</button>
-                <button class="step-type-btn" @click="addStep('setOutput')">🎚️ Set Output</button>
-                <button class="step-type-btn" @click="addStep('setVariable')">📝 Set Variable</button>
-                <button class="step-type-btn" @click="addStep('loop')">🔄 Loop</button>
-                <button class="step-type-btn" @click="addStep('endLoop')">↩️ End Loop</button>
-                <button class="step-type-btn" @click="addStep('message')">💬 Message</button>
+              <div class="step-buttons-grid">
+                <div class="step-group">
+                  <span class="step-group-label">Control</span>
+                  <div class="step-buttons">
+                    <button class="step-type-btn" @click="addStep('ramp')">📈 Ramp</button>
+                    <button class="step-type-btn" @click="addStep('soak')">⏸️ Soak</button>
+                    <button class="step-type-btn" @click="addStep('wait')">⏳ Wait</button>
+                  </div>
+                </div>
+                <div class="step-group">
+                  <span class="step-group-label">I/O</span>
+                  <div class="step-buttons">
+                    <button class="step-type-btn" @click="addStep('setOutput')">🎚️ Output</button>
+                    <button class="step-type-btn" @click="addStep('setVariable')">📝 Variable</button>
+                    <button class="step-type-btn" @click="addStep('recording')">⏺️ Recording</button>
+                  </div>
+                </div>
+                <div class="step-group">
+                  <span class="step-group-label">Flow</span>
+                  <div class="step-buttons">
+                    <button class="step-type-btn" @click="addStep('if')">❓ If</button>
+                    <button class="step-type-btn" @click="addStep('else')">➡️ Else</button>
+                    <button class="step-type-btn" @click="addStep('endIf')">✓ End If</button>
+                    <button class="step-type-btn" @click="addStep('loop')">🔄 Loop</button>
+                    <button class="step-type-btn" @click="addStep('endLoop')">↩️ End Loop</button>
+                  </div>
+                </div>
+                <div class="step-group">
+                  <span class="step-group-label">Advanced</span>
+                  <div class="step-buttons">
+                    <button class="step-type-btn" @click="addStep('safetyCheck')">🛡️ Safety</button>
+                    <button class="step-type-btn" @click="addStep('callSequence')">📞 Call Seq</button>
+                    <button class="step-type-btn" @click="addStep('message')">💬 Message</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1559,8 +2257,35 @@ const templateCategories = computed(() => {
                     <option value="abort">Abort Sequence</option>
                     <option value="continue">Continue</option>
                     <option value="alarm">Alarm & Continue</option>
+                    <option value="skip">Skip Step</option>
+                    <option value="retry">Retry</option>
                   </select>
                 </div>
+              </div>
+              <!-- Retry options (shown when retry selected) -->
+              <div v-if="(stepForm as any).timeoutAction === 'retry'" class="retry-options">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Retry Count</label>
+                    <input type="number" v-model.number="(stepForm as any).retryCount" min="1" max="10" placeholder="3" />
+                  </div>
+                  <div class="form-group">
+                    <label>Retry Delay (ms)</label>
+                    <input type="number" v-model.number="(stepForm as any).retryDelayMs" min="100" step="100" placeholder="1000" />
+                  </div>
+                  <div class="form-group">
+                    <label>On Final Failure</label>
+                    <select v-model="(stepForm as any).onFinalFailure">
+                      <option value="abort">Abort Sequence</option>
+                      <option value="continue">Continue</option>
+                      <option value="alarm">Alarm & Continue</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Notes (optional)</label>
+                <textarea v-model="(stepForm as any).notes" placeholder="Documentation for this step..." rows="2"></textarea>
               </div>
             </template>
 
@@ -1666,10 +2391,514 @@ const templateCategories = computed(() => {
                 as <code>{{ (stepForm as any).variableName || 'varName' }}</code>
               </div>
             </template>
+
+            <!-- If Step Fields -->
+            <template v-if="stepForm.type === 'if'">
+              <div class="form-group">
+                <label>Condition (formula returning true/false)</label>
+                <input
+                  type="text"
+                  v-model="(stepForm as any).condition"
+                  placeholder="ch.Temperature > 100 || ch.Pressure < 50"
+                />
+                <small class="hint">
+                  Use ch.ChannelName for values. Operators: >, <, >=, <=, ==, !=, &&, ||
+                </small>
+              </div>
+              <div class="info-box">
+                <strong>Note:</strong> If the condition is true, steps between IF and ELSE (or END IF) will execute.
+                If false, steps between ELSE and END IF execute (if ELSE exists).
+              </div>
+            </template>
+
+            <!-- Else Step Fields -->
+            <template v-if="stepForm.type === 'else'">
+              <div class="form-group">
+                <label>Match If Block</label>
+                <select v-model="(stepForm as any).ifId">
+                  <option value="">Select If block...</option>
+                  <option
+                    v-for="step in sequenceForm.steps?.filter(s => s.type === 'if')"
+                    :key="(step as any).ifId"
+                    :value="(step as any).ifId"
+                  >
+                    {{ step.label || `If: ${(step as any).condition?.substring(0, 30)}...` }}
+                  </option>
+                </select>
+              </div>
+            </template>
+
+            <!-- EndIf Step Fields -->
+            <template v-if="stepForm.type === 'endIf'">
+              <div class="form-group">
+                <label>Match If Block</label>
+                <select v-model="(stepForm as any).ifId">
+                  <option value="">Select If block...</option>
+                  <option
+                    v-for="step in sequenceForm.steps?.filter(s => s.type === 'if')"
+                    :key="(step as any).ifId"
+                    :value="(step as any).ifId"
+                  >
+                    {{ step.label || `If: ${(step as any).condition?.substring(0, 30)}...` }}
+                  </option>
+                </select>
+              </div>
+            </template>
+
+            <!-- Recording Step Fields -->
+            <template v-if="stepForm.type === 'recording'">
+              <div class="form-group">
+                <label>Action</label>
+                <select v-model="(stepForm as any).action">
+                  <option value="start">Start Recording</option>
+                  <option value="stop">Stop Recording</option>
+                </select>
+              </div>
+              <div class="form-group" v-if="(stepForm as any).action === 'start'">
+                <label>Filename (optional)</label>
+                <input
+                  type="text"
+                  v-model="(stepForm as any).filename"
+                  placeholder="Leave blank for auto-generated name"
+                />
+              </div>
+            </template>
+
+            <!-- Safety Check Step Fields -->
+            <template v-if="stepForm.type === 'safetyCheck'">
+              <div class="form-group">
+                <label>Safety Condition (must be true to proceed)</label>
+                <input
+                  type="text"
+                  v-model="(stepForm as any).condition"
+                  placeholder="ch.Pressure < 100 && ch.E_Stop == 1"
+                />
+                <small class="hint">
+                  This condition must evaluate to TRUE for the sequence to continue.
+                </small>
+              </div>
+              <div class="form-group">
+                <label>Fail Action</label>
+                <select v-model="(stepForm as any).failAction">
+                  <option value="abort">Abort Sequence</option>
+                  <option value="pause">Pause Sequence</option>
+                  <option value="alarm">Alarm & Continue</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Failure Message</label>
+                <input
+                  type="text"
+                  v-model="(stepForm as any).failMessage"
+                  placeholder="Safety interlock not satisfied"
+                />
+              </div>
+            </template>
+
+            <!-- Call Sequence Step Fields -->
+            <template v-if="stepForm.type === 'callSequence'">
+              <div class="form-group">
+                <label>Sequence to Call</label>
+                <select v-model="(stepForm as any).sequenceId">
+                  <option value="">Select sequence...</option>
+                  <option
+                    v-for="seq in scripts.sequences.value.filter(s => s.id !== selectedSequence)"
+                    :key="seq.id"
+                    :value="seq.id"
+                  >
+                    {{ seq.name }}
+                  </option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" v-model="(stepForm as any).waitForCompletion" />
+                  Wait for completion
+                </label>
+                <small class="hint">
+                  If checked, this sequence will wait for the called sequence to finish before continuing.
+                </small>
+              </div>
+            </template>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="showStepEditor = false">Cancel</button>
             <button class="btn btn-primary" @click="saveStep">Save Step</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sequence Templates Modal -->
+      <div v-if="showSequenceTemplates" class="modal-overlay" @click.self="showSequenceTemplates = false">
+        <div class="modal templates-modal">
+          <div class="modal-header">
+            <h3>Create from Template</h3>
+            <button class="close-btn" @click="showSequenceTemplates = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Sequence Name (optional)</label>
+              <input v-model="newSequenceName" type="text" placeholder="Leave empty to use template name" />
+            </div>
+            <div class="templates-grid">
+              <div
+                v-for="template in SEQUENCE_TEMPLATES"
+                :key="template.id"
+                class="template-card"
+                @click="createFromTemplate(template.id)"
+              >
+                <div class="template-icon">{{ template.icon }}</div>
+                <div class="template-info">
+                  <div class="template-name">{{ template.name }}</div>
+                  <div class="template-desc">{{ template.description }}</div>
+                  <div class="template-category">{{ template.category }} • {{ template.steps.length }} steps</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sequence History Modal -->
+      <div v-if="showSequenceHistory" class="modal-overlay" @click.self="showSequenceHistory = false">
+        <div class="modal history-modal">
+          <div class="modal-header">
+            <h3>Run History</h3>
+            <button class="close-btn" @click="showSequenceHistory = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="history-list">
+              <div
+                v-for="run in scripts.sequences.value.find(s => s.id === selectedSequenceForHistory)?.runHistory"
+                :key="run.id"
+                class="history-item"
+                :class="run.state"
+              >
+                <div class="history-time">{{ formatTimestamp(run.startTime) }}</div>
+                <div class="history-details">
+                  <span class="history-state" :class="run.state">{{ run.state }}</span>
+                  <span class="history-steps">{{ run.stepsCompleted }}/{{ run.totalSteps }} steps</span>
+                  <span class="history-duration">{{ formatDuration(run.duration) }}</span>
+                </div>
+                <div v-if="run.error" class="history-error">{{ run.error }}</div>
+              </div>
+              <div v-if="!scripts.sequences.value.find(s => s.id === selectedSequenceForHistory)?.runHistory?.length" class="empty-history">
+                No run history yet
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- DRAW PATTERNS TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'drawPatterns'" class="tab-content">
+      <div class="toolbar">
+        <button
+          class="btn btn-primary"
+          @click="openDrawPatternEditor()"
+          :disabled="scripts.isDrawPatternRunning.value"
+        >
+          + New Pattern
+        </button>
+        <div class="spacer"></div>
+        <div class="cycle-controls" v-if="activeDrawPattern">
+          <button
+            v-if="!scripts.isDrawPatternRunning.value && !scripts.isDrawPatternPaused.value"
+            class="btn btn-success"
+            @click="scripts.startDrawPattern(activeDrawPattern.id)"
+            :disabled="!activeDrawPattern.draws.some(d => d.enabled)"
+          >
+            Start Pattern
+          </button>
+          <button
+            v-if="scripts.isDrawPatternRunning.value"
+            class="btn btn-warning"
+            @click="scripts.pauseDrawPattern(activeDrawPattern.id)"
+          >
+            Pause
+          </button>
+          <button
+            v-if="scripts.isDrawPatternPaused.value"
+            class="btn btn-success"
+            @click="scripts.resumeDrawPattern(activeDrawPattern.id)"
+          >
+            Resume
+          </button>
+          <button
+            v-if="scripts.isDrawPatternRunning.value || scripts.isDrawPatternPaused.value"
+            class="btn btn-danger"
+            @click="scripts.stopDrawPattern(activeDrawPattern.id)"
+          >
+            Stop
+          </button>
+          <button
+            v-if="scripts.isDrawPatternRunning.value"
+            class="btn btn-secondary"
+            @click="scripts.skipCurrentDraw(activeDrawPattern.id)"
+          >
+            Skip Draw
+          </button>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <!-- Pattern Selector -->
+        <div class="pattern-selector" v-if="scripts.drawPatterns.value.length > 1">
+          <label>Active Pattern:</label>
+          <select v-model="selectedDrawPatternId">
+            <option v-for="p in scripts.drawPatterns.value" :key="p.id" :value="p.id">
+              {{ p.name }}
+            </option>
+          </select>
+        </div>
+
+        <!-- Status Banner -->
+        <div
+          v-if="scripts.isDrawPatternRunning.value || scripts.isDrawPatternPaused.value"
+          class="cycle-status-banner"
+          :class="{ running: scripts.isDrawPatternRunning.value, paused: scripts.isDrawPatternPaused.value }"
+        >
+          <div class="status-info">
+            <span class="status-label">{{ scripts.isDrawPatternPaused.value ? 'PAUSED' : 'RUNNING' }}</span>
+            <span v-if="scripts.currentDraw.value" class="current-valve">
+              Draw #{{ scripts.currentDraw.value.drawNumber }}: {{ scripts.currentDraw.value.valve }}
+            </span>
+            <span class="cycle-count">Cycle #{{ (activeDrawPattern?.cycleCount || 0) + 1 }}</span>
+          </div>
+          <div class="total-volume">
+            Total: {{ formatVolume(activeDrawPattern?.totalVolumeDispensed || 0, activeDrawPattern?.flowUnit || 'gal') }}
+          </div>
+        </div>
+
+        <!-- Draws Table -->
+        <div class="valve-grid" v-if="activeDrawPattern">
+          <div class="pattern-header">
+            <h4>{{ activeDrawPattern.name }}</h4>
+            <p v-if="activeDrawPattern.description" class="pattern-desc">{{ activeDrawPattern.description }}</p>
+            <div class="pattern-info">
+              <span>Flow: <code>{{ activeDrawPattern.flowChannel || 'Not set' }}</code></span>
+              <span>Unit: {{ activeDrawPattern.flowUnit }}</span>
+              <span>Delay: {{ activeDrawPattern.delayBetweenDraws }}s between draws</span>
+              <span v-if="activeDrawPattern.loopContinuously">Loop: Yes</span>
+            </div>
+            <div class="pattern-actions">
+              <button class="btn btn-sm btn-secondary" @click="openDrawPatternEditor(activeDrawPattern.id)">
+                Edit Pattern
+              </button>
+              <button class="btn btn-sm btn-danger" @click="deleteDrawPattern(activeDrawPattern.id)">
+                Delete
+              </button>
+            </div>
+          </div>
+
+          <table class="valve-table">
+            <thead>
+              <tr>
+                <th class="col-row-num">#</th>
+                <th class="col-enabled">On</th>
+                <th class="col-valve">Valve</th>
+                <th class="col-target">Volume Target</th>
+                <th class="col-timeout">Max Duration</th>
+                <th class="col-status">Status</th>
+                <th class="col-progress">Progress</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(draw, index) in activeDrawPattern.draws"
+                :key="draw.id"
+                :class="getDrawStateClass(draw.state)"
+              >
+                <td class="col-row-num">{{ draw.drawNumber }}</td>
+                <td class="col-enabled">
+                  <label class="toggle-switch small">
+                    <input
+                      type="checkbox"
+                      v-model="draw.enabled"
+                      :disabled="scripts.isDrawPatternRunning.value"
+                      @change="scripts.saveDrawPatterns()"
+                    >
+                    <span class="toggle-slider"></span>
+                  </label>
+                </td>
+                <td class="col-valve">
+                  <code>{{ draw.valve }}</code>
+                </td>
+                <td class="col-target">
+                  {{ draw.volumeTarget }} {{ draw.volumeUnit }}
+                </td>
+                <td class="col-timeout">
+                  {{ formatDrawDuration(draw.maxDuration) }}
+                </td>
+                <td class="col-status">
+                  <span class="valve-status" :class="draw.state">{{ draw.state }}</span>
+                </td>
+                <td class="col-progress">
+                  <div v-if="draw.state === 'active'" class="progress-cell">
+                    <div class="mini-progress">
+                      <div class="mini-progress-fill" :style="{ width: getDrawProgress(draw) + '%' }"></div>
+                    </div>
+                    <span class="progress-text">
+                      {{ formatVolume(draw.volumeDispensed, draw.volumeUnit) }} / {{ draw.volumeTarget }}
+                    </span>
+                    <span class="elapsed-time">{{ formatDrawDuration(draw.elapsedTime) }}</span>
+                  </div>
+                  <div v-else-if="draw.state === 'completed'" class="completed-info">
+                    {{ formatVolume(draw.volumeDispensed, draw.volumeUnit) }}
+                  </div>
+                  <span v-else class="no-progress">-</span>
+                </td>
+                <td class="col-actions">
+                  <button
+                    class="icon-btn"
+                    @click="openDrawEditor(index)"
+                    :disabled="scripts.isDrawPatternRunning.value"
+                    title="Edit"
+                  >✏️</button>
+                  <button
+                    class="icon-btn danger"
+                    @click="deleteDraw(index)"
+                    :disabled="scripts.isDrawPatternRunning.value"
+                    title="Delete"
+                  >🗑️</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="add-draw-row">
+            <button
+              class="btn btn-sm btn-primary"
+              @click="openDrawEditor()"
+              :disabled="scripts.isDrawPatternRunning.value"
+            >
+              + Add Draw
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="empty-state">
+          <div class="empty-icon">🚿</div>
+          <h3>No Draw Patterns</h3>
+          <p>Create a draw pattern to define a sequence of valve draws.</p>
+          <button class="btn btn-primary" @click="openDrawPatternEditor()">Create Draw Pattern</button>
+        </div>
+      </div>
+
+      <!-- Draw Pattern Editor Modal -->
+      <div v-if="showDrawPatternEditor" class="modal-overlay" @click.self="closeDrawPatternEditor">
+        <div class="modal valve-editor-modal">
+          <div class="modal-header">
+            <h3>{{ editingDrawPatternId ? 'Edit Draw Pattern' : 'New Draw Pattern' }}</h3>
+            <button class="close-btn" @click="closeDrawPatternEditor">x</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" v-model="drawPatternForm.name" placeholder="UEF-FHR Draw Pattern">
+            </div>
+            <div class="form-group">
+              <label>Description</label>
+              <textarea v-model="drawPatternForm.description" rows="2" placeholder="Optional description"></textarea>
+            </div>
+            <div class="form-group">
+              <label>Flow Channel (Totalizer)</label>
+              <select v-model="drawPatternForm.flowChannel">
+                <option value="">-- Select Channel --</option>
+                <option v-for="ch in flowChannels" :key="ch.name" :value="ch.name">
+                  {{ ch.displayName }} {{ ch.unit ? `(${ch.unit})` : '' }}
+                </option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Flow Unit</label>
+                <select v-model="drawPatternForm.flowUnit">
+                  <option value="gal">gal</option>
+                  <option value="L">L</option>
+                  <option value="mL">mL</option>
+                  <option value="ft3">ft3</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Delay Between Draws (sec)</label>
+                <input type="number" v-model.number="drawPatternForm.delayBetweenDraws" min="0" step="1">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="drawPatternForm.loopContinuously">
+                <span>Loop continuously (restart after last draw)</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="drawPatternForm.enabled">
+                <span>Enabled</span>
+              </label>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="closeDrawPatternEditor">Cancel</button>
+            <button class="btn btn-primary" @click="saveDrawPattern">
+              {{ editingDrawPatternId ? 'Update' : 'Create' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Draw Editor Modal -->
+      <div v-if="showDrawEditor" class="modal-overlay" @click.self="closeDrawEditor">
+        <div class="modal valve-editor-modal">
+          <div class="modal-header">
+            <h3>{{ editingDrawIndex !== null ? 'Edit Draw' : 'Add Draw' }}</h3>
+            <button class="close-btn" @click="closeDrawEditor">x</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Valve (Digital Output)</label>
+              <select v-model="drawForm.valve">
+                <option value="">-- Select Valve --</option>
+                <option v-for="ch in digitalOutputChannels" :key="ch.name" :value="ch.name">
+                  {{ ch.displayName }}
+                </option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Volume Target</label>
+                <input type="number" v-model.number="drawForm.volumeTarget" min="0" step="0.1">
+              </div>
+              <div class="form-group">
+                <label>Unit</label>
+                <select v-model="drawForm.volumeUnit">
+                  <option value="gal">gal</option>
+                  <option value="L">L</option>
+                  <option value="mL">mL</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Max Duration (seconds)</label>
+              <input type="number" v-model.number="drawForm.maxDuration" min="10" step="10">
+              <small>Safety timeout - valve closes after this time</small>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="drawForm.enabled">
+                <span>Enabled</span>
+              </label>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="closeDrawEditor">Cancel</button>
+            <button class="btn btn-primary" @click="saveDraw">
+              {{ editingDrawIndex !== null ? 'Update' : 'Add' }}
+            </button>
           </div>
         </div>
       </div>
@@ -1903,7 +3132,7 @@ const templateCategories = computed(() => {
               <button
                 class="toggle-btn"
                 :class="{ on: alarm.enabled }"
-                @click.stop="scripts.updateAlarm(alarm.id, { enabled: !alarm.enabled })"
+                @click.stop="toggleAlarmWithConfirmation(alarm.id)"
               >
                 <span class="slider"></span>
               </button>
@@ -2338,12 +3567,19 @@ const templateCategories = computed(() => {
                   <select v-model="action.type" class="action-type-select">
                     <option value="startSequence">Start Sequence</option>
                     <option value="stopSequence">Stop Sequence</option>
+                    <option value="runSequence">Run Sequence</option>
+                    <option value="abortSequence">Abort Sequence</option>
                     <option value="setOutput">Set Output</option>
+                    <option value="setSetpoint">Set Setpoint</option>
                     <option value="startRecording">Start Recording</option>
                     <option value="stopRecording">Stop Recording</option>
+                    <option value="enableScheduler">Enable Scheduler</option>
+                    <option value="disableScheduler">Disable Scheduler</option>
                     <option value="notification">Notification</option>
+                    <option value="sound">Play Sound</option>
+                    <option value="log">Log Event</option>
                   </select>
-                  <template v-if="action.type === 'startSequence'">
+                  <template v-if="action.type === 'startSequence' || action.type === 'runSequence'">
                     <select v-model="action.sequenceId" class="flex-input">
                       <option value="">Select sequence...</option>
                       <option v-for="seq in scripts.sequences.value" :key="seq.id" :value="seq.id">{{ seq.name }}</option>
@@ -2356,8 +3592,26 @@ const templateCategories = computed(() => {
                     </select>
                     <input type="number" v-model.number="action.value" class="value-input" />
                   </template>
+                  <template v-if="action.type === 'setSetpoint'">
+                    <select v-model="action.channel" class="channel-select">
+                      <option value="">Select setpoint...</option>
+                      <option v-for="ch in setpointChannels" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
+                    </select>
+                    <input type="number" v-model.number="action.value" class="value-input" placeholder="Value" />
+                  </template>
                   <template v-if="action.type === 'notification'">
                     <input type="text" v-model="action.message" placeholder="Message" class="flex-input" />
+                  </template>
+                  <template v-if="action.type === 'sound'">
+                    <select v-model="action.sound" class="flex-input">
+                      <option value="alert">Alert</option>
+                      <option value="warning">Warning</option>
+                      <option value="error">Error</option>
+                      <option value="success">Success</option>
+                    </select>
+                  </template>
+                  <template v-if="action.type === 'log'">
+                    <input type="text" v-model="action.message" placeholder="Log message" class="flex-input" />
                   </template>
                   <button class="remove-btn" @click="removeTriggerAction(index)">✕</button>
                 </div>
@@ -2436,6 +3690,218 @@ const templateCategories = computed(() => {
           </template>
           <div v-else class="no-selection">
             <p>Select a template from the left to configure it</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STATE MACHINES TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'stateMachines'" class="tab-content">
+      <div class="toolbar">
+        <button class="btn btn-primary" @click="createStateMachine">
+          + New State Machine
+        </button>
+        <div class="spacer"></div>
+      </div>
+
+      <div class="main-content">
+        <div v-if="scripts.stateMachines.value.length === 0" class="empty-state">
+          <div class="empty-icon">🔄</div>
+          <h3>No State Machines</h3>
+          <p>State machines define system modes with automatic transitions based on conditions.</p>
+          <button class="btn btn-primary" @click="createStateMachine">Create Your First State Machine</button>
+        </div>
+
+        <div v-else class="state-machines-grid">
+          <div
+            v-for="sm in scripts.stateMachines.value"
+            :key="sm.id"
+            class="state-machine-card"
+            :class="{ running: sm.isRunning, disabled: !sm.enabled }"
+          >
+            <div class="card-header">
+              <h4>{{ sm.name }}</h4>
+              <div class="card-actions">
+                <button
+                  class="icon-btn"
+                  :class="{ active: sm.isRunning }"
+                  @click="toggleStateMachine(sm)"
+                  :title="sm.isRunning ? 'Stop' : 'Start'"
+                >
+                  {{ sm.isRunning ? '⏹' : '▶' }}
+                </button>
+                <button v-if="false" class="icon-btn" @click="editStateMachine(sm)" title="Edit">✏️</button>
+                <button class="icon-btn danger" @click="deleteStateMachine(sm.id)" title="Delete">🗑️</button>
+              </div>
+            </div>
+            <p class="card-desc">{{ sm.description }}</p>
+            <div class="state-diagram-mini">
+              <div class="states-row">
+                <div
+                  v-for="state in sm.states.slice(0, 5)"
+                  :key="state.id"
+                  class="state-node-mini"
+                  :class="{ current: sm.currentStateId === state.id, fault: state.isFaultState }"
+                  :style="{ backgroundColor: state.color || '#374151' }"
+                >
+                  {{ state.name.slice(0, 3) }}
+                </div>
+                <div v-if="sm.states.length > 5" class="more-states">+{{ sm.states.length - 5 }}</div>
+              </div>
+            </div>
+            <div class="card-footer">
+              <span class="state-count">{{ sm.states.length }} states</span>
+              <span class="transition-count">{{ sm.transitions.length }} transitions</span>
+              <span v-if="sm.isRunning" class="current-state">
+                Current: <strong>{{ sm.states.find(s => s.id === sm.currentStateId)?.name || 'Unknown' }}</strong>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- WATCHDOGS TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'watchdogs'" class="tab-content">
+      <div class="toolbar">
+        <button class="btn btn-primary" @click="createWatchdog">
+          + New Watchdog
+        </button>
+        <div class="spacer"></div>
+      </div>
+
+      <div class="main-content">
+        <div v-if="scripts.watchdogs.value.length === 0" class="empty-state">
+          <div class="empty-icon">👁️</div>
+          <h3>No Watchdogs</h3>
+          <p>Watchdogs monitor channels for stale data, out-of-range values, or stuck sensors.</p>
+          <button class="btn btn-primary" @click="createWatchdog">Create Your First Watchdog</button>
+        </div>
+
+        <div v-else class="watchdogs-list">
+          <div
+            v-for="wd in scripts.watchdogs.value"
+            :key="wd.id"
+            class="watchdog-card"
+            :class="{ triggered: wd.isTriggered, disabled: !wd.enabled }"
+          >
+            <div class="card-header">
+              <div class="watchdog-status">
+                <span class="status-indicator" :class="{ triggered: wd.isTriggered, ok: !wd.isTriggered && wd.enabled }"></span>
+                <h4>{{ wd.name }}</h4>
+              </div>
+              <div class="card-actions">
+                <label class="toggle-switch small">
+                  <input type="checkbox" v-model="wd.enabled" @change="saveWatchdogs">
+                  <span class="toggle-slider"></span>
+                </label>
+                <button v-if="false" class="icon-btn" @click="editWatchdog(wd)" title="Edit">✏️</button>
+                <button class="icon-btn danger" @click="deleteWatchdog(wd.id)" title="Delete">🗑️</button>
+              </div>
+            </div>
+            <p class="card-desc">{{ wd.description }}</p>
+            <div class="watchdog-details">
+              <div class="detail-row">
+                <span class="detail-label">Monitoring:</span>
+                <span class="detail-value">{{ wd.channels.join(', ') }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">Condition:</span>
+                <span class="detail-value">{{ formatWatchdogCondition(wd.condition) }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">Actions:</span>
+                <span class="detail-value">{{ wd.actions.length }} action(s)</span>
+              </div>
+            </div>
+            <div v-if="wd.isTriggered" class="triggered-banner">
+              ⚠️ TRIGGERED at {{ new Date(wd.triggeredAt || 0).toLocaleTimeString() }}
+              <span v-if="wd.triggeredChannels?.length">on: {{ wd.triggeredChannels.join(', ') }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- REPORTS TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'reports'" class="tab-content">
+      <div class="toolbar">
+        <button class="btn btn-primary" @click="createReportTemplate">
+          + New Report Template
+        </button>
+        <button class="btn btn-secondary" @click="createScheduledReport">
+          + Schedule Report
+        </button>
+        <div class="spacer"></div>
+      </div>
+
+      <div class="main-content reports-layout">
+        <!-- Report Templates -->
+        <div class="reports-section">
+          <h3>Report Templates</h3>
+          <div v-if="scripts.reportTemplates.value.length === 0" class="empty-state small">
+            <p>No report templates defined. Create one to generate reports from recorded data.</p>
+          </div>
+          <div v-else class="templates-grid">
+            <div
+              v-for="template in scripts.reportTemplates.value"
+              :key="template.id"
+              class="report-template-card"
+            >
+              <div class="card-header">
+                <h4>{{ template.name }}</h4>
+                <div class="card-actions">
+                  <button v-if="false" class="icon-btn" @click="generateReport(template)" title="Generate Now">📄</button>
+                  <button v-if="false" class="icon-btn" @click="editReportTemplate(template)" title="Edit">✏️</button>
+                  <button class="icon-btn danger" @click="deleteReportTemplate(template.id)" title="Delete">🗑️</button>
+                </div>
+              </div>
+              <p class="card-desc">{{ template.description }}</p>
+              <div class="template-meta">
+                <span class="format-badge">{{ template.format.toUpperCase() }}</span>
+                <span>{{ template.sections.length }} sections</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scheduled Reports -->
+        <div class="reports-section">
+          <h3>Scheduled Reports</h3>
+          <div v-if="scripts.scheduledReports.value.length === 0" class="empty-state small">
+            <p>No scheduled reports. Schedule automatic report generation.</p>
+          </div>
+          <div v-else class="scheduled-list">
+            <div
+              v-for="sr in scripts.scheduledReports.value"
+              :key="sr.id"
+              class="scheduled-report-card"
+              :class="{ disabled: !sr.enabled }"
+            >
+              <div class="card-header">
+                <h4>{{ sr.name }}</h4>
+                <div class="card-actions">
+                  <label class="toggle-switch small">
+                    <input type="checkbox" v-model="sr.enabled" @change="saveScheduledReports">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <button v-if="false" class="icon-btn" @click="editScheduledReport(sr)" title="Edit">✏️</button>
+                  <button class="icon-btn danger" @click="deleteScheduledReport(sr.id)" title="Delete">🗑️</button>
+                </div>
+              </div>
+              <div class="schedule-info">
+                <span class="schedule-badge">{{ formatSchedule(sr.schedule, sr.time, sr.dayOfWeek) }}</span>
+                <span v-if="sr.lastGenerated" class="last-run">
+                  Last: {{ new Date(sr.lastGenerated).toLocaleDateString() }}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2585,6 +4051,12 @@ const templateCategories = computed(() => {
 .btn-small {
   padding: 4px 10px;
   font-size: 0.75rem;
+  background: #374151;
+  color: #fff;
+}
+
+.btn-small:hover {
+  background: #4b5563;
 }
 
 .icon {
@@ -3047,20 +4519,43 @@ const templateCategories = computed(() => {
   font-size: 0.8rem;
 }
 
+.step-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.step-group {
+  background: #0f0f1a;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.step-group-label {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+
 .step-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 .step-type-btn {
-  padding: 8px 12px;
+  padding: 6px 10px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 4px;
   color: #fff;
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .step-type-btn:hover {
@@ -3921,5 +5416,972 @@ const templateCategories = computed(() => {
   border-radius: 2px;
   font-family: monospace;
   color: #22c55e;
+}
+
+/* Run count badge */
+.run-count {
+  color: #60a5fa;
+  font-size: 0.65rem;
+}
+
+/* Template modal */
+.templates-modal .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.templates-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.template-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.template-card:hover {
+  border-color: #3b82f6;
+  background: #1e2a4a;
+}
+
+.template-icon {
+  font-size: 1.5rem;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f0f1a;
+  border-radius: 8px;
+}
+
+.template-info {
+  flex: 1;
+}
+
+.template-name {
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+.template-desc {
+  font-size: 0.75rem;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.template-category {
+  font-size: 0.65rem;
+  color: #60a5fa;
+  text-transform: uppercase;
+}
+
+/* History modal */
+.history-modal .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-item {
+  padding: 10px;
+  background: #1a1a2e;
+  border-radius: 6px;
+  border-left: 3px solid #4b5563;
+}
+
+.history-item.completed {
+  border-left-color: #22c55e;
+}
+
+.history-item.aborted {
+  border-left-color: #f59e0b;
+}
+
+.history-item.error {
+  border-left-color: #ef4444;
+}
+
+.history-time {
+  font-size: 0.7rem;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.history-details {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+}
+
+.history-state {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.history-state.completed { color: #22c55e; }
+.history-state.aborted { color: #f59e0b; }
+.history-state.error { color: #ef4444; }
+
+.history-steps {
+  color: #aaa;
+}
+
+.history-duration {
+  color: #60a5fa;
+  font-family: monospace;
+}
+
+.history-error {
+  margin-top: 6px;
+  font-size: 0.7rem;
+  color: #ef4444;
+  padding: 6px;
+  background: #7f1d1d30;
+  border-radius: 4px;
+}
+
+.empty-history {
+  text-align: center;
+  color: #666;
+  padding: 20px;
+}
+
+/* Action buttons */
+.action-btn.export,
+.action-btn.history {
+  background: #2a2a4a;
+  color: #fff;
+  font-size: 0.7rem;
+}
+
+.action-btn.export:hover,
+.action-btn.history:hover {
+  background: #3a3a5a;
+}
+
+/* ============================================
+   STATE MACHINES TAB
+   ============================================ */
+
+.state-machines-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+.state-machine-card {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.state-machine-card.running {
+  border-color: #22c55e;
+}
+
+.state-machine-card.disabled {
+  opacity: 0.5;
+}
+
+.state-diagram-mini {
+  margin: 12px 0;
+}
+
+.states-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.state-node-mini {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: #fff;
+  font-weight: 500;
+}
+
+.state-node-mini.current {
+  box-shadow: 0 0 8px currentColor;
+  animation: pulse 1s infinite;
+}
+
+.state-node-mini.fault {
+  border: 2px solid #ef4444;
+}
+
+.more-states {
+  padding: 4px 8px;
+  background: #374151;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.card-footer {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.current-state {
+  margin-left: auto;
+  color: #22c55e;
+}
+
+/* ============================================
+   WATCHDOGS TAB
+   ============================================ */
+
+.watchdogs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.watchdog-card {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.watchdog-card.triggered {
+  border-color: #ef4444;
+  background: #1a0f0f;
+}
+
+.watchdog-card.disabled {
+  opacity: 0.5;
+}
+
+.watchdog-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #374151;
+}
+
+.status-indicator.ok {
+  background: #22c55e;
+}
+
+.status-indicator.triggered {
+  background: #ef4444;
+  animation: pulse 1s infinite;
+}
+
+.watchdog-details {
+  margin-top: 12px;
+}
+
+.detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 0.8rem;
+  margin-bottom: 4px;
+}
+
+.detail-label {
+  color: #888;
+  min-width: 80px;
+}
+
+.detail-value {
+  color: #fff;
+}
+
+.triggered-banner {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #ef4444;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #fff;
+}
+
+/* ============================================
+   REPORTS TAB
+   ============================================ */
+
+.reports-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px;
+}
+
+.reports-section h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #fff;
+}
+
+.templates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.report-template-card,
+.scheduled-report-card {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.template-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #888;
+}
+
+.format-badge {
+  padding: 2px 6px;
+  background: #3b82f6;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.scheduled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedule-info {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+
+.schedule-badge {
+  padding: 4px 8px;
+  background: #374151;
+  border-radius: 4px;
+  color: #fff;
+}
+
+.last-run {
+  color: #888;
+}
+
+/* Common card styles */
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.card-header h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #fff;
+}
+
+.card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.card-desc {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  opacity: 0.7;
+  transition: all 0.2s;
+}
+
+.icon-btn:hover {
+  background: #2a2a4a;
+  opacity: 1;
+}
+
+.icon-btn.danger:hover {
+  background: #7f1d1d;
+}
+
+.icon-btn.active {
+  color: #22c55e;
+}
+
+.toggle-switch.small {
+  transform: scale(0.8);
+}
+
+.empty-state.small {
+  padding: 20px;
+}
+
+.empty-state.small p {
+  margin: 0;
+  color: #888;
+  font-size: 0.85rem;
+}
+
+/* ============================================
+   VALVE DOSING TAB STYLES
+   ============================================ */
+
+.cycle-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.cycle-status-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  background: #1e3a5f;
+}
+
+.cycle-status-banner.running {
+  background: #14532d;
+  animation: pulse-bg 2s infinite;
+}
+
+.cycle-status-banner.paused {
+  background: #78350f;
+}
+
+@keyframes pulse-bg {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+.status-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status-label {
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.current-valve {
+  font-size: 0.9rem;
+  color: #fff;
+}
+
+.cycle-count {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.total-volume {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+  color: #fff;
+}
+
+.valve-grid {
+  flex: 1;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+.valve-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #1a1a2e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.valve-table th {
+  padding: 12px;
+  text-align: left;
+  background: #0f0f1a;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.valve-table td {
+  padding: 12px;
+  border-bottom: 1px solid #1f1f3a;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+
+.valve-table tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.valve-table tr.active {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.valve-table tr.active .valve-name {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.valve-table tr.completed {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.valve-table tr.disabled {
+  opacity: 0.5;
+}
+
+.valve-name {
+  font-weight: 500;
+  color: #fff;
+}
+
+.volume-target {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.duration {
+  color: #888;
+}
+
+.valve-status {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.valve-status.pending {
+  background: #374151;
+  color: #9ca3af;
+}
+
+.valve-status.active {
+  background: #14532d;
+  color: #22c55e;
+  animation: pulse 1s infinite;
+}
+
+.valve-status.completed {
+  background: #1e3a8a;
+  color: #60a5fa;
+}
+
+.valve-status.skipped {
+  background: #78350f;
+  color: #fbbf24;
+}
+
+.valve-status.error {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.progress-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mini-progress {
+  width: 100px;
+  height: 6px;
+  background: #0f0f1a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mini-progress-fill {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.progress-text {
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: #888;
+}
+
+.elapsed-time {
+  font-size: 0.7rem;
+  color: #666;
+}
+
+.completed-info {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: #60a5fa;
+}
+
+.no-progress {
+  color: #555;
+}
+
+.cycle-settings {
+  padding: 16px;
+  margin: 16px;
+  background: #1a1a2e;
+  border-radius: 8px;
+  border: 1px solid #2a2a4a;
+}
+
+.cycle-settings h4 {
+  margin: 0 0 12px 0;
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.settings-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+
+.input-sm {
+  width: 60px;
+  padding: 4px 8px;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.valve-editor-modal .modal-body {
+  padding: 20px;
+}
+
+.valve-editor-modal .form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.valve-editor-modal .form-row .form-group {
+  flex: 1;
+}
+
+.valve-editor-modal small {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #666;
+}
+
+.col-enabled { width: 50px; }
+.col-name { width: 120px; }
+.col-output { width: 140px; }
+.col-flow { width: 140px; }
+.col-target { width: 100px; }
+.col-timeout { width: 80px; }
+.col-status { width: 80px; }
+.col-progress { width: 160px; }
+.col-actions { width: 80px; text-align: right; }
+
+/* Schedule Grid Styles */
+.schedule-grid-section {
+  padding: 16px;
+  margin: 16px;
+  background: #1a1a2e;
+  border-radius: 8px;
+  border: 1px solid #2a2a4a;
+}
+
+.schedule-grid-section .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.schedule-grid-section .section-header h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #00d4ff;
+}
+
+.schedule-grid-section .section-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.flow-channel-row {
+  margin-bottom: 16px;
+}
+
+.flow-channel-row label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+
+.flow-channel-row select {
+  padding: 6px 12px;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.85rem;
+  min-width: 200px;
+}
+
+.schedule-grid-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+
+.schedule-grid-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.schedule-grid-table th {
+  background: #0f0f1a;
+  padding: 10px 8px;
+  text-align: left;
+  font-weight: 500;
+  color: #888;
+  border-bottom: 1px solid #2a2a4a;
+  white-space: nowrap;
+}
+
+.schedule-grid-table td {
+  padding: 8px;
+  border-bottom: 1px solid #1a1a2e;
+  vertical-align: middle;
+}
+
+.schedule-grid-table tbody tr {
+  transition: background 0.15s;
+}
+
+.schedule-grid-table tbody tr:hover {
+  background: rgba(0, 212, 255, 0.05);
+}
+
+.schedule-grid-table tbody tr.selected {
+  background: rgba(0, 212, 255, 0.1);
+  outline: 1px solid rgba(0, 212, 255, 0.3);
+}
+
+.schedule-grid-table tbody tr.active {
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.schedule-grid-table tbody tr.completed {
+  background: rgba(100, 100, 100, 0.1);
+}
+
+.schedule-grid-table tbody tr.disabled {
+  opacity: 0.5;
+}
+
+/* Editable cells */
+.editable-cell {
+  cursor: pointer;
+  position: relative;
+}
+
+.editable-cell:hover:not(.editing) {
+  background: rgba(0, 212, 255, 0.1);
+}
+
+.editable-cell .cell-value {
+  display: block;
+  padding: 4px;
+  min-height: 24px;
+}
+
+.editable-cell.editing {
+  padding: 2px;
+}
+
+.editable-cell input,
+.editable-cell select {
+  width: 100%;
+  padding: 6px 8px;
+  background: #0a0a14;
+  border: 2px solid #00d4ff;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.editable-cell input:focus,
+.editable-cell select:focus {
+  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
+}
+
+.editable-cell input[type="number"] {
+  text-align: right;
+}
+
+.editable-cell input[type="time"] {
+  text-align: center;
+}
+
+/* Column widths for schedule grid */
+.col-row-num { width: 40px; text-align: center; color: #666; }
+.col-time { width: 90px; }
+.col-valve { width: 130px; }
+.col-unit { width: 70px; }
+
+/* Status badge */
+.entry-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.entry-status.pending {
+  background: #2a2a4a;
+  color: #888;
+}
+
+.entry-status.active {
+  background: rgba(0, 255, 136, 0.2);
+  color: #00ff88;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.entry-status.completed {
+  background: rgba(0, 212, 255, 0.2);
+  color: #00d4ff;
+}
+
+.entry-status.skipped {
+  background: rgba(255, 193, 7, 0.2);
+  color: #ffc107;
+}
+
+.entry-status.error {
+  background: rgba(255, 82, 82, 0.2);
+  color: #ff5252;
+}
+
+/* Empty grid state */
+.empty-grid-state {
+  padding: 32px;
+  text-align: center;
+  color: #666;
+}
+
+.empty-grid-state p {
+  margin: 8px 0;
+}
+
+.empty-grid-state .hint {
+  font-size: 0.8rem;
+  color: #555;
+}
+
+/* Grid help text */
+.grid-help {
+  color: #555;
+  font-size: 0.75rem;
+}
+
+/* Icon buttons for grid */
+.schedule-grid-table .icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0 2px;
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.7rem;
+  transition: all 0.15s;
+}
+
+.schedule-grid-table .icon-btn:hover:not(:disabled) {
+  background: #2a2a4a;
+  color: #fff;
+}
+
+.schedule-grid-table .icon-btn.danger:hover:not(:disabled) {
+  background: rgba(255, 82, 82, 0.2);
+  border-color: #ff5252;
+  color: #ff5252;
+}
+
+.schedule-grid-table .icon-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Small button variant */
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 0.8rem;
 }
 </style>

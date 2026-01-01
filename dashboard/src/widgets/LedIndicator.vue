@@ -61,7 +61,7 @@ function updateStyle(updates: Partial<WidgetStyle>) {
 </script>
 
 <template>
-  <div class="led-indicator" @click="openSettings">
+  <div class="led-indicator">
     <div
       class="led"
       :style="{

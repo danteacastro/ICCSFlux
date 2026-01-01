@@ -177,40 +177,49 @@ function onKeydown(e: KeyboardEvent) {
   align-items: center;
   justify-content: center;
   height: 100%;
-  padding: 6px;
+  padding: 4px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   position: relative;
+  gap: 2px;
 }
 
 .label {
-  font-size: 0.65rem;
+  font-size: 0.55rem;
   color: #888;
   text-transform: uppercase;
-  margin-bottom: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  line-height: 1.1;
 }
 
 .setpoint-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
 }
 
 .step-btn {
-  width: 28px;
-  height: 28px;
+  width: 16px;
+  height: 16px;
   border: none;
-  border-radius: 4px;
+  border-radius: 2px;
   background: #3b82f6;
   color: #fff;
-  font-size: 1.2rem;
+  font-size: 0.7rem;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
 }
 
 .step-btn:hover:not(:disabled) {
@@ -225,34 +234,34 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .value-container {
-  min-width: 60px;
-  padding: 4px 8px;
+  min-width: 36px;
+  padding: 2px 4px;
   background: #0f0f1a;
   border: 1px solid #2a2a4a;
-  border-radius: 4px;
+  border-radius: 2px;
   cursor: pointer;
   text-align: center;
 }
 
 .value {
-  font-size: 1.1rem;
+  font-size: 0.8rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   color: #4ade80;
 }
 
 .unit {
-  font-size: 0.7rem;
+  font-size: 0.6rem;
   color: #888;
   margin-left: 2px;
 }
 
 .value-input {
-  width: 60px;
+  width: 40px;
   background: transparent;
   border: none;
   color: #fff;
-  font-size: 1.1rem;
+  font-size: 0.8rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   text-align: center;
@@ -266,9 +275,9 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .range-info {
-  font-size: 0.55rem;
-  color: #666;
-  margin-top: 4px;
+  font-size: 0.5rem;
+  color: #555;
+  margin-top: 2px;
 }
 
 .disabled .value {

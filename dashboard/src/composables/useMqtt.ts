@@ -1,11 +1,22 @@
 import { ref, onUnmounted, computed } from 'vue'
 import mqtt, { type MqttClient, type IClientOptions } from 'mqtt'
 import type { ChannelValue, SystemStatus, ChannelConfig, RecordingConfig, RecordedFile } from '../types'
+import { usePlayground } from './usePlayground'
 
 // Stale data threshold in milliseconds
 const STALE_DATA_THRESHOLD_MS = 10000 // 10 seconds
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
+const COMMAND_ACK_TIMEOUT_MS = 5000
+
+// Pending command interface
+interface PendingCommand {
+  requestId: string
+  command: string
+  timestamp: number
+  resolve: (result: { success: boolean; error?: string }) => void
+  reject: (error: Error) => void
+}
 
 export function useMqtt(systemPrefix: string = 'nisystem') {
   const client = ref<MqttClient | null>(null)
@@ -31,9 +42,45 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
   const discoveryChannels = ref<any[]>([])
   const isScanning = ref(false)
 
+  // Channel lifecycle callbacks
+  const channelDeletedCallbacks: ((channelName: string) => void)[] = []
+  const channelCreatedCallbacks: ((channels: string[]) => void)[] = []
+
   // Recording state
   const recordingConfig = ref<Partial<RecordingConfig>>({})
   const recordedFiles = ref<RecordedFile[]>([])
+
+  // Watchdog state
+  const watchdogStatus = ref<{
+    status: 'online' | 'offline' | 'unknown'
+    daqOnline: boolean
+    failsafeTriggered: boolean
+    failsafeTriggerTime: string | null
+    lastHeartbeat: string | null
+    timeoutSec: number
+    timestamp: string | null
+  }>({
+    status: 'unknown',
+    daqOnline: false,
+    failsafeTriggered: false,
+    failsafeTriggerTime: null,
+    lastHeartbeat: null,
+    timeoutSec: 10,
+    timestamp: null
+  })
+
+  // Heartbeat state
+  const lastHeartbeat = ref<{
+    sequence: number
+    timestamp: string
+    acquiring: boolean
+    recording: boolean
+    uptime_seconds: number
+  } | null>(null)
+  const lastHeartbeatTime = ref<number>(0)
+
+  // Command acknowledgment tracking
+  const pendingCommands = new Map<string, PendingCommand>()
 
   // Callbacks
   const dataCallbacks: ((data: Record<string, number>) => void)[] = []
@@ -42,6 +89,9 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
   const configUpdateCallbacks: ((result: any) => void)[] = []
   const recordingCallbacks: ((result: any) => void)[] = []
   const fullConfigCallbacks: ((config: any) => void)[] = []
+
+  // Generic topic subscriptions
+  const topicCallbacks: Map<string, ((payload: any) => void)[]> = new Map()
 
   // Calculate exponential backoff delay
   function getReconnectDelay(): number {
@@ -76,7 +126,14 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
         `${systemPrefix}/alarms/#`,
         `${systemPrefix}/discovery/#`,
         `${systemPrefix}/recording/#`,
-        `${systemPrefix}/watchdog/#`  // Also subscribe to watchdog status
+        `${systemPrefix}/watchdog/#`,
+        `${systemPrefix}/project/#`,  // Project management topics
+        `${systemPrefix}/variables/#`,  // User variables / Playground
+        `${systemPrefix}/test-session/#`,  // Test session management
+        `${systemPrefix}/heartbeat`,  // Service heartbeat
+        `${systemPrefix}/command/ack`,  // Command acknowledgments
+        `${systemPrefix}/config/channel/deleted`,
+        `${systemPrefix}/config/channel/bulk-create/response`
       ]
 
       topics.forEach(topic => {
@@ -123,6 +180,28 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
           handleRecordingList(payload)
         } else if (topic === `${systemPrefix}/recording/response`) {
           handleRecordingResponse(payload)
+        } else if (topic === `${systemPrefix}/config/channel/deleted`) {
+          handleChannelDeleted(payload)
+        } else if (topic === `${systemPrefix}/config/channel/bulk-create/response`) {
+          handleBulkCreateResponse(payload)
+        } else if (topic.startsWith(`${systemPrefix}/watchdog/`)) {
+          handleWatchdogMessage(topic, payload)
+        } else if (topic === `${systemPrefix}/variables/config`) {
+          handleVariablesConfig(payload)
+        } else if (topic === `${systemPrefix}/variables/values`) {
+          handleVariablesValues(payload)
+        } else if (topic === `${systemPrefix}/test-session/status`) {
+          handleTestSessionStatus(payload)
+        } else if (topic === `${systemPrefix}/heartbeat`) {
+          handleHeartbeat(payload)
+        } else if (topic === `${systemPrefix}/command/ack`) {
+          handleCommandAck(payload)
+        }
+
+        // Handle generic topic subscriptions
+        const callbacks = topicCallbacks.get(topic)
+        if (callbacks) {
+          callbacks.forEach(cb => cb(payload))
         }
       } catch (e) {
         console.error('Error parsing MQTT message:', e)
@@ -170,11 +249,12 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
       Object.entries(payload.channels).forEach(([name, ch]) => {
         configs[name] = {
           name: ch.name || name,
-          display_name: ch.description || ch.name || name,
+          display_name: ch.name || name,  // TAG = channel name/ID
           channel_type: ch.channel_type || ch.type as any,
           unit: ch.units || '',
-          group: ch.module || 'Ungrouped',
-          description: ch.description,
+          group: ch.group || ch.module || 'Ungrouped',
+          description: ch.description,  // Description is separate documentation
+          visible: ch.visible !== false, // Default to true if not specified
           low_limit: ch.low_limit,
           high_limit: ch.high_limit,
           low_warning: ch.low_warning,
@@ -264,6 +344,172 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     fullConfigCallbacks.forEach(cb => cb(payload))
   }
 
+  function handleChannelDeleted(payload: any) {
+    const channelName = payload.channel
+    if (channelName) {
+      // Remove from local configs
+      if (channelConfigs.value[channelName]) {
+        delete channelConfigs.value[channelName]
+      }
+      if (channelValues.value[channelName]) {
+        delete channelValues.value[channelName]
+      }
+      console.log('Channel deleted:', channelName)
+      channelDeletedCallbacks.forEach(cb => cb(channelName))
+    }
+  }
+
+  function handleBulkCreateResponse(payload: any) {
+    console.log('Bulk create response:', payload)
+    if (payload.created && payload.created.length > 0) {
+      channelCreatedCallbacks.forEach(cb => cb(payload.created))
+    }
+    configUpdateCallbacks.forEach(cb => cb(payload))
+  }
+
+  function handleWatchdogMessage(topic: string, payload: any) {
+    const subtopic = topic.split('/').pop()
+
+    if (subtopic === 'status') {
+      // Update watchdog status
+      watchdogStatus.value = {
+        status: payload.status || 'unknown',
+        daqOnline: payload.daq_online ?? false,
+        failsafeTriggered: payload.failsafe_triggered ?? false,
+        failsafeTriggerTime: payload.failsafe_trigger_time || null,
+        lastHeartbeat: payload.last_heartbeat || null,
+        timeoutSec: payload.timeout_sec ?? 10,
+        timestamp: payload.timestamp || null
+      }
+      console.log('Watchdog status updated:', watchdogStatus.value.status,
+        watchdogStatus.value.failsafeTriggered ? '(FAILSAFE ACTIVE)' : '')
+    } else if (subtopic === 'event') {
+      // Log watchdog events (failsafe triggered, daq recovered, etc.)
+      console.warn('Watchdog event:', payload.event, '-', payload.message)
+    }
+  }
+
+  // ========================================================================
+  // User Variables / Playground Handlers
+  // ========================================================================
+
+  // Get playground composable instance (singleton)
+  const playground = usePlayground()
+
+  // Wire up playground MQTT handlers
+  playground.setMqttHandlers({
+    publish: (topic: string, payload: any) => {
+      if (client.value && connected.value) {
+        client.value.publish(topic, JSON.stringify(payload))
+      } else {
+        console.warn('MQTT not connected, cannot publish:', topic)
+      }
+    }
+  })
+
+  function handleVariablesConfig(payload: any) {
+    console.log('MQTT: Received variables config:', payload)
+    playground.handleVariablesConfig(payload)
+  }
+
+  function handleVariablesValues(payload: any) {
+    console.log('MQTT: Received variables values:', Object.keys(payload).length, 'variables')
+    playground.handleVariablesValues(payload)
+  }
+
+  function handleTestSessionStatus(payload: any) {
+    console.log('MQTT: Received test session status:', payload)
+    playground.handleTestSessionStatus(payload)
+  }
+
+  function handleHeartbeat(payload: any) {
+    lastHeartbeat.value = payload
+    lastHeartbeatTime.value = Date.now()
+  }
+
+  function handleCommandAck(payload: any) {
+    const { request_id, success, error: errorMsg } = payload
+
+    if (request_id && pendingCommands.has(request_id)) {
+      const pending = pendingCommands.get(request_id)!
+      pendingCommands.delete(request_id)
+
+      if (success) {
+        pending.resolve({ success: true })
+      } else {
+        pending.resolve({ success: false, error: errorMsg || 'Command failed' })
+      }
+    }
+  }
+
+  /**
+   * Generate a unique request ID for command tracking
+   */
+  function generateRequestId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  }
+
+  /**
+   * Send a command with acknowledgment tracking
+   * Returns a Promise that resolves when the DAQ acknowledges the command
+   * or rejects after timeout
+   */
+  async function sendCommandWithAck(
+    command: string,
+    payload?: any,
+    timeoutMs: number = COMMAND_ACK_TIMEOUT_MS
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!client.value || !connected.value) {
+      return { success: false, error: 'MQTT not connected' }
+    }
+
+    const requestId = generateRequestId()
+    const topic = `${systemPrefix}/${command}`
+    const message = {
+      ...(payload || {}),
+      request_id: requestId
+    }
+
+    return new Promise((resolve, reject) => {
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        if (pendingCommands.has(requestId)) {
+          pendingCommands.delete(requestId)
+          resolve({ success: false, error: 'Command timed out waiting for acknowledgment' })
+        }
+      }, timeoutMs)
+
+      // Track the pending command
+      pendingCommands.set(requestId, {
+        requestId,
+        command,
+        timestamp: Date.now(),
+        resolve: (result) => {
+          clearTimeout(timeoutId)
+          resolve(result)
+        },
+        reject: (error) => {
+          clearTimeout(timeoutId)
+          reject(error)
+        }
+      })
+
+      // Publish the command
+      client.value!.publish(topic, JSON.stringify(message))
+    })
+  }
+
+  /**
+   * Send a system command with acknowledgment tracking
+   */
+  async function sendSystemCommandWithAck(
+    command: string,
+    payload?: any,
+    timeoutMs: number = COMMAND_ACK_TIMEOUT_MS
+  ): Promise<{ success: boolean; error?: string }> {
+    return sendCommandWithAck(`system/${command}`, payload, timeoutMs)
+  }
+
   function isAlarm(value: number, config: ChannelConfig): boolean {
     if (config.low_limit !== undefined && value < config.low_limit) return true
     if (config.high_limit !== undefined && value > config.high_limit) return true
@@ -299,6 +545,31 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     const message = payload !== undefined ? JSON.stringify(payload) : '{}'
 
     client.value.publish(topic, message)
+  }
+
+  /**
+   * Subscribe to a specific topic with a callback
+   * Returns an unsubscribe function
+   */
+  function subscribe(topic: string, callback: (payload: any) => void): () => void {
+    if (!topicCallbacks.has(topic)) {
+      topicCallbacks.set(topic, [])
+    }
+    topicCallbacks.get(topic)!.push(callback)
+
+    // Return unsubscribe function
+    return () => {
+      const callbacks = topicCallbacks.get(topic)
+      if (callbacks) {
+        const idx = callbacks.indexOf(callback)
+        if (idx > -1) {
+          callbacks.splice(idx, 1)
+        }
+        if (callbacks.length === 0) {
+          topicCallbacks.delete(topic)
+        }
+      }
+    }
   }
 
   function startAcquisition() {
@@ -340,6 +611,15 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
       return
     }
     client.value.publish(`${systemPrefix}/commands/${channelName}`, JSON.stringify({ value }))
+  }
+
+  function resetCounter(channelName: string) {
+    // Reset counter channel to zero
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    client.value.publish(`${systemPrefix}/channel/reset`, JSON.stringify({ channel: channelName }))
   }
 
   // Discovery functions
@@ -385,6 +665,50 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
 
   function onConfigUpdate(callback: (result: any) => void) {
     configUpdateCallbacks.push(callback)
+  }
+
+  function createChannel(name: string, config: any) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    const payload = {
+      name,
+      config
+    }
+    client.value.publish(`${systemPrefix}/config/channel/create`, JSON.stringify(payload))
+    console.log('Channel create sent:', name)
+  }
+
+  function deleteChannel(name: string, force: boolean = false) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    const payload = {
+      name,
+      force
+    }
+    client.value.publish(`${systemPrefix}/config/channel/delete`, JSON.stringify(payload))
+    console.log('Channel delete sent:', name)
+  }
+
+  function bulkCreateChannels(channels: any[]) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    const payload = { channels }
+    client.value.publish(`${systemPrefix}/config/channel/bulk-create`, JSON.stringify(payload))
+    console.log('Bulk create sent:', channels.length, 'channels')
+  }
+
+  function onChannelDeleted(callback: (channelName: string) => void) {
+    channelDeletedCallbacks.push(callback)
+  }
+
+  function onChannelCreated(callback: (channels: string[]) => void) {
+    channelCreatedCallbacks.push(callback)
   }
 
   function onConfigCurrent(callback: (config: any) => void): () => void {
@@ -486,6 +810,9 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     recordingConfig,
     recordedFiles,
 
+    // Watchdog state
+    watchdogStatus,
+
     // Connection
     connect,
     disconnect,
@@ -500,7 +827,9 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     loadConfig,
     saveConfig,
     setOutput,
+    resetCounter,
     sendCommand,
+    subscribe,
 
     // Discovery
     scanDevices,
@@ -511,6 +840,13 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     saveSystemConfig,
     onConfigUpdate,
     onConfigCurrent,
+
+    // Channel lifecycle
+    createChannel,
+    deleteChannel,
+    bulkCreateChannels,
+    onChannelDeleted,
+    onChannelCreated,
 
     // Recording management
     updateRecordingConfig,
@@ -547,6 +883,17 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     },
     clearAlarm: (alarmId: string) => {
       sendCommand('alarm/clear', { alarmId })
-    }
+    },
+    resetAllLatched: () => {
+      sendCommand('alarm/reset-latched', {})
+    },
+
+    // Heartbeat / health monitoring
+    lastHeartbeat,
+    lastHeartbeatTime,
+
+    // Command acknowledgment
+    sendCommandWithAck,
+    sendSystemCommandWithAck
   }
 }

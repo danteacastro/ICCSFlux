@@ -852,7 +852,11 @@ function getControlDescription(ctrl: InterlockControl): string {
       <div class="interlocks-status-panel">
         <div class="panel-header">
           <h3>Interlock Status</h3>
-          <button class="btn btn-sm btn-primary" @click="openNewInterlockModal">
+          <button
+            v-if="safety.interlocks.value.length > 0"
+            class="btn btn-sm btn-primary"
+            @click="openNewInterlockModal"
+          >
             + Add Interlock
           </button>
         </div>
@@ -2110,6 +2114,29 @@ function getControlDescription(ctrl: InterlockControl): string {
 /* ============================================
    Interlock Modal
    ============================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.modal {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.modal h3 {
+  margin: 0 0 16px;
+  font-size: 1.1rem;
+  color: #fff;
+}
 
 .interlock-modal {
   min-width: 550px;

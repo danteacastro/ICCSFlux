@@ -2,9 +2,11 @@
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
+import { useScripts } from '../composables/useScripts'
 
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
+const scripts = useScripts()
 
 const isConnected = computed(() => store.isConnected)
 const mqttConnected = computed(() => mqtt.connected.value)
@@ -14,6 +16,14 @@ const isSimulation = computed(() => store.status?.simulation_mode ?? false)
 
 const channelCount = computed(() => store.status?.channel_count ?? 0)
 const scanRate = computed(() => store.status?.scan_rate_hz ?? 0)
+
+// Running sequence info
+const runningSequence = computed(() => scripts.runningSequence.value)
+const isSequenceRunning = computed(() => !!runningSequence.value)
+
+// Active alarms info
+const activeAlarmCount = computed(() => scripts.activeAlarmIds.value.length)
+const hasActiveAlarms = computed(() => activeAlarmCount.value > 0)
 
 // Calculate data freshness
 const lastUpdate = computed(() => {
@@ -74,6 +84,29 @@ const isDataStale = computed(() => {
         <span class="label">Hz</span>
       </div>
       <div v-if="isSimulation" class="sim-badge">SIM</div>
+    </div>
+
+    <!-- Sequence & Alarm Status -->
+    <div class="activity-row">
+      <!-- Running Sequence -->
+      <div v-if="isSequenceRunning" class="activity-item sequence-running">
+        <span class="activity-icon">▶</span>
+        <span class="activity-label">{{ runningSequence?.name }}</span>
+      </div>
+      <div v-else class="activity-item idle">
+        <span class="activity-icon">◼</span>
+        <span class="activity-label">No sequence</span>
+      </div>
+
+      <!-- Active Alarms -->
+      <div v-if="hasActiveAlarms" class="activity-item alarms-active">
+        <span class="activity-icon">⚠</span>
+        <span class="activity-label">{{ activeAlarmCount }} alarm{{ activeAlarmCount > 1 ? 's' : '' }}</span>
+      </div>
+      <div v-else class="activity-item ok">
+        <span class="activity-icon">✓</span>
+        <span class="activity-label">No alarms</span>
+      </div>
     </div>
   </div>
 </template>
@@ -191,5 +224,66 @@ const isDataStale = computed(() => {
   color: #fff;
   border-radius: 3px;
   font-weight: 700;
+}
+
+.activity-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.activity-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-icon {
+  font-size: 0.55rem;
+  flex-shrink: 0;
+}
+
+.activity-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-item.sequence-running {
+  background: #1e3a5f;
+  color: #60a5fa;
+  animation: pulse-seq 2s infinite;
+}
+
+.activity-item.idle {
+  background: #1a1a2e;
+  color: #6b7280;
+}
+
+.activity-item.alarms-active {
+  background: #7f1d1d;
+  color: #fca5a5;
+  animation: pulse-alarm 1s infinite;
+}
+
+.activity-item.ok {
+  background: #14532d;
+  color: #86efac;
+}
+
+@keyframes pulse-seq {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes pulse-alarm {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 </style>

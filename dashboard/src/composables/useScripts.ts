@@ -9,6 +9,14 @@ import type {
   SetOutputStep,
   SetVariableStep,
   LoopStep,
+  IfStep,
+  ElseStep,
+  EndIfStep,
+  RecordingStep,
+  SafetyCheckStep,
+  CallSequenceStep,
+  RunDrawPatternStep,
+  SingleDrawStep,
   Alarm,
   Transformation,
   RollingTransformation,
@@ -16,19 +24,28 @@ import type {
   UnitConversionTransformation,
   PolynomialTransformation,
   AutomationTrigger,
-  ScriptsSubTab,
   UnitConversionType,
   FunctionBlock,
   Schedule,
-  ScheduleAction
+  ScheduleAction,
+  // Draw patterns
+  DrawPattern,
+  Draw,
+  DrawPatternRunHistory,
+  // New types
+  StateMachine,
+  ReportTemplate,
+  ScheduledReport,
+  Watchdog,
+  ScriptsSubTabExtended
 } from '../types/scripts'
-import { UNIT_CONVERSIONS, FUNCTION_BLOCK_TEMPLATES, FUNCTION_BLOCKS_STORAGE_KEY, STORAGE_KEYS } from '../types/scripts'
+import { UNIT_CONVERSIONS, FUNCTION_BLOCK_TEMPLATES, FUNCTION_BLOCKS_STORAGE_KEY, STORAGE_KEYS, SEQUENCE_TEMPLATES, DRAW_PATTERNS_STORAGE_KEY } from '../types/scripts'
 
 // ==========================================================================
 // SINGLETON STATE - exists outside the composable function
 // ==========================================================================
 
-const activeSubTab = ref<ScriptsSubTab>('formulas')
+const activeSubTab = ref<ScriptsSubTabExtended>('formulas')
 const calculatedParams = ref<CalculatedParam[]>([])
 const sequences = ref<Sequence[]>([])
 const runningSequenceId = ref<string | null>(null)
@@ -42,6 +59,18 @@ const lastValues = ref<Record<string, { value: number; timestamp: number }>>({})
 const triggers = ref<AutomationTrigger[]>([])
 const functionBlocks = ref<FunctionBlock[]>([])
 const schedules = ref<Schedule[]>([])
+
+// Draw patterns state
+const drawPatterns = ref<DrawPattern[]>([])
+const drawPatternHistory = ref<DrawPatternRunHistory[]>([])
+const activeDrawPatternId = ref<string | null>(null)
+let drawPatternTickIntervalId: number | null = null
+
+// New feature state
+const stateMachines = ref<StateMachine[]>([])
+const reportTemplates = ref<ReportTemplate[]>([])
+const scheduledReports = ref<ScheduledReport[]>([])
+const watchdogs = ref<Watchdog[]>([])
 
 // Notifications queue for UI
 const notifications = ref<Array<{
@@ -66,6 +95,11 @@ let previousSchedulerEnabled = false
 
 let evaluationIntervalId: number | null = null
 let isInitialized = false
+
+// Sequence event listeners for subroutine calls
+type SequenceEventType = 'started' | 'completed' | 'aborted' | 'error' | 'stepCompleted'
+type SequenceEventListener = (event: SequenceEventType, seq: Sequence) => void
+const sequenceEventListeners: SequenceEventListener[] = []
 
 // ==========================================================================
 // COMPOSABLE FUNCTION
@@ -162,6 +196,7 @@ export function useScripts() {
     loadTransformations()
     loadTriggers()
     loadFunctionBlocks()
+    loadDrawPatterns()
   }
 
   function loadCalculatedParams() {
@@ -193,7 +228,9 @@ export function useScripts() {
           state: 'idle',
           currentStepIndex: 0,
           currentLoopIterations: {},
-          variables: {}
+          currentIfResults: {},
+          variables: {},
+          callStack: []
         }))
       }
     } catch (e) {
@@ -419,14 +456,16 @@ export function useScripts() {
   // SEQUENCES CRUD & EXECUTION
   // ========================================================================
 
-  function addSequence(seq: Omit<Sequence, 'id' | 'state' | 'currentStepIndex' | 'currentLoopIterations' | 'variables' | 'createdAt' | 'modifiedAt'>) {
+  function addSequence(seq: Omit<Sequence, 'id' | 'state' | 'currentStepIndex' | 'currentLoopIterations' | 'currentIfResults' | 'variables' | 'createdAt' | 'modifiedAt'>) {
     const newSeq: Sequence = {
       ...seq,
       id: `seq-${Date.now()}`,
       state: 'idle',
       currentStepIndex: 0,
       currentLoopIterations: {},
+      currentIfResults: {},
       variables: {},
+      callStack: [],
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString()
     }
@@ -439,6 +478,14 @@ export function useScripts() {
     const index = sequences.value.findIndex(s => s.id === id)
     if (index >= 0) {
       const existing = sequences.value[index]
+      if (!existing) return
+
+      // SAFETY: If disabling a running sequence, stop it first
+      if (updates.enabled === false && existing.state === 'running') {
+        addNotification('warning', 'Sequence Stopped', `Stopping ${existing.name} - sequence was disabled`)
+        abortSequence(id)
+      }
+
       sequences.value[index] = {
         ...existing,
         ...updates,
@@ -460,6 +507,12 @@ export function useScripts() {
     const seq = sequences.value.find(s => s.id === id)
     if (!seq || seq.state === 'running') return false
 
+    // Check if sequence is enabled
+    if (!seq.enabled) {
+      addNotification('warning', 'Cannot Start', `Sequence "${seq.name}" is disabled`)
+      return false
+    }
+
     if (runningSequenceId.value && runningSequenceId.value !== id) {
       abortSequence(runningSequenceId.value)
     }
@@ -467,7 +520,9 @@ export function useScripts() {
     seq.state = 'running'
     seq.currentStepIndex = 0
     seq.currentLoopIterations = {}
-    seq.variables = {}  // Initialize script variables
+    seq.currentIfResults = {}
+    seq.variables = {}
+    seq.callStack = []
     seq.startTime = Date.now()
     seq.error = undefined
     runningSequenceId.value = id
@@ -519,10 +574,53 @@ export function useScripts() {
 
     addNotification('warning', 'Sequence Aborted', `Aborted sequence: ${seq.name}`)
     emitSequenceEvent('aborted', seq)
+    recordSequenceHistory(seq, 'aborted')
     return true
   }
 
+  function recordSequenceHistory(seq: Sequence, finalState: 'completed' | 'aborted' | 'error') {
+    const now = Date.now()
+    const historyEntry = {
+      id: `run-${now}`,
+      startTime: seq.startTime || now,
+      endTime: now,
+      state: finalState,
+      duration: seq.startTime ? now - seq.startTime : 0,
+      stepsCompleted: seq.currentStepIndex,
+      totalSteps: seq.steps.length,
+      error: seq.error,
+      triggeredBy: 'manual' as const  // TODO: Track actual trigger source
+    }
+
+    // Initialize history array if needed
+    if (!seq.runHistory) {
+      seq.runHistory = []
+    }
+
+    // Add to history (keep last 50 runs)
+    seq.runHistory.unshift(historyEntry)
+    if (seq.runHistory.length > 50) {
+      seq.runHistory = seq.runHistory.slice(0, 50)
+    }
+
+    // Update run stats
+    seq.lastRunTime = now
+    seq.runCount = (seq.runCount || 0) + 1
+
+    // Save to localStorage
+    saveSequences()
+  }
+
   function emitSequenceEvent(event: 'started' | 'completed' | 'aborted' | 'error' | 'stepCompleted', seq: Sequence) {
+    // Notify all registered listeners (for subroutine calls)
+    sequenceEventListeners.forEach(listener => {
+      try {
+        listener(event, seq)
+      } catch (e) {
+        console.error('Sequence event listener error:', e)
+      }
+    })
+
     // Check triggers for sequence events
     triggers.value.forEach(trigger => {
       if (!trigger.enabled) return
@@ -543,6 +641,17 @@ export function useScripts() {
     })
   }
 
+  function onSequenceEvent(listener: SequenceEventListener): () => void {
+    sequenceEventListeners.push(listener)
+    // Return unsubscribe function
+    return () => {
+      const index = sequenceEventListeners.indexOf(listener)
+      if (index >= 0) {
+        sequenceEventListeners.splice(index, 1)
+      }
+    }
+  }
+
   function executeSequenceStep(seq: Sequence) {
     if (seq.state !== 'running') return
 
@@ -551,6 +660,7 @@ export function useScripts() {
       runningSequenceId.value = null
       addNotification('success', 'Sequence Completed', `Completed sequence: ${seq.name}`)
       emitSequenceEvent('completed', seq)
+      recordSequenceHistory(seq, 'completed')
       return
     }
 
@@ -598,6 +708,24 @@ export function useScripts() {
           if (!msgStep.pauseExecution) {
             executeSequenceStep(seq)
           }
+          break
+        case 'if':
+          executeIfStep(seq, step as IfStep)
+          break
+        case 'else':
+          executeElseStep(seq, step as ElseStep)
+          break
+        case 'endIf':
+          executeEndIfStep(seq, step as EndIfStep)
+          break
+        case 'recording':
+          executeRecordingStep(seq, step as RecordingStep)
+          break
+        case 'safetyCheck':
+          executeSafetyCheckStep(seq, step as SafetyCheckStep)
+          break
+        case 'callSequence':
+          executeCallSequenceStep(seq, step as CallSequenceStep)
           break
         default:
           seq.currentStepIndex++
@@ -654,6 +782,8 @@ export function useScripts() {
     addNotification('info', 'Wait Step', `Waiting for: ${step.condition}`)
 
     const startTime = Date.now()
+    const maxRetries = step.retryCount ?? 3
+    const retryDelay = step.retryDelayMs ?? 1000
 
     const checkCondition = () => {
       if (seq.state !== 'running') return
@@ -661,6 +791,8 @@ export function useScripts() {
       if (step.condition) {
         const result = evaluateFormula(step.condition)
         if (result.value && result.value !== 0) {
+          // Condition met - reset retry counter and continue
+          seq.currentRetryCount = 0
           seq.currentStepIndex++
           emitSequenceEvent('stepCompleted', seq)
           executeSequenceStep(seq)
@@ -671,20 +803,8 @@ export function useScripts() {
       if (step.timeout && step.timeout > 0) {
         const elapsed = (Date.now() - startTime) / 1000
         if (elapsed >= step.timeout) {
-          if (step.timeoutAction === 'abort') {
-            seq.state = 'aborted'
-            seq.error = `Wait step timed out`
-            runningSequenceId.value = null
-            addNotification('error', 'Wait Timeout', `Wait step timed out in ${seq.name}`)
-            emitSequenceEvent('aborted', seq)
-            return
-          }
-          if (step.timeoutAction === 'alarm') {
-            addNotification('warning', 'Wait Timeout', `Wait condition not met, continuing...`)
-          }
-          seq.currentStepIndex++
-          emitSequenceEvent('stepCompleted', seq)
-          executeSequenceStep(seq)
+          // Handle timeout based on action type
+          handleWaitTimeout(seq, step, maxRetries, retryDelay)
           return
         }
       }
@@ -693,6 +813,91 @@ export function useScripts() {
     }
 
     checkCondition()
+  }
+
+  function handleWaitTimeout(seq: Sequence, step: WaitStep, maxRetries: number, retryDelay: number) {
+    const currentRetry = seq.currentRetryCount ?? 0
+
+    switch (step.timeoutAction) {
+      case 'abort':
+        seq.state = 'aborted'
+        seq.error = `Wait step timed out`
+        seq.currentRetryCount = 0
+        runningSequenceId.value = null
+        addNotification('error', 'Wait Timeout', `Wait step timed out in ${seq.name}`)
+        emitSequenceEvent('aborted', seq)
+        recordSequenceHistory(seq, 'aborted')
+        break
+
+      case 'continue':
+        seq.currentRetryCount = 0
+        seq.currentStepIndex++
+        emitSequenceEvent('stepCompleted', seq)
+        executeSequenceStep(seq)
+        break
+
+      case 'alarm':
+        addNotification('warning', 'Wait Timeout', `Wait condition not met, continuing...`)
+        seq.currentRetryCount = 0
+        seq.currentStepIndex++
+        emitSequenceEvent('stepCompleted', seq)
+        executeSequenceStep(seq)
+        break
+
+      case 'skip':
+        addNotification('info', 'Step Skipped', `Skipping wait step due to timeout`)
+        seq.currentRetryCount = 0
+        seq.currentStepIndex++
+        emitSequenceEvent('stepCompleted', seq)
+        executeSequenceStep(seq)
+        break
+
+      case 'retry':
+        if (currentRetry < maxRetries) {
+          seq.currentRetryCount = currentRetry + 1
+          addNotification('warning', 'Wait Retry', `Retrying wait step (${seq.currentRetryCount}/${maxRetries})`)
+
+          // Delay before retry
+          sequenceTimeoutId.value = window.setTimeout(() => {
+            if (seq.state !== 'running') return
+            // Re-execute the same step
+            executeWaitStep(seq, step as WaitStep)
+          }, retryDelay)
+        } else {
+          // All retries exhausted - use fallback action
+          seq.currentRetryCount = 0
+          const fallback = step.onFinalFailure || 'abort'
+          addNotification('error', 'Retries Exhausted', `All ${maxRetries} retries failed for wait step`)
+
+          if (fallback === 'abort') {
+            seq.state = 'aborted'
+            seq.error = `Wait step failed after ${maxRetries} retries`
+            runningSequenceId.value = null
+            emitSequenceEvent('aborted', seq)
+            recordSequenceHistory(seq, 'aborted')
+          } else if (fallback === 'alarm') {
+            addNotification('error', 'Wait Failed', `Wait step failed - continuing with alarm`)
+            seq.currentStepIndex++
+            emitSequenceEvent('stepCompleted', seq)
+            executeSequenceStep(seq)
+          } else {
+            // continue
+            seq.currentStepIndex++
+            emitSequenceEvent('stepCompleted', seq)
+            executeSequenceStep(seq)
+          }
+        }
+        break
+
+      default:
+        // Unknown action - abort
+        seq.state = 'aborted'
+        seq.error = `Wait step timed out`
+        seq.currentRetryCount = 0
+        runningSequenceId.value = null
+        emitSequenceEvent('aborted', seq)
+        recordSequenceHistory(seq, 'aborted')
+    }
   }
 
   function executeSetOutputStep(step: SetOutputStep) {
@@ -837,6 +1042,220 @@ export function useScripts() {
     }
 
     executeSequenceStep(seq)
+  }
+
+  // ========================================================================
+  // CONDITIONAL BRANCHING (If/Else/EndIf)
+  // ========================================================================
+
+  function executeIfStep(seq: Sequence, step: IfStep) {
+    // Initialize currentIfResults if not exists
+    if (!seq.currentIfResults) seq.currentIfResults = {}
+
+    // Evaluate the condition
+    const result = evaluateFormulaWithSequenceVars(step.condition, seq)
+    const conditionResult = result.value !== null && result.value !== 0
+
+    // Store the result for else/endIf navigation
+    seq.currentIfResults[step.ifId] = conditionResult
+
+    if (conditionResult) {
+      // Condition is true - execute the if block (continue to next step)
+      seq.currentStepIndex++
+      emitSequenceEvent('stepCompleted', seq)
+      executeSequenceStep(seq)
+    } else {
+      // Condition is false - skip to else or endIf
+      const elseIndex = seq.steps.findIndex(s =>
+        (s.type === 'else' && (s as ElseStep).ifId === step.ifId)
+      )
+      const endIfIndex = seq.steps.findIndex(s =>
+        (s.type === 'endIf' && (s as EndIfStep).ifId === step.ifId)
+      )
+
+      if (elseIndex > seq.currentStepIndex) {
+        // Jump to else block
+        seq.currentStepIndex = elseIndex + 1
+      } else if (endIfIndex > seq.currentStepIndex) {
+        // No else, jump to endIf
+        seq.currentStepIndex = endIfIndex + 1
+      } else {
+        // Malformed if block - just continue
+        seq.currentStepIndex++
+      }
+      emitSequenceEvent('stepCompleted', seq)
+      executeSequenceStep(seq)
+    }
+  }
+
+  function executeElseStep(seq: Sequence, step: ElseStep) {
+    // If we reached else, it means the if condition was true and we executed the if block
+    // So we need to skip to endIf
+    const endIfIndex = seq.steps.findIndex(s =>
+      s.type === 'endIf' && (s as EndIfStep).ifId === step.ifId
+    )
+
+    if (endIfIndex > seq.currentStepIndex) {
+      seq.currentStepIndex = endIfIndex + 1
+    } else {
+      seq.currentStepIndex++
+    }
+    emitSequenceEvent('stepCompleted', seq)
+    executeSequenceStep(seq)
+  }
+
+  function executeEndIfStep(seq: Sequence, step: EndIfStep) {
+    // Clean up the if result tracking
+    if (seq.currentIfResults) {
+      delete seq.currentIfResults[step.ifId]
+    }
+    seq.currentStepIndex++
+    emitSequenceEvent('stepCompleted', seq)
+    executeSequenceStep(seq)
+  }
+
+  // ========================================================================
+  // RECORDING CONTROL
+  // ========================================================================
+
+  function executeRecordingStep(seq: Sequence, step: RecordingStep) {
+    if (step.action === 'start') {
+      // Use MQTT handler to start recording
+      if (mqttStartRecording) {
+        mqttStartRecording(step.filename)
+      }
+      addNotification('info', 'Recording Started', step.filename || 'Auto-generated filename')
+    } else {
+      // Use MQTT handler to stop recording
+      if (mqttStopRecording) {
+        mqttStopRecording()
+      }
+      addNotification('info', 'Recording Stopped', 'Data recording stopped by sequence')
+    }
+    seq.currentStepIndex++
+    emitSequenceEvent('stepCompleted', seq)
+    executeSequenceStep(seq)
+  }
+
+  // ========================================================================
+  // SAFETY CHECK
+  // ========================================================================
+
+  function executeSafetyCheckStep(seq: Sequence, step: SafetyCheckStep) {
+    const result = evaluateFormulaWithSequenceVars(step.condition, seq)
+    const safetyOk = result.value !== null && result.value !== 0
+
+    if (safetyOk) {
+      // Safety check passed
+      seq.currentStepIndex++
+      emitSequenceEvent('stepCompleted', seq)
+      executeSequenceStep(seq)
+    } else {
+      // Safety check failed
+      addNotification('error', 'Safety Check Failed', step.failMessage)
+
+      switch (step.failAction) {
+        case 'abort':
+          seq.state = 'aborted'
+          seq.error = `Safety check failed: ${step.failMessage}`
+          runningSequenceId.value = null
+          emitSequenceEvent('aborted', seq)
+          break
+        case 'pause':
+          seq.state = 'paused'
+          seq.pausedTime = Date.now()
+          addNotification('warning', 'Sequence Paused', 'Waiting for safety condition')
+          break
+        case 'alarm':
+          // Just log the alarm and continue
+          addNotification('error', 'Safety Alarm', step.failMessage)
+          seq.currentStepIndex++
+          emitSequenceEvent('stepCompleted', seq)
+          executeSequenceStep(seq)
+          break
+      }
+    }
+  }
+
+  // ========================================================================
+  // CALL SEQUENCE (Subroutine)
+  // ========================================================================
+
+  function executeCallSequenceStep(seq: Sequence, step: CallSequenceStep) {
+    const targetSequence = sequences.value.find(s => s.id === step.sequenceId)
+
+    if (!targetSequence) {
+      addNotification('error', 'Call Sequence Error', `Sequence ${step.sequenceId} not found`)
+      seq.currentStepIndex++
+      executeSequenceStep(seq)
+      return
+    }
+
+    if (!targetSequence.enabled) {
+      addNotification('warning', 'Called Sequence Disabled', `${targetSequence.name} is disabled, skipping`)
+      seq.currentStepIndex++
+      emitSequenceEvent('stepCompleted', seq)
+      executeSequenceStep(seq)
+      return
+    }
+
+    // Initialize call stack if needed
+    if (!seq.callStack) seq.callStack = []
+
+    // Check for recursion (prevent infinite loops)
+    if (seq.callStack.includes(step.sequenceId)) {
+      addNotification('error', 'Recursion Detected', `Cannot call ${targetSequence.name} - already in call stack`)
+      seq.currentStepIndex++
+      executeSequenceStep(seq)
+      return
+    }
+
+    if (step.waitForCompletion) {
+      // Synchronous call - pause parent, run child
+      seq.state = 'paused'
+      seq.callStack.push(step.sequenceId)
+
+      // Set up the child sequence
+      targetSequence.state = 'running'
+      targetSequence.currentStepIndex = 0
+      targetSequence.currentLoopIterations = {}
+      targetSequence.currentIfResults = {}
+      targetSequence.variables = { ...seq.variables } // Pass variables to child
+      targetSequence.startTime = Date.now()
+      targetSequence.parentSequenceId = seq.id
+
+      // Subscribe to child completion
+      const unsubscribe = onSequenceEvent((event, eventSeq) => {
+        if (eventSeq.id === step.sequenceId &&
+            (event === 'completed' || event === 'aborted' || event === 'error')) {
+          unsubscribe()
+
+          // Resume parent sequence
+          seq.callStack = seq.callStack?.filter(id => id !== step.sequenceId)
+          seq.state = 'running'
+          seq.currentStepIndex++
+
+          // Copy any variables set by child back to parent
+          if (targetSequence.variables) {
+            seq.variables = { ...seq.variables, ...targetSequence.variables }
+          }
+
+          emitSequenceEvent('stepCompleted', seq)
+          executeSequenceStep(seq)
+        }
+      })
+
+      // Start child execution
+      runningSequenceId.value = step.sequenceId
+      executeSequenceStep(targetSequence)
+    } else {
+      // Fire-and-forget - start child and continue parent
+      addNotification('info', 'Starting Sequence', `Starting ${targetSequence.name} (async)`)
+      startSequence(step.sequenceId)
+      seq.currentStepIndex++
+      emitSequenceEvent('stepCompleted', seq)
+      executeSequenceStep(seq)
+    }
   }
 
   // ========================================================================
@@ -1387,6 +1806,24 @@ export function useScripts() {
               evaluateFormula(action.formula)
             }
             break
+          case 'start_draw_pattern':
+            if (action.drawPatternId) {
+              startDrawPattern(action.drawPatternId)
+            }
+            break
+          case 'valve_draw':
+            // Execute a specific draw from a pattern (or standalone draw)
+            if (action.drawPatternId && action.drawNumber) {
+              const pattern = drawPatterns.value.find(p => p.id === action.drawPatternId)
+              if (pattern) {
+                const draw = pattern.draws.find(d => d.drawNumber === action.drawNumber)
+                if (draw) {
+                  // Execute single draw inline
+                  executeSingleDraw(draw.valve, pattern.flowChannel, draw.volumeTarget, draw.volumeUnit, draw.maxDuration)
+                }
+              }
+            }
+            break
         }
       } catch (e) {
         console.error('Error executing schedule action:', e)
@@ -1396,6 +1833,447 @@ export function useScripts() {
 
   const enabledSchedules = computed(() => schedules.value.filter(s => s.enabled))
   const hasActiveSchedule = computed(() => schedules.value.some(s => s.enabled && s.isRunning))
+
+  // ========================================================================
+  // DRAW PATTERNS CRUD & EXECUTION
+  // ========================================================================
+
+  function loadDrawPatterns() {
+    try {
+      const stored = localStorage.getItem(DRAW_PATTERNS_STORAGE_KEY)
+      if (stored) {
+        const data = JSON.parse(stored)
+        drawPatterns.value = data.patterns || []
+        drawPatternHistory.value = (data.history || []).slice(0, 100) // Keep last 100
+      }
+    } catch (e) {
+      console.error('Failed to load draw patterns:', e)
+    }
+  }
+
+  function saveDrawPatterns() {
+    try {
+      localStorage.setItem(DRAW_PATTERNS_STORAGE_KEY, JSON.stringify({
+        patterns: drawPatterns.value,
+        history: drawPatternHistory.value.slice(0, 100)
+      }))
+    } catch (e) {
+      console.error('Failed to save draw patterns:', e)
+    }
+  }
+
+  function addDrawPattern(pattern: Omit<DrawPattern, 'id' | 'state' | 'currentDrawIndex' | 'cycleCount' | 'totalVolumeDispensed'>): string {
+    const newPattern: DrawPattern = {
+      ...pattern,
+      id: `dp-${Date.now()}`,
+      state: 'idle',
+      currentDrawIndex: -1,
+      cycleCount: 0,
+      totalVolumeDispensed: 0
+    }
+    drawPatterns.value.push(newPattern)
+    saveDrawPatterns()
+    return newPattern.id
+  }
+
+  function updateDrawPattern(id: string, updates: Partial<DrawPattern>) {
+    const pattern = drawPatterns.value.find(p => p.id === id)
+    if (pattern) {
+      Object.assign(pattern, updates)
+      saveDrawPatterns()
+    }
+  }
+
+  function deleteDrawPattern(id: string) {
+    if (activeDrawPatternId.value === id) {
+      stopDrawPattern(id)
+    }
+    drawPatterns.value = drawPatterns.value.filter(p => p.id !== id)
+    saveDrawPatterns()
+  }
+
+  // Draw CRUD within a pattern
+  function addDraw(patternId: string, draw: Omit<Draw, 'id' | 'drawNumber' | 'state' | 'volumeDispensed' | 'elapsedTime'>) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern) return
+
+    const maxDrawNumber = pattern.draws.reduce((max, d) => Math.max(max, d.drawNumber || 0), 0)
+    const newDraw: Draw = {
+      ...draw,
+      id: `draw-${Date.now()}`,
+      drawNumber: maxDrawNumber + 1,
+      state: 'pending',
+      volumeDispensed: 0,
+      elapsedTime: 0
+    }
+    pattern.draws.push(newDraw)
+    saveDrawPatterns()
+  }
+
+  function updateDraw(patternId: string, drawId: string, updates: Partial<Draw>) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern) return
+
+    const draw = pattern.draws.find(d => d.id === drawId)
+    if (draw) {
+      Object.assign(draw, updates)
+      saveDrawPatterns()
+    }
+  }
+
+  function removeDraw(patternId: string, drawId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern) return
+
+    pattern.draws = pattern.draws.filter(d => d.id !== drawId)
+    // Renumber draws
+    pattern.draws.forEach((d, i) => { d.drawNumber = i + 1 })
+    saveDrawPatterns()
+  }
+
+  function reorderDraws(patternId: string, fromIndex: number, toIndex: number) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern) return
+
+    const [moved] = pattern.draws.splice(fromIndex, 1)
+    if (moved) {
+      pattern.draws.splice(toIndex, 0, moved)
+      // Renumber draws
+      pattern.draws.forEach((d, i) => { d.drawNumber = i + 1 })
+    }
+    saveDrawPatterns()
+  }
+
+  // Draw pattern execution
+  function startDrawPattern(patternId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern || !pattern.enabled) {
+      console.error('Draw pattern not found or disabled:', patternId)
+      return
+    }
+
+    if (pattern.state === 'running') {
+      console.warn('Draw pattern already running')
+      return
+    }
+
+    // Reset all draws
+    pattern.draws.forEach(d => {
+      d.state = 'pending'
+      d.volumeDispensed = 0
+      d.elapsedTime = 0
+      d.startVolume = undefined
+      d.startTime = undefined
+      d.endTime = undefined
+      d.completedBy = undefined
+    })
+
+    pattern.state = 'running'
+    pattern.currentDrawIndex = -1
+    pattern.startTime = Date.now()
+    pattern.totalVolumeDispensed = 0
+    pattern.error = undefined
+    activeDrawPatternId.value = patternId
+
+    // Start tick loop
+    startDrawPatternTickLoop()
+
+    // Advance to first enabled draw
+    advanceToNextDraw(pattern)
+
+    saveDrawPatterns()
+    addNotification('info', 'Draw Pattern Started', `Started "${pattern.name}"`)
+    console.log('Draw pattern started:', pattern.name)
+  }
+
+  function pauseDrawPattern(patternId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern || pattern.state !== 'running') return
+
+    // Close current valve
+    const currentDraw = pattern.draws[pattern.currentDrawIndex]
+    if (currentDraw) {
+      sendOutput(currentDraw.valve, false)
+    }
+
+    pattern.state = 'paused'
+    pattern.pausedTime = Date.now()
+    saveDrawPatterns()
+    console.log('Draw pattern paused')
+  }
+
+  function resumeDrawPattern(patternId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern || pattern.state !== 'paused') return
+
+    pattern.state = 'running'
+    pattern.pausedTime = undefined
+
+    // Re-open current valve and reset flow reference
+    const currentDraw = pattern.draws[pattern.currentDrawIndex]
+    if (currentDraw) {
+      sendOutput(currentDraw.valve, true)
+      currentDraw.startVolume = getFlowTotalizer(pattern.flowChannel) ?? 0
+    }
+
+    saveDrawPatterns()
+    console.log('Draw pattern resumed')
+  }
+
+  function stopDrawPattern(patternId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern) return
+
+    // Stop tick loop if this was the active pattern
+    if (activeDrawPatternId.value === patternId) {
+      stopDrawPatternTickLoop()
+      activeDrawPatternId.value = null
+    }
+
+    // Close all valves
+    pattern.draws.forEach(d => {
+      sendOutput(d.valve, false)
+    })
+
+    // Record history
+    if (pattern.startTime) {
+      const historyEntry: DrawPatternRunHistory = {
+        id: `dph-${Date.now()}`,
+        patternId: pattern.id,
+        patternName: pattern.name,
+        startTime: pattern.startTime,
+        endTime: Date.now(),
+        state: pattern.state === 'completed' ? 'completed' : 'idle',
+        cyclesCompleted: pattern.cycleCount,
+        drawResults: pattern.draws.map(d => ({
+          drawNumber: d.drawNumber,
+          valve: d.valve,
+          volumeDispensed: d.volumeDispensed,
+          duration: d.elapsedTime,
+          completedBy: d.completedBy || 'manual'
+        })),
+        totalVolumeDispensed: pattern.totalVolumeDispensed
+      }
+      drawPatternHistory.value.unshift(historyEntry)
+    }
+
+    pattern.state = 'idle'
+    pattern.currentDrawIndex = -1
+    pattern.startTime = undefined
+    pattern.pausedTime = undefined
+    pattern.lastRun = new Date().toISOString()
+    pattern.runCount = (pattern.runCount || 0) + 1
+
+    saveDrawPatterns()
+    addNotification('info', 'Draw Pattern Stopped', `Stopped "${pattern.name}"`)
+    console.log('Draw pattern stopped')
+  }
+
+  function skipCurrentDraw(patternId: string) {
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern || pattern.state !== 'running') return
+
+    const currentDraw = pattern.draws[pattern.currentDrawIndex]
+    if (currentDraw) {
+      sendOutput(currentDraw.valve, false)
+      currentDraw.state = 'skipped'
+      currentDraw.endTime = Date.now()
+      currentDraw.completedBy = 'manual'
+    }
+
+    advanceToNextDraw(pattern)
+    saveDrawPatterns()
+  }
+
+  function advanceToNextDraw(pattern: DrawPattern) {
+    let nextIndex = pattern.currentDrawIndex + 1
+
+    // Find next enabled draw
+    while (nextIndex < pattern.draws.length) {
+      const draw = pattern.draws[nextIndex]
+      if (draw && draw.enabled) break
+      if (draw) draw.state = 'skipped'
+      nextIndex++
+    }
+
+    if (nextIndex >= pattern.draws.length) {
+      // Reached end of draws
+      if (pattern.loopContinuously) {
+        pattern.cycleCount++
+        // Reset all draws and start over
+        pattern.draws.forEach(d => {
+          d.state = 'pending'
+          d.volumeDispensed = 0
+          d.elapsedTime = 0
+          d.startVolume = undefined
+          d.startTime = undefined
+          d.endTime = undefined
+          d.completedBy = undefined
+        })
+        pattern.currentDrawIndex = -1
+        advanceToNextDraw(pattern)
+      } else {
+        // Pattern complete
+        pattern.state = 'completed'
+        stopDrawPattern(pattern.id)
+        addNotification('success', 'Draw Pattern Complete', `"${pattern.name}" completed successfully`)
+      }
+      return
+    }
+
+    pattern.currentDrawIndex = nextIndex
+    const nextDraw = pattern.draws[nextIndex]
+    if (nextDraw) {
+      openDraw(pattern, nextDraw)
+    }
+  }
+
+  function openDraw(pattern: DrawPattern, draw: Draw) {
+    draw.state = 'active'
+    draw.startVolume = getFlowTotalizer(pattern.flowChannel) ?? 0
+    draw.volumeDispensed = 0
+    draw.elapsedTime = 0
+    draw.startTime = Date.now()
+
+    sendOutput(draw.valve, true)
+    console.log(`Opened draw #${draw.drawNumber}: ${draw.valve} (target: ${draw.volumeTarget} ${draw.volumeUnit})`)
+  }
+
+  function closeDraw(pattern: DrawPattern, draw: Draw, reason: 'volume' | 'timeout') {
+    sendOutput(draw.valve, false)
+    draw.state = 'completed'
+    draw.endTime = Date.now()
+    draw.completedBy = reason
+
+    // Update total volume
+    pattern.totalVolumeDispensed += draw.volumeDispensed
+
+    console.log(`Closed draw #${draw.drawNumber}: ${draw.valve} (dispensed: ${draw.volumeDispensed.toFixed(2)} ${draw.volumeUnit}, reason: ${reason})`)
+
+    // Delay before next draw
+    if (pattern.delayBetweenDraws > 0) {
+      setTimeout(() => {
+        if (pattern.state === 'running') {
+          advanceToNextDraw(pattern)
+          saveDrawPatterns()
+        }
+      }, pattern.delayBetweenDraws * 1000)
+    } else {
+      advanceToNextDraw(pattern)
+    }
+  }
+
+  function getFlowTotalizer(channel: string): number | null {
+    const value = store.values[channel]
+    if (value && typeof value.value === 'number') {
+      return value.value
+    }
+    return null
+  }
+
+  // Execute a single standalone draw (for sequence steps and schedule actions)
+  // Returns a promise that resolves when draw completes
+  function executeSingleDraw(
+    valve: string,
+    flowChannel: string,
+    volumeTarget: number,
+    volumeUnit: string,
+    maxDuration: number
+  ): Promise<{ success: boolean; volumeDispensed: number; completedBy: 'volume' | 'timeout' | 'error' }> {
+    return new Promise((resolve) => {
+      const startVolume = getFlowTotalizer(flowChannel) ?? 0
+      let elapsedTime = 0
+      let volumeDispensed = 0
+
+      // Open valve
+      sendOutput(valve, true)
+      console.log(`Single draw started: ${valve} (target: ${volumeTarget} ${volumeUnit})`)
+
+      const tickInterval = window.setInterval(() => {
+        elapsedTime++
+
+        // Update volume
+        const currentTotal = getFlowTotalizer(flowChannel)
+        if (currentTotal !== null) {
+          volumeDispensed = currentTotal - startVolume
+        }
+
+        // Check completion
+        if (volumeDispensed >= volumeTarget) {
+          clearInterval(tickInterval)
+          sendOutput(valve, false)
+          console.log(`Single draw completed by volume: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
+          resolve({ success: true, volumeDispensed, completedBy: 'volume' })
+        } else if (elapsedTime >= maxDuration) {
+          clearInterval(tickInterval)
+          sendOutput(valve, false)
+          console.log(`Single draw completed by timeout: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
+          resolve({ success: true, volumeDispensed, completedBy: 'timeout' })
+        }
+      }, 1000)
+    })
+  }
+
+  function drawPatternTick() {
+    const patternId = activeDrawPatternId.value
+    if (!patternId) return
+
+    const pattern = drawPatterns.value.find(p => p.id === patternId)
+    if (!pattern || pattern.state !== 'running') return
+
+    const draw = pattern.draws[pattern.currentDrawIndex]
+    if (!draw || draw.state !== 'active') return
+
+    // Update elapsed time
+    draw.elapsedTime++
+
+    // Update volume dispensed
+    const currentTotal = getFlowTotalizer(pattern.flowChannel)
+    if (currentTotal !== null && draw.startVolume !== undefined) {
+      draw.volumeDispensed = currentTotal - draw.startVolume
+    }
+
+    // Check completion conditions
+    if (draw.volumeDispensed >= draw.volumeTarget) {
+      closeDraw(pattern, draw, 'volume')
+    } else if (draw.elapsedTime >= draw.maxDuration) {
+      closeDraw(pattern, draw, 'timeout')
+    }
+
+    // Periodic save (every 10 seconds)
+    if (draw.elapsedTime % 10 === 0) {
+      saveDrawPatterns()
+    }
+  }
+
+  function startDrawPatternTickLoop() {
+    if (drawPatternTickIntervalId !== null) return
+    drawPatternTickIntervalId = window.setInterval(drawPatternTick, 1000)
+  }
+
+  function stopDrawPatternTickLoop() {
+    if (drawPatternTickIntervalId !== null) {
+      clearInterval(drawPatternTickIntervalId)
+      drawPatternTickIntervalId = null
+    }
+  }
+
+  // Computed for draw patterns
+  const activeDrawPattern = computed(() => {
+    if (!activeDrawPatternId.value) return null
+    return drawPatterns.value.find(p => p.id === activeDrawPatternId.value) || null
+  })
+
+  const isDrawPatternRunning = computed(() => activeDrawPattern.value?.state === 'running')
+  const isDrawPatternPaused = computed(() => activeDrawPattern.value?.state === 'paused')
+
+  const currentDraw = computed(() => {
+    const pattern = activeDrawPattern.value
+    if (!pattern || pattern.currentDrawIndex < 0) return null
+    return pattern.draws[pattern.currentDrawIndex] || null
+  })
+
+  const enabledDrawPatterns = computed(() => drawPatterns.value.filter(p => p.enabled))
 
   function evaluateTriggers() {
     const now = Date.now()
@@ -2354,6 +3232,174 @@ export function useScripts() {
   )
 
   // ========================================================================
+  // SEQUENCE IMPORT/EXPORT
+  // ========================================================================
+
+  function exportSequence(id: string): string | null {
+    const seq = sequences.value.find(s => s.id === id)
+    if (!seq) return null
+
+    // Export only the definition, not runtime state
+    const exportData = {
+      version: 1,
+      exportDate: new Date().toISOString(),
+      sequence: {
+        name: seq.name,
+        description: seq.description,
+        steps: seq.steps,
+        enabled: seq.enabled
+      }
+    }
+
+    return JSON.stringify(exportData, null, 2)
+  }
+
+  function exportAllSequences(): string {
+    const exportData = {
+      version: 1,
+      exportDate: new Date().toISOString(),
+      sequences: sequences.value.map(seq => ({
+        name: seq.name,
+        description: seq.description,
+        steps: seq.steps,
+        enabled: seq.enabled
+      }))
+    }
+
+    return JSON.stringify(exportData, null, 2)
+  }
+
+  function importSequence(jsonData: string): { success: boolean; message: string; sequenceId?: string } {
+    try {
+      const data = JSON.parse(jsonData)
+
+      if (!data.sequence && !data.sequences) {
+        return { success: false, message: 'Invalid format: missing sequence data' }
+      }
+
+      if (data.sequence) {
+        // Single sequence import
+        const seq = data.sequence
+        if (!seq.name || !Array.isArray(seq.steps)) {
+          return { success: false, message: 'Invalid sequence: missing name or steps' }
+        }
+
+        // Generate new IDs for all steps
+        const steps = seq.steps.map((step: any) => ({
+          ...step,
+          id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        }))
+
+        const newId = addSequence({
+          name: seq.name + ' (imported)',
+          description: seq.description || '',
+          steps,
+          enabled: seq.enabled ?? true
+        })
+
+        return { success: true, message: `Imported sequence: ${seq.name}`, sequenceId: newId }
+      }
+
+      if (data.sequences) {
+        // Multiple sequences import
+        let imported = 0
+        for (const seq of data.sequences) {
+          if (!seq.name || !Array.isArray(seq.steps)) continue
+
+          const steps = seq.steps.map((step: any) => ({
+            ...step,
+            id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          }))
+
+          addSequence({
+            name: seq.name + ' (imported)',
+            description: seq.description || '',
+            steps,
+            enabled: seq.enabled ?? true
+          })
+          imported++
+        }
+
+        return { success: true, message: `Imported ${imported} sequences` }
+      }
+
+      return { success: false, message: 'Unknown format' }
+    } catch (e: any) {
+      return { success: false, message: `Parse error: ${e.message}` }
+    }
+  }
+
+  function createSequenceFromTemplate(templateId: string, name: string): string | null {
+    const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId)
+
+    if (!template) return null
+
+    // Generate unique IDs for all steps and handle loopId/ifId references
+    const idMap: Record<string, string> = {}
+    const steps = template.steps.map((step: any) => {
+      const newId = `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+      // Track loopId and ifId mappings
+      if (step.loopId) {
+        if (!idMap[step.loopId]) {
+          idMap[step.loopId] = `loop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        }
+      }
+      if (step.ifId) {
+        if (!idMap[step.ifId]) {
+          idMap[step.ifId] = `if-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        }
+      }
+
+      return {
+        ...step,
+        id: newId,
+        loopId: step.loopId ? idMap[step.loopId] : undefined,
+        ifId: step.ifId ? idMap[step.ifId] : undefined
+      }
+    })
+
+    return addSequence({
+      name: name || template.name,
+      description: template.description,
+      steps,
+      enabled: true
+    })
+  }
+
+  // ========================================================================
+  // ALARM SAFETY CONFIRMATION
+  // ========================================================================
+
+  function canDisableAlarmSafely(alarmId: string): { safe: boolean; reason?: string } {
+    const alarm = alarms.value.find(a => a.id === alarmId)
+    if (!alarm) return { safe: true }
+
+    if (alarm.state === 'active') {
+      return {
+        safe: false,
+        reason: `This alarm is currently ACTIVE. Disabling it will prevent safety actions from executing.`
+      }
+    }
+
+    if (alarm.state === 'acknowledged') {
+      return {
+        safe: false,
+        reason: `This alarm is in acknowledged state. The condition may still be present.`
+      }
+    }
+
+    if (alarm.state === 'latched') {
+      return {
+        safe: false,
+        reason: `This alarm is latched. The triggering condition occurred recently.`
+      }
+    }
+
+    return { safe: true }
+  }
+
+  // ========================================================================
   // RETURN
   // ========================================================================
 
@@ -2414,12 +3460,17 @@ export function useScripts() {
     pauseSequence,
     resumeSequence,
     abortSequence,
+    exportSequence,
+    exportAllSequences,
+    importSequence,
+    createSequenceFromTemplate,
 
     // Alarms
     addAlarm,
     updateAlarm,
     deleteAlarm,
     acknowledgeAlarm,
+    canDisableAlarmSafely,
 
     // Transformations
     addTransformation,
@@ -2437,6 +3488,30 @@ export function useScripts() {
     deleteSchedule,
     saveSchedules,
 
+    // Draw Patterns
+    drawPatterns,
+    drawPatternHistory,
+    activeDrawPatternId,
+    activeDrawPattern,
+    isDrawPatternRunning,
+    isDrawPatternPaused,
+    currentDraw,
+    enabledDrawPatterns,
+    addDrawPattern,
+    updateDrawPattern,
+    deleteDrawPattern,
+    addDraw,
+    updateDraw,
+    removeDraw,
+    reorderDraws,
+    startDrawPattern,
+    pauseDrawPattern,
+    resumeDrawPattern,
+    stopDrawPattern,
+    skipCurrentDraw,
+    executeSingleDraw,
+    saveDrawPatterns,
+
     // Function Blocks
     functionBlocks,
     enabledFunctionBlocks,
@@ -2446,6 +3521,16 @@ export function useScripts() {
     updateFunctionBlockInput,
     resetFunctionBlockState,
     saveFunctionBlocks,
+
+    // State Machines
+    stateMachines,
+
+    // Reports
+    reportTemplates,
+    scheduledReports,
+
+    // Watchdogs
+    watchdogs,
 
     // Evaluation
     startEvaluation,

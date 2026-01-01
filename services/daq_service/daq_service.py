@@ -22,11 +22,14 @@ from config_parser import (
     get_input_channels, get_output_channels, ConfigValidationError, ValidationResult
 )
 from simulator import HardwareSimulator
+from hardware_reader import HardwareReader, NIDAQMX_AVAILABLE as HW_READER_AVAILABLE
 from scheduler import SimpleScheduler
+from sequence_manager import SequenceManager, Sequence, SequenceStep
 from device_discovery import DeviceDiscovery
 from recording_manager import RecordingManager, RecordingConfig
 from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config
+from user_variables import UserVariableManager
 
 # Try to import nidaqmx - if not available, we'll use simulation only
 try:
@@ -54,10 +57,22 @@ class DAQService:
         self.config: Optional[NISystemConfig] = None
         self.mqtt_client: Optional[mqtt.Client] = None
         self.simulator: Optional[HardwareSimulator] = None
-        self.running = False
+        self.hardware_reader: Optional[HardwareReader] = None
+
+        # Thread-safe control flags using Events
+        self._running = threading.Event()
+        self._acquiring = threading.Event()
+        self._shutdown_requested = threading.Event()
+
+        # Service start time for uptime tracking
+        self._start_time: Optional[datetime] = None
+
+        # Heartbeat state
+        self._heartbeat_sequence = 0
+        self.heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_interval = 2.0  # seconds
 
         # System state - controllable via MQTT
-        self.acquiring = False          # Is data acquisition active
         self.recording = False          # Is data recording active
         self.recording_start_time: Optional[datetime] = None
         self.recording_filename: Optional[str] = None
@@ -93,6 +108,11 @@ class DAQService:
         self._config_backup: Optional[NISystemConfig] = None
         self._config_path_backup: Optional[str] = None
 
+        # Project state
+        self.current_project: Optional[str] = None  # Current project filename
+        self.current_project_data: Dict[str, Any] = {}  # Current project data
+        self.projects_dir: Optional[Path] = None  # Projects directory
+
         # Loop timing for status display
         self.last_scan_dt_ms = 0.0
         self.last_publish_dt_ms = 0.0
@@ -109,10 +129,52 @@ class DAQService:
         # Dependency tracker
         self.dependency_tracker: Optional[DependencyTracker] = None
 
+        # Sequence manager
+        self.sequence_manager: Optional[SequenceManager] = None
+
+        # User variable manager
+        self.user_variables: Optional[UserVariableManager] = None
+
         self._load_config()
         self._init_scheduler()
         self._init_recording_manager()
         self._init_dependency_tracker()
+        self._init_sequence_manager()
+        self._init_user_variables()
+
+    # =========================================================================
+    # THREAD-SAFE PROPERTY ACCESSORS
+    # =========================================================================
+
+    @property
+    def running(self) -> bool:
+        """Thread-safe running state accessor"""
+        return self._running.is_set()
+
+    @running.setter
+    def running(self, value: bool):
+        """Thread-safe running state setter"""
+        if value:
+            self._running.set()
+        else:
+            self._running.clear()
+
+    @property
+    def acquiring(self) -> bool:
+        """Thread-safe acquiring state accessor"""
+        return self._acquiring.is_set()
+
+    @acquiring.setter
+    def acquiring(self, value: bool):
+        """Thread-safe acquiring state setter"""
+        if value:
+            self._acquiring.set()
+        else:
+            self._acquiring.clear()
+
+    # =========================================================================
+    # CONFIGURATION
+    # =========================================================================
 
     def _load_config(self, strict: bool = True):
         """Load and validate configuration from INI file
@@ -133,10 +195,27 @@ class DAQService:
             if validation.errors:
                 logger.error(f"Configuration has {len(validation.errors)} error(s)")
 
-            # Initialize simulator if in simulation mode
-            if self.config.system.simulation_mode or not NIDAQMX_AVAILABLE:
-                logger.info("Initializing hardware simulator")
+            # Initialize hardware reader or simulator
+            if self.config.system.simulation_mode:
+                logger.info("Simulation mode enabled - using hardware simulator")
                 self.simulator = HardwareSimulator(self.config)
+                self.hardware_reader = None
+            elif not HW_READER_AVAILABLE:
+                logger.warning("nidaqmx not available - falling back to simulator")
+                self.simulator = HardwareSimulator(self.config)
+                self.hardware_reader = None
+            else:
+                # Real hardware mode
+                logger.info("Initializing hardware reader for real NI hardware")
+                try:
+                    self.hardware_reader = HardwareReader(self.config)
+                    self.simulator = None
+                    logger.info("Hardware reader initialized successfully")
+                except Exception as e:
+                    logger.error(f"Failed to initialize hardware reader: {e}")
+                    logger.warning("Falling back to simulator")
+                    self.hardware_reader = None
+                    self.simulator = HardwareSimulator(self.config)
 
             # Initialize channel values
             for name, channel in self.config.channels.items():
@@ -178,6 +257,149 @@ class DAQService:
         """Initialize the dependency tracker"""
         self.dependency_tracker = DependencyTracker(self.config)
         logger.info("Dependency tracker initialized")
+
+    def _init_sequence_manager(self):
+        """Initialize the sequence manager with callbacks"""
+        self.sequence_manager = SequenceManager()
+
+        # Wire up callbacks
+        self.sequence_manager.on_set_output = self._sequence_set_output
+        self.sequence_manager.on_start_recording = self._sequence_start_recording
+        self.sequence_manager.on_stop_recording = self._sequence_stop_recording
+        self.sequence_manager.on_start_acquisition = self._sequence_start_acquisition
+        self.sequence_manager.on_stop_acquisition = self._sequence_stop_acquisition
+        self.sequence_manager.on_get_channel_value = self._sequence_get_channel_value
+        self.sequence_manager.on_sequence_event = self._sequence_event_handler
+        self.sequence_manager.on_log_message = self._sequence_log_message
+
+        logger.info("Sequence manager initialized")
+
+    def _init_user_variables(self):
+        """Initialize the user variable manager with callbacks"""
+        # Get data directory from config or use default
+        data_dir = getattr(self.config.system, 'data_directory', 'data')
+
+        self.user_variables = UserVariableManager(
+            data_dir=data_dir,
+            on_session_start=self._on_test_session_start,
+            on_session_stop=self._on_test_session_stop,
+            scheduler_enable=self._user_var_scheduler_enable,
+            recording_start=self._user_var_recording_start,
+            recording_stop=self._user_var_recording_stop,
+            run_sequence=self._user_var_run_sequence,
+            stop_sequence=self._user_var_stop_sequence,
+        )
+        logger.info("User variable manager initialized")
+
+    def _on_test_session_start(self):
+        """Custom callback when test session starts"""
+        logger.info("Test session started - custom callback")
+        self._publish_test_session_status()
+
+    def _on_test_session_stop(self):
+        """Custom callback when test session stops"""
+        logger.info("Test session stopped - custom callback")
+        self._publish_test_session_status()
+
+    def _user_var_scheduler_enable(self, enable: bool):
+        """Callback for user variable manager to enable/disable scheduler"""
+        if self.scheduler:
+            self.scheduler.enabled = enable
+            logger.info(f"Scheduler {'enabled' if enable else 'disabled'} by test session")
+            self._publish_schedule_status()
+
+    def _user_var_recording_start(self):
+        """Callback for user variable manager to start recording"""
+        self._start_recording()
+
+    def _user_var_recording_stop(self):
+        """Callback for user variable manager to stop recording"""
+        self._stop_recording()
+
+    def _user_var_run_sequence(self, sequence_id: str):
+        """Callback for user variable manager to run a sequence"""
+        if self.sequence_manager:
+            self.sequence_manager.start_sequence(sequence_id, self.channel_values)
+
+    def _user_var_stop_sequence(self):
+        """Callback for user variable manager to stop running sequence"""
+        if self.sequence_manager:
+            self.sequence_manager.abort_current_sequence()
+
+    def _sequence_set_output(self, channel: str, value: Any):
+        """Callback for sequence to set output"""
+        if channel in self.config.channels:
+            ch = self.config.channels[channel]
+            if ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+                if self.simulator:
+                    self.simulator.write_channel(channel, value)
+                elif self.hardware_reader:
+                    self.hardware_reader.write_channel(channel, value)
+                with self.values_lock:
+                    self.channel_values[channel] = value
+                self._publish_channel_value(channel, value)
+
+    def _sequence_start_recording(self, filename: Optional[str] = None):
+        """Callback for sequence to start recording"""
+        self._start_recording(filename)
+
+    def _sequence_stop_recording(self):
+        """Callback for sequence to stop recording"""
+        self._stop_recording()
+
+    def _sequence_start_acquisition(self):
+        """Callback for sequence to start acquisition"""
+        if not self.acquiring:
+            self.acquiring = True
+            logger.info("Sequence started acquisition")
+
+    def _sequence_stop_acquisition(self):
+        """Callback for sequence to stop acquisition"""
+        if self.acquiring:
+            self.acquiring = False
+            logger.info("Sequence stopped acquisition")
+
+    def _sequence_get_channel_value(self, channel: str) -> Any:
+        """Callback for sequence to get channel value"""
+        with self.values_lock:
+            return self.channel_values.get(channel)
+
+    def _sequence_event_handler(self, event_type: str, sequence):
+        """Handle sequence events and publish status"""
+        base = self.config.system.mqtt_base_topic
+
+        # Publish sequence status
+        payload = {
+            "event": event_type,
+            "sequence_id": sequence.id,
+            "sequence_name": sequence.name,
+            "state": sequence.state.value if hasattr(sequence.state, 'value') else sequence.state,
+            "current_step": sequence.current_step_index,
+            "total_steps": len(sequence.steps),
+            "progress": round(sequence.current_step_index / len(sequence.steps) * 100) if sequence.steps else 0,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        if sequence.error_message:
+            payload["error"] = sequence.error_message
+
+        self.mqtt_client.publish(
+            f"{base}/sequence/status",
+            json.dumps(payload)
+        )
+
+        # Also update system status
+        self._publish_system_status()
+
+    def _sequence_log_message(self, message: str):
+        """Callback for sequence log messages"""
+        base = self.config.system.mqtt_base_topic
+        payload = {
+            "type": "sequence_log",
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.mqtt_client.publish(f"{base}/sequence/log", json.dumps(payload))
 
     def _scheduled_start_acquire(self):
         """Callback for scheduler to start acquisition"""
@@ -260,6 +482,9 @@ class DAQService:
             client.subscribe(f"{base}/config/load")
             client.subscribe(f"{base}/config/list")
             client.subscribe(f"{base}/config/channel/update")
+            client.subscribe(f"{base}/config/channel/create")
+            client.subscribe(f"{base}/config/channel/delete")
+            client.subscribe(f"{base}/config/channel/bulk-create")
 
             # Subscribe to schedule topics
             client.subscribe(f"{base}/schedule/set")
@@ -267,8 +492,26 @@ class DAQService:
             client.subscribe(f"{base}/schedule/disable")
             client.subscribe(f"{base}/schedule/status")
 
+            # Subscribe to sequence topics
+            client.subscribe(f"{base}/sequence/start")
+            client.subscribe(f"{base}/sequence/pause")
+            client.subscribe(f"{base}/sequence/resume")
+            client.subscribe(f"{base}/sequence/abort")
+            client.subscribe(f"{base}/sequence/add")
+            client.subscribe(f"{base}/sequence/remove")
+            client.subscribe(f"{base}/sequence/list")
+            client.subscribe(f"{base}/sequence/get")
+
             # Subscribe to discovery topics
             client.subscribe(f"{base}/discovery/scan")
+
+            # Subscribe to alarm control topics
+            client.subscribe(f"{base}/alarm/acknowledge")
+            client.subscribe(f"{base}/alarm/clear")
+            client.subscribe(f"{base}/alarm/reset-latched")
+
+            # Subscribe to channel control topics
+            client.subscribe(f"{base}/channel/reset")
 
             # Subscribe to recording management topics
             client.subscribe(f"{base}/recording/config")
@@ -283,11 +526,40 @@ class DAQService:
             client.subscribe(f"{base}/dependencies/validate")
             client.subscribe(f"{base}/dependencies/orphans")
 
+            # Subscribe to project management topics
+            client.subscribe(f"{base}/project/list")
+            client.subscribe(f"{base}/project/load")
+            client.subscribe(f"{base}/project/save")
+            client.subscribe(f"{base}/project/delete")
+            client.subscribe(f"{base}/project/get")
+            client.subscribe(f"{base}/project/get-current")
+
+            # Subscribe to user variable/playground topics
+            client.subscribe(f"{base}/variables/create")
+            client.subscribe(f"{base}/variables/update")
+            client.subscribe(f"{base}/variables/delete")
+            client.subscribe(f"{base}/variables/set")
+            client.subscribe(f"{base}/variables/reset")
+            client.subscribe(f"{base}/variables/get")
+            client.subscribe(f"{base}/variables/list")
+            client.subscribe(f"{base}/variables/timer/start")
+            client.subscribe(f"{base}/variables/timer/stop")
+
+            # Subscribe to test session topics
+            client.subscribe(f"{base}/test-session/start")
+            client.subscribe(f"{base}/test-session/stop")
+            client.subscribe(f"{base}/test-session/config")
+            client.subscribe(f"{base}/test-session/status")
+
             # Publish connection status
             self._publish_system_status()
 
             # Publish channel configuration
             self._publish_channel_config()
+
+            # Publish user variable configuration
+            self._publish_user_variables_config()
+            self._publish_test_session_status()
 
         else:
             logger.error(f"MQTT connection failed with code {reason_code}")
@@ -308,11 +580,16 @@ class DAQService:
 
         logger.debug(f"Received message on {topic}: {payload}")
 
+        # Extract request_id from payload if present (for command acknowledgment)
+        request_id = None
+        if isinstance(payload, dict):
+            request_id = payload.get('request_id')
+
         # === SYSTEM CONTROL ===
         if topic == f"{base}/system/acquire/start":
-            self._handle_acquire_start()
+            self._handle_acquire_start(request_id)
         elif topic == f"{base}/system/acquire/stop":
-            self._handle_acquire_stop()
+            self._handle_acquire_stop(request_id)
         elif topic == f"{base}/system/recording/start":
             self._handle_recording_start(payload)
         elif topic == f"{base}/system/recording/stop":
@@ -339,6 +616,12 @@ class DAQService:
             self._handle_config_list()
         elif topic == f"{base}/config/channel/update":
             self._handle_channel_update(payload)
+        elif topic == f"{base}/config/channel/create":
+            self._handle_channel_create(payload)
+        elif topic == f"{base}/config/channel/delete":
+            self._handle_channel_delete(payload)
+        elif topic == f"{base}/config/channel/bulk-create":
+            self._handle_channel_bulk_create(payload)
 
         # === SCHEDULE MANAGEMENT ===
         elif topic == f"{base}/schedule/set":
@@ -350,9 +633,39 @@ class DAQService:
         elif topic == f"{base}/schedule/status":
             self._publish_schedule_status()
 
+        # === SEQUENCE CONTROL ===
+        elif topic == f"{base}/sequence/start":
+            self._handle_sequence_start(payload)
+        elif topic == f"{base}/sequence/pause":
+            self._handle_sequence_pause(payload)
+        elif topic == f"{base}/sequence/resume":
+            self._handle_sequence_resume(payload)
+        elif topic == f"{base}/sequence/abort":
+            self._handle_sequence_abort(payload)
+        elif topic == f"{base}/sequence/add":
+            self._handle_sequence_add(payload)
+        elif topic == f"{base}/sequence/remove":
+            self._handle_sequence_remove(payload)
+        elif topic == f"{base}/sequence/list":
+            self._handle_sequence_list()
+        elif topic == f"{base}/sequence/get":
+            self._handle_sequence_get(payload)
+
         # === DEVICE DISCOVERY ===
         elif topic == f"{base}/discovery/scan":
             self._handle_discovery_scan()
+
+        # === ALARM CONTROL ===
+        elif topic == f"{base}/alarm/acknowledge":
+            self._handle_alarm_acknowledge(payload)
+        elif topic == f"{base}/alarm/clear":
+            self._handle_alarm_clear(payload)
+        elif topic == f"{base}/alarm/reset-latched":
+            self._handle_alarm_reset_latched()
+
+        # === CHANNEL CONTROL ===
+        elif topic == f"{base}/channel/reset":
+            self._handle_channel_reset(payload)
 
         # === RECORDING MANAGEMENT ===
         elif topic == f"{base}/recording/config":
@@ -375,6 +688,50 @@ class DAQService:
             self._handle_dependency_validate()
         elif topic == f"{base}/dependencies/orphans":
             self._handle_dependency_orphans()
+
+        # === PROJECT FILE MANAGEMENT ===
+        elif topic == f"{base}/project/list":
+            self._handle_project_list()
+        elif topic == f"{base}/project/load":
+            self._handle_project_load(payload)
+        elif topic == f"{base}/project/save":
+            self._handle_project_save(payload)
+        elif topic == f"{base}/project/delete":
+            self._handle_project_delete(payload)
+        elif topic == f"{base}/project/get":
+            self._handle_project_get()
+        elif topic == f"{base}/project/get-current":
+            self._handle_project_get_current()
+
+        # === USER VARIABLES / PLAYGROUND ===
+        elif topic == f"{base}/variables/create":
+            self._handle_variable_create(payload)
+        elif topic == f"{base}/variables/update":
+            self._handle_variable_update(payload)
+        elif topic == f"{base}/variables/delete":
+            self._handle_variable_delete(payload)
+        elif topic == f"{base}/variables/set":
+            self._handle_variable_set(payload)
+        elif topic == f"{base}/variables/reset":
+            self._handle_variable_reset(payload)
+        elif topic == f"{base}/variables/get":
+            self._handle_variable_get(payload)
+        elif topic == f"{base}/variables/list":
+            self._handle_variable_list()
+        elif topic == f"{base}/variables/timer/start":
+            self._handle_timer_start(payload)
+        elif topic == f"{base}/variables/timer/stop":
+            self._handle_timer_stop(payload)
+
+        # === TEST SESSION ===
+        elif topic == f"{base}/test-session/start":
+            self._handle_test_session_start(payload)
+        elif topic == f"{base}/test-session/stop":
+            self._handle_test_session_stop()
+        elif topic == f"{base}/test-session/config":
+            self._handle_test_session_config(payload)
+        elif topic == f"{base}/test-session/status":
+            self._publish_test_session_status()
 
         # === CHANNEL COMMANDS ===
         elif topic.startswith(f"{base}/commands/"):
@@ -425,6 +782,8 @@ class DAQService:
 
         if self.simulator:
             self.simulator.write_channel(channel_name, value)
+        elif self.hardware_reader:
+            self.hardware_reader.write_channel(channel_name, value)
 
         # Update cache
         with self.values_lock:
@@ -658,30 +1017,49 @@ class DAQService:
     # SYSTEM CONTROL HANDLERS
     # =========================================================================
 
-    def _handle_acquire_start(self):
-        """Start data acquisition"""
-        if self.acquiring:
-            logger.info("Acquisition already running")
-            return
+    def _handle_acquire_start(self, request_id: Optional[str] = None):
+        """Start data acquisition with command acknowledgment"""
+        try:
+            if self.acquiring:
+                logger.info("Acquisition already running")
+                self._publish_command_ack("acquire/start", request_id, False, "Already acquiring")
+                return
 
-        logger.info("Starting data acquisition")
-        self.acquiring = True
-        self._publish_system_status()
+            # Reload config to pick up any changes made while stopped
+            logger.info("Reloading configuration before starting acquisition...")
+            self._load_config()
+            self._publish_channel_config()
 
-    def _handle_acquire_stop(self):
-        """Stop data acquisition"""
-        if not self.acquiring:
-            logger.info("Acquisition not running")
-            return
+            logger.info("Starting data acquisition")
+            self.acquiring = True
+            self._publish_system_status()
+            self._publish_command_ack("acquire/start", request_id, True)
 
-        logger.info("Stopping data acquisition")
-        self.acquiring = False
+        except Exception as e:
+            logger.error(f"Error starting acquisition: {e}")
+            self._publish_command_ack("acquire/start", request_id, False, str(e))
 
-        # Also stop recording if active
-        if self.recording:
-            self._handle_recording_stop()
+    def _handle_acquire_stop(self, request_id: Optional[str] = None):
+        """Stop data acquisition with command acknowledgment"""
+        try:
+            if not self.acquiring:
+                logger.info("Acquisition not running")
+                self._publish_command_ack("acquire/stop", request_id, False, "Not acquiring")
+                return
 
-        self._publish_system_status()
+            logger.info("Stopping data acquisition")
+            self.acquiring = False
+
+            # Also stop recording if active
+            if self.recording:
+                self._handle_recording_stop()
+
+            self._publish_system_status()
+            self._publish_command_ack("acquire/stop", request_id, True)
+
+        except Exception as e:
+            logger.error(f"Error stopping acquisition: {e}")
+            self._publish_command_ack("acquire/stop", request_id, False, str(e))
 
     def _handle_recording_start(self, payload: Any):
         """Start data recording"""
@@ -821,6 +1199,73 @@ class DAQService:
             retain=True
         )
 
+    # =========================================================================
+    # HEARTBEAT AND COMMAND ACKNOWLEDGMENT
+    # =========================================================================
+
+    def _heartbeat_loop(self):
+        """Heartbeat loop - publishes health status periodically"""
+        logger.info(f"Starting heartbeat loop at {1/self._heartbeat_interval:.1f} Hz")
+
+        while not self._shutdown_requested.wait(timeout=self._heartbeat_interval):
+            if not self._running.is_set():
+                continue
+
+            try:
+                self._heartbeat_sequence += 1
+                uptime = 0.0
+                if self._start_time:
+                    uptime = (datetime.now() - self._start_time).total_seconds()
+
+                base = self.config.system.mqtt_base_topic
+                payload = {
+                    "sequence": self._heartbeat_sequence,
+                    "timestamp": datetime.now().isoformat(),
+                    "acquiring": self.acquiring,
+                    "recording": self.recording,
+                    "thread_health": {
+                        "scan": self.scan_thread.is_alive() if self.scan_thread else False,
+                        "publish": self.publish_thread.is_alive() if self.publish_thread else False,
+                        "heartbeat": True  # Obviously true if we're running
+                    },
+                    "uptime_seconds": round(uptime, 1),
+                    "scan_rate_actual_hz": round(1000 / max(self.last_scan_dt_ms, 0.1), 1) if self.last_scan_dt_ms > 0 else 0,
+                    "publish_rate_actual_hz": round(1000 / max(self.last_publish_dt_ms, 0.1), 1) if self.last_publish_dt_ms > 0 else 0
+                }
+
+                self.mqtt_client.publish(
+                    f"{base}/heartbeat",
+                    json.dumps(payload),
+                    qos=1
+                )
+
+            except Exception as e:
+                logger.error(f"Error in heartbeat loop: {e}")
+
+        logger.info("Heartbeat loop stopped")
+
+    def _publish_command_ack(self, command: str, request_id: Optional[str],
+                              success: bool, error: Optional[str] = None):
+        """Publish command acknowledgment to dashboard"""
+        if not self.mqtt_client:
+            return
+
+        base = self.config.system.mqtt_base_topic
+        payload = {
+            "command": command,
+            "request_id": request_id,
+            "success": success,
+            "timestamp": datetime.now().isoformat()
+        }
+        if error:
+            payload["error"] = error
+
+        self.mqtt_client.publish(
+            f"{base}/command/ack",
+            json.dumps(payload),
+            qos=1
+        )
+
     def _publish_system_status(self):
         """Publish comprehensive system status"""
         base = self.config.system.mqtt_base_topic
@@ -856,7 +1301,10 @@ class DAQService:
             "dt_scan_ms": round(self.last_scan_dt_ms, 2),
             "dt_publish_ms": round(self.last_publish_dt_ms, 2),
             "channel_count": len(self.config.channels),
-            "config_path": self.config_path
+            "config_path": self.config_path,
+            # Sequence status
+            "sequences_active": self._get_active_sequence_count(),
+            "sequences_total": len(self.sequence_manager.sequences) if self.sequence_manager else 0
         }
 
         self.mqtt_client.publish(
@@ -1058,6 +1506,470 @@ class DAQService:
             json.dumps({"configs": configs})
         )
 
+    # =========================================================================
+    # PROJECT FILE MANAGEMENT
+    # =========================================================================
+
+    def _get_projects_dir(self) -> Path:
+        """Get or create the projects directory"""
+        if self.projects_dir is None:
+            config_dir = Path(self.config_path).parent
+            self.projects_dir = config_dir.parent / "projects"
+            self.projects_dir.mkdir(parents=True, exist_ok=True)
+        return self.projects_dir
+
+    def _handle_project_list(self):
+        """List available project files"""
+        base = self.config.system.mqtt_base_topic
+        projects_dir = self._get_projects_dir()
+
+        projects = []
+        for f in projects_dir.glob("*.json"):
+            try:
+                with open(f, 'r') as fp:
+                    data = json.load(fp)
+                projects.append({
+                    "filename": f.name,
+                    "name": data.get("name", f.stem),
+                    "config": data.get("config", ""),
+                    "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                    "created": data.get("created", ""),
+                    "active": f.name == self.current_project
+                })
+            except Exception as e:
+                logger.warning(f"Could not read project file {f}: {e}")
+                projects.append({
+                    "filename": f.name,
+                    "name": f.stem,
+                    "config": "",
+                    "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                    "created": "",
+                    "active": f.name == self.current_project,
+                    "error": str(e)
+                })
+
+        self.mqtt_client.publish(
+            f"{base}/project/list/response",
+            json.dumps({"projects": projects})
+        )
+
+    def _handle_project_load(self, payload: Any):
+        """Load a project file"""
+        base = self.config.system.mqtt_base_topic
+
+        filename = None
+        if isinstance(payload, dict):
+            filename = payload.get("filename")
+        elif isinstance(payload, str):
+            filename = payload
+
+        if not filename:
+            self._publish_project_response(False, "No filename provided")
+            return
+
+        projects_dir = self._get_projects_dir()
+        project_path = projects_dir / filename
+
+        if not project_path.exists():
+            self._publish_project_response(False, f"Project not found: {filename}")
+            return
+
+        try:
+            with open(project_path, 'r') as f:
+                project_data = json.load(f)
+
+            # Validate project structure
+            if project_data.get("type") != "nisystem-project":
+                self._publish_project_response(False, "Invalid project file format")
+                return
+
+            # Check if we need to switch config files
+            project_config = project_data.get("config", "")
+            if project_config and project_config != Path(self.config_path).name:
+                # Need to load different config first
+                if self.acquiring:
+                    self._publish_project_response(False, "Stop acquisition before loading project with different config")
+                    return
+
+                config_dir = Path(self.config_path).parent
+                new_config_path = config_dir / project_config
+
+                if new_config_path.exists():
+                    # Load the new config
+                    self._handle_config_load({"filename": project_config})
+                else:
+                    logger.warning(f"Project config {project_config} not found, using current config")
+
+            # Store project data
+            self.current_project = filename
+            self.current_project_data = project_data
+
+            logger.info(f"Loaded project: {filename}")
+
+            # Publish the loaded project data to frontend
+            self.mqtt_client.publish(
+                f"{base}/project/loaded",
+                json.dumps({
+                    "success": True,
+                    "filename": filename,
+                    "project": project_data
+                })
+            )
+
+        except json.JSONDecodeError as e:
+            self._publish_project_response(False, f"Invalid JSON in project file: {e}")
+        except Exception as e:
+            logger.error(f"Error loading project: {e}")
+            self._publish_project_response(False, str(e))
+
+    def _handle_project_save(self, payload: Any):
+        """Save project to file"""
+        base = self.config.system.mqtt_base_topic
+
+        if not isinstance(payload, dict):
+            self._publish_project_response(False, "Invalid payload")
+            return
+
+        filename = payload.get("filename")
+        project_data = payload.get("data", {})
+
+        if not filename:
+            self._publish_project_response(False, "No filename provided")
+            return
+
+        # Ensure .json extension
+        if not filename.endswith(".json"):
+            filename += ".json"
+
+        projects_dir = self._get_projects_dir()
+        project_path = projects_dir / filename
+
+        try:
+            # Add metadata
+            project_data["type"] = "nisystem-project"
+            project_data["version"] = "1.0"
+            project_data["config"] = Path(self.config_path).name
+            project_data["modified"] = datetime.now().isoformat()
+
+            if not project_data.get("created"):
+                project_data["created"] = datetime.now().isoformat()
+
+            # Write to file
+            with open(project_path, 'w') as f:
+                json.dump(project_data, f, indent=2)
+
+            self.current_project = filename
+            self.current_project_data = project_data
+
+            logger.info(f"Saved project: {filename}")
+            self._publish_project_response(True, f"Project saved: {filename}")
+
+        except Exception as e:
+            logger.error(f"Error saving project: {e}")
+            self._publish_project_response(False, str(e))
+
+    def _handle_project_delete(self, payload: Any):
+        """Delete a project file"""
+        filename = None
+        if isinstance(payload, dict):
+            filename = payload.get("filename")
+        elif isinstance(payload, str):
+            filename = payload
+
+        if not filename:
+            self._publish_project_response(False, "No filename provided")
+            return
+
+        projects_dir = self._get_projects_dir()
+        project_path = projects_dir / filename
+
+        if not project_path.exists():
+            self._publish_project_response(False, f"Project not found: {filename}")
+            return
+
+        try:
+            project_path.unlink()
+
+            # Clear current project if it was the deleted one
+            if self.current_project == filename:
+                self.current_project = None
+                self.current_project_data = {}
+
+            logger.info(f"Deleted project: {filename}")
+            self._publish_project_response(True, f"Project deleted: {filename}")
+
+        except Exception as e:
+            logger.error(f"Error deleting project: {e}")
+            self._publish_project_response(False, str(e))
+
+    def _handle_project_get(self):
+        """Get the current project data"""
+        base = self.config.system.mqtt_base_topic
+
+        self.mqtt_client.publish(
+            f"{base}/project/current",
+            json.dumps({
+                "filename": self.current_project,
+                "project": self.current_project_data if self.current_project else None
+            })
+        )
+
+    def _handle_project_get_current(self):
+        """Alias for _handle_project_get"""
+        self._handle_project_get()
+
+    # =========================================================================
+    # USER VARIABLES / PLAYGROUND HANDLERS
+    # =========================================================================
+
+    def _handle_variable_create(self, payload: Dict[str, Any]):
+        """Create a new user variable"""
+        if not isinstance(payload, dict):
+            self._publish_variable_response(False, "Invalid payload")
+            return
+
+        try:
+            var = self.user_variables.create_variable(payload)
+            self._publish_variable_response(True, f"Created variable: {var.name}")
+            self._publish_user_variables_config()
+            self._publish_user_variables_values()
+        except Exception as e:
+            logger.error(f"Failed to create variable: {e}")
+            self._publish_variable_response(False, str(e))
+
+    def _handle_variable_update(self, payload: Dict[str, Any]):
+        """Update an existing user variable"""
+        if not isinstance(payload, dict):
+            self._publish_variable_response(False, "Invalid payload")
+            return
+
+        var_id = payload.get('id')
+        if not var_id:
+            self._publish_variable_response(False, "Missing variable ID")
+            return
+
+        try:
+            var = self.user_variables.update_variable(var_id, payload)
+            if var:
+                self._publish_variable_response(True, f"Updated variable: {var.name}")
+                self._publish_user_variables_config()
+            else:
+                self._publish_variable_response(False, f"Variable not found: {var_id}")
+        except Exception as e:
+            logger.error(f"Failed to update variable: {e}")
+            self._publish_variable_response(False, str(e))
+
+    def _handle_variable_delete(self, payload: Dict[str, Any]):
+        """Delete a user variable"""
+        var_id = payload.get('id') if isinstance(payload, dict) else payload
+        if not var_id:
+            self._publish_variable_response(False, "Missing variable ID")
+            return
+
+        if self.user_variables.delete_variable(var_id):
+            self._publish_variable_response(True, f"Deleted variable: {var_id}")
+            self._publish_user_variables_config()
+        else:
+            self._publish_variable_response(False, f"Variable not found: {var_id}")
+
+    def _handle_variable_set(self, payload: Dict[str, Any]):
+        """Manually set a variable's value"""
+        if not isinstance(payload, dict):
+            self._publish_variable_response(False, "Invalid payload")
+            return
+
+        var_id = payload.get('id')
+        value = payload.get('value')
+
+        if not var_id or value is None:
+            self._publish_variable_response(False, "Missing variable ID or value")
+            return
+
+        try:
+            value = float(value)
+            if self.user_variables.set_variable_value(var_id, value):
+                self._publish_variable_response(True, f"Set variable value")
+                self._publish_user_variables_values()
+            else:
+                self._publish_variable_response(False, f"Variable not found: {var_id}")
+        except ValueError:
+            self._publish_variable_response(False, "Invalid value - must be numeric")
+
+    def _handle_variable_reset(self, payload: Dict[str, Any]):
+        """Reset variable(s) to zero"""
+        if isinstance(payload, dict):
+            var_id = payload.get('id')
+            var_ids = payload.get('ids', [])
+        else:
+            var_id = payload
+            var_ids = []
+
+        if var_id:
+            # Reset single variable
+            if self.user_variables.reset_variable(var_id):
+                self._publish_variable_response(True, f"Reset variable: {var_id}")
+            else:
+                self._publish_variable_response(False, f"Variable not found: {var_id}")
+        elif var_ids:
+            # Reset multiple variables
+            self.user_variables.reset_all_variables(var_ids)
+            self._publish_variable_response(True, f"Reset {len(var_ids)} variables")
+        else:
+            # Reset all variables
+            self.user_variables.reset_all_variables()
+            self._publish_variable_response(True, "Reset all variables")
+
+        self._publish_user_variables_values()
+
+    def _handle_variable_get(self, payload: Dict[str, Any]):
+        """Get a specific variable's config and value"""
+        var_id = payload.get('id') if isinstance(payload, dict) else payload
+        if not var_id:
+            self._publish_variable_response(False, "Missing variable ID")
+            return
+
+        var = self.user_variables.get_variable(var_id)
+        if var:
+            base = self.config.system.mqtt_base_topic
+            self.mqtt_client.publish(
+                f"{base}/variables/get/response",
+                json.dumps(var.to_dict())
+            )
+        else:
+            self._publish_variable_response(False, f"Variable not found: {var_id}")
+
+    def _handle_variable_list(self):
+        """List all user variables"""
+        self._publish_user_variables_config()
+        self._publish_user_variables_values()
+
+    def _handle_timer_start(self, payload: Dict[str, Any]):
+        """Start a timer variable"""
+        var_id = payload.get('id') if isinstance(payload, dict) else payload
+        if not var_id:
+            self._publish_variable_response(False, "Missing variable ID")
+            return
+
+        if self.user_variables.start_timer(var_id):
+            self._publish_variable_response(True, f"Started timer: {var_id}")
+        else:
+            self._publish_variable_response(False, f"Failed to start timer: {var_id}")
+
+    def _handle_timer_stop(self, payload: Dict[str, Any]):
+        """Stop a timer variable"""
+        var_id = payload.get('id') if isinstance(payload, dict) else payload
+        if not var_id:
+            self._publish_variable_response(False, "Missing variable ID")
+            return
+
+        if self.user_variables.stop_timer(var_id):
+            self._publish_variable_response(True, f"Stopped timer: {var_id}")
+            self._publish_user_variables_values()
+        else:
+            self._publish_variable_response(False, f"Failed to stop timer: {var_id}")
+
+    def _publish_variable_response(self, success: bool, message: str):
+        """Publish variable operation response"""
+        base = self.config.system.mqtt_base_topic
+        self.mqtt_client.publish(
+            f"{base}/variables/response",
+            json.dumps({
+                "success": success,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            })
+        )
+
+    def _publish_user_variables_config(self):
+        """Publish user variable configurations"""
+        if not self.user_variables:
+            return
+        base = self.config.system.mqtt_base_topic
+        config = self.user_variables.get_config_dict()
+        self.mqtt_client.publish(
+            f"{base}/variables/config",
+            json.dumps(config),
+            retain=True
+        )
+
+    def _publish_user_variables_values(self):
+        """Publish current user variable values"""
+        if not self.user_variables:
+            return
+        base = self.config.system.mqtt_base_topic
+        values = self.user_variables.get_values_dict()
+        self.mqtt_client.publish(
+            f"{base}/variables/values",
+            json.dumps(values),
+            retain=True
+        )
+
+    # =========================================================================
+    # TEST SESSION HANDLERS
+    # =========================================================================
+
+    def _handle_test_session_start(self, payload: Dict[str, Any]):
+        """Start a test session"""
+        started_by = payload.get('started_by', 'user') if isinstance(payload, dict) else 'user'
+
+        result = self.user_variables.start_session(self.acquiring, started_by)
+
+        if result.get('success'):
+            self._publish_variable_response(True, "Test session started")
+            self._publish_test_session_status()
+            self._publish_user_variables_values()
+        else:
+            self._publish_variable_response(False, result.get('error', 'Failed to start session'))
+
+    def _handle_test_session_stop(self):
+        """Stop the test session"""
+        result = self.user_variables.stop_session()
+
+        if result.get('success'):
+            self._publish_variable_response(True, "Test session stopped")
+            self._publish_test_session_status()
+            self._publish_user_variables_values()
+        else:
+            self._publish_variable_response(False, result.get('error', 'Failed to stop session'))
+
+    def _handle_test_session_config(self, payload: Dict[str, Any]):
+        """Update test session configuration"""
+        if not isinstance(payload, dict):
+            self._publish_variable_response(False, "Invalid payload")
+            return
+
+        try:
+            self.user_variables.update_session_config(payload)
+            self._publish_variable_response(True, "Updated test session config")
+            self._publish_test_session_status()
+        except Exception as e:
+            logger.error(f"Failed to update session config: {e}")
+            self._publish_variable_response(False, str(e))
+
+    def _publish_test_session_status(self):
+        """Publish test session status"""
+        if not self.user_variables:
+            return
+        base = self.config.system.mqtt_base_topic
+        status = self.user_variables.get_session_status()
+        self.mqtt_client.publish(
+            f"{base}/test-session/status",
+            json.dumps(status),
+            retain=True
+        )
+
+    def _publish_project_response(self, success: bool, message: str):
+        """Publish project operation response"""
+        base = self.config.system.mqtt_base_topic
+        self.mqtt_client.publish(
+            f"{base}/project/response",
+            json.dumps({
+                "success": success,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            })
+        )
+
     def _handle_channel_update(self, payload: Any):
         """Update a single channel's configuration"""
         if not self.authenticated:
@@ -1200,6 +2112,66 @@ class DAQService:
         if 'log_interval_ms' in config_data:
             channel.log_interval_ms = int(config_data['log_interval_ms'])
 
+        # Visibility
+        if 'visible' in config_data:
+            channel.visible = bool(config_data['visible'])
+
+        # Group
+        if 'group' in config_data:
+            channel.group = config_data['group']
+
+        # Terminal configuration (for analog inputs)
+        if 'terminal_config' in config_data:
+            channel.terminal_config = config_data['terminal_config']
+
+        # RTD-specific parameters
+        if 'rtd_type' in config_data:
+            channel.rtd_type = config_data['rtd_type']
+        if 'rtd_resistance' in config_data:
+            channel.rtd_resistance = float(config_data['rtd_resistance'])
+        if 'rtd_wiring' in config_data:
+            channel.rtd_wiring = config_data['rtd_wiring']
+        if 'rtd_current' in config_data:
+            channel.rtd_current = float(config_data['rtd_current'])
+
+        # Strain gauge-specific parameters
+        if 'strain_config' in config_data:
+            channel.strain_config = config_data['strain_config']
+        if 'strain_excitation_voltage' in config_data:
+            channel.strain_excitation_voltage = float(config_data['strain_excitation_voltage'])
+        if 'strain_gage_factor' in config_data:
+            channel.strain_gage_factor = float(config_data['strain_gage_factor'])
+        if 'strain_resistance' in config_data:
+            channel.strain_resistance = float(config_data['strain_resistance'])
+
+        # IEPE-specific parameters
+        if 'iepe_sensitivity' in config_data:
+            channel.iepe_sensitivity = float(config_data['iepe_sensitivity'])
+        if 'iepe_current' in config_data:
+            channel.iepe_current = float(config_data['iepe_current'])
+        if 'iepe_coupling' in config_data:
+            channel.iepe_coupling = config_data['iepe_coupling']
+
+        # Resistance-specific parameters
+        if 'resistance_range' in config_data:
+            channel.resistance_range = float(config_data['resistance_range'])
+        if 'resistance_wiring' in config_data:
+            channel.resistance_wiring = config_data['resistance_wiring']
+
+        # Counter-specific parameters
+        if 'counter_mode' in config_data:
+            channel.counter_mode = config_data['counter_mode']
+        if 'pulses_per_unit' in config_data:
+            channel.pulses_per_unit = float(config_data['pulses_per_unit'])
+        if 'counter_edge' in config_data:
+            channel.counter_edge = config_data['counter_edge']
+        if 'counter_reset_on_read' in config_data:
+            channel.counter_reset_on_read = bool(config_data['counter_reset_on_read'])
+        if 'counter_min_freq' in config_data:
+            channel.counter_min_freq = float(config_data['counter_min_freq'])
+        if 'counter_max_freq' in config_data:
+            channel.counter_max_freq = float(config_data['counter_max_freq'])
+
         # Validate scaling config
         is_valid, error_msg = validate_scaling_config(channel)
         if not is_valid:
@@ -1208,6 +2180,280 @@ class DAQService:
         logger.info(f"Updated channel {channel_name} (type: {channel.channel_type.value})")
         self._publish_channel_config()
         self._publish_config_response(True, f"Updated {channel_name}")
+
+    def _handle_channel_create(self, payload: Any):
+        """Create a new channel at runtime"""
+        if not self.authenticated:
+            logger.warning("Channel create rejected - not authenticated")
+            self._publish_config_response(False, "Not authenticated")
+            return
+
+        if self.acquiring:
+            logger.warning("Channel create rejected - acquisition running")
+            self._publish_config_response(False, "Stop acquisition before creating channels")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_config_response(False, "Invalid payload")
+            return
+
+        channel_name = payload.get('name')
+        if not channel_name:
+            self._publish_config_response(False, "Channel name is required")
+            return
+
+        if channel_name in self.config.channels:
+            self._publish_config_response(False, f"Channel '{channel_name}' already exists")
+            return
+
+        # Get channel configuration from payload
+        config_data = payload.get('config', payload)
+
+        try:
+            # Parse channel type
+            channel_type_str = config_data.get('channel_type', 'voltage')
+            channel_type = ChannelType(channel_type_str)
+
+            # Parse thermocouple type if applicable
+            tc_type = None
+            if 'thermocouple_type' in config_data:
+                from config_parser import ThermocoupleType
+                tc_type = ThermocoupleType(config_data['thermocouple_type'])
+
+            # Create the channel config
+            channel = ChannelConfig(
+                name=channel_name,
+                module=config_data.get('module', ''),
+                physical_channel=config_data.get('physical_channel', ''),
+                channel_type=channel_type,
+                description=config_data.get('description', ''),
+                units=config_data.get('units', ''),
+                visible=config_data.get('visible', True),
+                group=config_data.get('group', ''),
+                scale_slope=float(config_data.get('scale_slope', 1.0)),
+                scale_offset=float(config_data.get('scale_offset', 0.0)),
+                scale_type=config_data.get('scale_type', 'none'),
+                four_twenty_scaling=bool(config_data.get('four_twenty_scaling', False)),
+                eng_units_min=float(config_data['eng_units_min']) if config_data.get('eng_units_min') is not None else None,
+                eng_units_max=float(config_data['eng_units_max']) if config_data.get('eng_units_max') is not None else None,
+                pre_scaled_min=float(config_data['pre_scaled_min']) if config_data.get('pre_scaled_min') is not None else None,
+                pre_scaled_max=float(config_data['pre_scaled_max']) if config_data.get('pre_scaled_max') is not None else None,
+                scaled_min=float(config_data['scaled_min']) if config_data.get('scaled_min') is not None else None,
+                scaled_max=float(config_data['scaled_max']) if config_data.get('scaled_max') is not None else None,
+                voltage_range=float(config_data.get('voltage_range', 10.0)),
+                current_range_ma=float(config_data.get('current_range_ma', 20.0)),
+                thermocouple_type=tc_type,
+                cjc_source=config_data.get('cjc_source', 'internal'),
+                counter_mode=config_data.get('counter_mode', 'frequency'),
+                pulses_per_unit=float(config_data.get('pulses_per_unit', 1.0)),
+                counter_edge=config_data.get('counter_edge', 'rising'),
+                counter_reset_on_read=bool(config_data.get('counter_reset_on_read', False)),
+                invert=bool(config_data.get('invert', False)),
+                default_state=bool(config_data.get('default_state', False)),
+                default_value=float(config_data.get('default_value', 0.0)),
+                low_limit=float(config_data['low_limit']) if config_data.get('low_limit') is not None else None,
+                high_limit=float(config_data['high_limit']) if config_data.get('high_limit') is not None else None,
+                low_warning=float(config_data['low_warning']) if config_data.get('low_warning') is not None else None,
+                high_warning=float(config_data['high_warning']) if config_data.get('high_warning') is not None else None,
+                safety_action=config_data.get('safety_action'),
+                safety_interlock=config_data.get('safety_interlock'),
+                log=bool(config_data.get('log', True)),
+                log_interval_ms=int(config_data.get('log_interval_ms', 1000))
+            )
+
+            # Add to config
+            self.config.channels[channel_name] = channel
+
+            # Initialize channel value
+            if channel_type == ChannelType.DIGITAL_OUTPUT:
+                self.channel_values[channel_name] = channel.default_state
+            elif channel_type == ChannelType.ANALOG_OUTPUT:
+                self.channel_values[channel_name] = channel.default_value
+            else:
+                self.channel_values[channel_name] = 0.0
+
+            # Update simulator if running
+            if self.simulator:
+                self.simulator.add_channel(channel)
+
+            # Update dependency tracker
+            if self.dependency_tracker:
+                self.dependency_tracker.refresh(self.config)
+
+            logger.info(f"Created channel {channel_name} (type: {channel_type.value})")
+            self._publish_channel_config()
+            self._publish_config_response(True, f"Created channel {channel_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to create channel {channel_name}: {e}")
+            self._publish_config_response(False, f"Failed to create channel: {e}")
+
+    def _handle_channel_delete(self, payload: Any):
+        """Delete a channel"""
+        if not self.authenticated:
+            logger.warning("Channel delete rejected - not authenticated")
+            self._publish_config_response(False, "Not authenticated")
+            return
+
+        if self.acquiring:
+            logger.warning("Channel delete rejected - acquisition running")
+            self._publish_config_response(False, "Stop acquisition before deleting channels")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_config_response(False, "Invalid payload")
+            return
+
+        channel_name = payload.get('name') or payload.get('channel')
+        if not channel_name:
+            self._publish_config_response(False, "Channel name is required")
+            return
+
+        if channel_name not in self.config.channels:
+            self._publish_config_response(False, f"Channel '{channel_name}' not found")
+            return
+
+        # Check dependencies using dependency tracker
+        if self.dependency_tracker:
+            deps = self.dependency_tracker.get_dependencies(EntityType.CHANNEL, channel_name)
+            if deps.dependents and not payload.get('force', False):
+                # Return dependency info so frontend can show confirmation
+                self.mqtt_client.publish(
+                    f"{self.config.system.mqtt_base_topic}/config/channel/delete/confirm",
+                    json.dumps({
+                        "channel": channel_name,
+                        "dependencies": deps.to_dict(),
+                        "message": f"Channel has {deps.total_affected} dependents. Set force=true to delete anyway.",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                )
+                return
+
+        # Delete the channel
+        del self.config.channels[channel_name]
+
+        # Remove from channel values
+        if channel_name in self.channel_values:
+            del self.channel_values[channel_name]
+        if channel_name in self.channel_raw_values:
+            del self.channel_raw_values[channel_name]
+        if channel_name in self.channel_timestamps:
+            del self.channel_timestamps[channel_name]
+
+        # Update simulator
+        if self.simulator:
+            self.simulator.remove_channel(channel_name)
+
+        # Update dependency tracker
+        if self.dependency_tracker:
+            self.dependency_tracker.refresh(self.config)
+
+        # Notify about deleted channel so frontend can clean up widgets
+        self.mqtt_client.publish(
+            f"{self.config.system.mqtt_base_topic}/config/channel/deleted",
+            json.dumps({
+                "channel": channel_name,
+                "timestamp": datetime.now().isoformat()
+            }),
+            retain=False
+        )
+
+        logger.info(f"Deleted channel {channel_name}")
+        self._publish_channel_config()
+        self._publish_config_response(True, f"Deleted channel {channel_name}")
+
+    def _handle_channel_bulk_create(self, payload: Any):
+        """Create multiple channels at once (from discovery)"""
+        if not self.authenticated:
+            logger.warning("Bulk channel create rejected - not authenticated")
+            self._publish_config_response(False, "Not authenticated")
+            return
+
+        if self.acquiring:
+            logger.warning("Bulk channel create rejected - acquisition running")
+            self._publish_config_response(False, "Stop acquisition before creating channels")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_config_response(False, "Invalid payload")
+            return
+
+        channels = payload.get('channels', [])
+        if not channels:
+            self._publish_config_response(False, "No channels specified")
+            return
+
+        created = []
+        failed = []
+
+        for ch_config in channels:
+            channel_name = ch_config.get('name')
+            if not channel_name:
+                failed.append({"name": "unnamed", "error": "Name is required"})
+                continue
+
+            if channel_name in self.config.channels:
+                failed.append({"name": channel_name, "error": "Already exists"})
+                continue
+
+            try:
+                # Use same logic as single create
+                channel_type_str = ch_config.get('channel_type', 'voltage')
+                channel_type = ChannelType(channel_type_str)
+
+                tc_type = None
+                if 'thermocouple_type' in ch_config:
+                    from config_parser import ThermocoupleType
+                    tc_type = ThermocoupleType(ch_config['thermocouple_type'])
+
+                channel = ChannelConfig(
+                    name=channel_name,
+                    module=ch_config.get('module', ''),
+                    physical_channel=ch_config.get('physical_channel', ''),
+                    channel_type=channel_type,
+                    description=ch_config.get('description', ''),
+                    units=ch_config.get('units', ''),
+                    visible=ch_config.get('visible', True),
+                    group=ch_config.get('group', ''),
+                    thermocouple_type=tc_type,
+                    log=ch_config.get('log', True)
+                )
+
+                self.config.channels[channel_name] = channel
+
+                # Initialize value
+                if channel_type == ChannelType.DIGITAL_OUTPUT:
+                    self.channel_values[channel_name] = channel.default_state
+                elif channel_type == ChannelType.ANALOG_OUTPUT:
+                    self.channel_values[channel_name] = channel.default_value
+                else:
+                    self.channel_values[channel_name] = 0.0
+
+                if self.simulator:
+                    self.simulator.add_channel(channel)
+
+                created.append(channel_name)
+
+            except Exception as e:
+                failed.append({"name": channel_name, "error": str(e)})
+
+        # Update dependency tracker once at the end
+        if self.dependency_tracker and created:
+            self.dependency_tracker.refresh(self.config)
+
+        logger.info(f"Bulk create: {len(created)} created, {len(failed)} failed")
+        self._publish_channel_config()
+
+        self.mqtt_client.publish(
+            f"{self.config.system.mqtt_base_topic}/config/channel/bulk-create/response",
+            json.dumps({
+                "success": len(failed) == 0,
+                "created": created,
+                "failed": failed,
+                "message": f"Created {len(created)} channels" + (f", {len(failed)} failed" if failed else ""),
+                "timestamp": datetime.now().isoformat()
+            })
+        )
 
     # =========================================================================
     # DEVICE DISCOVERY HANDLERS
@@ -1494,6 +2740,294 @@ class DAQService:
             })
         )
 
+    # =========================================================================
+    # SEQUENCE HANDLERS
+    # =========================================================================
+
+    def _handle_sequence_start(self, payload: Any):
+        """Start a sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload - expected object with sequenceId")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        if self.sequence_manager.start_sequence(sequence_id):
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' started")
+            self._publish_sequence_status()
+        else:
+            self._publish_sequence_response(False, f"Failed to start sequence '{sequence_id}'")
+
+    def _handle_sequence_pause(self, payload: Any):
+        """Pause a running sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        if self.sequence_manager.pause_sequence(sequence_id):
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' paused")
+            self._publish_sequence_status()
+        else:
+            self._publish_sequence_response(False, f"Failed to pause sequence '{sequence_id}'")
+
+    def _handle_sequence_resume(self, payload: Any):
+        """Resume a paused sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        if self.sequence_manager.resume_sequence(sequence_id):
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' resumed")
+            self._publish_sequence_status()
+        else:
+            self._publish_sequence_response(False, f"Failed to resume sequence '{sequence_id}'")
+
+    def _handle_sequence_abort(self, payload: Any):
+        """Abort a running sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        if self.sequence_manager.abort_sequence(sequence_id):
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' aborted")
+            self._publish_sequence_status()
+        else:
+            self._publish_sequence_response(False, f"Failed to abort sequence '{sequence_id}'")
+
+    def _handle_sequence_add(self, payload: Any):
+        """Add a new sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload - expected sequence definition")
+            return
+
+        try:
+            from sequence_manager import Sequence, SequenceStep
+
+            sequence_id = payload.get('id') or payload.get('sequenceId')
+            if not sequence_id:
+                self._publish_sequence_response(False, "Missing sequence id")
+                return
+
+            name = payload.get('name', sequence_id)
+            description = payload.get('description', '')
+            steps_data = payload.get('steps', [])
+
+            # Convert steps data to SequenceStep objects using from_dict
+            steps = []
+            for i, step_data in enumerate(steps_data):
+                # Map frontend field names to backend field names
+                mapped_data = {
+                    'type': step_data.get('type', 'setOutput'),
+                    'label': step_data.get('label') or step_data.get('id') or step_data.get('description') or f"Step {i+1}",
+                    'channel': step_data.get('channel'),
+                    'value': step_data.get('value'),
+                    'duration_ms': int(step_data.get('duration', 0) * 1000) if step_data.get('duration') else step_data.get('duration_ms'),
+                    'condition_channel': step_data.get('conditionChannel') or step_data.get('condition_channel'),
+                    'condition_operator': step_data.get('conditionOperator') or step_data.get('condition_operator'),
+                    'condition_value': step_data.get('conditionValue') or step_data.get('condition_value'),
+                    'condition_timeout_ms': step_data.get('conditionTimeout') or step_data.get('condition_timeout_ms'),
+                    'recording_filename': step_data.get('filename') or step_data.get('recording_filename'),
+                    'message': step_data.get('message'),
+                    'loop_count': step_data.get('loopCount') or step_data.get('loop_count'),
+                    'loop_id': step_data.get('loopId') or step_data.get('loop_id'),
+                    'sequence_id': step_data.get('sequenceId') or step_data.get('sequence_id'),
+                }
+                # Remove None values
+                mapped_data = {k: v for k, v in mapped_data.items() if v is not None}
+                step = SequenceStep.from_dict(mapped_data)
+                steps.append(step)
+
+            sequence = Sequence(
+                id=sequence_id,
+                name=name,
+                description=description,
+                steps=steps
+            )
+
+            self.sequence_manager.add_sequence(sequence)
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' added")
+            self._publish_sequence_list()
+        except Exception as e:
+            logger.error(f"Error adding sequence: {e}")
+            self._publish_sequence_response(False, f"Error adding sequence: {str(e)}")
+
+    def _handle_sequence_remove(self, payload: Any):
+        """Remove a sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id') or payload.get('id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        if self.sequence_manager.remove_sequence(sequence_id):
+            self._publish_sequence_response(True, f"Sequence '{sequence_id}' removed")
+            self._publish_sequence_list()
+        else:
+            self._publish_sequence_response(False, f"Sequence '{sequence_id}' not found")
+
+    def _handle_sequence_list(self):
+        """List all sequences"""
+        self._publish_sequence_list()
+
+    def _handle_sequence_get(self, payload: Any):
+        """Get details of a specific sequence"""
+        if not self.sequence_manager:
+            self._publish_sequence_response(False, "Sequence manager not initialized")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_sequence_response(False, "Invalid payload")
+            return
+
+        sequence_id = payload.get('sequenceId') or payload.get('sequence_id') or payload.get('id')
+        if not sequence_id:
+            self._publish_sequence_response(False, "Missing sequenceId")
+            return
+
+        sequence = self.sequence_manager.get_sequence(sequence_id)
+        if sequence:
+            base = self.config.system.mqtt_base_topic
+            self.mqtt_client.publish(
+                f"{base}/sequence/details",
+                json.dumps({
+                    "success": True,
+                    "sequence": self._sequence_to_dict(sequence),
+                    "timestamp": datetime.now().isoformat()
+                }),
+                qos=1
+            )
+        else:
+            self._publish_sequence_response(False, f"Sequence '{sequence_id}' not found")
+
+    def _publish_sequence_response(self, success: bool, message: str):
+        """Publish sequence operation response"""
+        base = self.config.system.mqtt_base_topic
+
+        self.mqtt_client.publish(
+            f"{base}/sequence/response",
+            json.dumps({
+                "success": success,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            }),
+            qos=1
+        )
+
+    def _publish_sequence_status(self):
+        """Publish current sequence status"""
+        if not self.sequence_manager:
+            return
+
+        base = self.config.system.mqtt_base_topic
+
+        # Get status of all sequences
+        sequences_status = {}
+        for seq_id, sequence in self.sequence_manager.sequences.items():
+            sequences_status[seq_id] = {
+                "state": sequence.state.value,
+                "current_step": sequence.current_step_index,
+                "total_steps": len(sequence.steps),
+                "error": sequence.error_message
+            }
+
+        self.mqtt_client.publish(
+            f"{base}/sequence/status",
+            json.dumps({
+                "sequences": sequences_status,
+                "timestamp": datetime.now().isoformat()
+            }),
+            retain=True
+        )
+
+    def _publish_sequence_list(self):
+        """Publish list of all sequences"""
+        if not self.sequence_manager:
+            return
+
+        base = self.config.system.mqtt_base_topic
+
+        sequences = []
+        for seq_id, sequence in self.sequence_manager.sequences.items():
+            sequences.append(self._sequence_to_dict(sequence))
+
+        self.mqtt_client.publish(
+            f"{base}/sequence/list/response",
+            json.dumps({
+                "success": True,
+                "sequences": sequences,
+                "count": len(sequences),
+                "timestamp": datetime.now().isoformat()
+            }),
+            qos=1
+        )
+
+    def _sequence_to_dict(self, sequence) -> dict:
+        """Convert a Sequence object to a dictionary"""
+        return {
+            "id": sequence.id,
+            "name": sequence.name,
+            "description": sequence.description,
+            "state": sequence.state.value,
+            "current_step": sequence.current_step_index,
+            "steps": [step.to_dict() for step in sequence.steps],
+            "error": sequence.error_message
+        }
+
+    def _get_active_sequence_count(self) -> int:
+        """Get count of sequences that are running or paused"""
+        if not self.sequence_manager:
+            return 0
+        from sequence_manager import SequenceState
+        return sum(
+            1 for seq in self.sequence_manager.sequences.values()
+            if seq.state in (SequenceState.RUNNING, SequenceState.PAUSED)
+        )
+
     def _publish_config_response(self, success: bool, message: str):
         """Publish config operation response"""
         base = self.config.system.mqtt_base_topic
@@ -1631,6 +3165,14 @@ class DAQService:
                 'log': str(ch.log).lower()
             }
 
+            # Visibility (only save if not default)
+            if not ch.visible:
+                section['visible'] = 'false'
+
+            # Group (only save if set)
+            if ch.group:
+                section['group'] = ch.group
+
             # Linear scaling
             if ch.scale_slope != 1.0:
                 section['scale_slope'] = str(ch.scale_slope)
@@ -1697,6 +3239,58 @@ class DAQService:
             if ch.log_interval_ms != 1000:
                 section['log_interval_ms'] = str(ch.log_interval_ms)
 
+            # Terminal configuration (only save if not default)
+            if ch.terminal_config != 'RSE':
+                section['terminal_config'] = ch.terminal_config
+
+            # RTD-specific (only save if not default)
+            if ch.rtd_type != 'Pt100':
+                section['rtd_type'] = ch.rtd_type
+            if ch.rtd_resistance != 100.0:
+                section['rtd_resistance'] = str(ch.rtd_resistance)
+            if ch.rtd_wiring != '4-wire':
+                section['rtd_wiring'] = ch.rtd_wiring
+            if ch.rtd_current != 0.001:
+                section['rtd_current'] = str(ch.rtd_current)
+
+            # Strain gauge-specific (only save if not default)
+            if ch.strain_config != 'full-bridge':
+                section['strain_config'] = ch.strain_config
+            if ch.strain_excitation_voltage != 2.5:
+                section['strain_excitation_voltage'] = str(ch.strain_excitation_voltage)
+            if ch.strain_gage_factor != 2.0:
+                section['strain_gage_factor'] = str(ch.strain_gage_factor)
+            if ch.strain_resistance != 350.0:
+                section['strain_resistance'] = str(ch.strain_resistance)
+
+            # IEPE-specific (only save if not default)
+            if ch.iepe_sensitivity != 100.0:
+                section['iepe_sensitivity'] = str(ch.iepe_sensitivity)
+            if ch.iepe_current != 0.004:
+                section['iepe_current'] = str(ch.iepe_current)
+            if ch.iepe_coupling != 'AC':
+                section['iepe_coupling'] = ch.iepe_coupling
+
+            # Resistance-specific (only save if not default)
+            if ch.resistance_range != 1000.0:
+                section['resistance_range'] = str(ch.resistance_range)
+            if ch.resistance_wiring != '4-wire':
+                section['resistance_wiring'] = ch.resistance_wiring
+
+            # Counter-specific (only save if not default)
+            if ch.counter_mode != 'frequency':
+                section['counter_mode'] = ch.counter_mode
+            if ch.pulses_per_unit != 1.0:
+                section['pulses_per_unit'] = str(ch.pulses_per_unit)
+            if ch.counter_edge != 'rising':
+                section['counter_edge'] = ch.counter_edge
+            if ch.counter_reset_on_read:
+                section['counter_reset_on_read'] = 'true'
+            if ch.counter_min_freq != 0.1:
+                section['counter_min_freq'] = str(ch.counter_min_freq)
+            if ch.counter_max_freq != 1000.0:
+                section['counter_max_freq'] = str(ch.counter_max_freq)
+
             config[f'channel:{name}'] = section
 
         # Safety action sections
@@ -1732,13 +3326,37 @@ class DAQService:
                 "module": channel.module,
                 "physical_channel": channel.physical_channel,
                 "type": channel.channel_type.value,
+                "channel_type": channel.channel_type.value,
                 "description": channel.description,
                 "units": channel.units,
+                "visible": channel.visible,
+                "group": channel.group or channel.module or "Ungrouped",
                 "low_limit": channel.low_limit,
                 "high_limit": channel.high_limit,
                 "low_warning": channel.low_warning,
                 "high_warning": channel.high_warning,
-                "log": channel.log
+                "log": channel.log,
+                # Include all config for frontend editing
+                "scale_type": channel.scale_type,
+                "scale_slope": channel.scale_slope,
+                "scale_offset": channel.scale_offset,
+                "four_twenty_scaling": channel.four_twenty_scaling,
+                "eng_units_min": channel.eng_units_min,
+                "eng_units_max": channel.eng_units_max,
+                "pre_scaled_min": channel.pre_scaled_min,
+                "pre_scaled_max": channel.pre_scaled_max,
+                "scaled_min": channel.scaled_min,
+                "scaled_max": channel.scaled_max,
+                "invert": channel.invert,
+                "default_state": channel.default_state,
+                "default_value": channel.default_value,
+                "safety_action": channel.safety_action,
+                "safety_interlock": channel.safety_interlock,
+                "thermocouple_type": channel.thermocouple_type.value if channel.thermocouple_type else None,
+                "cjc_source": channel.cjc_source,
+                "voltage_range": channel.voltage_range,
+                "current_range_ma": channel.current_range_ma,
+                "log_interval_ms": channel.log_interval_ms
             }
 
         for name, module in self.config.modules.items():
@@ -1865,6 +3483,67 @@ class DAQService:
 
             logger.info(f"ALARM CLEARED: {source}")
 
+    def _handle_alarm_acknowledge(self, payload: Any):
+        """Handle alarm acknowledgment from frontend"""
+        alarm_id = payload.get('alarmId') if isinstance(payload, dict) else None
+        if alarm_id:
+            logger.info(f"Alarm acknowledged: {alarm_id}")
+            # The backend tracks alarms by source (channel name), not by ID
+            # Just log the acknowledgment for now - frontend handles state
+
+    def _handle_alarm_clear(self, payload: Any):
+        """Handle alarm clear from frontend"""
+        alarm_id = payload.get('alarmId') if isinstance(payload, dict) else None
+        if alarm_id:
+            # Try to clear by alarm ID (which might be the source name)
+            self._clear_alarm(alarm_id)
+            logger.info(f"Alarm clear requested: {alarm_id}")
+
+    def _handle_alarm_reset_latched(self):
+        """Reset all latched alarms"""
+        logger.info("Reset all latched alarms requested")
+        # Clear all active alarms
+        sources_to_clear = list(self.alarms_active.keys())
+        for source in sources_to_clear:
+            self._clear_alarm(source)
+        logger.info(f"Cleared {len(sources_to_clear)} latched alarms")
+
+    def _handle_channel_reset(self, payload: Any):
+        """Reset a channel value (e.g., counter to zero)"""
+        channel_name = payload.get('channel') if isinstance(payload, dict) else None
+        if not channel_name:
+            logger.warning("Channel reset requested but no channel specified")
+            return
+
+        if channel_name not in self.config.channels:
+            logger.warning(f"Channel reset requested for unknown channel: {channel_name}")
+            return
+
+        channel = self.config.channels[channel_name]
+
+        # Check if this is a counter channel
+        if channel.channel_type == ChannelType.COUNTER:
+            logger.info(f"Resetting counter channel: {channel_name}")
+
+            # Reset in simulator if running
+            if self.simulator:
+                self.simulator.reset_counter(channel_name)
+
+            # Reset in hardware if available
+            if self.hardware_reader:
+                self.hardware_reader.reset_counter(channel_name)
+
+            # Reset cached value
+            with self.values_lock:
+                self.channel_values[channel_name] = 0
+                self.channel_timestamps[channel_name] = time.time()
+
+            # Publish the reset value
+            self._publish_channel_value(channel_name, 0)
+            logger.info(f"Counter {channel_name} reset to 0")
+        else:
+            logger.warning(f"Channel reset not supported for channel type: {channel.channel_type}")
+
     def _check_safety(self, channel_name: str, value: Any):
         """Check safety limits and trigger actions if needed (thread-safe)"""
         channel = self.config.channels[channel_name]
@@ -1974,32 +3653,40 @@ class DAQService:
             # Only acquire data if acquiring flag is set
             if self.acquiring:
                 try:
+                    # Read raw values from either simulator or real hardware
                     if self.simulator:
-                        # Read raw values from simulator
                         raw_values = self.simulator.read_all()
+                    elif self.hardware_reader:
+                        raw_values = self.hardware_reader.read_all()
+                    else:
+                        raw_values = {}
 
-                        # Apply scaling and update values under lock
-                        with self.values_lock:
-                            for name, raw_value in raw_values.items():
-                                # Apply scaling based on channel configuration
-                                if name in self.config.channels:
-                                    channel = self.config.channels[name]
+                    # Apply scaling and update values under lock
+                    with self.values_lock:
+                        for name, raw_value in raw_values.items():
+                            # Apply scaling based on channel configuration
+                            if name in self.config.channels:
+                                channel = self.config.channels[name]
+                                # Don't apply scaling to output channels - they store engineering units directly
+                                if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+                                    self.channel_values[name] = raw_value
+                                else:
                                     scaled_value = apply_scaling(channel, raw_value)
                                     self.channel_values[name] = scaled_value
                                     # Store raw value for diagnostics
                                     self.channel_raw_values[name] = raw_value
-                                else:
-                                    self.channel_values[name] = raw_value
-                                self.channel_timestamps[name] = start_time
+                            else:
+                                self.channel_values[name] = raw_value
+                            self.channel_timestamps[name] = start_time
 
-                        # Check safety OUTSIDE the lock (using scaled values)
-                        for name in raw_values:
-                            if name in self.channel_values:
-                                self._check_safety(name, self.channel_values[name])
+                    # Check safety OUTSIDE the lock (using scaled values)
+                    for name in raw_values:
+                        if name in self.channel_values:
+                            self._check_safety(name, self.channel_values[name])
 
-                    else:
-                        # Read from real hardware (TODO: implement nidaqmx reads)
-                        pass
+                    # Process user variables (accumulators, timers, stats, etc.)
+                    if self.user_variables:
+                        self.user_variables.process_scan(self.channel_values)
 
                 except Exception as e:
                     logger.error(f"Error in scan loop: {e}")
@@ -2057,6 +3744,9 @@ class DAQService:
             status_publish_counter += 1
             if status_publish_counter >= self.config.system.publish_rate_hz:
                 self._publish_system_status()
+                # Publish user variable values (at 1 Hz, not full publish rate)
+                if self.user_variables:
+                    self._publish_user_variables_values()
                 status_publish_counter = 0
 
             # Track loop timing
@@ -2093,18 +3783,27 @@ class DAQService:
         """Start the DAQ service"""
         logger.info("Starting DAQ Service...")
 
+        # Record start time for uptime tracking
+        self._start_time = datetime.now()
+
+        # Clear shutdown flag, set running flag
+        self._shutdown_requested.clear()
         self.running = True
 
         # Setup MQTT
         self._setup_mqtt()
 
         # Start scan thread
-        self.scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
+        self.scan_thread = threading.Thread(target=self._scan_loop, daemon=True, name="scan")
         self.scan_thread.start()
 
         # Start publish thread
-        self.publish_thread = threading.Thread(target=self._publish_loop, daemon=True)
+        self.publish_thread = threading.Thread(target=self._publish_loop, daemon=True, name="publish")
         self.publish_thread.start()
+
+        # Start heartbeat thread
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
+        self.heartbeat_thread.start()
 
         # Start scheduler
         if self.scheduler:
@@ -2113,34 +3812,78 @@ class DAQService:
         logger.info("DAQ Service started")
 
     def stop(self):
-        """Stop the DAQ service"""
-        logger.info("Stopping DAQ Service...")
+        """Stop the DAQ service gracefully"""
+        logger.info("Initiating graceful shutdown...")
 
+        # Signal shutdown to all threads
+        self._shutdown_requested.set()
         self.running = False
+
+        # Stop acquiring first to prevent new data
+        self.acquiring = False
+
+        # Publish shutting_down status
+        if self.mqtt_client:
+            base = self.config.system.mqtt_base_topic
+            self.mqtt_client.publish(f"{base}/status/system", json.dumps({
+                "status": "shutting_down",
+                "timestamp": datetime.now().isoformat()
+            }), retain=True, qos=1)
 
         # Stop scheduler
         if self.scheduler:
+            logger.info("Stopping scheduler...")
             self.scheduler.stop()
 
-        if self.scan_thread:
-            self.scan_thread.join(timeout=2.0)
+        # Stop recording and flush buffer
+        if self.recording_manager and self.recording_manager.recording:
+            logger.info("Flushing recording buffer...")
+            self.recording_manager.stop()
 
-        if self.publish_thread:
-            self.publish_thread.join(timeout=2.0)
+        # Join threads with reasonable timeouts
+        shutdown_timeout = 5.0  # seconds per thread
+        for thread_name, thread in [
+            ("heartbeat", self.heartbeat_thread),
+            ("scan", self.scan_thread),
+            ("publish", self.publish_thread),
+        ]:
+            if thread and thread.is_alive():
+                logger.info(f"Waiting for {thread_name} thread...")
+                thread.join(timeout=shutdown_timeout)
+                if thread.is_alive():
+                    logger.warning(f"{thread_name} thread did not stop gracefully")
 
+        # Close hardware (with retry for busy resources)
+        if self.hardware_reader:
+            for attempt in range(3):
+                try:
+                    logger.info("Closing hardware reader...")
+                    self.hardware_reader.close()
+                    self.hardware_reader = None
+                    break
+                except Exception as e:
+                    logger.warning(f"Hardware close attempt {attempt+1} failed: {e}")
+                    time.sleep(0.5)
+
+        # Final status and disconnect MQTT
         if self.mqtt_client:
             base = self.config.system.mqtt_base_topic
             self.mqtt_client.publish(f"{base}/status/service", json.dumps({
                 "status": "offline",
                 "timestamp": datetime.now().isoformat()
-            }), retain=True)
+            }), retain=True, qos=1)
+            # Give MQTT time to send the message
+            time.sleep(0.2)
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
 
+        # Close log file
         if self.log_file:
+            self.log_file.flush()
             self.log_file.close()
+            self.log_file = None
 
-        logger.info("DAQ Service stopped")
+        logger.info("DAQ Service stopped cleanly")
 
     def run(self):
         """Run the service (blocking)"""

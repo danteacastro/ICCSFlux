@@ -164,6 +164,10 @@ class DependencyTracker:
         """Set widget definitions for dependency tracking"""
         self.widgets = widgets
 
+    def refresh(self, config):
+        """Refresh the dependency tracker with updated config"""
+        self.config = config
+
     def get_dependencies(self, entity_type: EntityType, entity_id: str) -> DependencyInfo:
         """
         Get all dependencies for an entity before deletion.

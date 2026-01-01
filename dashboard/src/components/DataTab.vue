@@ -75,6 +75,9 @@ const recordingSize = computed(() => store.status?.recording_bytes || 0)
 const recordingSamples = computed(() => store.status?.recording_samples || 0)
 const recordingMode = computed(() => store.status?.recording_mode || 'manual')
 
+// Configuration is locked while recording (industrial standard)
+const configLocked = computed(() => isRecording.value)
+
 // File browser state
 const showFileBrowser = ref(false)
 const selectedFile = ref<string | null>(null)
@@ -468,11 +471,15 @@ const scheduleDayLabels = [
     <!-- Main Configuration -->
     <div class="config-layout">
       <!-- Left Panel: Channel Selection -->
-      <div class="channel-panel">
+      <div class="channel-panel" :class="{ locked: configLocked }">
+        <div v-if="configLocked" class="locked-overlay">
+          <span class="lock-icon">🔒</span>
+          <span>Locked while recording</span>
+        </div>
         <div class="panel-header">
           <h3>Channels to Record</h3>
           <label class="select-all">
-            <input type="checkbox" v-model="selectAllChannels" @change="toggleAllChannels" />
+            <input type="checkbox" v-model="selectAllChannels" @change="toggleAllChannels" :disabled="configLocked" />
             <span>All Channels</span>
           </label>
         </div>
@@ -484,12 +491,13 @@ const scheduleDayLabels = [
               v-for="ch in channels"
               :key="ch.name"
               class="channel-item"
-              :class="{ selected: selectAllChannels || selectedChannels.includes(ch.name) }"
-              @click="toggleChannel(ch.name)"
+              :class="{ selected: selectAllChannels || selectedChannels.includes(ch.name), disabled: configLocked }"
+              @click="!configLocked && toggleChannel(ch.name)"
             >
               <input
                 type="checkbox"
                 :checked="selectAllChannels || selectedChannels.includes(ch.name)"
+                :disabled="configLocked"
                 @click.stop
                 @change="toggleChannel(ch.name)"
               />
@@ -512,7 +520,11 @@ const scheduleDayLabels = [
       </div>
 
       <!-- Center Panel: Recording Settings -->
-      <div class="settings-panel">
+      <div class="settings-panel" :class="{ locked: configLocked }">
+        <div v-if="configLocked" class="locked-banner">
+          <span class="lock-icon">🔒</span>
+          <span>Configuration locked while recording - stop recording to edit</span>
+        </div>
         <!-- Sample Rate Section -->
         <div class="settings-section">
           <h3>Sample Rate</h3>
@@ -520,18 +532,18 @@ const scheduleDayLabels = [
           <div class="form-row">
             <div class="form-group" style="flex: 2;">
               <label>Sample Interval</label>
-              <input type="number" v-model.number="recordingConfig.sampleInterval" min="0.001" step="0.1" />
+              <input type="number" v-model.number="recordingConfig.sampleInterval" min="0.001" step="0.1" :disabled="configLocked" />
             </div>
             <div class="form-group" style="flex: 1;">
               <label>Unit</label>
-              <select v-model="recordingConfig.sampleIntervalUnit">
+              <select v-model="recordingConfig.sampleIntervalUnit" :disabled="configLocked">
                 <option value="seconds">Seconds</option>
                 <option value="milliseconds">Milliseconds</option>
               </select>
             </div>
             <div class="form-group" style="flex: 1;">
               <label>Decimation</label>
-              <input type="number" v-model.number="recordingConfig.decimation" min="1" max="100" />
+              <input type="number" v-model.number="recordingConfig.decimation" min="1" max="100" :disabled="configLocked" />
             </div>
           </div>
 
@@ -556,6 +568,7 @@ const scheduleDayLabels = [
             <button
               class="rotation-btn"
               :class="{ active: recordingConfig.rotationMode === 'single' }"
+              :disabled="configLocked"
               @click="recordingConfig.rotationMode = 'single'"
               title="One continuous file until manually stopped"
             >
@@ -564,6 +577,7 @@ const scheduleDayLabels = [
             <button
               class="rotation-btn"
               :class="{ active: recordingConfig.rotationMode === 'time' }"
+              :disabled="configLocked"
               @click="recordingConfig.rotationMode = 'time'"
               title="Create new file after time limit"
             >
@@ -572,6 +586,7 @@ const scheduleDayLabels = [
             <button
               class="rotation-btn"
               :class="{ active: recordingConfig.rotationMode === 'size' }"
+              :disabled="configLocked"
               @click="recordingConfig.rotationMode = 'size'"
               title="Create new file after size limit"
             >
@@ -580,6 +595,7 @@ const scheduleDayLabels = [
             <button
               class="rotation-btn"
               :class="{ active: recordingConfig.rotationMode === 'samples' }"
+              :disabled="configLocked"
               @click="recordingConfig.rotationMode = 'samples'"
               title="Create new file after sample count"
             >
@@ -588,6 +604,7 @@ const scheduleDayLabels = [
             <button
               class="rotation-btn"
               :class="{ active: recordingConfig.rotationMode === 'session' }"
+              :disabled="configLocked"
               @click="recordingConfig.rotationMode = 'session'"
               title="New file each start/stop cycle"
             >
@@ -599,39 +616,39 @@ const scheduleDayLabels = [
           <div v-if="recordingConfig.rotationMode === 'time'" class="rotation-options">
             <div class="form-group">
               <label>Split every (seconds)</label>
-              <input type="number" v-model.number="recordingConfig.maxFileDuration" min="60" max="86400" />
+              <input type="number" v-model.number="recordingConfig.maxFileDuration" min="60" max="86400" :disabled="configLocked" />
             </div>
             <div class="quick-presets">
-              <button @click="recordingConfig.maxFileDuration = 3600">1 hour</button>
-              <button @click="recordingConfig.maxFileDuration = 21600">6 hours</button>
-              <button @click="recordingConfig.maxFileDuration = 43200">12 hours</button>
-              <button @click="recordingConfig.maxFileDuration = 86400">24 hours</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileDuration = 3600">1 hour</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileDuration = 21600">6 hours</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileDuration = 43200">12 hours</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileDuration = 86400">24 hours</button>
             </div>
           </div>
 
           <div v-if="recordingConfig.rotationMode === 'size'" class="rotation-options">
             <div class="form-group">
               <label>Max file size (MB)</label>
-              <input type="number" v-model.number="recordingConfig.maxFileSize" min="1" max="10000" />
+              <input type="number" v-model.number="recordingConfig.maxFileSize" min="1" max="10000" :disabled="configLocked" />
             </div>
             <div class="quick-presets">
-              <button @click="recordingConfig.maxFileSize = 50">50 MB</button>
-              <button @click="recordingConfig.maxFileSize = 100">100 MB</button>
-              <button @click="recordingConfig.maxFileSize = 500">500 MB</button>
-              <button @click="recordingConfig.maxFileSize = 1000">1 GB</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSize = 50">50 MB</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSize = 100">100 MB</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSize = 500">500 MB</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSize = 1000">1 GB</button>
             </div>
           </div>
 
           <div v-if="recordingConfig.rotationMode === 'samples'" class="rotation-options">
             <div class="form-group">
               <label>Max samples per file</label>
-              <input type="number" v-model.number="recordingConfig.maxFileSamples" min="100" max="10000000" />
+              <input type="number" v-model.number="recordingConfig.maxFileSamples" min="100" max="10000000" :disabled="configLocked" />
             </div>
             <div class="quick-presets">
-              <button @click="recordingConfig.maxFileSamples = 1000">1K</button>
-              <button @click="recordingConfig.maxFileSamples = 10000">10K</button>
-              <button @click="recordingConfig.maxFileSamples = 100000">100K</button>
-              <button @click="recordingConfig.maxFileSamples = 1000000">1M</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSamples = 1000">1K</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSamples = 10000">10K</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSamples = 100000">100K</button>
+              <button :disabled="configLocked" @click="recordingConfig.maxFileSamples = 1000000">1M</button>
             </div>
           </div>
 
@@ -640,21 +657,21 @@ const scheduleDayLabels = [
             <label class="section-label">When limit reached:</label>
             <div class="limit-selector">
               <label class="radio-label">
-                <input type="radio" v-model="recordingConfig.onLimitReached" value="new_file" />
+                <input type="radio" v-model="recordingConfig.onLimitReached" value="new_file" :disabled="configLocked" />
                 <span>Start new file (continuous)</span>
               </label>
               <label class="radio-label">
-                <input type="radio" v-model="recordingConfig.onLimitReached" value="stop" />
+                <input type="radio" v-model="recordingConfig.onLimitReached" value="stop" :disabled="configLocked" />
                 <span>Stop recording</span>
               </label>
               <label class="radio-label">
-                <input type="radio" v-model="recordingConfig.onLimitReached" value="circular" />
+                <input type="radio" v-model="recordingConfig.onLimitReached" value="circular" :disabled="configLocked" />
                 <span>Circular (keep last N files)</span>
               </label>
             </div>
             <div v-if="recordingConfig.onLimitReached === 'circular'" class="form-group" style="margin-top: 8px;">
               <label>Keep last N files</label>
-              <input type="number" v-model.number="recordingConfig.circularMaxFiles" min="2" max="1000" />
+              <input type="number" v-model.number="recordingConfig.circularMaxFiles" min="2" max="1000" :disabled="configLocked" />
             </div>
           </div>
         </div>
@@ -667,6 +684,7 @@ const scheduleDayLabels = [
             <button
               class="naming-btn"
               :class="{ active: recordingConfig.namingPattern === 'timestamp' }"
+              :disabled="configLocked"
               @click="recordingConfig.namingPattern = 'timestamp'"
             >
               Timestamp
@@ -674,6 +692,7 @@ const scheduleDayLabels = [
             <button
               class="naming-btn"
               :class="{ active: recordingConfig.namingPattern === 'sequential' }"
+              :disabled="configLocked"
               @click="recordingConfig.namingPattern = 'sequential'"
             >
               Sequential
@@ -681,6 +700,7 @@ const scheduleDayLabels = [
             <button
               class="naming-btn"
               :class="{ active: recordingConfig.namingPattern === 'custom' }"
+              :disabled="configLocked"
               @click="recordingConfig.namingPattern = 'custom'"
             >
               Custom Only
@@ -690,11 +710,11 @@ const scheduleDayLabels = [
           <div class="form-row">
             <div class="form-group">
               <label>File Prefix</label>
-              <input type="text" v-model="recordingConfig.filePrefix" placeholder="recording" />
+              <input type="text" v-model="recordingConfig.filePrefix" placeholder="recording" :disabled="configLocked" />
             </div>
             <div class="form-group" style="flex: 0.5;">
               <label>Format</label>
-              <select v-model="recordingConfig.fileFormat">
+              <select v-model="recordingConfig.fileFormat" :disabled="configLocked">
                 <option value="csv">CSV</option>
                 <option value="tdms">TDMS</option>
               </select>
@@ -705,15 +725,15 @@ const scheduleDayLabels = [
           <div v-if="recordingConfig.namingPattern === 'timestamp'" class="naming-options">
             <div class="form-row checkboxes">
               <label class="checkbox-label">
-                <input type="checkbox" v-model="recordingConfig.includeDate" />
+                <input type="checkbox" v-model="recordingConfig.includeDate" :disabled="configLocked" />
                 Include Date
               </label>
               <label class="checkbox-label">
-                <input type="checkbox" v-model="recordingConfig.includeTime" />
+                <input type="checkbox" v-model="recordingConfig.includeTime" :disabled="configLocked" />
                 Include Time
               </label>
               <label class="checkbox-label">
-                <input type="checkbox" v-model="recordingConfig.includeChannelsInName" />
+                <input type="checkbox" v-model="recordingConfig.includeChannelsInName" :disabled="configLocked" />
                 Include Channel Count
               </label>
             </div>
@@ -724,11 +744,11 @@ const scheduleDayLabels = [
             <div class="form-row">
               <div class="form-group">
                 <label>Start Number</label>
-                <input type="number" v-model.number="recordingConfig.sequentialStart" min="0" />
+                <input type="number" v-model.number="recordingConfig.sequentialStart" min="0" :disabled="configLocked" />
               </div>
               <div class="form-group">
                 <label>Zero Padding</label>
-                <select v-model.number="recordingConfig.sequentialPadding">
+                <select v-model.number="recordingConfig.sequentialPadding" :disabled="configLocked">
                   <option :value="2">2 digits (01)</option>
                   <option :value="3">3 digits (001)</option>
                   <option :value="4">4 digits (0001)</option>
@@ -740,7 +760,7 @@ const scheduleDayLabels = [
 
           <div class="form-group">
             <label>Custom Suffix (optional)</label>
-            <input type="text" v-model="recordingConfig.customSuffix" placeholder="e.g., test_run_1" />
+            <input type="text" v-model="recordingConfig.customSuffix" placeholder="e.g., test_run_1" :disabled="configLocked" />
           </div>
 
           <div class="preview-filename">
@@ -760,6 +780,7 @@ const scheduleDayLabels = [
               v-model="recordingConfig.basePath"
               placeholder="/path/to/data"
               class="path-input"
+              :disabled="configLocked"
             />
           </div>
 
@@ -767,6 +788,7 @@ const scheduleDayLabels = [
             <button
               class="dir-btn"
               :class="{ active: recordingConfig.directoryStructure === 'flat' }"
+              :disabled="configLocked"
               @click="recordingConfig.directoryStructure = 'flat'"
             >
               Flat
@@ -774,6 +796,7 @@ const scheduleDayLabels = [
             <button
               class="dir-btn"
               :class="{ active: recordingConfig.directoryStructure === 'daily' }"
+              :disabled="configLocked"
               @click="recordingConfig.directoryStructure = 'daily'"
             >
               Daily Folders
@@ -781,6 +804,7 @@ const scheduleDayLabels = [
             <button
               class="dir-btn"
               :class="{ active: recordingConfig.directoryStructure === 'monthly' }"
+              :disabled="configLocked"
               @click="recordingConfig.directoryStructure = 'monthly'"
             >
               Monthly Folders
@@ -788,6 +812,7 @@ const scheduleDayLabels = [
             <button
               class="dir-btn"
               :class="{ active: recordingConfig.directoryStructure === 'experiment' }"
+              :disabled="configLocked"
               @click="recordingConfig.directoryStructure = 'experiment'"
             >
               Experiment
@@ -796,7 +821,7 @@ const scheduleDayLabels = [
 
           <div v-if="recordingConfig.directoryStructure === 'experiment'" class="form-group">
             <label>Experiment Name</label>
-            <input type="text" v-model="recordingConfig.experimentName" placeholder="experiment_1" />
+            <input type="text" v-model="recordingConfig.experimentName" placeholder="experiment_1" :disabled="configLocked" />
           </div>
 
           <div class="preview-path">
@@ -810,15 +835,15 @@ const scheduleDayLabels = [
           <h3>Write Strategy</h3>
 
           <div class="write-selector">
-            <label class="radio-card" :class="{ active: recordingConfig.writeMode === 'immediate' }">
-              <input type="radio" v-model="recordingConfig.writeMode" value="immediate" />
+            <label class="radio-card" :class="{ active: recordingConfig.writeMode === 'immediate', disabled: configLocked }">
+              <input type="radio" v-model="recordingConfig.writeMode" value="immediate" :disabled="configLocked" />
               <div class="radio-content">
                 <strong>Immediate</strong>
                 <span>Write each sample instantly - slower but safer</span>
               </div>
             </label>
-            <label class="radio-card" :class="{ active: recordingConfig.writeMode === 'buffered' }">
-              <input type="radio" v-model="recordingConfig.writeMode" value="buffered" />
+            <label class="radio-card" :class="{ active: recordingConfig.writeMode === 'buffered', disabled: configLocked }">
+              <input type="radio" v-model="recordingConfig.writeMode" value="buffered" :disabled="configLocked" />
               <div class="radio-content">
                 <strong>Buffered</strong>
                 <span>Batch writes for better performance</span>
@@ -830,11 +855,11 @@ const scheduleDayLabels = [
             <div class="form-row">
               <div class="form-group">
                 <label>Buffer Size (samples)</label>
-                <input type="number" v-model.number="recordingConfig.bufferSize" min="10" max="10000" />
+                <input type="number" v-model.number="recordingConfig.bufferSize" min="10" max="10000" :disabled="configLocked" />
               </div>
               <div class="form-group">
                 <label>Max Flush Interval (sec)</label>
-                <input type="number" v-model.number="recordingConfig.flushInterval" min="1" max="60" step="0.5" />
+                <input type="number" v-model.number="recordingConfig.flushInterval" min="1" max="60" step="0.5" :disabled="configLocked" />
               </div>
             </div>
             <div class="buffer-info">
@@ -850,6 +875,7 @@ const scheduleDayLabels = [
             <button
               class="mode-btn"
               :class="{ active: recordingConfig.mode === 'manual' }"
+              :disabled="configLocked"
               @click="recordingConfig.mode = 'manual'"
             >
               Manual
@@ -857,6 +883,7 @@ const scheduleDayLabels = [
             <button
               class="mode-btn"
               :class="{ active: recordingConfig.mode === 'triggered' }"
+              :disabled="configLocked"
               @click="recordingConfig.mode = 'triggered'"
             >
               Triggered
@@ -864,6 +891,7 @@ const scheduleDayLabels = [
             <button
               class="mode-btn"
               :class="{ active: recordingConfig.mode === 'scheduled' }"
+              :disabled="configLocked"
               @click="recordingConfig.mode = 'scheduled'"
             >
               Scheduled
@@ -875,7 +903,7 @@ const scheduleDayLabels = [
             <div class="form-row">
               <div class="form-group">
                 <label>Trigger Channel</label>
-                <select v-model="recordingConfig.triggerChannel">
+                <select v-model="recordingConfig.triggerChannel" :disabled="configLocked">
                   <option value="">Select channel...</option>
                   <option v-for="ch in availableChannels" :key="ch.name" :value="ch.name">
                     {{ ch.displayName }}
@@ -884,7 +912,7 @@ const scheduleDayLabels = [
               </div>
               <div class="form-group">
                 <label>Condition</label>
-                <select v-model="recordingConfig.triggerCondition">
+                <select v-model="recordingConfig.triggerCondition" :disabled="configLocked">
                   <option value="above">Above</option>
                   <option value="below">Below</option>
                   <option value="change">Change</option>
@@ -894,15 +922,15 @@ const scheduleDayLabels = [
             <div class="form-row">
               <div class="form-group">
                 <label>Trigger Value</label>
-                <input type="number" v-model.number="recordingConfig.triggerValue" step="0.1" />
+                <input type="number" v-model.number="recordingConfig.triggerValue" step="0.1" :disabled="configLocked" />
               </div>
               <div class="form-group">
                 <label>Pre-trigger Samples</label>
-                <input type="number" v-model.number="recordingConfig.preTriggerSamples" min="0" />
+                <input type="number" v-model.number="recordingConfig.preTriggerSamples" min="0" :disabled="configLocked" />
               </div>
               <div class="form-group">
                 <label>Post-trigger Samples</label>
-                <input type="number" v-model.number="recordingConfig.postTriggerSamples" min="0" />
+                <input type="number" v-model.number="recordingConfig.postTriggerSamples" min="0" :disabled="configLocked" />
               </div>
             </div>
           </div>
@@ -912,11 +940,11 @@ const scheduleDayLabels = [
             <div class="form-row">
               <div class="form-group">
                 <label>Start Time</label>
-                <input type="time" v-model="recordingConfig.scheduleStart" />
+                <input type="time" v-model="recordingConfig.scheduleStart" :disabled="configLocked" />
               </div>
               <div class="form-group">
                 <label>End Time</label>
-                <input type="time" v-model="recordingConfig.scheduleEnd" />
+                <input type="time" v-model="recordingConfig.scheduleEnd" :disabled="configLocked" />
               </div>
             </div>
             <div class="form-group">
@@ -927,6 +955,7 @@ const scheduleDayLabels = [
                   :key="day.id"
                   class="day-btn"
                   :class="{ active: recordingConfig.scheduleDays.includes(day.id) }"
+                  :disabled="configLocked"
                   @click="toggleScheduleDay(day.id)"
                 >
                   {{ day.label }}
@@ -1097,6 +1126,71 @@ const scheduleDayLabels = [
   flex-direction: column;
   height: 100%;
   background: #0a0a14;
+}
+
+/* Locked State Styles */
+.locked-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  background: rgba(15, 15, 26, 0.95);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  z-index: 10;
+  font-size: 0.8rem;
+  color: #fca5a5;
+}
+
+.locked-overlay .lock-icon {
+  font-size: 1.2rem;
+}
+
+.locked-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #fca5a5;
+}
+
+.locked-banner .lock-icon {
+  font-size: 1rem;
+}
+
+.channel-panel.locked,
+.settings-panel.locked {
+  position: relative;
+}
+
+.channel-panel.locked::after,
+.settings-panel.locked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 20, 0.5);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.channel-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.radio-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Status Bar */

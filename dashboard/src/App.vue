@@ -3,19 +3,23 @@ import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useDashboardStore } from './stores/dashboard'
 import { useMqtt } from './composables/useMqtt'
 import { useScripts } from './composables/useScripts'
+import { useProjectFiles } from './composables/useProjectFiles'
 import DashboardGrid from './components/DashboardGrid.vue'
 import ControlBar from './components/ControlBar.vue'
 import ConfigurationTab from './components/ConfigurationTab.vue'
 import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
 import SafetyTab from './components/SafetyTab.vue'
+import PlaygroundTab from './components/PlaygroundTab.vue'
 import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
+import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig } from './types'
 
 const store = useDashboardStore()
 const scripts = useScripts()
+const projectFiles = useProjectFiles()
 
 // Tabs
 const activeTab = ref('overview')
@@ -79,7 +83,10 @@ const filteredChannels = computed(() => {
   if (!selectedWidgetType.value) return []
   const wt = selectedWidgetType.value.type
 
+  // Only show visible channels
   return Object.entries(store.channels).filter(([_, ch]) => {
+    // Skip hidden channels
+    if (ch.visible === false) return false
     // Toggle only works with digital outputs
     if (wt === 'toggle') return ch.channel_type === 'digital_output'
     // LED works with digital inputs, but also allow any channel (for threshold-based indicators)
@@ -116,19 +123,50 @@ onMounted(() => {
     store.setStatus(status)
   })
 
-  // Watch for channel config
+  // Watch for channel config and load project
   const checkChannels = setInterval(() => {
     if (Object.keys(mqtt.channelConfigs.value).length > 0) {
       store.setChannels(mqtt.channelConfigs.value)
 
-      // Load saved layout or generate default
-      if (!store.loadLayoutFromStorage()) {
-        store.generateDefaultLayout()
-      }
+      // Request current project from backend
+      // If backend has a loaded project, it will send project/current with the data
+      // The useProjectFiles composable will apply it automatically
+      projectFiles.getCurrentProject()
+
+      // Give time for project data to arrive, then fall back to layout from storage
+      setTimeout(() => {
+        if (!projectFiles.currentProjectData.value) {
+          // No project loaded from backend, use local storage
+          if (!store.loadLayoutFromStorage()) {
+            store.generateDefaultLayout()
+          }
+        }
+      }, 500)
 
       clearInterval(checkChannels)
     }
   }, 100)
+
+  // When a project is loaded, reload scripts
+  projectFiles.onProjectLoaded((data) => {
+    console.log('Project loaded:', data.name)
+    scripts.loadAll()  // Reload scripts from localStorage (where project data was applied)
+    scripts.startEvaluation()
+  })
+
+  // Handle channel deletion - clean up widgets
+  mqtt.onChannelDeleted((channelName: string) => {
+    const removed = store.handleChannelDeleted(channelName)
+    if (removed > 0) {
+      console.log(`Cleaned up ${removed} widgets for deleted channel: ${channelName}`)
+    }
+  })
+
+  // Handle channel creation - refresh store
+  mqtt.onChannelCreated((channels: string[]) => {
+    console.log(`Created channels: ${channels.join(', ')}`)
+    // Channel config will be refreshed via the config/channels topic
+  })
 
   // Cleanup interval on unmount
   onUnmounted(() => {
@@ -163,15 +201,13 @@ function handleScheduleDisable() {
   mqtt.disableScheduler()
 }
 
-function handleLoadConfig(name: string) {
-  mqtt.loadConfig(name)
+function handleRetryConnection() {
+  mqtt.disconnect()
+  setTimeout(() => {
+    mqtt.connect('ws://localhost:9001')
+  }, 100)
 }
 
-function handleSaveConfig(name: string) {
-  mqtt.saveConfig(name)
-  // Also save layout
-  store.saveLayoutToStorage()
-}
 </script>
 
 <template>
@@ -183,7 +219,7 @@ function handleSaveConfig(name: string) {
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
           </svg>
-          <span class="title">NISystem</span>
+          <span class="title">DCFlux</span>
         </div>
 
         <!-- Navigation Tabs -->
@@ -244,10 +280,36 @@ function handleSaveConfig(name: string) {
             </svg>
             Safety
           </button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'playground' }"
+            @click="activeTab = 'playground'"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 3v18h18"/>
+              <path d="M7 12l4-4 4 4 4-4"/>
+              <circle cx="7" cy="12" r="1.5"/>
+              <circle cx="11" cy="8" r="1.5"/>
+              <circle cx="15" cy="12" r="1.5"/>
+              <circle cx="19" cy="8" r="1.5"/>
+            </svg>
+            Playground
+          </button>
         </nav>
       </div>
 
       <div class="header-right">
+        <!-- Control Bar integrated into header -->
+        <ControlBar
+          :show-edit-controls="activeTab === 'overview'"
+          @start="handleStart"
+          @stop="handleStop"
+          @record-start="handleRecordStart"
+          @record-stop="handleRecordStop"
+          @schedule-enable="handleScheduleEnable"
+          @schedule-disable="handleScheduleDisable"
+          @add-widget="openAddPanel"
+        />
         <span class="system-name">{{ store.systemName }}</span>
         <span class="connection-status" :class="{ connected: mqtt.connected.value }">
           {{ mqtt.connected.value ? 'Connected' : 'Disconnected' }}
@@ -262,27 +324,23 @@ function handleSaveConfig(name: string) {
       <ScriptsTab v-else-if="activeTab === 'scripts'" />
       <DataTab v-else-if="activeTab === 'data'" />
       <SafetyTab v-else-if="activeTab === 'safety'" />
+      <PlaygroundTab v-else-if="activeTab === 'playground'" />
     </main>
-
-    <!-- Control bar -->
-    <ControlBar
-      :show-edit-controls="activeTab === 'overview'"
-      @start="handleStart"
-      @stop="handleStop"
-      @record-start="handleRecordStart"
-      @record-stop="handleRecordStop"
-      @schedule-enable="handleScheduleEnable"
-      @schedule-disable="handleScheduleDisable"
-      @load-config="handleLoadConfig"
-      @save-config="handleSaveConfig"
-      @add-widget="openAddPanel"
-    />
 
     <!-- Notifications Toast -->
     <NotificationToast />
 
     <!-- Status Messages (only on overview) -->
     <StatusMessages v-if="activeTab === 'overview'" :maxMessages="50" />
+
+    <!-- Connection Overlay -->
+    <ConnectionOverlay
+      :connected="mqtt.connected.value"
+      :reconnect-attempts="mqtt.reconnectAttempts.value"
+      :data-is-stale="mqtt.dataIsStale.value"
+      :last-heartbeat-time="mqtt.lastHeartbeatTime.value"
+      @retry-now="handleRetryConnection"
+    />
 
     <!-- Add Widget Modal -->
     <Teleport to="body">
@@ -342,9 +400,10 @@ function handleSaveConfig(name: string) {
   justify-content: space-between;
   align-items: center;
   padding: 0 16px;
-  height: 48px;
+  height: 56px;
   background: #0f0f1a;
   border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
 }
 
 .header-left {
@@ -399,6 +458,8 @@ function handleSaveConfig(name: string) {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex: 1;
+  justify-content: flex-end;
 }
 
 .system-name {

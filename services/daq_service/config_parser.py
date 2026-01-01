@@ -17,7 +17,11 @@ class ChannelType(Enum):
     THERMOCOUPLE = "thermocouple"
     VOLTAGE = "voltage"
     CURRENT = "current"
-    COUNTER = "counter"  # Pulse/frequency counter
+    RTD = "rtd"                      # Resistance Temperature Detector
+    STRAIN = "strain"                # Strain gauge / bridge
+    IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones
+    RESISTANCE = "resistance"        # Resistance measurement
+    COUNTER = "counter"              # Pulse/frequency counter
     DIGITAL_INPUT = "digital_input"
     DIGITAL_OUTPUT = "digital_output"
     ANALOG_OUTPUT = "analog_output"
@@ -39,8 +43,8 @@ class SystemConfig:
     mqtt_broker: str = "localhost"
     mqtt_port: int = 1883
     mqtt_base_topic: str = "nisystem"
-    scan_rate_hz: float = 100.0
-    publish_rate_hz: float = 10.0
+    scan_rate_hz: float = 100.0    # Scan rate (capped at 100Hz)
+    publish_rate_hz: float = 4.0   # Publish rate (capped at 10Hz)
     simulation_mode: bool = True
     log_directory: str = "./logs"
     config_reload_topic: str = "nisystem/config/reload"
@@ -55,6 +59,9 @@ class ChassisConfig:
     ip_address: str = ""
     description: str = ""
     enabled: bool = True
+    # NI MAX device name (e.g., "cDAQ1" or "cDAQ9189-1234567")
+    # If not specified, will attempt auto-discovery by serial or slot
+    device_name: str = ""
 
 
 @dataclass
@@ -76,6 +83,12 @@ class ChannelConfig:
     description: str = ""
     units: str = ""
 
+    # Visibility - hidden channels still collect data but don't appear in UI
+    visible: bool = True
+
+    # Group for organization in UI
+    group: str = ""
+
     # Scaling - Linear (y = mx + b)
     scale_slope: float = 1.0
     scale_offset: float = 0.0
@@ -96,15 +109,45 @@ class ChannelConfig:
     voltage_range: float = 10.0
     current_range_ma: float = 20.0
 
+    # Terminal configuration for analog inputs (RSE, DIFF, NRSE, PSEUDO_DIFF)
+    # RSE = Referenced Single-Ended (default, most common)
+    # DIFF = Differential (better noise rejection, uses 2 channels)
+    # NRSE = Non-Referenced Single-Ended
+    # PSEUDO_DIFF = Pseudo-Differential
+    terminal_config: str = "RSE"
+
     # Thermocouple specific
     thermocouple_type: Optional[ThermocoupleType] = None
     cjc_source: str = "internal"
+
+    # RTD specific
+    rtd_type: str = "Pt100"          # Pt100, Pt500, Pt1000, custom
+    rtd_resistance: float = 100.0    # Nominal resistance at 0°C
+    rtd_wiring: str = "4-wire"       # 2-wire, 3-wire, 4-wire
+    rtd_current: float = 0.001       # Excitation current in Amps (default 1mA)
+
+    # Strain gauge specific
+    strain_config: str = "full-bridge"  # full-bridge, half-bridge, quarter-bridge
+    strain_excitation_voltage: float = 2.5  # Bridge excitation voltage
+    strain_gage_factor: float = 2.0  # Gage factor (typically 2.0 for foil gages)
+    strain_resistance: float = 350.0 # Nominal gage resistance in Ohms
+
+    # IEPE specific (accelerometers, microphones)
+    iepe_sensitivity: float = 100.0  # mV/g or mV/Pa
+    iepe_current: float = 0.004      # Excitation current in Amps (default 4mA)
+    iepe_coupling: str = "AC"        # AC or DC coupling
+
+    # Resistance specific
+    resistance_range: float = 1000.0 # Maximum expected resistance in Ohms
+    resistance_wiring: str = "4-wire"  # 2-wire, 4-wire
 
     # Counter specific
     counter_mode: str = "frequency"  # frequency, count, period
     pulses_per_unit: float = 1.0     # e.g., 100 pulses = 1 gallon → pulses_per_unit = 100
     counter_edge: str = "rising"     # rising, falling, both
     counter_reset_on_read: bool = False  # For totalizer mode
+    counter_min_freq: float = 0.1    # Minimum expected frequency in Hz
+    counter_max_freq: float = 1000.0 # Maximum expected frequency in Hz
 
     # Digital specific
     invert: bool = False
@@ -192,7 +235,9 @@ def parse_actions(actions_str: str) -> Dict[str, Any]:
 def load_config(config_path: str) -> NISystemConfig:
     """Load and parse the INI configuration file"""
 
-    parser = configparser.ConfigParser()
+    # Use RawConfigParser to avoid interpolation issues with % characters
+    # (e.g., units = %RH for relative humidity)
+    parser = configparser.RawConfigParser()
     parser.read(config_path)
 
     # Parse system config
@@ -202,8 +247,15 @@ def load_config(config_path: str) -> NISystemConfig:
         system.mqtt_broker = sys_section.get('mqtt_broker', system.mqtt_broker)
         system.mqtt_port = int(sys_section.get('mqtt_port', system.mqtt_port))
         system.mqtt_base_topic = sys_section.get('mqtt_base_topic', system.mqtt_base_topic)
-        system.scan_rate_hz = float(sys_section.get('scan_rate_hz', system.scan_rate_hz))
-        system.publish_rate_hz = float(sys_section.get('publish_rate_hz', system.publish_rate_hz))
+
+        # Parse scan/publish rates (reasonable limits: scan up to 100Hz, publish up to 10Hz)
+        scan_rate = float(sys_section.get('scan_rate_hz', system.scan_rate_hz))
+        publish_rate = float(sys_section.get('publish_rate_hz', system.publish_rate_hz))
+        system.scan_rate_hz = min(scan_rate, 100.0)  # Cap at 100Hz
+        system.publish_rate_hz = min(publish_rate, 10.0)  # Cap at 10Hz
+        if scan_rate > 100.0 or publish_rate > 10.0:
+            logger.warning(f"Scan/publish rates capped (requested: scan={scan_rate}Hz, publish={publish_rate}Hz)")
+
         system.simulation_mode = parse_bool(sys_section.get('simulation_mode', 'true'))
         system.log_directory = sys_section.get('log_directory', system.log_directory)
         system.config_reload_topic = sys_section.get('config_reload_topic', system.config_reload_topic)
@@ -221,7 +273,8 @@ def load_config(config_path: str) -> NISystemConfig:
                 connection=sec.get('connection', 'USB'),
                 ip_address=sec.get('ip_address', ''),
                 description=sec.get('description', ''),
-                enabled=parse_bool(sec.get('enabled', 'true'))
+                enabled=parse_bool(sec.get('enabled', 'true')),
+                device_name=sec.get('device_name', '')
             )
 
     # Parse module configs
@@ -259,6 +312,8 @@ def load_config(config_path: str) -> NISystemConfig:
                 channel_type=channel_type,
                 description=sec.get('description', ''),
                 units=sec.get('units', ''),
+                visible=parse_bool(sec.get('visible', 'true')),
+                group=sec.get('group', ''),
                 scale_slope=float(sec.get('scale_slope', 1.0)),
                 scale_offset=float(sec.get('scale_offset', 0.0)),
                 scale_type=sec.get('scale_type', 'none'),
@@ -271,12 +326,32 @@ def load_config(config_path: str) -> NISystemConfig:
                 scaled_max=float(sec['scaled_max']) if 'scaled_max' in sec else None,
                 voltage_range=float(sec.get('voltage_range', 10.0)),
                 current_range_ma=float(sec.get('current_range_ma', 20.0)),
+                terminal_config=sec.get('terminal_config', 'RSE'),
                 thermocouple_type=tc_type,
                 cjc_source=sec.get('cjc_source', 'internal'),
+                # RTD
+                rtd_type=sec.get('rtd_type', 'Pt100'),
+                rtd_resistance=float(sec.get('rtd_resistance', 100.0)),
+                rtd_wiring=sec.get('rtd_wiring', '4-wire'),
+                rtd_current=float(sec.get('rtd_current', 0.001)),
+                # Strain
+                strain_config=sec.get('strain_config', 'full-bridge'),
+                strain_excitation_voltage=float(sec.get('strain_excitation_voltage', 2.5)),
+                strain_gage_factor=float(sec.get('strain_gage_factor', 2.0)),
+                strain_resistance=float(sec.get('strain_resistance', 350.0)),
+                # IEPE
+                iepe_sensitivity=float(sec.get('iepe_sensitivity', 100.0)),
+                iepe_current=float(sec.get('iepe_current', 0.004)),
+                iepe_coupling=sec.get('iepe_coupling', 'AC'),
+                # Resistance
+                resistance_range=float(sec.get('resistance_range', 1000.0)),
+                resistance_wiring=sec.get('resistance_wiring', '4-wire'),
                 counter_mode=sec.get('counter_mode', 'frequency'),
                 pulses_per_unit=float(sec.get('pulses_per_unit', 1.0)),
                 counter_edge=sec.get('counter_edge', 'rising'),
                 counter_reset_on_read=parse_bool(sec.get('counter_reset_on_read', 'false')),
+                counter_min_freq=float(sec.get('counter_min_freq', 0.1)),
+                counter_max_freq=float(sec.get('counter_max_freq', 1000.0)),
                 invert=parse_bool(sec.get('invert', 'false')),
                 default_state=parse_bool(sec.get('default_state', 'false')),
                 default_value=float(sec.get('default_value', 0.0)),

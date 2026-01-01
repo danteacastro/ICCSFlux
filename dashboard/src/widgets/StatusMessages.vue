@@ -214,7 +214,7 @@ const hasError = computed(() => {
 <style scoped>
 .status-messages {
   position: fixed;
-  bottom: 60px;
+  bottom: 16px;
   right: 16px;
   width: 380px;
   max-height: 280px;

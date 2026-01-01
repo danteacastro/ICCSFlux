@@ -6,7 +6,6 @@ const props = defineProps<{
   channel: string
   label?: string
   decimals?: number
-  showUnit?: boolean
 }>()
 
 const store = useDashboardStore()
@@ -30,7 +29,7 @@ const displayValue = computed(() => {
 })
 
 const unit = computed(() => {
-  if (props.showUnit === false) return ''
+  // Show unit if channel has one configured (non-empty string)
   return channelConfig.value?.unit || ''
 })
 

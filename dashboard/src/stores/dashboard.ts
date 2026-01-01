@@ -13,7 +13,7 @@ import type {
 export const useDashboardStore = defineStore('dashboard', () => {
   // System state
   const systemId = ref<string>('default')
-  const systemName = ref<string>('NISystem')
+  const systemName = ref<string>('DCFlux')
   const mqttPrefix = ref<string>('nisystem')
 
   // Channel data
@@ -23,8 +23,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Layout state
   const widgets = ref<WidgetConfig[]>([])
-  const gridColumns = ref(12)
-  const rowHeight = ref(60)
+  const gridColumns = ref(24)  // 24 columns for finer control (was 12)
+  const rowHeight = ref(30)    // Smaller row height to match (was 60)
   const editMode = ref(false)
 
   // Chart state (max 2 charts)
@@ -35,6 +35,23 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const groups: Record<string, ChannelConfig[]> = {}
 
     Object.values(channels.value).forEach(ch => {
+      const group = ch.group || 'Ungrouped'
+      if (!groups[group]) groups[group] = []
+      groups[group].push(ch)
+    })
+
+    return groups
+  })
+
+  // Visible channels only (for widget dropdowns)
+  const visibleChannels = computed(() => {
+    return Object.values(channels.value).filter(ch => ch.visible !== false)
+  })
+
+  const visibleChannelsByGroup = computed(() => {
+    const groups: Record<string, ChannelConfig[]> = {}
+
+    visibleChannels.value.forEach(ch => {
       const group = ch.group || 'Ungrouped'
       if (!groups[group]) groups[group] = []
       groups[group].push(ch)
@@ -194,6 +211,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (stored) {
       try {
         const layout = JSON.parse(stored) as LayoutConfig
+        // Migration: fix showUnit=false to undefined (show by default)
+        if (layout.widgets) {
+          layout.widgets.forEach(w => {
+            if (w.showUnit === false) {
+              delete (w as any).showUnit  // Remove explicit false, let it default to showing
+            }
+          })
+        }
         setLayout(layout)
         return true
       } catch (e) {
@@ -278,30 +303,68 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   }
 
+  // Widget defaults for 24-column grid (double the old 12-column values)
+  // Row height is now 30px (was 60px), so h values stay same for same pixel height
   function getWidgetDefaults(type: WidgetType): { w: number; h: number } {
     const defaults: Record<WidgetType, { w: number; h: number }> = {
-      numeric: { w: 1, h: 1 },
-      gauge: { w: 2, h: 2 },
-      led: { w: 1, h: 1 },
-      chart: { w: 4, h: 3 },
-      table: { w: 3, h: 2 },
-      setpoint: { w: 2, h: 1 },
-      toggle: { w: 1, h: 1 },
-      title: { w: 2, h: 1 },
-      sparkline: { w: 2, h: 1 },
-      alarm_summary: { w: 2, h: 2 },
-      recording_status: { w: 2, h: 2 },
-      system_status: { w: 2, h: 2 },
-      interlock_status: { w: 2, h: 2 },
-      multi_channel_table: { w: 2, h: 3 },
-      action_button: { w: 1, h: 1 },
-      clock: { w: 2, h: 1 },
-      divider: { w: 3, h: 1 },
-      bar_graph: { w: 2, h: 1 },
-      scheduler_status: { w: 2, h: 2 },
-      sequence_status: { w: 2, h: 2 }
+      numeric: { w: 2, h: 2 },      // 1 old cell = 2 new units
+      gauge: { w: 4, h: 4 },        // 2 old cells = 4 new units
+      led: { w: 2, h: 2 },          // 1 old cell
+      chart: { w: 8, h: 6 },        // 4 old cells wide
+      table: { w: 6, h: 4 },        // 3 old cells wide
+      setpoint: { w: 3, h: 2 },     // 1.5 old cells - the sweet spot!
+      toggle: { w: 2, h: 2 },       // 1 old cell
+      title: { w: 4, h: 2 },        // 2 old cells
+      sparkline: { w: 4, h: 2 },    // 2 old cells
+      alarm_summary: { w: 4, h: 4 },
+      recording_status: { w: 4, h: 4 },
+      system_status: { w: 4, h: 4 },
+      interlock_status: { w: 4, h: 4 },
+      multi_channel_table: { w: 4, h: 6 },
+      action_button: { w: 2, h: 2 },
+      clock: { w: 4, h: 2 },
+      divider: { w: 6, h: 2 },
+      bar_graph: { w: 4, h: 2 },
+      scheduler_status: { w: 4, h: 4 },
+      sequence_status: { w: 4, h: 4 }
     }
-    return defaults[type] || { w: 1, h: 1 }
+    return defaults[type] || { w: 2, h: 2 }
+  }
+
+  // Load preset layout from JSON file
+  async function loadPresetLayout(layoutName: string): Promise<boolean> {
+    try {
+      // Fetch layout from config directory
+      const response = await fetch(`/config/${layoutName}.json`)
+      if (!response.ok) {
+        console.error(`Failed to load preset layout: ${layoutName}`)
+        return false
+      }
+
+      const layoutData = await response.json()
+
+      // Validate required fields
+      if (!layoutData.widgets || !Array.isArray(layoutData.widgets)) {
+        console.error('Invalid layout format: missing widgets array')
+        return false
+      }
+
+      // Apply the layout
+      const layout: LayoutConfig = {
+        widgets: layoutData.widgets,
+        gridColumns: layoutData.gridColumns || 24,
+        rowHeight: layoutData.rowHeight || 30
+      }
+
+      setLayout(layout)
+      saveLayoutToStorage()
+
+      console.log(`Loaded preset layout: ${layoutData.name || layoutName}`)
+      return true
+    } catch (error) {
+      console.error('Error loading preset layout:', error)
+      return false
+    }
   }
 
   // Widget style update
@@ -350,6 +413,67 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   }
 
+  // Find widgets that reference non-existent channels
+  function findOrphanedWidgets(): WidgetConfig[] {
+    const channelNames = new Set(Object.keys(channels.value))
+    return widgets.value.filter(widget => {
+      // Single-channel widgets
+      if (widget.channel && !channelNames.has(widget.channel)) {
+        return true
+      }
+      // Multi-channel widgets (charts) - orphaned if ALL channels are missing
+      if (widget.channels && widget.channels.length > 0) {
+        const allMissing = widget.channels.every(ch => !channelNames.has(ch))
+        return allMissing
+      }
+      return false
+    })
+  }
+
+  // Remove widget references to a deleted channel
+  function handleChannelDeleted(channelName: string) {
+    // Remove from single-channel widgets
+    const toRemove: string[] = []
+
+    for (const widget of widgets.value) {
+      if (widget.channel === channelName) {
+        toRemove.push(widget.id)
+      }
+      // Remove from multi-channel widgets (charts)
+      if (widget.channels && Array.isArray(widget.channels)) {
+        const idx = widget.channels.indexOf(channelName)
+        if (idx !== -1) {
+          widget.channels.splice(idx, 1)
+          // If chart has no channels left, mark for removal
+          if (widget.channels.length === 0) {
+            toRemove.push(widget.id)
+          }
+        }
+      }
+    }
+
+    // Remove orphaned widgets
+    for (const id of toRemove) {
+      removeWidget(id)
+    }
+
+    // Also remove from channel values
+    if (values.value[channelName]) {
+      delete values.value[channelName]
+    }
+
+    return toRemove.length
+  }
+
+  // Clean up all orphaned widgets
+  function cleanupOrphanedWidgets(): number {
+    const orphans = findOrphanedWidgets()
+    for (const widget of orphans) {
+      removeWidget(widget.id)
+    }
+    return orphans.length
+  }
+
   // Clear all values (reset to boot state with "--" displays)
   function clearValues() {
     values.value = {}
@@ -371,6 +495,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     // Computed
     channelsByGroup,
+    visibleChannels,
+    visibleChannelsByGroup,
     chartWidgets,
     canAddChart,
     isAcquiring,
@@ -399,10 +525,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
     saveLayoutToStorage,
     loadLayoutFromStorage,
     generateDefaultLayout,
+    loadPresetLayout,
 
     // Chart
     addChannelToChart,
     removeChannelFromChart,
-    renameChannelInWidgets
+    renameChannelInWidgets,
+
+    // Channel lifecycle
+    findOrphanedWidgets,
+    handleChannelDeleted,
+    cleanupOrphanedWidgets
   }
 })

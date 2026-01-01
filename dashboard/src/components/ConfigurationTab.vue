@@ -27,7 +27,12 @@ const mqtt = useMqtt()
 // Project manager for export/import
 const projectManager = useProjectManager()
 const isExporting = ref(false)
+const isReloading = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
+
+// Edit mode - only allow editing when explicitly enabled and not acquiring
+const editMode = ref(false)
+const canEdit = computed(() => editMode.value && !store.isAcquiring)
 
 async function exportProject() {
   isExporting.value = true
@@ -153,6 +158,17 @@ function toggleChannelEnabled(channelName: string) {
   }
 }
 
+// Update a single channel field inline (for editable table cells)
+function updateChannelField(channelName: string, field: string, value: any) {
+  if (!canEdit.value) return
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  mqtt.updateChannelConfig(channelName, { [field]: value })
+  markDirty()
+}
+
 // Add new channel
 function openAddChannelModal() {
   newChannelForm.value = {
@@ -238,6 +254,18 @@ function deleteChannel(channelName: string, event: Event) {
   // Remove from local enable state
   delete channelEnabled.value[channelName]
   markDirty()
+}
+
+// Reset counter to zero
+function resetCounter(channelName: string) {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+
+  // Send reset command to backend
+  mqtt.resetCounter(channelName)
+  showFeedback('info', `Resetting counter: ${channelName}`)
 }
 
 // Open system settings
@@ -346,17 +374,18 @@ function deselectAllDiscoveryChannels() {
 // Channel type tabs
 const channelTypeTabs = [
   { id: 'all', label: 'ALL CHANNELS', icon: '⊞' },
-  { id: 'thermocouple', label: 'THERMOCOUPLE', icon: '🌡' },
-  { id: 'rtd', label: 'RTD', icon: '🌡' },
-  { id: 'voltage', label: 'VOLTAGE INPUT', icon: '⚡' },
   { id: 'current', label: 'CURRENT INPUT', icon: '〰' },
-  { id: 'strain', label: 'STRAIN/BRIDGE', icon: '⚖' },
-  { id: 'iepe', label: 'IEPE/ACCEL', icon: '〰' },
-  { id: 'counter', label: 'COUNTER', icon: '#' },
-  { id: 'resistance', label: 'RESISTANCE', icon: 'Ω' },
+  { id: 'voltage', label: 'VOLTAGE INPUT', icon: '⚡' },
+  { id: 'current_output', label: 'CURRENT OUTPUT', icon: '〰' },
+  { id: 'voltage_output', label: 'VOLTAGE OUTPUT', icon: '↗' },
   { id: 'digital_input', label: 'DIGITAL INPUT', icon: '▢' },
   { id: 'digital_output', label: 'DIGITAL OUTPUT', icon: '▣' },
-  { id: 'analog_output', label: 'ANALOG OUTPUT', icon: '↗' },
+  { id: 'counter', label: 'COUNTER', icon: '#' },
+  { id: 'thermocouple', label: 'THERMOCOUPLE', icon: '🌡' },
+  { id: 'rtd', label: 'RTD', icon: '🌡' },
+  { id: 'strain', label: 'STRAIN/BRIDGE', icon: '⚖' },
+  { id: 'iepe', label: 'IEPE/ACCEL', icon: '〰' },
+  { id: 'resistance', label: 'RESISTANCE', icon: 'Ω' },
 ]
 
 const activeTypeTab = ref('all')
@@ -370,7 +399,20 @@ const filteredChannels = computed(() => {
 
   // Filter by type
   if (activeTypeTab.value !== 'all') {
-    channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
+    // Handle virtual output types (voltage_output and current_output filter analog_output)
+    if (activeTypeTab.value === 'voltage_output') {
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'analog_output' &&
+        (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA'))
+      )
+    } else if (activeTypeTab.value === 'current_output') {
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'analog_output' &&
+        ch.ao_range?.includes('mA')
+      )
+    } else {
+      channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
+    }
   }
 
   // Filter by search
@@ -391,6 +433,41 @@ function getCurrentValue(channelName: string): string {
   const value = store.values[channelName]
   if (!value) return '--'
   return value.value.toFixed(2)
+}
+
+// Get raw value (before scaling) for voltage/current inputs
+function getRawValue(channelName: string): string {
+  const value = store.values[channelName]
+  if (!value) return '--'
+  // Backend may provide raw_value; otherwise use main value
+  const raw = value.raw_value ?? value.value
+  return raw.toFixed(3)
+}
+
+// Get scaled value (after engineering unit conversion)
+function getScaledValue(channelName: string): string {
+  const value = store.values[channelName]
+  const config = store.channels[channelName]
+  if (!value) return '--'
+
+  // Apply scaling based on config
+  if (config?.scale_type === 'linear' && config.scale_slope !== undefined) {
+    const scaled = value.value * config.scale_slope + (config.scale_offset || 0)
+    return `${scaled.toFixed(2)} ${config.unit || ''}`
+  } else if (config?.scale_type === 'map' && config.pre_scaled_min !== undefined) {
+    const rawRange = (config.pre_scaled_max || 10) - (config.pre_scaled_min || 0)
+    const scaledRange = (config.scaled_max || 100) - (config.scaled_min || 0)
+    const normalized = (value.value - (config.pre_scaled_min || 0)) / rawRange
+    const scaled = normalized * scaledRange + (config.scaled_min || 0)
+    return `${scaled.toFixed(2)} ${config.unit || ''}`
+  } else if (config?.four_twenty_scaling && config.eng_units_min !== undefined) {
+    const normalized = (value.value - 4) / 16
+    const scaled = normalized * ((config.eng_units_max || 100) - (config.eng_units_min || 0)) + (config.eng_units_min || 0)
+    return `${scaled.toFixed(2)} ${config.unit || ''}`
+  }
+
+  // No scaling - show raw with unit
+  return `${value.value.toFixed(2)} ${config?.unit || ''}`
 }
 
 // Get alarm status
@@ -780,6 +857,23 @@ function saveToFile(filename?: string) {
   }
 }
 
+// Reload config from disk (re-reads the INI file)
+function reloadConfig() {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  isReloading.value = true
+  mqtt.sendCommand('config/reload', {})
+  showFeedback('info', 'Reloading configuration from disk...')
+
+  // Reset after a delay
+  setTimeout(() => {
+    isReloading.value = false
+    showFeedback('success', 'Configuration reload requested')
+  }, 1500)
+}
+
 // Open Save As dialog
 function openSaveAsDialog() {
   if (!mqtt.connected.value) {
@@ -858,8 +952,9 @@ const tableColumns = computed(() => {
   const baseColumns = [
     { key: 'enable', label: 'EN', width: '40px' },
     { key: 'type', label: 'TYPE', width: '50px' },
-    { key: 'name', label: 'CHANNEL', width: '180px' },
-    { key: 'label', label: 'LABEL', width: '140px' },
+    { key: 'tag', label: 'TAG', width: '100px' },
+    { key: 'channel', label: 'CHANNEL', width: '200px' },
+    { key: 'description', label: 'DESCRIPTION', width: '350px' },
   ]
 
   switch (activeTypeTab.value) {
@@ -882,18 +977,23 @@ const tableColumns = computed(() => {
     case 'voltage':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '80px' },
-        { key: 'terminal', label: 'TERMINAL', width: '80px' },
-        { key: 'scale', label: 'SCALE', width: '80px' },
-        { key: 'unit', label: 'UNITS', width: '60px' },
+        { key: 'range', label: 'RANGE', width: '70px' },
+        { key: 'terminal', label: 'TERM', width: '70px' },
+        { key: 'scale', label: 'SCALE', width: '70px' },
+        { key: 'raw_value', label: 'RAW (V)', width: '80px' },
+        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'current':
       return [
         ...baseColumns,
         { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'scaling', label: '4-20 SCALE', width: '100px' },
-        { key: 'unit', label: 'UNITS', width: '60px' },
+        { key: 'terminal', label: 'TERM', width: '70px' },
+        { key: 'scale', label: 'SCALE', width: '70px' },
+        { key: 'raw_value', label: 'RAW (mA)', width: '80px' },
+        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'strain':
@@ -917,7 +1017,10 @@ const tableColumns = computed(() => {
         ...baseColumns,
         { key: 'mode', label: 'MODE', width: '100px' },
         { key: 'edge', label: 'EDGE', width: '70px' },
+        { key: 'min_freq', label: 'MIN FREQ', width: '80px' },
+        { key: 'max_freq', label: 'MAX FREQ', width: '80px' },
         { key: 'value', label: 'COUNT', width: '100px' },
+        { key: 'reset', label: 'RESET', width: '60px' },
       ]
     case 'resistance':
       return [
@@ -934,11 +1037,35 @@ const tableColumns = computed(() => {
         { key: 'invert', label: 'INV', width: '50px' },
         { key: 'state', label: 'STATE', width: '80px' },
       ]
+    case 'voltage_output':
+      return [
+        ...baseColumns,
+        { key: 'range', label: 'RANGE', width: '70px' },
+        { key: 'scale', label: 'SCALE', width: '70px' },
+        { key: 'raw_value', label: 'RAW (V)', width: '80px' },
+        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'unit', label: 'UNIT', width: '60px' },
+        { key: 'value', label: 'VALUE', width: '100px' },
+      ]
+    case 'current_output':
+      return [
+        ...baseColumns,
+        { key: 'range', label: 'RANGE', width: '70px' },
+        { key: 'scale', label: 'SCALE', width: '70px' },
+        { key: 'raw_value', label: 'RAW (mA)', width: '80px' },
+        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'unit', label: 'UNIT', width: '60px' },
+        { key: 'value', label: 'VALUE', width: '100px' },
+      ]
     case 'analog_output':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '100px' },
-        { key: 'output', label: 'OUTPUT', width: '100px' },
+        { key: 'range', label: 'RANGE', width: '70px' },
+        { key: 'scale', label: 'SCALE', width: '70px' },
+        { key: 'raw_value', label: 'RAW', width: '80px' },
+        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'unit', label: 'UNIT', width: '60px' },
+        { key: 'value', label: 'VALUE', width: '100px' },
       ]
     default:
       return [
@@ -1012,6 +1139,19 @@ watch(() => Object.keys(store.channels), () => {
           </svg>
           Settings
         </button>
+        <button
+          class="action-btn edit-btn"
+          :class="{ active: editMode }"
+          @click="editMode = !editMode"
+          :disabled="store.isAcquiring"
+          :title="store.isAcquiring ? 'Stop acquisition to edit' : (editMode ? 'Exit edit mode' : 'Enter edit mode')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          {{ editMode ? 'EDITING' : 'EDIT' }}
+        </button>
         <button class="action-btn load-btn" @click="openLoadDialog">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4"/>
@@ -1019,6 +1159,15 @@ watch(() => Object.keys(store.channels), () => {
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
           Load
+        </button>
+        <button class="action-btn reload-btn" @click="reloadConfig" :disabled="isReloading" title="Reload configuration from disk">
+          <svg v-if="!isReloading" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6"/>
+            <path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          <span v-else class="spinner"></span>
+          {{ isReloading ? 'Reloading...' : 'Reload' }}
         </button>
         <button class="action-btn save-btn" :class="{ dirty: configDirty }" @click="saveToFile()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1116,64 +1265,528 @@ watch(() => Object.keys(store.channels), () => {
                   {{ formatChannelType(config.channel_type) }}
                 </span>
               </td>
-              <td class="col-name">{{ name }}</td>
-              <td class="col-label">{{ config.display_name || name }}</td>
+              <!-- TAG - short name like TC101 -->
+              <td class="col-tag editable-cell" @click.stop>
+                <input
+                  type="text"
+                  :value="config.display_name || ''"
+                  @blur="updateChannelField(name, 'display_name', ($event.target as HTMLInputElement).value)"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()"
+                  class="inline-input"
+                  :placeholder="name"
+                  :disabled="!canEdit"
+                />
+              </td>
+              <!-- CHANNEL - cDAQ physical location -->
+              <td class="col-channel editable-cell" @click.stop>
+                <input
+                  type="text"
+                  :value="config.physical_channel || ''"
+                  @blur="updateChannelField(name, 'physical_channel', ($event.target as HTMLInputElement).value)"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()"
+                  class="inline-input channel-input"
+                  placeholder="cDAQ1Mod1/ai0"
+                  :disabled="!canEdit"
+                />
+              </td>
+              <!-- DESCRIPTION - long text -->
+              <td class="col-description editable-cell" @click.stop>
+                <input
+                  type="text"
+                  :value="config.description || ''"
+                  @blur="updateChannelField(name, 'description', ($event.target as HTMLInputElement).value)"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()"
+                  class="inline-input description-input"
+                  placeholder="Description..."
+                  :disabled="!canEdit"
+                />
+              </td>
 
-              <!-- Type-specific columns -->
+              <!-- Type-specific columns with inline editing -->
               <template v-if="activeTypeTab === 'thermocouple'">
-                <td>K</td>
-                <td>INT</td>
-                <td>°C</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.thermocouple_type || 'K'"
+                    @change="updateChannelField(name, 'tc_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="tc in THERMOCOUPLE_TYPES" :key="tc.value" :value="tc.value">{{ tc.value }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.cjc_source || 'internal'"
+                    @change="updateChannelField(name, 'cjc_source', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="internal">INT</option>
+                    <option value="constant">CONST</option>
+                    <option value="channel">EXT</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.unit || 'degC'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="degC">°C</option>
+                    <option value="degF">°F</option>
+                    <option value="K">K</option>
+                  </select>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'rtd'">
-                <td>Pt100</td>
-                <td>4-wire</td>
-                <td>°C</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.rtd_type || 'Pt100'"
+                    @change="updateChannelField(name, 'rtd_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="rtd in RTD_TYPES" :key="rtd.value" :value="rtd.value">{{ rtd.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.wiring || '4-wire'"
+                    @change="updateChannelField(name, 'wiring', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="2-wire">2-wire</option>
+                    <option value="3-wire">3-wire</option>
+                    <option value="4-wire">4-wire</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.unit || 'degC'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="degC">°C</option>
+                    <option value="degF">°F</option>
+                    <option value="K">K</option>
+                  </select>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'voltage'">
-                <td>±10V</td>
-                <td>DIFF</td>
-                <td>1:1</td>
-                <td>{{ config.unit || '-' }}</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.voltage_range ? `${config.voltage_range}V` : '10V'"
+                    @change="updateChannelField(name, 'voltage_range', parseFloat(($event.target as HTMLSelectElement).value))"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="r in VOLTAGE_RANGES" :key="r.value" :value="r.value">{{ r.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'differential'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.scale_type || 'none'"
+                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="none">None</option>
+                    <option value="linear">Linear</option>
+                    <option value="map">Map</option>
+                  </select>
+                </td>
+                <td class="col-value raw">
+                  {{ getRawValue(name) }}
+                </td>
+                <td class="col-value scaled">
+                  {{ getScaledValue(name) }}
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || ''"
+                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                    placeholder="unit"
+                  />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'current'">
-                <td>±20mA</td>
-                <td>4-20→0-100</td>
-                <td>{{ config.unit || '-' }}</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.current_range_ma ? `${config.current_range_ma}mA` : '20mA'"
+                    @change="updateChannelField(name, 'current_range_ma', parseFloat(($event.target as HTMLSelectElement).value))"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="r in CURRENT_RANGES" :key="r.value" :value="r.value">{{ r.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'differential'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.scale_type || 'none'"
+                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="none">None</option>
+                    <option value="linear">Linear</option>
+                    <option value="map">Map</option>
+                    <option value="four_twenty">4-20mA</option>
+                  </select>
+                </td>
+                <td class="col-value raw">
+                  {{ getRawValue(name) }}
+                </td>
+                <td class="col-value scaled">
+                  {{ getScaledValue(name) }}
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || ''"
+                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                    placeholder="unit"
+                  />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'strain'">
-                <td>Full</td>
-                <td>2.0</td>
-                <td>2.5V</td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || 'mA'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                  />
+                </td>
+              </template>
+              <template v-else-if="activeTypeTab === 'strain'">
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.bridge_config || 'full'"
+                    @change="updateChannelField(name, 'bridge_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="b in BRIDGE_CONFIGS" :key="b.value" :value="b.value">{{ b.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.gage_factor ?? 2.0"
+                    @change="updateChannelField(name, 'gage_factor', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input"
+                    step="0.01"
+                    :disabled="!canEdit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.excitation_voltage ?? 2.5"
+                    @change="updateChannelField(name, 'excitation_voltage', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input"
+                    step="0.1"
+                    :disabled="!canEdit"
+                  />V
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'iepe'">
-                <td>AC</td>
-                <td>100</td>
-                <td>g</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.coupling || 'AC'"
+                    @change="updateChannelField(name, 'coupling', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="AC">AC</option>
+                    <option value="DC">DC</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.sensitivity ?? 100"
+                    @change="updateChannelField(name, 'sensitivity', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input"
+                    step="1"
+                    :disabled="!canEdit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || 'g'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                  />
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'counter'">
-                <td>Count</td>
-                <td>Rising</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.counter_mode || 'count_edges'"
+                    @change="updateChannelField(name, 'counter_mode', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="count_edges">Count</option>
+                    <option value="frequency">Frequency</option>
+                    <option value="period">Period</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.edge || 'rising'"
+                    @change="updateChannelField(name, 'edge', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="rising">Rising</option>
+                    <option value="falling">Falling</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.counter_min_freq"
+                    @change="updateChannelField(name, 'counter_min_freq', parseFloat(($event.target as HTMLInputElement).value) || undefined)"
+                    class="inline-input"
+                    placeholder="0.1"
+                    step="0.1"
+                    min="0"
+                    :disabled="!canEdit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.counter_max_freq"
+                    @change="updateChannelField(name, 'counter_max_freq', parseFloat(($event.target as HTMLInputElement).value) || undefined)"
+                    class="inline-input"
+                    placeholder="1000"
+                    step="1"
+                    min="0"
+                    :disabled="!canEdit"
+                  />
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'resistance'">
-                <td>4-wire</td>
-                <td>100Ω</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.wiring || '4-wire'"
+                    @change="updateChannelField(name, 'wiring', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="2-wire">2-wire</option>
+                    <option value="3-wire">3-wire</option>
+                    <option value="4-wire">4-wire</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.resistance_range || '1000'"
+                    @change="updateChannelField(name, 'resistance_range', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="100">100Ω</option>
+                    <option value="1000">1kΩ</option>
+                    <option value="10000">10kΩ</option>
+                    <option value="100000">100kΩ</option>
+                  </select>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'digital_input' || activeTypeTab === 'digital_output'">
-                <td>24V</td>
-                <td>NO</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.logic_level || '24V'"
+                    @change="updateChannelField(name, 'logic_level', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="5V">5V TTL</option>
+                    <option value="24V">24V</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="config.invert === true"
+                    @change="updateChannelField(name, 'invert', ($event.target as HTMLInputElement).checked)"
+                    :disabled="!canEdit"
+                  />
+                </td>
+              </template>
+              <template v-else-if="activeTypeTab === 'voltage_output'">
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.ao_range || '10V'"
+                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="5V">0-5V</option>
+                    <option value="10V">0-10V</option>
+                    <option value="pm10V">±10V</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.scale_type || 'none'"
+                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="none">None</option>
+                    <option value="linear">Linear</option>
+                    <option value="map">Map</option>
+                  </select>
+                </td>
+                <td class="col-value raw">
+                  {{ getRawValue(name) }}
+                </td>
+                <td class="col-value scaled">
+                  {{ getScaledValue(name) }}
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || ''"
+                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                    placeholder="unit"
+                  />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
+              </template>
+              <template v-else-if="activeTypeTab === 'current_output'">
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.ao_range || '20mA'"
+                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="20mA">0-20mA</option>
+                    <option value="4-20mA">4-20mA</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.scale_type || 'none'"
+                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="none">None</option>
+                    <option value="linear">Linear</option>
+                    <option value="map">Map</option>
+                    <option value="four_twenty">4-20mA</option>
+                  </select>
+                </td>
+                <td class="col-value raw">
+                  {{ getRawValue(name) }}
+                </td>
+                <td class="col-value scaled">
+                  {{ getScaledValue(name) }}
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || ''"
+                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                    placeholder="unit"
+                  />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'analog_output'">
-                <td>±10V</td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.ao_range || '10V'"
+                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="5V">0-5V</option>
+                    <option value="10V">0-10V</option>
+                    <option value="pm10V">±10V</option>
+                    <option value="20mA">0-20mA</option>
+                    <option value="4-20mA">4-20mA</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.scale_type || 'none'"
+                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="none">None</option>
+                    <option value="linear">Linear</option>
+                    <option value="map">Map</option>
+                    <option value="four_twenty">4-20mA</option>
+                  </select>
+                </td>
+                <td class="col-value raw">
+                  {{ getRawValue(name) }}
+                </td>
+                <td class="col-value scaled">
+                  {{ getScaledValue(name) }}
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || ''"
+                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                    placeholder="unit"
+                  />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
               </template>
               <template v-else>
-                <td>{{ config.unit || '-' }}</td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || '-'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                  />
+                </td>
                 <td>{{ config.low_limit ?? '-' }}</td>
                 <td>{{ config.high_limit ?? '-' }}</td>
               </template>
 
-              <!-- Value column -->
-              <td class="col-value" :class="getAlarmStatus(name)">
+              <!-- Value column - only for tabs that don't have built-in value display -->
+              <td
+                v-if="!['voltage', 'current', 'voltage_output', 'current_output', 'analog_output'].includes(activeTypeTab)"
+                class="col-value"
+                :class="getAlarmStatus(name)"
+              >
                 <template v-if="config.channel_type === 'digital_input' || config.channel_type === 'digital_output'">
                   <span class="digital-state" :class="{ on: store.values[name]?.value }">
                     {{ store.values[name]?.value ? 'ON' : 'OFF' }}
@@ -1183,6 +1796,22 @@ watch(() => Object.keys(store.channels), () => {
                   <span class="value">{{ getCurrentValue(name) }}</span>
                   <span class="unit">{{ config.unit }}</span>
                 </template>
+              </td>
+
+              <!-- Reset button for counter channels -->
+              <td v-if="activeTypeTab === 'counter'" class="col-reset">
+                <button
+                  class="reset-btn"
+                  @click.stop="resetCounter(name)"
+                  title="Reset counter to zero"
+                  :disabled="!store.isConnected"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                    <path d="M3 3v5h5"/>
+                  </svg>
+                  0
+                </button>
               </td>
 
               <td class="col-actions">
@@ -1205,6 +1834,17 @@ watch(() => Object.keys(store.channels), () => {
                 <div class="empty-state">
                   <p v-if="searchQuery">No channels matching "{{ searchQuery }}"</p>
                   <p v-else>No channels configured</p>
+                </div>
+              </td>
+            </tr>
+            <!-- Add Channel Row -->
+            <tr class="add-channel-row" @click="openAddChannelModal">
+              <td :colspan="tableColumns.length + 1">
+                <div class="add-channel-cell">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  <span>Add Channel...</span>
                 </div>
               </td>
             </tr>
@@ -2372,13 +3012,15 @@ watch(() => Object.keys(store.channels), () => {
 
 .channel-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.75rem;
 }
 
 .channel-table th {
   position: sticky;
   top: 0;
+  z-index: 10;
   background: #0f0f1a;
   padding: 8px 6px;
   text-align: left;
@@ -2388,10 +3030,38 @@ watch(() => Object.keys(store.channels), () => {
   white-space: nowrap;
 }
 
+.channel-table th.col-actions {
+  position: sticky;
+  top: 0;
+  right: 0;
+  z-index: 20;
+  background: #0f0f1a;
+  text-align: center;
+  width: 70px;
+  min-width: 70px;
+}
+
 .channel-table td {
   padding: 6px;
   border-bottom: 1px solid #1a1a2e;
   color: #ccc;
+}
+
+.channel-table td.col-actions {
+  position: sticky;
+  right: 0;
+  background: #0a0a14;
+  text-align: center;
+  width: 70px;
+  min-width: 70px;
+}
+
+.channel-row:hover td.col-actions {
+  background: #1a1a2e;
+}
+
+.channel-row.selected td.col-actions {
+  background: #1e3a5f;
 }
 
 .channel-row {
@@ -2417,7 +3087,7 @@ watch(() => Object.keys(store.channels), () => {
 
 /* Column styling */
 .col-enable { text-align: center; }
-.col-name { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; }
+.col-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 600; }
 .col-actions { width: 50px; text-align: center; }
 
 /* Type Badge */
@@ -2456,6 +3126,23 @@ watch(() => Object.keys(store.channels), () => {
 .col-value.warning .value { color: #fbbf24; }
 .col-value.alarm .value { color: #ef4444; }
 
+/* Raw/Scaled value columns */
+.col-value.raw {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.col-value.scaled {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.col-value.scaled.warning { color: #fbbf24; }
+.col-value.scaled.alarm { color: #ef4444; }
+
 .digital-state {
   padding: 2px 8px;
   border-radius: 3px;
@@ -2483,6 +3170,101 @@ watch(() => Object.keys(store.channels), () => {
 .config-btn:hover {
   background: #2a2a4a;
   color: #fff;
+}
+
+/* Inline Editable Cells */
+.editable-cell {
+  cursor: default;
+}
+
+.editable-cell select {
+  background: #0f0f1a;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #ccc;
+  font-size: 0.75rem;
+  padding: 2px 4px;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.editable-cell select:hover:not(:disabled) {
+  border-color: #3b82f6;
+}
+
+.editable-cell select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: #1a1a2e;
+}
+
+.editable-cell select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inline-input {
+  background: #0f0f1a;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #ccc;
+  font-size: 0.75rem;
+  padding: 2px 4px;
+  width: 100%;
+}
+
+.inline-input:hover:not(:disabled) {
+  border-color: #3b82f6;
+}
+
+.inline-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: #1a1a2e;
+}
+
+.inline-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inline-input[type="number"] {
+  max-width: 70px;
+}
+
+/* Channel input - monospace for cDAQ paths */
+.col-channel .inline-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+}
+
+/* Description input - full width */
+.col-description .inline-input {
+  min-width: 280px;
+}
+
+
+.editable-cell input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.editable-cell input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.scaling-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  background: #1e3a8a;
+  color: #93c5fd;
+}
+
+.scaling-badge.off {
+  background: #374151;
+  color: #9ca3af;
 }
 
 /* Config Panel */
@@ -2701,6 +3483,41 @@ watch(() => Object.keys(store.channels), () => {
   color: #555;
 }
 
+/* Add Channel Row */
+.add-channel-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.add-channel-row:hover {
+  background: #1a2a3a;
+}
+
+.add-channel-row td {
+  border-bottom: none;
+}
+
+.add-channel-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  color: #60a5fa;
+  font-size: 0.8rem;
+}
+
+.add-channel-cell svg {
+  opacity: 0.7;
+}
+
+.add-channel-row:hover .add-channel-cell {
+  color: #93c5fd;
+}
+
+.add-channel-row:hover .add-channel-cell svg {
+  opacity: 1;
+}
+
 /* Info Panel */
 .info-panel {
   display: flex;
@@ -2783,6 +3600,21 @@ input[type="checkbox"] {
 .action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.edit-btn {
+  border-color: #3b82f6;
+}
+
+.edit-btn.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+
+.edit-btn:hover:not(:disabled):not(.active) {
+  border-color: #60a5fa;
+  color: #60a5fa;
 }
 
 .scan-btn:hover:not(:disabled) {
@@ -3144,6 +3976,36 @@ input[type="checkbox"] {
 .delete-btn:hover {
   background: #7f1d1d;
   color: #fca5a5;
+}
+
+/* Reset counter button */
+.col-reset {
+  text-align: center;
+}
+
+.reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1e3a5f;
+  border: 1px solid #3b82f6;
+  color: #93c5fd;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.reset-btn:hover:not(:disabled) {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.reset-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Disabled channel row */

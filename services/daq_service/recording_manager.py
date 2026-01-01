@@ -306,9 +306,14 @@ class RecordingManager:
                 filtered_values = channel_values.copy()
 
             # Add script values if configured
+            # Take a snapshot to avoid RuntimeError if dict changes during iteration
             if self.config.include_scripts and self.script_values:
-                for name, value in self.script_values.items():
-                    filtered_values[f"script:{name}"] = value
+                script_snapshot = dict(self.script_values)  # Atomic copy
+                for name, value in script_snapshot.items():
+                    # Validate value type - only accept numeric types
+                    if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value or abs(value) == float('inf'))):
+                        filtered_values[f"script:{name}"] = value
+                    # Skip NaN, Inf, or non-numeric values silently
 
             # Handle triggered mode
             if self.config.mode == 'triggered':
@@ -323,8 +328,30 @@ class RecordingManager:
 
     def update_script_values(self, values: Dict[str, Any]):
         """Update script-computed values (calculated params, transforms)"""
+        if not isinstance(values, dict):
+            logger.warning("update_script_values: received non-dict, ignoring")
+            return
+
+        # Limit the number of script values to prevent memory issues
+        MAX_SCRIPT_VALUES = 500
+
         with self.lock:
-            self.script_values.update(values)
+            # Filter and validate incoming values
+            for key, value in values.items():
+                # Validate key is a string
+                if not isinstance(key, str):
+                    continue
+                # Validate value is numeric
+                if not isinstance(value, (int, float)):
+                    continue
+                # Skip NaN and Inf
+                if isinstance(value, float) and (value != value or abs(value) == float('inf')):
+                    continue
+                # Check size limit
+                if key not in self.script_values and len(self.script_values) >= MAX_SCRIPT_VALUES:
+                    logger.warning(f"Script values limit reached ({MAX_SCRIPT_VALUES}), ignoring new key: {key}")
+                    continue
+                self.script_values[key] = value
 
     def _generate_filename(self) -> str:
         """Generate a filename based on configuration"""
@@ -374,28 +401,35 @@ class RecordingManager:
                 row.append(str(value))
 
         # Handle write mode (immediate vs buffered)
-        if self.config.write_mode == 'immediate':
-            self.csv_writer.writerow(row)
-            self.current_file_handle.flush()
-        else:
-            # Buffered mode
-            self.write_buffer.append(row)
+        try:
+            if self.config.write_mode == 'immediate':
+                self.csv_writer.writerow(row)
+                self.current_file_handle.flush()
+            else:
+                # Buffered mode
+                self.write_buffer.append(row)
 
-            # Check if we should flush
-            should_flush = False
-            if len(self.write_buffer) >= self.config.buffer_size:
-                should_flush = True
-            elif self.last_flush_time:
-                time_since_flush = (datetime.now() - self.last_flush_time).total_seconds()
-                if time_since_flush >= self.config.flush_interval_s:
+                # Check if we should flush
+                should_flush = False
+                if len(self.write_buffer) >= self.config.buffer_size:
                     should_flush = True
+                elif self.last_flush_time:
+                    time_since_flush = (datetime.now() - self.last_flush_time).total_seconds()
+                    if time_since_flush >= self.config.flush_interval_s:
+                        should_flush = True
 
-            if should_flush:
-                self._flush_buffer()
+                if should_flush:
+                    self._flush_buffer()
 
-        self.samples_written += 1
-        self.current_file_samples += 1
-        self.bytes_written = self.current_file.stat().st_size if self.current_file else 0
+            self.samples_written += 1
+            self.current_file_samples += 1
+            self.bytes_written = self.current_file.stat().st_size if self.current_file else 0
+        except IOError as e:
+            logger.error(f"File I/O error writing sample: {e}")
+            # Try to recover by reopening file
+            self._handle_write_error(e)
+        except Exception as e:
+            logger.error(f"Unexpected error writing sample: {e}")
 
     def _init_csv_writer(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Initialize CSV writer with headers"""
@@ -437,12 +471,38 @@ class RecordingManager:
         if not self.write_buffer or not self.csv_writer:
             return
 
-        for row in self.write_buffer:
-            self.csv_writer.writerow(row)
+        try:
+            for row in self.write_buffer:
+                self.csv_writer.writerow(row)
 
-        self.current_file_handle.flush()
-        self.write_buffer = []
-        self.last_flush_time = datetime.now()
+            self.current_file_handle.flush()
+            self.write_buffer = []
+            self.last_flush_time = datetime.now()
+        except IOError as e:
+            logger.error(f"Error flushing buffer to disk: {e}")
+            # Keep buffer intact for retry on next flush
+            self._handle_write_error(e)
+        except Exception as e:
+            logger.error(f"Unexpected error flushing buffer: {e}")
+
+    def _handle_write_error(self, error: Exception):
+        """Handle write errors - attempt recovery or stop recording gracefully"""
+        logger.warning(f"Attempting recovery from write error: {error}")
+        try:
+            # Check if file handle is still valid
+            if self.current_file_handle and not self.current_file_handle.closed:
+                self.current_file_handle.flush()
+        except Exception:
+            # File handle is broken, try to reopen
+            try:
+                if self.current_file and self.current_file.exists():
+                    self.current_file_handle = open(self.current_file, 'a', newline='')
+                    self.csv_writer = csv.writer(self.current_file_handle)
+                    logger.info("Successfully reopened recording file")
+            except Exception as reopen_error:
+                logger.error(f"Failed to recover recording file: {reopen_error}")
+                # Mark recording as having errors but don't stop
+                # The user should see this in the status
 
     def _handle_trigger(self, values: Dict[str, Any]) -> bool:
         """Handle triggered recording mode. Returns True if sample should be written."""
