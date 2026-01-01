@@ -114,19 +114,19 @@ class ModbusConnection:
     def _create_client(self):
         """Create the appropriate Modbus client based on connection type"""
         if self.config.connection_type.lower() == "tcp":
+            # pymodbus 3.x API
             self.client = ModbusTcpClient(
                 host=self.config.ip_address,
                 port=self.config.port,
                 timeout=self.config.timeout,
-                retries=self.config.retries,
-                retry_on_empty=True
+                retries=self.config.retries
             )
             logger.info(f"Created Modbus TCP client for {self.config.name}: "
                        f"{self.config.ip_address}:{self.config.port}")
         else:
-            # RTU (serial) connection
+            # RTU (serial) connection - pymodbus 3.x API
             parity_map = {'N': 'N', 'E': 'E', 'O': 'O', 'NONE': 'N', 'EVEN': 'E', 'ODD': 'O'}
-            parity = parity_map.get(self.config.parity.upper(), 'E')
+            parity = parity_map.get(self.config.parity.upper(), 'N')
 
             self.client = ModbusSerialClient(
                 port=self.config.serial_port,
@@ -134,7 +134,8 @@ class ModbusConnection:
                 parity=parity,
                 stopbits=self.config.stopbits,
                 bytesize=self.config.bytesize,
-                timeout=self.config.timeout
+                timeout=self.config.timeout,
+                retries=self.config.retries
             )
             logger.info(f"Created Modbus RTU client for {self.config.name}: "
                        f"{self.config.serial_port} @ {self.config.baudrate} baud")
@@ -192,7 +193,7 @@ class ModbusConnection:
                     return None
 
             try:
-                result = self.client.read_coils(address, count, slave=slave_id)
+                result = self.client.read_coils(address, count=count, device_id=slave_id)
                 if result.isError():
                     self._handle_error(result, f"read_coils({address}, {count})")
                     return None
@@ -211,7 +212,7 @@ class ModbusConnection:
                     return None
 
             try:
-                result = self.client.read_discrete_inputs(address, count, slave=slave_id)
+                result = self.client.read_discrete_inputs(address, count=count, device_id=slave_id)
                 if result.isError():
                     self._handle_error(result, f"read_discrete_inputs({address}, {count})")
                     return None
@@ -230,7 +231,7 @@ class ModbusConnection:
                     return False
 
             try:
-                result = self.client.write_coil(address, value, slave=slave_id)
+                result = self.client.write_coil(address, value, device_id=slave_id)
                 if result.isError():
                     self._handle_error(result, f"write_coil({address}, {value})")
                     return False
@@ -247,7 +248,7 @@ class ModbusConnection:
                     return False
 
             try:
-                result = self.client.write_register(address, value, slave=slave_id)
+                result = self.client.write_register(address, value, device_id=slave_id)
                 if result.isError():
                     self._handle_error(result, f"write_register({address}, {value})")
                     return False
@@ -264,7 +265,7 @@ class ModbusConnection:
                     return False
 
             try:
-                result = self.client.write_registers(address, values, slave=slave_id)
+                result = self.client.write_registers(address, values, device_id=slave_id)
                 if result.isError():
                     self._handle_error(result, f"write_registers({address}, {values})")
                     return False
@@ -283,9 +284,9 @@ class ModbusConnection:
 
             try:
                 if reg_type == "holding":
-                    result = self.client.read_holding_registers(address, count, slave=slave_id)
+                    result = self.client.read_holding_registers(address, count=count, device_id=slave_id)
                 else:
-                    result = self.client.read_input_registers(address, count, slave=slave_id)
+                    result = self.client.read_input_registers(address, count=count, device_id=slave_id)
 
                 if result.isError():
                     self._handle_error(result, f"read_{reg_type}_registers({address}, {count})")
