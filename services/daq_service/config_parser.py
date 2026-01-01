@@ -66,6 +66,19 @@ class ChassisConfig:
     # If not specified, will attempt auto-discovery by serial or slot
     device_name: str = ""
 
+    # Modbus TCP settings
+    modbus_port: int = 502              # TCP port (default 502)
+
+    # Modbus RTU settings (serial)
+    modbus_baudrate: int = 9600         # Baud rate: 9600, 19200, 38400, 57600, 115200
+    modbus_parity: str = "E"            # N=None, E=Even, O=Odd
+    modbus_stopbits: int = 1            # Stop bits: 1 or 2
+    modbus_bytesize: int = 8            # Data bits: 7 or 8
+
+    # Modbus common settings
+    modbus_timeout: float = 1.0         # Response timeout in seconds
+    modbus_retries: int = 3             # Number of retries on failure
+
 
 @dataclass
 class ModuleConfig:
@@ -286,7 +299,17 @@ def load_config(config_path: str) -> NISystemConfig:
                 ip_address=sec.get('ip_address', ''),
                 description=sec.get('description', ''),
                 enabled=parse_bool(sec.get('enabled', 'true')),
-                device_name=sec.get('device_name', '')
+                device_name=sec.get('device_name', ''),
+                # Modbus TCP
+                modbus_port=int(sec.get('modbus_port', sec.get('port', 502))),
+                # Modbus RTU
+                modbus_baudrate=int(sec.get('modbus_baudrate', sec.get('baudrate', 9600))),
+                modbus_parity=sec.get('modbus_parity', sec.get('parity', 'E')),
+                modbus_stopbits=int(sec.get('modbus_stopbits', sec.get('stopbits', 1))),
+                modbus_bytesize=int(sec.get('modbus_bytesize', sec.get('bytesize', 8))),
+                # Modbus common
+                modbus_timeout=float(sec.get('modbus_timeout', sec.get('timeout', 1.0))),
+                modbus_retries=int(sec.get('modbus_retries', sec.get('retries', 3)))
             )
 
     # Parse module configs

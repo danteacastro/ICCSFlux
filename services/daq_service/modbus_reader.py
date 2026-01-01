@@ -360,18 +360,28 @@ class ModbusReader:
             device_config = ModbusDeviceConfig(
                 name=name,
                 connection_type="tcp" if is_tcp else "rtu",
+                # TCP settings
                 ip_address=chassis.ip_address if is_tcp else "",
-                port=502,  # Default Modbus TCP port
+                port=getattr(chassis, 'modbus_port', 502),
+                # RTU settings - serial is the COM port (e.g., "COM3" or "/dev/ttyUSB0")
                 serial_port=chassis.serial if not is_tcp else "",
-                baudrate=9600,  # Could be made configurable
-                parity="E",
-                slave_id=1
+                baudrate=getattr(chassis, 'modbus_baudrate', 9600),
+                parity=getattr(chassis, 'modbus_parity', 'E'),
+                stopbits=getattr(chassis, 'modbus_stopbits', 1),
+                bytesize=getattr(chassis, 'modbus_bytesize', 8),
+                # Common settings
+                timeout=getattr(chassis, 'modbus_timeout', 1.0),
+                retries=getattr(chassis, 'modbus_retries', 3),
+                slave_id=1  # Default, overridden per-module
             )
 
             try:
                 connection = ModbusConnection(device_config)
                 self.connections[name] = connection
-                logger.info(f"Initialized Modbus connection: {name}")
+                if is_tcp:
+                    logger.info(f"Initialized Modbus TCP connection: {name} -> {chassis.ip_address}:{device_config.port}")
+                else:
+                    logger.info(f"Initialized Modbus RTU connection: {name} -> {chassis.serial} @ {device_config.baudrate} baud")
             except Exception as e:
                 logger.error(f"Failed to initialize Modbus connection {name}: {e}")
 
