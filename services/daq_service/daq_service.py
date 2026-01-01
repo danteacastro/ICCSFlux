@@ -37,6 +37,7 @@ from recording_manager import RecordingManager, RecordingConfig
 from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config
 from user_variables import UserVariableManager
+from alarm_manager import AlarmManager, AlarmConfig, AlarmSeverity, LatchBehavior
 
 # Try to import nidaqmx - if not available, we'll use simulation only
 try:
@@ -143,12 +144,16 @@ class DAQService:
         # User variable manager
         self.user_variables: Optional[UserVariableManager] = None
 
+        # Enhanced alarm manager
+        self.alarm_manager: Optional[AlarmManager] = None
+
         self._load_config()
         self._init_scheduler()
         self._init_recording_manager()
         self._init_dependency_tracker()
         self._init_sequence_manager()
         self._init_user_variables()
+        self._init_alarm_manager()
 
     # =========================================================================
     # THREAD-SAFE PROPERTY ACCESSORS
@@ -339,6 +344,81 @@ class DAQService:
             stop_sequence=self._user_var_stop_sequence,
         )
         logger.info("User variable manager initialized")
+
+    def _init_alarm_manager(self):
+        """Initialize the enhanced alarm manager"""
+        data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+        self.alarm_manager = AlarmManager(
+            data_dir=data_dir,
+            publish_callback=self._alarm_manager_publish
+        )
+
+        # Auto-create alarm configs from channel configs that have limits defined
+        for name, channel in self.config.channels.items():
+            # Skip if no limits defined
+            if not any([channel.high_limit, channel.low_limit, channel.high_warning, channel.low_warning]):
+                continue
+
+            # Check if config already exists
+            if self.alarm_manager.get_alarm_config(f"alarm-{name}"):
+                continue
+
+            # Determine severity based on channel config
+            severity = AlarmSeverity.MEDIUM
+            if channel.safety_action:
+                severity = AlarmSeverity.HIGH  # Channels with safety actions are high priority
+
+            # Create alarm config from channel limits
+            config = AlarmConfig(
+                id=f"alarm-{name}",
+                channel=name,
+                name=channel.display_name or name,
+                description=channel.description or '',
+                enabled=True,  # Enable by default if limits are defined
+                severity=severity,
+                high_high=channel.high_limit,
+                high=channel.high_warning,
+                low=channel.low_warning,
+                low_low=channel.low_limit,
+                deadband=0,
+                on_delay_s=0,
+                off_delay_s=0,
+                latch_behavior=LatchBehavior.AUTO_CLEAR,
+                group=channel.group or '',
+                actions=[channel.safety_action] if channel.safety_action else []
+            )
+            self.alarm_manager.add_alarm_config(config)
+
+        logger.info(f"Alarm manager initialized with {len(self.alarm_manager.alarm_configs)} alarm configs")
+
+    def _alarm_manager_publish(self, event_type: str, data: dict):
+        """Callback from alarm manager to publish events"""
+        if not self.mqtt_client:
+            return
+
+        base = self.config.system.mqtt_base_topic
+
+        if event_type == 'alarm':
+            # Publish alarm state
+            self.mqtt_client.publish(
+                f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}",
+                json.dumps(data),
+                retain=True,
+                qos=1
+            )
+        elif event_type == 'alarm_cleared':
+            # Publish cleared state
+            self.mqtt_client.publish(
+                f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}",
+                json.dumps({'active': False, 'alarm_id': data.get('alarm_id')}),
+                retain=True,
+                qos=1
+            )
+        elif event_type == 'action':
+            # Execute safety action
+            action_id = data.get('action_id')
+            if action_id and action_id in self.config.safety_actions:
+                self._execute_safety_action(action_id)
 
     def _on_test_session_start(self):
         """Custom callback when test session starts"""
@@ -716,6 +796,12 @@ class DAQService:
             self._handle_alarm_clear(payload)
         elif topic == f"{base}/alarm/reset-latched":
             self._handle_alarm_reset_latched()
+        elif topic == f"{base}/alarm/reset":
+            self._handle_alarm_reset(payload)
+        elif topic == f"{base}/alarm/shelve":
+            self._handle_alarm_shelve(payload)
+        elif topic == f"{base}/alarm/unshelve":
+            self._handle_alarm_unshelve(payload)
 
         # === CHANNEL CONTROL ===
         elif topic == f"{base}/channel/reset":
@@ -3545,28 +3631,71 @@ class DAQService:
 
     def _handle_alarm_acknowledge(self, payload: Any):
         """Handle alarm acknowledgment from frontend"""
-        alarm_id = payload.get('alarmId') if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return
+        alarm_id = payload.get('alarmId') or payload.get('alarm_id')
+        user = payload.get('user', 'Unknown')
         if alarm_id:
-            logger.info(f"Alarm acknowledged: {alarm_id}")
-            # The backend tracks alarms by source (channel name), not by ID
-            # Just log the acknowledgment for now - frontend handles state
+            logger.info(f"Alarm acknowledged: {alarm_id} by {user}")
+            # Use enhanced alarm manager if available
+            if self.alarm_manager:
+                self.alarm_manager.acknowledge_alarm(alarm_id, user)
+            # Legacy: track in alarms_active (frontend handles display state)
 
     def _handle_alarm_clear(self, payload: Any):
         """Handle alarm clear from frontend"""
-        alarm_id = payload.get('alarmId') if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return
+        alarm_id = payload.get('alarmId') or payload.get('alarm_id')
         if alarm_id:
-            # Try to clear by alarm ID (which might be the source name)
+            # Try to clear by alarm ID
             self._clear_alarm(alarm_id)
             logger.info(f"Alarm clear requested: {alarm_id}")
 
     def _handle_alarm_reset_latched(self):
         """Reset all latched alarms"""
         logger.info("Reset all latched alarms requested")
-        # Clear all active alarms
+        # Use enhanced alarm manager if available
+        if self.alarm_manager:
+            count = self.alarm_manager.reset_all_latched('User')
+            logger.info(f"Reset {count} latched alarms via alarm manager")
+        # Legacy: Clear all active alarms
         sources_to_clear = list(self.alarms_active.keys())
         for source in sources_to_clear:
             self._clear_alarm(source)
-        logger.info(f"Cleared {len(sources_to_clear)} latched alarms")
+        logger.info(f"Cleared {len(sources_to_clear)} legacy latched alarms")
+
+    def _handle_alarm_reset(self, payload: Any):
+        """Reset (force clear) a specific latched alarm"""
+        if not isinstance(payload, dict):
+            return
+        alarm_id = payload.get('alarm_id')
+        user = payload.get('user', 'Unknown')
+        if alarm_id and self.alarm_manager:
+            self.alarm_manager.reset_alarm(alarm_id, user)
+            logger.info(f"Alarm reset: {alarm_id} by {user}")
+
+    def _handle_alarm_shelve(self, payload: Any):
+        """Shelve (temporarily suppress) an alarm"""
+        if not isinstance(payload, dict):
+            return
+        alarm_id = payload.get('alarm_id')
+        user = payload.get('user', 'Unknown')
+        reason = payload.get('reason', '')
+        duration_s = payload.get('duration_s', 3600)
+        if alarm_id and self.alarm_manager:
+            self.alarm_manager.shelve_alarm(alarm_id, user, reason, duration_s)
+            logger.info(f"Alarm shelved: {alarm_id} by {user} for {duration_s}s")
+
+    def _handle_alarm_unshelve(self, payload: Any):
+        """Unshelve an alarm"""
+        if not isinstance(payload, dict):
+            return
+        alarm_id = payload.get('alarm_id')
+        user = payload.get('user', 'Unknown')
+        if alarm_id and self.alarm_manager:
+            self.alarm_manager.unshelve_alarm(alarm_id, user)
+            logger.info(f"Alarm unshelved: {alarm_id} by {user}")
 
     def _handle_channel_reset(self, payload: Any):
         """Reset a channel value (e.g., counter to zero)"""
@@ -3750,6 +3879,13 @@ class DAQService:
                         if name in self.channel_values:
                             self._check_safety(name, self.channel_values[name])
 
+                            # Also process through enhanced alarm manager
+                            if self.alarm_manager:
+                                try:
+                                    self.alarm_manager.process_value(name, self.channel_values[name])
+                                except Exception as e:
+                                    logger.debug(f"Alarm manager error for {name}: {e}")
+
                     # Process user variables (accumulators, timers, stats, etc.)
                     if self.user_variables:
                         self.user_variables.process_scan(self.channel_values)
@@ -3905,6 +4041,11 @@ class DAQService:
         if self.recording_manager and self.recording_manager.recording:
             logger.info("Flushing recording buffer...")
             self.recording_manager.stop()
+
+        # Save alarm manager state
+        if self.alarm_manager:
+            logger.info("Saving alarm manager state...")
+            self.alarm_manager.save_all()
 
         # Join threads with reasonable timeouts
         shutdown_timeout = 5.0  # seconds per thread

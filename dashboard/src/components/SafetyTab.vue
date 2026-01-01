@@ -218,6 +218,80 @@ function resetAllLatched() {
 }
 
 // ============================================
+// Severity Helpers
+// ============================================
+
+function getSeverityClass(severity: string): string {
+  switch (severity) {
+    case 'critical': return 'critical'
+    case 'high':
+    case 'alarm': return 'alarm'
+    case 'medium': return 'medium'
+    case 'low':
+    case 'warning': return 'warning'
+    default: return 'warning'
+  }
+}
+
+function getSeverityLabel(severity: string): string {
+  switch (severity) {
+    case 'critical': return 'CRITICAL'
+    case 'high':
+    case 'alarm': return 'HIGH'
+    case 'medium': return 'MEDIUM'
+    case 'low':
+    case 'warning': return 'LOW'
+    default: return severity.toUpperCase()
+  }
+}
+
+function scrollToAlarm(alarmId: string | undefined) {
+  if (!alarmId) return
+  const el = document.getElementById(`alarm-${alarmId}`)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('highlight')
+    setTimeout(() => el.classList.remove('highlight'), 2000)
+  }
+}
+
+// ============================================
+// Shelve Modal State
+// ============================================
+
+const showShelveModal = ref(false)
+const shelveTarget = ref<{ id: string; channel: string; name: string } | null>(null)
+const shelveReason = ref('')
+const shelveDuration = ref(3600)
+
+const shelveDurationOptions = [
+  { value: 900, label: '15 minutes' },
+  { value: 1800, label: '30 minutes' },
+  { value: 3600, label: '1 hour' },
+  { value: 7200, label: '2 hours' },
+  { value: 14400, label: '4 hours' },
+  { value: 28800, label: '8 hours' }
+]
+
+function openShelveModal(alarm: { id: string; channel: string; name?: string }) {
+  shelveTarget.value = {
+    id: alarm.id,
+    channel: alarm.channel,
+    name: alarm.name || store.channels[alarm.channel]?.display_name || alarm.channel
+  }
+  shelveReason.value = ''
+  shelveDuration.value = 3600
+  showShelveModal.value = true
+}
+
+function confirmShelve() {
+  if (!shelveTarget.value) return
+  safety.shelveAlarm(shelveTarget.value.id, 'User', shelveReason.value, shelveDuration.value)
+  showShelveModal.value = false
+  shelveTarget.value = null
+}
+
+// ============================================
 // UI State
 // ============================================
 
@@ -549,15 +623,32 @@ function getControlDescription(ctrl: InterlockControl): string {
           <span>CLEAR</span>
         </div>
 
-        <!-- Alarm summary counts -->
+        <!-- First-Out Indicator (root cause) -->
+        <div v-if="safety.firstOutAlarm.value" class="first-out-indicator" @click="scrollToAlarm(safety.firstOutAlarm.value?.id)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L1 21h22L12 2zm0 3.5l8.5 14.5H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
+          </svg>
+          <span class="first-out-label">FIRST-OUT:</span>
+          <span class="first-out-name">{{ safety.firstOutAlarm.value?.name || safety.firstOutAlarm.value?.channel }}</span>
+        </div>
+
+        <!-- Alarm summary counts by severity -->
         <div class="alarm-summary">
-          <div class="summary-item alarm" :class="{ pulse: alarmCounts.active > 0 }">
-            <span class="count">{{ alarmCounts.active }}</span>
-            <span class="label">Alarms</span>
+          <div class="summary-item critical" :class="{ pulse: alarmCounts.critical > 0 }">
+            <span class="count">{{ alarmCounts.critical }}</span>
+            <span class="label">Critical</span>
           </div>
-          <div class="summary-item warning" :class="{ pulse: alarmCounts.warnings > 0 }">
-            <span class="count">{{ alarmCounts.warnings }}</span>
-            <span class="label">Warnings</span>
+          <div class="summary-item alarm" :class="{ pulse: (alarmCounts.high || alarmCounts.active) > 0 }">
+            <span class="count">{{ alarmCounts.high || alarmCounts.active }}</span>
+            <span class="label">High</span>
+          </div>
+          <div class="summary-item warning" :class="{ pulse: (alarmCounts.medium || alarmCounts.warnings) > 0 }">
+            <span class="count">{{ alarmCounts.medium || alarmCounts.warnings || 0 }}</span>
+            <span class="label">Medium</span>
+          </div>
+          <div class="summary-item shelved" v-if="alarmCounts.shelved > 0">
+            <span class="count">{{ alarmCounts.shelved }}</span>
+            <span class="label">Shelved</span>
           </div>
           <div class="summary-item acknowledged">
             <span class="count">{{ alarmCounts.acknowledged }}</span>
@@ -593,12 +684,20 @@ function getControlDescription(ctrl: InterlockControl): string {
           <div
             v-for="alarm in activeAlarms"
             :key="alarm.id"
+            :id="`alarm-${alarm.id}`"
             class="alarm-item"
-            :class="[alarm.severity, alarm.state]"
+            :class="[
+              getSeverityClass(alarm.severity),
+              alarm.state,
+              { 'first-out': alarm.is_first_out }
+            ]"
           >
             <div class="alarm-icon">
-              <svg v-if="alarm.severity === 'alarm'" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <svg v-if="alarm.severity === 'critical' || alarm.severity === 'alarm'" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2L1 21h22L12 2zm0 3.5l8.5 14.5H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
+              </svg>
+              <svg v-else-if="alarm.state === 'shelved'" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
               </svg>
               <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h2v2h-2v-2zm0-10h2v8h-2V7z"/>
@@ -607,37 +706,68 @@ function getControlDescription(ctrl: InterlockControl): string {
 
             <div class="alarm-content">
               <div class="alarm-title">
-                {{ store.channels[alarm.channel]?.display_name || alarm.channel }}
-                <span class="alarm-badge" :class="alarm.severity">{{ alarm.severity }}</span>
+                <span v-if="alarm.is_first_out" class="first-out-badge">1ST</span>
+                {{ alarm.name || store.channels[alarm.channel]?.display_name || alarm.channel }}
+                <span class="alarm-badge" :class="getSeverityClass(alarm.severity)">
+                  {{ getSeverityLabel(alarm.severity) }}
+                </span>
                 <span v-if="alarm.state === 'acknowledged'" class="alarm-badge ack">ACK</span>
+                <span v-if="alarm.state === 'returned'" class="alarm-badge returned">RTN</span>
+                <span v-if="alarm.state === 'shelved'" class="alarm-badge shelved">SHELVED</span>
               </div>
               <div class="alarm-message">{{ alarm.message }}</div>
               <div class="alarm-meta">
                 <span>Current: {{ getCurrentValue(alarm.channel) }}</span>
                 <span>Duration: {{ formatDuration(alarm.duration_seconds) }}</span>
                 <span>Since: {{ formatTime(alarm.triggered_at) }}</span>
+                <span v-if="alarm.shelve_expires_at" class="shelve-expiry">
+                  Unshelves: {{ formatTime(alarm.shelve_expires_at) }}
+                </span>
               </div>
             </div>
 
             <div class="alarm-actions">
+              <!-- ACK button for active/returned alarms -->
               <button
-                v-if="alarm.state === 'active'"
+                v-if="alarm.state === 'active' || alarm.state === 'returned'"
                 class="btn btn-sm btn-ack"
                 @click="acknowledgeAlarm(alarm.id)"
                 title="Acknowledge - silence alert"
               >
                 ACK
               </button>
-              <!-- Show RESET for latched alarms (force clear even if condition persists) -->
+
+              <!-- SHELVE button (not for shelved alarms) -->
               <button
-                v-if="alarmConfigs[alarm.channel]?.behavior === 'latch'"
+                v-if="alarm.state !== 'shelved' && alarmConfigs[alarm.channel]?.shelve_allowed !== false"
+                class="btn btn-sm btn-shelve"
+                @click="openShelveModal(alarm)"
+                title="Shelve - temporarily suppress this alarm"
+              >
+                SHELVE
+              </button>
+
+              <!-- UNSHELVE button for shelved alarms -->
+              <button
+                v-if="alarm.state === 'shelved'"
+                class="btn btn-sm btn-unshelve"
+                @click="safety.unshelveAlarm(alarm.id)"
+                title="Unshelve - re-enable this alarm"
+              >
+                UNSHELVE
+              </button>
+
+              <!-- RESET for latched/timed-latch alarms -->
+              <button
+                v-if="alarmConfigs[alarm.channel]?.behavior === 'latch' || alarmConfigs[alarm.channel]?.behavior === 'timed_latch'"
                 class="btn btn-sm btn-reset"
                 @click="resetAlarm(alarm.id)"
                 title="Reset - force clear this latched alarm"
               >
                 RESET
               </button>
-              <!-- Show CLEAR for auto-clear alarms that are acknowledged but value still in alarm -->
+
+              <!-- CLEAR for auto-clear alarms that are acknowledged -->
               <button
                 v-else-if="alarm.state === 'acknowledged'"
                 class="btn btn-sm btn-clear"
@@ -1172,6 +1302,51 @@ function getControlDescription(ctrl: InterlockControl): string {
                 {{ editingInterlock ? 'Save' : 'Create' }}
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Shelve Alarm Modal -->
+    <Teleport to="body">
+      <div v-if="showShelveModal" class="modal-overlay" @click.self="showShelveModal = false">
+        <div class="modal shelve-modal">
+          <h3>Shelve Alarm</h3>
+          <p class="shelve-target">{{ shelveTarget?.name }}</p>
+
+          <div class="form-group">
+            <label>Duration</label>
+            <select v-model.number="shelveDuration" class="form-select">
+              <option v-for="opt in shelveDurationOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Reason (required for audit)</label>
+            <input
+              type="text"
+              v-model="shelveReason"
+              placeholder="e.g., Sensor maintenance, Known issue"
+              class="form-input"
+            />
+          </div>
+
+          <div class="shelve-warning">
+            Shelved alarms are temporarily suppressed but remain active.
+            The alarm will automatically unshelve after the selected duration.
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn btn-secondary" @click="showShelveModal = false">Cancel</button>
+            <button
+              class="btn btn-warning"
+              @click="confirmShelve"
+              :disabled="!shelveReason.trim()"
+            >
+              Shelve Alarm
+            </button>
           </div>
         </div>
       </div>
@@ -2293,5 +2468,224 @@ function getControlDescription(ctrl: InterlockControl): string {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ============================================
+   Enhanced Safety System Styles
+   ============================================ */
+
+/* First-Out Indicator */
+.first-out-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #7f1d1d;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  color: #fca5a5;
+  cursor: pointer;
+  animation: pulse-first-out 1.5s infinite;
+}
+
+.first-out-indicator:hover {
+  background: #991b1b;
+}
+
+.first-out-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #ef4444;
+}
+
+.first-out-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+@keyframes pulse-first-out {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Critical severity */
+.summary-item.critical {
+  border: 2px solid #dc2626;
+  background: linear-gradient(135deg, #7f1d1d 0%, #1a1a2e 100%);
+}
+.summary-item.critical .count {
+  color: #f87171;
+}
+.summary-item.critical.pulse {
+  animation: pulse-critical 0.5s infinite;
+}
+
+@keyframes pulse-critical {
+  0%, 100% { background: linear-gradient(135deg, #7f1d1d 0%, #1a1a2e 100%); }
+  50% { background: linear-gradient(135deg, #991b1b 0%, #2a1a2e 100%); }
+}
+
+/* Medium severity */
+.summary-item.medium {
+  border: 1px solid #f59e0b;
+}
+.summary-item.medium .count {
+  color: #f59e0b;
+}
+
+/* Shelved summary */
+.summary-item.shelved {
+  border: 1px solid #6b7280;
+}
+.summary-item.shelved .count {
+  color: #9ca3af;
+}
+
+/* First-out badge */
+.first-out-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  border-radius: 3px;
+  animation: pulse-badge 1s infinite;
+  margin-right: 4px;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Alarm item first-out highlight */
+.alarm-item.first-out {
+  border-left-width: 5px;
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.3);
+}
+
+/* Alarm item highlight when scrolled to */
+.alarm-item.highlight {
+  animation: highlight-flash 0.5s ease-out 3;
+}
+
+@keyframes highlight-flash {
+  0%, 100% { background: #1a1a2e; }
+  50% { background: #2a3a5e; }
+}
+
+/* Severity-specific alarm items */
+.alarm-item.critical {
+  border-left-color: #dc2626;
+  background: linear-gradient(90deg, #450a0a 0%, #1a1a2e 40%);
+}
+.alarm-item.critical.active {
+  animation: pulse-critical-item 1s infinite;
+}
+
+@keyframes pulse-critical-item {
+  0%, 100% { background: linear-gradient(90deg, #450a0a 0%, #1a1a2e 40%); }
+  50% { background: linear-gradient(90deg, #7f1d1d 0%, #1a1a2e 40%); }
+}
+
+.alarm-item.critical .alarm-icon {
+  color: #f87171;
+}
+
+.alarm-item.medium {
+  border-left-color: #f59e0b;
+}
+.alarm-item.medium.active {
+  background: linear-gradient(90deg, #451a03 0%, #1a1a2e 40%);
+}
+
+/* Severity badges */
+.alarm-badge.critical {
+  background: #dc2626;
+  color: #fff;
+}
+
+.alarm-badge.medium {
+  background: #f59e0b;
+  color: #000;
+}
+
+/* State badges */
+.alarm-badge.returned {
+  background: #6366f1;
+  color: #fff;
+}
+
+.alarm-badge.shelved {
+  background: #6b7280;
+  color: #fff;
+}
+
+/* Shelve expiry text */
+.shelve-expiry {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* Button styles for shelve/unshelve */
+.btn-shelve {
+  background: #6b7280;
+  color: #fff;
+}
+.btn-shelve:hover {
+  background: #4b5563;
+}
+
+.btn-unshelve {
+  background: #6366f1;
+  color: #fff;
+}
+.btn-unshelve:hover {
+  background: #4f46e5;
+}
+
+/* Shelve Modal */
+.shelve-modal {
+  min-width: 400px;
+  max-width: 450px;
+}
+
+.shelve-target {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fbbf24;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  border-left: 3px solid #fbbf24;
+}
+
+.form-select,
+.form-input {
+  width: 100%;
+  padding: 10px;
+  background: #0a0a14;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.form-select:focus,
+.form-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.shelve-warning {
+  margin: 16px 0;
+  padding: 10px 12px;
+  background: #451a03;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #fcd34d;
 }
 </style>

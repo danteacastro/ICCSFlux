@@ -459,61 +459,146 @@ export const WIDGET_COLORS = {
 }
 
 // ============================================
-// Safety & Alarm Types
+// Safety & Alarm Types (ISA-18.2 aligned)
 // ============================================
 
+// Alarm severity levels (ISA-18.2 style)
+export type AlarmSeverityLevel = 'critical' | 'high' | 'medium' | 'low'
+
+// Legacy severity type for backward compatibility
 export type AlarmSeverity = 'alarm' | 'warning'
-export type AlarmBehavior = 'latch' | 'auto_clear'
-export type AlarmState = 'active' | 'acknowledged' | 'cleared'
+
+// Latch behavior
+export type AlarmBehavior = 'latch' | 'auto_clear' | 'timed_latch'
+
+// Alarm lifecycle states
+export type AlarmState = 'normal' | 'active' | 'acknowledged' | 'returned' | 'shelved' | 'out_of_service'
+
+// Threshold types
+export type ThresholdType = 'high_high' | 'high' | 'low' | 'low_low' | 'rate'
 
 export interface AlarmConfig {
+  id: string               // Unique alarm ID
   channel: string
+  name: string             // Human-readable name
+  description?: string
   enabled: boolean
-  // Thresholds
-  low_alarm?: number
-  high_alarm?: number
-  low_warning?: number
-  high_warning?: number
+
+  // Severity level
+  severity: AlarmSeverityLevel
+
+  // Thresholds (ISA-18.2 style: HH, H, L, LL)
+  high_high?: number       // Critical high (most severe)
+  high?: number            // High warning
+  low?: number             // Low warning
+  low_low?: number         // Critical low (most severe)
+
+  // Legacy threshold names for backward compatibility
+  high_alarm?: number      // Maps to high_high
+  low_alarm?: number       // Maps to low_low
+  high_warning?: number    // Maps to high
+  low_warning?: number     // Maps to low
+
+  // Deadband prevents alarm chatter at threshold boundary
+  deadband: number
+
+  // Time-based filtering
+  on_delay_s: number       // Must be in alarm for X seconds before triggering (was delay_seconds)
+  off_delay_s: number      // Must be clear for X seconds before clearing
+  delay_seconds?: number   // Legacy alias for on_delay_s
+
+  // Rate-of-change alarm
+  rate_limit?: number      // Max change per second
+  rate_window_s?: number   // Time window for rate calculation
+
   // Behavior
-  behavior: AlarmBehavior  // 'latch' requires manual reset, 'auto_clear' resets when value is OK
-  // Filtering
-  deadband: number         // Hysteresis to prevent chatter (e.g., alarm at 100, clear at 95 = 5 deadband)
-  delay_seconds: number    // Value must exceed threshold for this long before triggering
+  behavior: AlarmBehavior
+  timed_latch_s?: number   // For 'timed_latch': seconds after clear to auto-reset
+
   // Actions
+  actions?: string[]       // Action IDs to execute on alarm
   log_to_file: boolean
   play_sound: boolean
   start_recording: boolean
-  run_script?: string      // Script name to execute on alarm
+  run_script?: string
+
+  // Grouping
+  group?: string           // Alarm group (e.g., "Zone1", "Coolant")
+  priority?: number        // Priority within severity (for first-out)
+
+  // Shelving
+  max_shelve_time_s?: number  // Max time alarm can be shelved (default 1 hour)
+  shelve_allowed?: boolean
 }
 
 export interface ActiveAlarm {
-  id: string               // Unique alarm instance ID
+  id: string               // Unique alarm instance ID (alarm_id from backend)
+  alarm_id?: string        // Reference to AlarmConfig.id
   channel: string
-  severity: AlarmSeverity
+  name?: string            // Human-readable name from config
+  severity: AlarmSeverity | AlarmSeverityLevel
   state: AlarmState
-  value: number            // Value that triggered the alarm
+  value: number            // Value that triggered the alarm (triggered_value)
   threshold: number        // The threshold that was exceeded
-  threshold_type: 'high_alarm' | 'low_alarm' | 'high_warning' | 'low_warning'
+  threshold_type: ThresholdType | 'high_alarm' | 'low_alarm' | 'high_warning' | 'low_warning'
+  current_value?: number   // Current channel value
   triggered_at: string     // ISO timestamp when alarm first triggered
   acknowledged_at?: string // ISO timestamp when acknowledged
   acknowledged_by?: string // User who acknowledged
   cleared_at?: string      // ISO timestamp when cleared
   duration_seconds: number // How long the alarm has been active
   message: string          // Human-readable alarm message
+
+  // First-out tracking
+  sequence_number?: number  // Global sequence for first-out
+  is_first_out?: boolean    // First alarm in a cascade
+
+  // Shelving
+  shelved_at?: string
+  shelved_by?: string
+  shelve_expires_at?: string
+  shelve_reason?: string
 }
 
 export interface AlarmHistoryEntry {
   id: string
+  alarm_id?: string        // Reference to AlarmConfig.id
   channel: string
-  severity: AlarmSeverity
-  value: number
-  threshold: number
-  threshold_type: 'high_alarm' | 'low_alarm' | 'high_warning' | 'low_warning'
+  event_type: 'triggered' | 'acknowledged' | 'cleared' | 'reset' | 'shelved' | 'unshelved'
+  severity: AlarmSeverity | AlarmSeverityLevel
+  value?: number
+  threshold?: number
+  threshold_type?: ThresholdType | 'high_alarm' | 'low_alarm' | 'high_warning' | 'low_warning'
   triggered_at: string
-  cleared_at: string
-  duration_seconds: number
-  acknowledged_by?: string
+  cleared_at?: string
+  duration_seconds?: number
+  user?: string
+  acknowledged_by?: string  // Legacy alias for user
   message: string
+}
+
+export interface AlarmCounts {
+  total: number
+  active: number
+  acknowledged: number
+  returned: number
+  shelved: number
+  critical: number
+  high: number
+  medium: number
+  low: number
+  // Legacy counts
+  warnings?: number
+}
+
+export interface AlarmStats {
+  total_alarms: number
+  total_acknowledged: number
+  total_cleared: number
+  total_shelved: number
+  counts: AlarmCounts
+  first_out?: string       // Alarm ID of first-out alarm
+  config_count: number
 }
 
 export interface SystemHealth {
