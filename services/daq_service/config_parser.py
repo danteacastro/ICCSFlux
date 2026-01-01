@@ -25,6 +25,9 @@ class ChannelType(Enum):
     DIGITAL_INPUT = "digital_input"
     DIGITAL_OUTPUT = "digital_output"
     ANALOG_OUTPUT = "analog_output"
+    # Modbus channel types
+    MODBUS_REGISTER = "modbus_register"  # Modbus holding/input register
+    MODBUS_COIL = "modbus_coil"          # Modbus coil/discrete input
 
 
 class ThermocoupleType(Enum):
@@ -148,6 +151,15 @@ class ChannelConfig:
     counter_reset_on_read: bool = False  # For totalizer mode
     counter_min_freq: float = 0.1    # Minimum expected frequency in Hz
     counter_max_freq: float = 1000.0 # Maximum expected frequency in Hz
+
+    # Modbus specific
+    modbus_register_type: str = "holding"  # holding, input, coil, discrete
+    modbus_address: int = 0                # Register/coil address
+    modbus_data_type: str = "float32"      # int16, uint16, int32, uint32, float32, float64, bool
+    modbus_byte_order: str = "big"         # big or little endian
+    modbus_word_order: str = "big"         # For 32/64-bit: big or little (word swap)
+    modbus_scale: float = 1.0              # Scale factor: value = raw * scale + offset
+    modbus_offset: float = 0.0             # Offset: value = raw * scale + offset
 
     # Digital specific
     invert: bool = False
@@ -352,6 +364,14 @@ def load_config(config_path: str) -> NISystemConfig:
                 counter_reset_on_read=parse_bool(sec.get('counter_reset_on_read', 'false')),
                 counter_min_freq=float(sec.get('counter_min_freq', 0.1)),
                 counter_max_freq=float(sec.get('counter_max_freq', 1000.0)),
+                # Modbus
+                modbus_register_type=sec.get('modbus_register_type', 'holding'),
+                modbus_address=int(sec.get('modbus_address', 0)),
+                modbus_data_type=sec.get('modbus_data_type', 'float32'),
+                modbus_byte_order=sec.get('modbus_byte_order', 'big'),
+                modbus_word_order=sec.get('modbus_word_order', 'big'),
+                modbus_scale=float(sec.get('modbus_scale', 1.0)),
+                modbus_offset=float(sec.get('modbus_offset', 0.0)),
                 invert=parse_bool(sec.get('invert', 'false')),
                 default_state=parse_bool(sec.get('default_state', 'false')),
                 default_value=float(sec.get('default_value', 0.0)),

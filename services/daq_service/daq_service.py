@@ -23,6 +23,13 @@ from config_parser import (
 )
 from simulator import HardwareSimulator
 from hardware_reader import HardwareReader, NIDAQMX_AVAILABLE as HW_READER_AVAILABLE
+
+# Try to import ModbusReader
+try:
+    from modbus_reader import ModbusReader, PYMODBUS_AVAILABLE
+except ImportError:
+    PYMODBUS_AVAILABLE = False
+    ModbusReader = None
 from scheduler import SimpleScheduler
 from sequence_manager import SequenceManager, Sequence, SequenceStep
 from device_discovery import DeviceDiscovery
@@ -58,6 +65,7 @@ class DAQService:
         self.mqtt_client: Optional[mqtt.Client] = None
         self.simulator: Optional[HardwareSimulator] = None
         self.hardware_reader: Optional[HardwareReader] = None
+        self.modbus_reader: Optional['ModbusReader'] = None
 
         # Thread-safe control flags using Events
         self._running = threading.Event()
@@ -217,6 +225,9 @@ class DAQService:
                     self.hardware_reader = None
                     self.simulator = HardwareSimulator(self.config)
 
+            # Initialize Modbus reader if we have Modbus devices configured
+            self._init_modbus_reader()
+
             # Initialize channel values
             for name, channel in self.config.channels.items():
                 if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
@@ -234,6 +245,44 @@ class DAQService:
         except ConfigValidationError as e:
             logger.error(f"Configuration validation failed: {e}")
             raise
+
+    def _init_modbus_reader(self):
+        """Initialize Modbus reader if Modbus devices are configured"""
+        if not PYMODBUS_AVAILABLE:
+            logger.debug("pymodbus not available - Modbus support disabled")
+            return
+
+        # Check if we have any Modbus channels configured
+        has_modbus_channels = any(
+            ch.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            for ch in self.config.channels.values()
+        )
+
+        # Check if we have any Modbus-type chassis (TCP or RTU connection)
+        has_modbus_devices = any(
+            chassis.connection.upper() in ("TCP", "RTU", "MODBUS_TCP", "MODBUS_RTU")
+            for chassis in self.config.chassis.values()
+            if chassis.enabled
+        )
+
+        if not has_modbus_channels and not has_modbus_devices:
+            logger.debug("No Modbus devices or channels configured")
+            return
+
+        try:
+            self.modbus_reader = ModbusReader(self.config)
+            connection_results = self.modbus_reader.connect_all()
+
+            connected = sum(1 for v in connection_results.values() if v)
+            total = len(connection_results)
+            logger.info(f"Modbus reader initialized: {connected}/{total} devices connected")
+
+            if connected == 0 and total > 0:
+                logger.warning("No Modbus devices connected - check device availability")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize Modbus reader: {e}")
+            self.modbus_reader = None
 
     def _init_scheduler(self):
         """Initialize the scheduler with callbacks"""
@@ -330,8 +379,13 @@ class DAQService:
         """Callback for sequence to set output"""
         if channel in self.config.channels:
             ch = self.config.channels[channel]
-            if ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
-                if self.simulator:
+            if ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT,
+                                   ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+                # Route to appropriate backend
+                is_modbus = ch.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+                if is_modbus and self.modbus_reader:
+                    self.modbus_reader.write_channel(channel, value)
+                elif self.simulator:
                     self.simulator.write_channel(channel, value)
                 elif self.hardware_reader:
                     self.hardware_reader.write_channel(channel, value)
@@ -780,7 +834,13 @@ class DAQService:
         # Write the value
         logger.info(f"Writing to {channel_name}: {value}")
 
-        if self.simulator:
+        # Determine which backend handles this channel
+        channel = self.config.channels.get(channel_name)
+        is_modbus = channel and channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+
+        if is_modbus and self.modbus_reader:
+            self.modbus_reader.write_channel(channel_name, value)
+        elif self.simulator:
             self.simulator.write_channel(channel_name, value)
         elif self.hardware_reader:
             self.hardware_reader.write_channel(channel_name, value)
@@ -3653,13 +3713,19 @@ class DAQService:
             # Only acquire data if acquiring flag is set
             if self.acquiring:
                 try:
-                    # Read raw values from either simulator or real hardware
+                    # Read raw values from all available sources
+                    raw_values = {}
+
+                    # Read from simulator or NI hardware
                     if self.simulator:
-                        raw_values = self.simulator.read_all()
+                        raw_values.update(self.simulator.read_all())
                     elif self.hardware_reader:
-                        raw_values = self.hardware_reader.read_all()
-                    else:
-                        raw_values = {}
+                        raw_values.update(self.hardware_reader.read_all())
+
+                    # Read from Modbus devices (if configured)
+                    if self.modbus_reader:
+                        modbus_values = self.modbus_reader.read_all()
+                        raw_values.update(modbus_values)
 
                     # Apply scaling and update values under lock
                     with self.values_lock:
@@ -3864,6 +3930,15 @@ class DAQService:
                 except Exception as e:
                     logger.warning(f"Hardware close attempt {attempt+1} failed: {e}")
                     time.sleep(0.5)
+
+        # Close Modbus connections
+        if self.modbus_reader:
+            try:
+                logger.info("Closing Modbus reader...")
+                self.modbus_reader.close()
+                self.modbus_reader = None
+            except Exception as e:
+                logger.warning(f"Error closing Modbus reader: {e}")
 
         # Final status and disconnect MQTT
         if self.mqtt_client:

@@ -12,6 +12,8 @@ export type ChannelType =
   | 'digital_input'
   | 'digital_output'
   | 'analog_output'
+  | 'modbus_register'
+  | 'modbus_coil'
 
 export type WidgetType =
   | 'numeric'
@@ -84,6 +86,7 @@ export interface ChannelConfig {
   rtd_type?: 'Pt100' | 'Pt500' | 'Pt1000' | 'custom'
   rtd_resistance?: number      // Nominal resistance at 0°C (default 100.0)
   rtd_wiring?: '2-wire' | '3-wire' | '4-wire'
+  wiring?: '2-wire' | '3-wire' | '4-wire'  // Alias for rtd_wiring (UI compatibility)
   rtd_current?: number         // Excitation current in Amps (default 0.001)
 
   // Voltage-specific
@@ -91,13 +94,18 @@ export interface ChannelConfig {
 
   // Strain-specific
   strain_config?: 'full-bridge' | 'half-bridge' | 'quarter-bridge'
+  bridge_config?: 'full' | 'half' | 'quarter' | 'full-bridge' | 'half-bridge' | 'quarter-bridge'  // UI alias
   strain_excitation_voltage?: number  // Bridge excitation voltage (default 2.5V)
+  excitation_voltage?: number  // Alias for strain_excitation_voltage (UI)
   strain_gage_factor?: number  // Gage factor (default 2.0)
+  gage_factor?: number         // Alias for strain_gage_factor (UI)
   strain_resistance?: number   // Nominal gage resistance in Ohms (default 350)
 
   // IEPE-specific
   iepe_coupling?: 'AC' | 'DC'
+  coupling?: 'AC' | 'DC'       // Alias for iepe_coupling (UI)
   iepe_sensitivity?: number    // mV/g or mV/Pa (default 100.0)
+  sensitivity?: number         // Alias for iepe_sensitivity (UI)
   iepe_current?: number        // Excitation current in Amps (default 0.004)
 
   // Counter-specific
@@ -112,6 +120,15 @@ export interface ChannelConfig {
   // Resistance-specific
   resistance_range?: number    // Maximum expected resistance in Ohms
   resistance_wiring?: '2-wire' | '4-wire'
+
+  // Modbus-specific
+  modbus_register_type?: 'holding' | 'input' | 'coil' | 'discrete'
+  modbus_address?: number              // Register/coil address
+  modbus_data_type?: 'int16' | 'uint16' | 'int32' | 'uint32' | 'float32' | 'float64' | 'bool'
+  modbus_byte_order?: 'big' | 'little' // Endianness
+  modbus_word_order?: 'big' | 'little' // For 32/64-bit values (word swap)
+  modbus_scale?: number                // Scale factor: value = raw * scale + offset
+  modbus_offset?: number               // Offset: value = raw * scale + offset
 
   // Digital I/O
   logic_level?: '5V' | '24V'
