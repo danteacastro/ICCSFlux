@@ -10,6 +10,11 @@ const props = defineProps<{
   label?: string
   style?: WidgetStyle
   invert?: boolean
+  compact?: boolean        // Compact mode: smaller, inline
+  industrial?: boolean     // Industrial theme: flat, square
+  showLabel?: boolean      // Show/hide label (default true)
+  showStatus?: boolean     // Show/hide status text (default true in normal, false in compact)
+  ledSize?: 'small' | 'medium' | 'large'
 }>()
 
 const store = useDashboardStore()
@@ -58,20 +63,34 @@ function closeSettings() {
 function updateStyle(updates: Partial<WidgetStyle>) {
   store.updateWidgetStyle(props.widgetId, updates)
 }
+
+// Mode classes
+const modeClasses = computed(() => ({
+  compact: props.compact,
+  industrial: props.industrial,
+  [`led-${props.ledSize || 'medium'}`]: true
+}))
+
+// Show/hide logic
+const shouldShowLabel = computed(() => props.showLabel !== false)
+const shouldShowStatus = computed(() => {
+  if (props.showStatus !== undefined) return props.showStatus
+  return !props.compact // Default: show status in normal mode, hide in compact
+})
 </script>
 
 <template>
-  <div class="led-indicator">
+  <div class="led-indicator" :class="modeClasses">
     <div
       class="led"
       :style="{
         backgroundColor: ledColor,
-        boxShadow: isOn ? `0 0 8px ${ledColor}` : 'none'
+        boxShadow: isOn && !industrial ? `0 0 8px ${ledColor}` : 'none'
       }"
     ></div>
-    <div class="info">
-      <div class="label">{{ displayLabel }}</div>
-      <div class="status" :style="{ color: isOn ? onColor : '#6b7280' }">{{ statusText }}</div>
+    <div v-if="shouldShowLabel || shouldShowStatus" class="info">
+      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+      <div v-if="shouldShowStatus" class="status" :style="{ color: isOn ? onColor : '#6b7280' }">{{ statusText }}</div>
     </div>
 
     <!-- Settings button (edit mode only) -->
@@ -272,5 +291,77 @@ function updateStyle(updates: Partial<WidgetStyle>) {
 
 .close-btn:hover {
   background: #2563eb;
+}
+
+/* ========================================
+   LED SIZES
+   ======================================== */
+.led-small .led {
+  width: 10px;
+  height: 10px;
+}
+
+.led-medium .led {
+  width: 16px;
+  height: 16px;
+}
+
+.led-large .led {
+  width: 24px;
+  height: 24px;
+}
+
+/* ========================================
+   COMPACT MODE
+   Smaller, tighter, inline
+   ======================================== */
+.compact {
+  padding: 2px 6px;
+  gap: 4px;
+}
+
+.compact .led {
+  width: 10px;
+  height: 10px;
+}
+
+.compact .label {
+  font-size: 0.6rem;
+}
+
+.compact .status {
+  font-size: 0.65rem;
+}
+
+.compact .info {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ========================================
+   INDUSTRIAL MODE
+   Flat, square, LabVIEW-style
+   ======================================== */
+.industrial {
+  border-radius: 0;
+  border: 1px solid #444;
+  background: #2a2a2a;
+}
+
+.industrial .led {
+  border-radius: 2px;
+  border: 1px solid #555;
+}
+
+.industrial .label {
+  font-size: 0.6rem;
+  color: #aaa;
+  letter-spacing: 0.5px;
+}
+
+/* Compact + Industrial combo */
+.compact.industrial {
+  padding: 1px 4px;
 }
 </style>

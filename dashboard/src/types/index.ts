@@ -36,6 +36,9 @@ export type WidgetType =
   | 'bar_graph'
   | 'scheduler_status'
   | 'sequence_status'
+  | 'svg_symbol'
+  | 'text_label'
+  | 'value_table'
 
 export interface ChannelConfig {
   name: string
@@ -358,16 +361,47 @@ export interface WidgetConfig {
   // Divider-specific
   lineColor?: string
   lineStyle?: 'solid' | 'dashed' | 'dotted'
+  // SVG Symbol-specific
+  symbol?: string           // Symbol type from SCADA_SYMBOLS
+  valuePosition?: 'top' | 'bottom' | 'left' | 'right' | 'inside'
+  showLabel?: boolean
+  accentColor?: string
+  symbolSize?: 'small' | 'medium' | 'large'
+  rotation?: 0 | 90 | 180 | 270  // Symbol rotation
+  // Text Label-specific
+  text?: string             // Static text content
+  fontSize?: 'small' | 'medium' | 'large' | 'xlarge'
+  textAlign?: 'left' | 'center' | 'right'
+  textColor?: string
+  // Compact mode (for numeric, led, etc.)
+  compact?: boolean         // Hide label, show only value
+  industrial?: boolean      // Industrial/LabVIEW-style theme
+  // Value Table-specific
+  showUnits?: boolean       // Show unit column in tables
+  showStatus?: boolean      // Show status indicator
+  maxRows?: number          // Limit visible rows
   // Styling
   style?: WidgetStyle
+}
+
+// Dashboard Page - each page has its own widget layout
+export interface DashboardPage {
+  id: string
+  name: string
+  widgets: WidgetConfig[]
+  order: number           // Sort order
+  createdAt?: string
 }
 
 export interface LayoutConfig {
   system_id: string
   user?: string
-  widgets: WidgetConfig[]
+  widgets: WidgetConfig[]  // Legacy: widgets for default page
   gridColumns: number
   rowHeight: number
+  // Multi-page support
+  pages?: DashboardPage[]
+  currentPageId?: string
 }
 
 export interface SystemConfig {
@@ -407,7 +441,10 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   divider: { w: 3, h: 1, minW: 1, minH: 1 },
   bar_graph: { w: 2, h: 1, minW: 1, minH: 1 },
   scheduler_status: { w: 2, h: 2, minW: 2, minH: 2 },
-  sequence_status: { w: 2, h: 2, minW: 2, minH: 2 }
+  sequence_status: { w: 2, h: 2, minW: 2, minH: 2 },
+  svg_symbol: { w: 2, h: 2, minW: 1, minH: 1 },
+  text_label: { w: 3, h: 1, minW: 1, minH: 1 },
+  value_table: { w: 3, h: 4, minW: 2, minH: 2 }
 }
 
 // Preset colors for widgets

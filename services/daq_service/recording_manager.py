@@ -192,6 +192,7 @@ class RecordingManager:
 
     def start(self, filename: str = None) -> bool:
         """Start recording"""
+        should_notify = False
         with self.lock:
             if self.recording:
                 logger.warning("Recording already active")
@@ -235,15 +236,17 @@ class RecordingManager:
                     self.circular_files = [self.current_file]
 
                 logger.info(f"Recording started: {self.current_file}")
-
-                if self.on_status_change:
-                    self.on_status_change()
-
-                return True
+                should_notify = True
 
             except Exception as e:
                 logger.error(f"Failed to start recording: {e}")
                 return False
+
+        # Call callback AFTER releasing lock to avoid deadlock
+        if should_notify and self.on_status_change:
+            self.on_status_change()
+
+        return True
 
     def _get_output_directory(self) -> Path:
         """Get output directory based on directory structure configuration"""
@@ -265,6 +268,7 @@ class RecordingManager:
 
     def stop(self) -> bool:
         """Stop recording"""
+        should_notify = False
         with self.lock:
             if not self.recording:
                 logger.warning("Recording not active")
@@ -280,17 +284,20 @@ class RecordingManager:
             duration = (datetime.now() - self.recording_start_time).total_seconds() if self.recording_start_time else 0
 
             logger.info(f"Recording stopped: {self.samples_written} samples, {self.bytes_written} bytes, {duration:.1f}s")
+            should_notify = True
 
-            if self.on_status_change:
-                self.on_status_change()
+        # Call callback AFTER releasing lock to avoid deadlock
+        if should_notify and self.on_status_change:
+            self.on_status_change()
 
-            return True
+        return True
 
     def write_sample(self, channel_values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Write a sample to the recording file"""
         if not self.recording:
             return
 
+        should_notify = False
         with self.lock:
             # Apply decimation
             self.decimation_counter += 1
@@ -323,8 +330,12 @@ class RecordingManager:
             # Write the sample
             self._write_row(filtered_values, channel_configs)
 
-            # Check file limits
-            self._check_file_limits()
+            # Check file limits (may signal need to notify)
+            should_notify = self._check_file_limits()
+
+        # Call callback AFTER releasing lock to avoid deadlock
+        if should_notify and self.on_status_change:
+            self.on_status_change()
 
     def update_script_values(self, values: Dict[str, Any]):
         """Update script-computed values (calculated params, transforms)"""
@@ -559,11 +570,12 @@ class RecordingManager:
 
         return True
 
-    def _check_file_limits(self):
-        """Check if file limits are exceeded based on rotation mode"""
+    def _check_file_limits(self) -> bool:
+        """Check if file limits are exceeded based on rotation mode.
+        Returns True if status callback should be called (after lock release)."""
         # Single and session modes don't rotate
         if self.config.rotation_mode in ('single', 'session'):
-            return
+            return False
 
         should_rotate = False
         reason = ""
@@ -590,19 +602,20 @@ class RecordingManager:
                     reason = f"sample limit ({self.current_file_samples} samples)"
 
         if should_rotate:
-            self._handle_rotation(reason)
+            return self._handle_rotation(reason)
 
-    def _handle_rotation(self, reason: str):
-        """Handle file rotation based on on_limit_reached setting"""
+        return False
+
+    def _handle_rotation(self, reason: str) -> bool:
+        """Handle file rotation based on on_limit_reached setting.
+        Returns True if status callback should be called (after lock release)."""
         logger.info(f"File limit reached: {reason}")
 
         if self.config.on_limit_reached == 'stop':
             # Stop recording
             self.recording = False
             logger.info("Recording stopped due to limit reached")
-            if self.on_status_change:
-                self.on_status_change()
-            return
+            return True  # Signal to call status change callback
 
         elif self.config.on_limit_reached == 'circular':
             # Rotate and delete oldest if needed
@@ -611,6 +624,8 @@ class RecordingManager:
 
         else:  # 'new_file'
             self._rotate_file()
+
+        return False
 
     def _rotate_file(self):
         """Close current file and start a new one"""

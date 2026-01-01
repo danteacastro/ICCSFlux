@@ -220,11 +220,11 @@ export function parseFormulaReferences(formula: string): FormulaReference[] {
 
   // Match {ChannelName} or {ChannelName.property}
   const channelRegex = /\{([a-zA-Z_][a-zA-Z0-9_]*)(?:\.([a-zA-Z]+))?\}/g
-  let match
+  let match: RegExpExecArray | null
   while ((match = channelRegex.exec(formula)) !== null) {
     refs.push({
       type: 'channel',
-      name: match[1],
+      name: match[1]!,
       property: (match[2] as ChannelProperty) || 'value'
     })
   }
@@ -232,19 +232,19 @@ export function parseFormulaReferences(formula: string): FormulaReference[] {
   // Match $VariableName
   const varRegex = /\$([a-zA-Z_][a-zA-Z0-9_]*)/g
   while ((match = varRegex.exec(formula)) !== null) {
-    refs.push({ type: 'variable', name: match[1] })
+    refs.push({ type: 'variable', name: match[1]! })
   }
 
   // Match #ConstantName
   const constRegex = /#([a-zA-Z_][a-zA-Z0-9_]*)/g
   while ((match = constRegex.exec(formula)) !== null) {
-    refs.push({ type: 'constant', name: match[1] })
+    refs.push({ type: 'constant', name: match[1]! })
   }
 
   // Match @LoopVar
   const loopRegex = /@([a-zA-Z_][a-zA-Z0-9_]*)/g
   while ((match = loopRegex.exec(formula)) !== null) {
-    refs.push({ type: 'loopVar', name: match[1] })
+    refs.push({ type: 'loopVar', name: match[1]! })
   }
 
   return refs

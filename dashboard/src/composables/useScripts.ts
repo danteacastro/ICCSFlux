@@ -15,8 +15,6 @@ import type {
   RecordingStep,
   SafetyCheckStep,
   CallSequenceStep,
-  RunDrawPatternStep,
-  SingleDrawStep,
   Alarm,
   Transformation,
   RollingTransformation,

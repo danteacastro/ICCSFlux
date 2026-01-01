@@ -15,6 +15,7 @@ const configWidgetId = ref<string | null>(null)
 
 // Track dragging state to hide controls
 const isDragging = ref(false)
+const draggingWidgetId = ref<string | null>(null)
 
 // Multi-select state
 const selectedWidgets = ref<Set<string>>(new Set())
@@ -54,14 +55,27 @@ function clearSelection() {
 // Expose for external use
 defineExpose({ clearSelection })
 
-// Handle drag start
-function onDragStart() {
+// Handle drag start - dispatch custom event for PageSelector
+function onDragStart(widgetId: string) {
   isDragging.value = true
+  draggingWidgetId.value = widgetId
+
+  // Dispatch custom event for PageSelector to listen
+  window.dispatchEvent(new CustomEvent('widget-drag-start', {
+    detail: { widgetId }
+  }))
 }
 
-// Handle drag end
+// Handle drag end - dispatch custom event for PageSelector
 function onDragEnd() {
+  const widgetId = draggingWidgetId.value
   isDragging.value = false
+  draggingWidgetId.value = null
+
+  // Dispatch custom event for PageSelector to listen
+  window.dispatchEvent(new CustomEvent('widget-drag-end', {
+    detail: { widgetId }
+  }))
 }
 
 // Convert widgets to grid-layout format
@@ -120,6 +134,28 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.plotStyles !== undefined) props.plotStyles = widget.plotStyles
   if (widget.cursors !== undefined) props.cursors = widget.cursors
 
+  // SVG Symbol props
+  if (widget.symbol !== undefined) props.symbol = widget.symbol
+  if (widget.symbolSize !== undefined) props.size = widget.symbolSize
+  if (widget.valuePosition !== undefined) props.valuePosition = widget.valuePosition
+  if (widget.showLabel !== undefined) props.showLabel = widget.showLabel
+  if (widget.showValue !== undefined) props.showValue = widget.showValue
+  if (widget.accentColor !== undefined) props.accentColor = widget.accentColor
+  if (widget.rotation !== undefined) props.rotation = widget.rotation
+
+  // Text Label props
+  if (widget.text !== undefined) props.text = widget.text
+  if (widget.fontSize !== undefined) props.fontSize = widget.fontSize
+  if (widget.textAlign !== undefined) props.textAlign = widget.textAlign
+  if (widget.textColor !== undefined) props.textColor = widget.textColor
+
+  // Compact/Industrial mode (for numeric, led, value_table)
+  if (widget.compact !== undefined) props.compact = widget.compact
+  if (widget.industrial !== undefined) props.industrial = widget.industrial
+  if (widget.showUnits !== undefined) props.showUnits = widget.showUnits
+  if (widget.showStatus !== undefined) props.showStatus = widget.showStatus
+  if (widget.maxRows !== undefined) props.maxRows = widget.maxRows
+
   return props
 }
 
@@ -144,7 +180,7 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
 
 // Handle toggle switch change events for digital outputs
 function handleToggleChange(widgetId: string, value: boolean) {
-  const widget = store.widgets[widgetId]
+  const widget = store.widgets.find(w => w.id === widgetId)
   if (!widget?.channel) return
   mqtt.setOutput(widget.channel, value)
 }
@@ -174,9 +210,9 @@ function handleToggleChange(widgetId: string, value: boolean) {
         :min-w="item.minW"
         :min-h="item.minH"
         drag-ignore-from=".no-drag"
-        @movestart="onDragStart"
+        @movestart="onDragStart(item.i)"
         @moveend="onDragEnd"
-        @resizestart="onDragStart"
+        @resizestart="onDragStart(item.i)"
         @resizeend="onDragEnd"
       >
         <div

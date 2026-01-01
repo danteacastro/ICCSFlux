@@ -22,6 +22,9 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   bar_graph: defineAsyncComponent(() => import('./BarGraphWidget.vue')),
   scheduler_status: defineAsyncComponent(() => import('./SchedulerStatusWidget.vue')),
   sequence_status: defineAsyncComponent(() => import('./SequenceStatusWidget.vue')),
+  svg_symbol: defineAsyncComponent(() => import('./SvgSymbolWidget.vue')),
+  text_label: defineAsyncComponent(() => import('./TextLabelWidget.vue')),
+  value_table: defineAsyncComponent(() => import('./ValueTableWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -192,5 +195,29 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Running sequence progress',
     needsChannel: false,
     defaultSize: { w: 2, h: 2 }
+  },
+  {
+    type: 'svg_symbol',
+    name: 'P&ID Symbol',
+    icon: '⚙',
+    description: 'SCADA equipment symbol (valve, pump, sensor)',
+    needsChannel: true,
+    defaultSize: { w: 2, h: 2 }
+  },
+  {
+    type: 'text_label',
+    name: 'Text Label',
+    icon: 'A',
+    description: 'Static text annotation for P&ID labeling',
+    needsChannel: false,
+    defaultSize: { w: 3, h: 1 }
+  },
+  {
+    type: 'value_table',
+    name: 'Value Table',
+    icon: '▦',
+    description: 'Compact table of multiple values (industrial style)',
+    needsChannel: false, // Uses channels array, not single channel
+    defaultSize: { w: 3, h: 4 }
   }
 ]

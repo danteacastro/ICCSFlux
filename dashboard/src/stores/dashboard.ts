@@ -7,7 +7,8 @@ import type {
   WidgetConfig,
   LayoutConfig,
   WidgetType,
-  WidgetStyle
+  WidgetStyle,
+  DashboardPage
 } from '../types'
 
 export const useDashboardStore = defineStore('dashboard', () => {
@@ -21,13 +22,30 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const values = ref<Record<string, ChannelValue>>({})
   const status = ref<SystemStatus | null>(null)
 
-  // Layout state
-  const widgets = ref<WidgetConfig[]>([])
+  // Multi-page dashboard state
+  const pages = ref<DashboardPage[]>([])
+  const currentPageId = ref<string>('default')
+
+  // Legacy: widgets ref for backward compatibility (maps to current page)
+  const widgets = computed({
+    get: () => {
+      const page = pages.value.find(p => p.id === currentPageId.value)
+      return page?.widgets || []
+    },
+    set: (newWidgets: WidgetConfig[]) => {
+      const pageIndex = pages.value.findIndex(p => p.id === currentPageId.value)
+      if (pageIndex !== -1) {
+        pages.value[pageIndex]!.widgets = newWidgets
+      }
+    }
+  })
+
+  // Grid settings
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
   const rowHeight = ref(30)    // Smaller row height to match (was 60)
   const editMode = ref(false)
 
-  // Chart state (max 2 charts)
+  // Chart state (max 2 charts per page)
   const maxCharts = 2
 
   // Computed
@@ -144,30 +162,197 @@ export const useDashboardStore = defineStore('dashboard', () => {
     mqttPrefix.value = prefix
   }
 
-  // Layout actions
+  // ========================================================================
+  // PAGE MANAGEMENT
+  // ========================================================================
+
+  const currentPage = computed(() =>
+    pages.value.find(p => p.id === currentPageId.value)
+  )
+
+  const sortedPages = computed(() =>
+    [...pages.value].sort((a, b) => a.order - b.order)
+  )
+
+  function ensureDefaultPage() {
+    if (pages.value.length === 0) {
+      pages.value.push({
+        id: 'default',
+        name: 'Page 1',
+        widgets: [],
+        order: 0,
+        createdAt: new Date().toISOString()
+      })
+      currentPageId.value = 'default'
+    }
+  }
+
+  function addPage(name?: string): string {
+    const id = `page-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const order = pages.value.length
+    const pageName = name || `Page ${order + 1}`
+
+    pages.value.push({
+      id,
+      name: pageName,
+      widgets: [],
+      order,
+      createdAt: new Date().toISOString()
+    })
+
+    return id
+  }
+
+  function removePage(pageId: string) {
+    // Can't remove last page
+    if (pages.value.length <= 1) return false
+
+    const index = pages.value.findIndex(p => p.id === pageId)
+    if (index === -1) return false
+
+    pages.value.splice(index, 1)
+
+    // If we removed the current page, switch to first available
+    if (currentPageId.value === pageId) {
+      currentPageId.value = pages.value[0]?.id || 'default'
+    }
+
+    // Reorder remaining pages
+    pages.value.forEach((p, i) => p.order = i)
+
+    return true
+  }
+
+  function renamePage(pageId: string, newName: string) {
+    const page = pages.value.find(p => p.id === pageId)
+    if (page) {
+      page.name = newName.trim() || `Page ${page.order + 1}`
+    }
+  }
+
+  function switchPage(pageId: string) {
+    if (pages.value.some(p => p.id === pageId)) {
+      currentPageId.value = pageId
+    }
+  }
+
+  function duplicatePage(pageId: string): string | null {
+    const source = pages.value.find(p => p.id === pageId)
+    if (!source) return null
+
+    const id = `page-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const newWidgets = source.widgets.map(w => ({
+      ...w,
+      id: `widget-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    }))
+
+    pages.value.push({
+      id,
+      name: `${source.name} (copy)`,
+      widgets: newWidgets,
+      order: pages.value.length,
+      createdAt: new Date().toISOString()
+    })
+
+    return id
+  }
+
+  function movePage(pageId: string, direction: 'up' | 'down') {
+    const index = pages.value.findIndex(p => p.id === pageId)
+    if (index === -1) return
+
+    const newIndex = direction === 'up' ? index - 1 : index + 1
+    if (newIndex < 0 || newIndex >= pages.value.length) return
+
+    // Swap orders
+    const currentPage = pages.value[index]
+    const targetPage = pages.value[newIndex]
+    if (!currentPage || !targetPage) return
+
+    const temp = currentPage.order
+    currentPage.order = targetPage.order
+    targetPage.order = temp
+  }
+
+  // ========================================================================
+  // WIDGET ACTIONS (operate on current page)
+  // ========================================================================
+
   function addWidget(widget: Omit<WidgetConfig, 'id'>) {
+    ensureDefaultPage()
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page) return null
+
     const id = `widget-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 
-    // Check chart limit
+    // Check chart limit per page
     if (widget.type === 'chart' && !canAddChart.value) {
       console.warn('Maximum number of charts reached')
       return null
     }
 
     const newWidget: WidgetConfig = { id, ...widget }
-    widgets.value.push(newWidget)
+    page.widgets.push(newWidget)
     return id
   }
 
   function removeWidget(widgetId: string) {
-    const index = widgets.value.findIndex(w => w.id === widgetId)
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page) return
+
+    const index = page.widgets.findIndex(w => w.id === widgetId)
     if (index !== -1) {
-      widgets.value.splice(index, 1)
+      page.widgets.splice(index, 1)
     }
   }
 
+  function moveWidgetToPage(widgetId: string, targetPageId: string): boolean {
+    if (currentPageId.value === targetPageId) return false
+
+    const sourcePage = pages.value.find(p => p.id === currentPageId.value)
+    const targetPage = pages.value.find(p => p.id === targetPageId)
+    if (!sourcePage || !targetPage) return false
+
+    const widgetIndex = sourcePage.widgets.findIndex(w => w.id === widgetId)
+    if (widgetIndex === -1) return false
+
+    // Remove from source and add to target
+    const [widget] = sourcePage.widgets.splice(widgetIndex, 1)
+    if (widget) {
+      // Reset position to avoid overlap on target page
+      widget.x = 0
+      widget.y = targetPage.widgets.reduce((maxY, w) => Math.max(maxY, w.y + w.h), 0)
+      targetPage.widgets.push(widget)
+    }
+
+    return true
+  }
+
+  function copyWidgetToPage(widgetId: string, targetPageId: string): boolean {
+    const sourcePage = pages.value.find(p => p.id === currentPageId.value)
+    const targetPage = pages.value.find(p => p.id === targetPageId)
+    if (!sourcePage || !targetPage) return false
+
+    const widget = sourcePage.widgets.find(w => w.id === widgetId)
+    if (!widget) return false
+
+    // Create a copy with new ID
+    const newWidget: WidgetConfig = {
+      ...widget,
+      id: `widget-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      x: 0,
+      y: targetPage.widgets.reduce((maxY, w) => Math.max(maxY, w.y + w.h), 0)
+    }
+    targetPage.widgets.push(newWidget)
+
+    return true
+  }
+
   function updateWidget(widgetId: string, updates: Partial<WidgetConfig>) {
-    const widget = widgets.value.find(w => w.id === widgetId)
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page) return
+
+    const widget = page.widgets.find(w => w.id === widgetId)
     if (widget) {
       Object.assign(widget, updates)
     }
@@ -185,20 +370,39 @@ export const useDashboardStore = defineStore('dashboard', () => {
     editMode.value = !editMode.value
   }
 
-  // Layout persistence
+  // ========================================================================
+  // LAYOUT PERSISTENCE (with multi-page support)
+  // ========================================================================
+
   function getLayout(): LayoutConfig {
     return {
       system_id: systemId.value,
-      widgets: [...widgets.value],
+      widgets: currentPage.value?.widgets || [],  // Legacy: current page widgets
       gridColumns: gridColumns.value,
-      rowHeight: rowHeight.value
+      rowHeight: rowHeight.value,
+      pages: pages.value,
+      currentPageId: currentPageId.value
     }
   }
 
   function setLayout(layout: LayoutConfig) {
-    widgets.value = [...layout.widgets]
     gridColumns.value = layout.gridColumns
     rowHeight.value = layout.rowHeight
+
+    // Handle multi-page layouts
+    if (layout.pages && layout.pages.length > 0) {
+      pages.value = layout.pages
+      currentPageId.value = layout.currentPageId || layout.pages[0]!.id
+    } else {
+      // Legacy single-page layout - migrate to multi-page
+      pages.value = [{
+        id: 'default',
+        name: 'Page 1',
+        widgets: layout.widgets || [],
+        order: 0
+      }]
+      currentPageId.value = 'default'
+    }
   }
 
   function saveLayoutToStorage() {
@@ -212,13 +416,21 @@ export const useDashboardStore = defineStore('dashboard', () => {
       try {
         const layout = JSON.parse(stored) as LayoutConfig
         // Migration: fix showUnit=false to undefined (show by default)
-        if (layout.widgets) {
-          layout.widgets.forEach(w => {
+        const migrateWidgets = (widgetList: WidgetConfig[]) => {
+          widgetList.forEach(w => {
             if (w.showUnit === false) {
-              delete (w as any).showUnit  // Remove explicit false, let it default to showing
+              delete (w as any).showUnit
             }
           })
         }
+
+        if (layout.pages) {
+          layout.pages.forEach(p => migrateWidgets(p.widgets))
+        }
+        if (layout.widgets) {
+          migrateWidgets(layout.widgets)
+        }
+
         setLayout(layout)
         return true
       } catch (e) {
@@ -230,7 +442,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Auto-generate layout from channel config
   function generateDefaultLayout() {
-    widgets.value = []
+    // Ensure we have a default page
+    ensureDefaultPage()
+
+    // Clear current page widgets
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (page) {
+      page.widgets = []
+    }
 
     const groups = channelsByGroup.value
     let currentY = 0
@@ -326,7 +545,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
       divider: { w: 6, h: 2 },
       bar_graph: { w: 4, h: 2 },
       scheduler_status: { w: 4, h: 4 },
-      sequence_status: { w: 4, h: 4 }
+      sequence_status: { w: 4, h: 4 },
+      svg_symbol: { w: 2, h: 2 },
+      text_label: { w: 6, h: 2 },
+      value_table: { w: 6, h: 8 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }
@@ -351,6 +573,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
       // Apply the layout
       const layout: LayoutConfig = {
+        system_id: layoutData.system_id || 'default',
         widgets: layoutData.widgets,
         gridColumns: layoutData.gridColumns || 24,
         rowHeight: layoutData.rowHeight || 30
@@ -493,6 +716,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
     editMode,
     maxCharts,
 
+    // Multi-page state
+    pages,
+    currentPageId,
+    currentPage,
+    sortedPages,
+
     // Computed
     channelsByGroup,
     visibleChannels,
@@ -512,9 +741,20 @@ export const useDashboardStore = defineStore('dashboard', () => {
     setStatus,
     setSystemInfo,
 
+    // Page management
+    ensureDefaultPage,
+    addPage,
+    removePage,
+    renamePage,
+    switchPage,
+    duplicatePage,
+    movePage,
+
     // Layout
     addWidget,
     removeWidget,
+    moveWidgetToPage,
+    copyWidgetToPage,
     updateWidget,
     updateWidgetPosition,
     updateWidgetStyle,

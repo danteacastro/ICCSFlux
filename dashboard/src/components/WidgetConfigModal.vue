@@ -4,6 +4,7 @@ import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
 import type { WidgetConfig, WidgetStyle, ButtonAction, ButtonActionType, SystemCommandType } from '../types'
 import { WIDGET_COLORS } from '../types'
+import { SYMBOL_INFO, type ScadaSymbolType } from '../assets/symbols'
 
 const props = defineProps<{
   widgetId: string | null
@@ -55,6 +56,19 @@ const digitalOutputChannels = computed(() => {
 // Available sequences for script_run action
 const availableSequences = computed(() => scripts.sequences.value)
 
+// Group symbols by category for the select dropdown
+const symbolsByCategory = computed(() => {
+  const grouped: Record<string, [ScadaSymbolType, { label: string; category: string }][]> = {}
+  for (const [key, info] of Object.entries(SYMBOL_INFO) as [ScadaSymbolType, { label: string; category: string }][]) {
+    const category = info.category
+    if (!grouped[category]) {
+      grouped[category] = []
+    }
+    grouped[category]!.push([key, info])
+  }
+  return grouped
+})
+
 // Button action type options
 const buttonActionTypes: { value: ButtonActionType; label: string }[] = [
   { value: 'mqtt_publish', label: 'MQTT Publish' },
@@ -85,6 +99,18 @@ function ensureButtonAction(): ButtonAction {
 function updateButtonAction<K extends keyof ButtonAction>(key: K, value: ButtonAction[K]) {
   const action = ensureButtonAction()
   action[key] = value
+}
+
+// Toggle channel in channels array (for value_table, charts)
+function toggleChannel(channelName: string, add: boolean) {
+  if (!localWidget.value.channels) {
+    localWidget.value.channels = []
+  }
+  if (add && !localWidget.value.channels.includes(channelName)) {
+    localWidget.value.channels.push(channelName)
+  } else if (!add) {
+    localWidget.value.channels = localWidget.value.channels.filter(c => c !== channelName)
+  }
 }
 
 // Save changes
@@ -129,7 +155,7 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
           </div>
 
           <!-- Channel selection (for single-channel widgets) -->
-          <div v-if="['numeric', 'gauge', 'led', 'toggle', 'setpoint', 'sparkline'].includes(widgetType)" class="form-group">
+          <div v-if="['numeric', 'gauge', 'led', 'toggle', 'setpoint', 'sparkline', 'svg_symbol'].includes(widgetType)" class="form-group">
             <label>Channel</label>
             <select v-model="localWidget.channel">
               <option value="">-- Select Channel --</option>
@@ -159,6 +185,68 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
                 />
                 Show Unit
               </label>
+            </div>
+          </template>
+
+          <!-- Compact/Industrial mode (numeric, led, value_table) -->
+          <template v-if="['numeric', 'led', 'value_table'].includes(widgetType)">
+            <div class="config-section">
+              <div class="section-header">Display Mode</div>
+              <div class="form-row">
+                <div class="form-group half checkbox">
+                  <label>
+                    <input
+                      type="checkbox"
+                      v-model="localWidget.compact"
+                    />
+                    Compact
+                  </label>
+                </div>
+                <div class="form-group half checkbox">
+                  <label>
+                    <input
+                      type="checkbox"
+                      v-model="localWidget.industrial"
+                    />
+                    Industrial Style
+                  </label>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Value Table specific -->
+          <template v-if="widgetType === 'value_table'">
+            <div class="form-group">
+              <label>Channels</label>
+              <div class="channel-checkboxes">
+                <label v-for="[name, config] in availableChannels" :key="name" class="channel-checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="localWidget.channels?.includes(name)"
+                    @change="toggleChannel(name, ($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>{{ config.display_name || name }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" min="0" max="6" />
+            </div>
+            <div class="form-row">
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" :checked="localWidget.showUnits !== false" @change="localWidget.showUnits = ($event.target as HTMLInputElement).checked" />
+                  Show Units
+                </label>
+              </div>
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showStatus" />
+                  Show Status
+                </label>
+              </div>
             </div>
           </template>
 
@@ -672,6 +760,131 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
               </div>
             </div>
           </template>
+
+          <!-- SVG Symbol specific -->
+          <template v-if="widgetType === 'svg_symbol'">
+            <div class="form-group">
+              <label>Symbol Type</label>
+              <select v-model="localWidget.symbol">
+                <option value="">-- Select Symbol --</option>
+                <optgroup v-for="(symbols, category) in symbolsByCategory" :key="category" :label="category">
+                  <option v-for="[key, info] in symbols" :key="key" :value="key">
+                    {{ info.label }}
+                  </option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>Symbol Size</label>
+                <select v-model="localWidget.symbolSize">
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                </select>
+              </div>
+              <div class="form-group half">
+                <label>Rotation</label>
+                <select v-model.number="localWidget.rotation">
+                  <option :value="0">0° (default)</option>
+                  <option :value="90">90° (clockwise)</option>
+                  <option :value="180">180° (flip)</option>
+                  <option :value="270">270° (counter-clockwise)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Value Position</label>
+              <select v-model="localWidget.valuePosition">
+                <option value="bottom">Below Symbol</option>
+                <option value="top">Above Symbol</option>
+                <option value="left">Left of Symbol</option>
+                <option value="right">Right of Symbol</option>
+                <option value="inside">Inside Symbol</option>
+              </select>
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" :checked="localWidget.showValue !== false" @change="localWidget.showValue = ($event.target as HTMLInputElement).checked" />
+                Show Value
+              </label>
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" :checked="localWidget.showLabel !== false" @change="localWidget.showLabel = ($event.target as HTMLInputElement).checked" />
+                Show Label
+              </label>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" min="0" max="6" />
+            </div>
+            <div class="form-group">
+              <label>Accent Color (optional)</label>
+              <div class="color-options">
+                <button
+                  class="color-btn"
+                  :class="{ selected: !localWidget.accentColor }"
+                  style="background: linear-gradient(45deg, #60a5fa, #22c55e);"
+                  @click="localWidget.accentColor = undefined"
+                  title="Auto (status-based)"
+                />
+                <button
+                  v-for="color in ['#60a5fa', '#22c55e', '#fbbf24', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#ffffff']"
+                  :key="color"
+                  class="color-btn"
+                  :class="{ selected: localWidget.accentColor === color }"
+                  :style="{ backgroundColor: color }"
+                  @click="localWidget.accentColor = color"
+                />
+              </div>
+              <p class="hint">Leave auto for status-based coloring</p>
+            </div>
+          </template>
+
+          <!-- Text Label specific -->
+          <template v-if="widgetType === 'text_label'">
+            <div class="form-group">
+              <label>Text Content</label>
+              <input
+                type="text"
+                v-model="localWidget.text"
+                placeholder="Enter text..."
+              />
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>Font Size</label>
+                <select v-model="localWidget.fontSize">
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                  <option value="xlarge">Extra Large</option>
+                </select>
+              </div>
+              <div class="form-group half">
+                <label>Alignment</label>
+                <select v-model="localWidget.textAlign">
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Text Color</label>
+              <div class="color-options">
+                <button
+                  v-for="color in ['#ffffff', '#60a5fa', '#22c55e', '#fbbf24', '#ef4444', '#8b5cf6', '#ec4899', '#888888']"
+                  :key="color"
+                  class="color-btn"
+                  :class="{ selected: localWidget.textColor === color }"
+                  :style="{ backgroundColor: color }"
+                  @click="localWidget.textColor = color"
+                />
+              </div>
+            </div>
+          </template>
         </div>
 
         <div class="modal-footer">
@@ -797,6 +1010,38 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
 
 .channel-item:hover {
   color: #fff;
+}
+
+.channel-checkboxes {
+  max-height: 180px;
+  overflow-y: auto;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channel-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #aaa;
+}
+
+.channel-checkbox:hover {
+  background: #1a1a2e;
+  color: #fff;
+}
+
+.channel-checkbox input {
+  margin: 0;
 }
 
 .color-options {

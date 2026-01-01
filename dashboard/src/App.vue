@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { useDashboardStore } from './stores/dashboard'
 import { useMqtt } from './composables/useMqtt'
 import { useScripts } from './composables/useScripts'
@@ -11,6 +11,7 @@ import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
 import SafetyTab from './components/SafetyTab.vue'
 import PlaygroundTab from './components/PlaygroundTab.vue'
+import PageSelector from './components/PageSelector.vue'
 import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
@@ -23,6 +24,27 @@ const projectFiles = useProjectFiles()
 
 // Tabs
 const activeTab = ref('overview')
+
+// URL-based page selection (for multi-window support)
+function getPageFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('page')
+}
+
+function updateUrlWithPage(pageId: string) {
+  const url = new URL(window.location.href)
+  if (pageId && pageId !== 'default') {
+    url.searchParams.set('page', pageId)
+  } else {
+    url.searchParams.delete('page')
+  }
+  window.history.replaceState({}, '', url.toString())
+}
+
+// Watch for page changes and update URL
+watch(() => store.currentPageId, (newPageId) => {
+  updateUrlWithPage(newPageId)
+})
 
 // Add Widget modal state
 const showAddPanel = ref(false)
@@ -141,6 +163,12 @@ onMounted(() => {
             store.generateDefaultLayout()
           }
         }
+
+        // Check URL for page parameter (multi-window support)
+        const urlPageId = getPageFromUrl()
+        if (urlPageId && store.pages.some(p => p.id === urlPageId)) {
+          store.switchPage(urlPageId)
+        }
       }, 500)
 
       clearInterval(checkChannels)
@@ -235,6 +263,9 @@ function handleRetryConnection() {
             </svg>
             Overview
           </button>
+
+          <!-- Page Selector (only visible on Overview tab) -->
+          <PageSelector v-if="activeTab === 'overview'" />
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'configuration' }"

@@ -6,6 +6,12 @@ const props = defineProps<{
   channel: string
   label?: string
   decimals?: number
+  compact?: boolean        // Compact mode: horizontal layout, smaller
+  industrial?: boolean     // Industrial theme: flat, square, dense
+  showLabel?: boolean      // Show/hide label (default true)
+  showUnit?: boolean       // Show/hide unit (default true)
+  valueColor?: string      // Custom value color
+  backgroundColor?: string // Custom background color
 }>()
 
 const store = useDashboardStore()
@@ -43,14 +49,36 @@ const statusClass = computed(() => {
   if (channelValue.value.warning) return 'warning'
   return 'normal'
 })
+
+// Computed style classes
+const modeClasses = computed(() => ({
+  compact: props.compact,
+  industrial: props.industrial
+}))
+
+// Custom styles
+const customStyles = computed(() => {
+  const styles: Record<string, string> = {}
+  if (props.backgroundColor) {
+    styles['--widget-bg'] = props.backgroundColor
+  }
+  if (props.valueColor) {
+    styles['--custom-value-color'] = props.valueColor
+  }
+  return styles
+})
+
+// Whether to show label and unit
+const shouldShowLabel = computed(() => props.showLabel !== false)
+const shouldShowUnit = computed(() => props.showUnit !== false && unit.value)
 </script>
 
 <template>
-  <div class="numeric-display" :class="statusClass">
-    <div class="label">{{ displayLabel }}</div>
+  <div class="numeric-display" :class="[statusClass, modeClasses]" :style="customStyles">
+    <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
     <div class="value-container">
       <span class="value">{{ displayValue }}</span>
-      <span class="unit" v-if="unit">{{ unit }}</span>
+      <span class="unit" v-if="shouldShowUnit">{{ unit }}</span>
     </div>
   </div>
 </template>
@@ -122,5 +150,95 @@ const statusClass = computed(() => {
 @keyframes pulse-alarm {
   0%, 100% { background-color: #1a1a2e; }
   50% { background-color: #3f1515; }
+}
+
+/* ========================================
+   COMPACT MODE
+   Horizontal layout, smaller, denser
+   ======================================== */
+.compact {
+  flex-direction: row;
+  justify-content: space-between;
+  padding: 2px 6px;
+  gap: 4px;
+}
+
+.compact .label {
+  font-size: 0.65rem;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.compact .value-container {
+  flex-shrink: 0;
+}
+
+.compact .value {
+  font-size: 0.9rem;
+}
+
+.compact .unit {
+  font-size: 0.6rem;
+}
+
+/* ========================================
+   INDUSTRIAL MODE
+   Flat, square, LabVIEW-style
+   ======================================== */
+.industrial {
+  border-radius: 0;
+  border: 1px solid #444;
+  background: #2a2a2a;
+}
+
+.industrial .label {
+  font-size: 0.6rem;
+  color: #aaa;
+  letter-spacing: 0.5px;
+}
+
+.industrial .value {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 700;
+}
+
+.industrial.normal {
+  background: linear-gradient(180deg, #2d4a2d 0%, #1a2e1a 100%);
+  border-color: #3a5a3a;
+}
+
+.industrial.normal .value {
+  color: #7fff7f;
+  text-shadow: 0 0 4px rgba(127, 255, 127, 0.3);
+}
+
+.industrial.stale {
+  background: #2a2a2a;
+  border-color: #444;
+}
+
+.industrial.warning {
+  background: linear-gradient(180deg, #4a4a2d 0%, #2e2e1a 100%);
+  border-color: #5a5a3a;
+}
+
+.industrial.alarm {
+  background: linear-gradient(180deg, #4a2d2d 0%, #2e1a1a 100%);
+  border-color: #5a3a3a;
+}
+
+/* Compact + Industrial combo */
+.compact.industrial {
+  padding: 1px 4px;
+  border-width: 1px;
+}
+
+.compact.industrial .value {
+  font-size: 0.85rem;
+}
+
+/* Custom value color override */
+.numeric-display[style*="--custom-value-color"] .value {
+  color: var(--custom-value-color) !important;
 }
 </style>
