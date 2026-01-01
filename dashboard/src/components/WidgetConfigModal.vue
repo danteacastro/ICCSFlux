@@ -2,9 +2,16 @@
 import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
-import type { WidgetConfig, WidgetStyle, ButtonAction, ButtonActionType, SystemCommandType } from '../types'
+import type { WidgetConfig, WidgetStyle, ButtonAction, ButtonActionType, SystemCommandType, ChartPlotStyle } from '../types'
 import { WIDGET_COLORS } from '../types'
 import { SYMBOL_INFO, type ScadaSymbolType } from '../assets/symbols'
+
+// Default chart colors (same as TrendChart)
+const CHART_COLORS = [
+  '#22c55e', '#3b82f6', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16',
+  '#a855f7', '#14b8a6', '#f97316', '#6366f1'
+]
 
 const props = defineProps<{
   widgetId: string | null
@@ -132,6 +139,67 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
   }
   ;(localWidget.value.style as Record<string, string>)[key] = value
 }
+
+// ============================================
+// Chart Plot Style Helpers
+// ============================================
+
+// Get plot style for a channel
+function getPlotStyle(channel: string): ChartPlotStyle {
+  const styles = localWidget.value.plotStyles || []
+  const existing = styles.find(s => s.channel === channel)
+  if (existing) return existing
+
+  // Create default style with indexed color
+  const idx = localWidget.value.channels?.indexOf(channel) ?? 0
+  return {
+    channel,
+    color: CHART_COLORS[idx % CHART_COLORS.length] || '#4ade80',
+    lineWidth: 1.5,
+    lineStyle: 'solid',
+    showMarkers: false,
+    markerStyle: 'circle',
+    yAxisId: 0,
+    visible: true
+  }
+}
+
+// Update plot style for a channel
+function updatePlotStyle(channel: string, updates: Partial<ChartPlotStyle>) {
+  if (!localWidget.value.plotStyles) {
+    localWidget.value.plotStyles = []
+  }
+
+  const idx = localWidget.value.plotStyles.findIndex(s => s.channel === channel)
+  if (idx >= 0) {
+    // Merge updates into existing style (existing style has all required fields)
+    const existing = localWidget.value.plotStyles[idx]
+    if (existing) {
+      Object.assign(existing, updates)
+    }
+  } else {
+    // Create new entry with all required fields
+    const channelIdx = localWidget.value.channels?.indexOf(channel) ?? 0
+    const newStyle: ChartPlotStyle = {
+      channel,
+      color: CHART_COLORS[channelIdx % CHART_COLORS.length] || '#4ade80',
+      lineWidth: 1.5,
+      lineStyle: 'solid',
+      showMarkers: false,
+      markerStyle: 'circle',
+      yAxisId: 0,
+      visible: true
+    }
+    // Apply updates (already have defaults for all required fields)
+    Object.assign(newStyle, updates)
+    localWidget.value.plotStyles.push(newStyle)
+  }
+}
+
+// Get selected channels for chart
+const selectedChartChannels = computed(() => {
+  return localWidget.value.channels || []
+})
 </script>
 
 <template>
@@ -385,6 +453,65 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
                     />
                     <span>{{ config.display_name || name }}</span>
                   </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-Channel Styling (only shows selected channels) -->
+            <div v-if="selectedChartChannels.length > 0" class="config-section">
+              <div class="section-header">Channel Styling</div>
+              <div class="channel-style-list">
+                <div
+                  v-for="channel in selectedChartChannels"
+                  :key="channel"
+                  class="channel-style-row"
+                >
+                  <div class="channel-style-preview" :style="{ backgroundColor: getPlotStyle(channel).color }"></div>
+                  <span class="channel-style-name">{{ store.channels[channel]?.display_name || channel }}</span>
+
+                  <div class="channel-style-controls">
+                    <!-- Color picker -->
+                    <label class="color-picker-label" title="Line Color">
+                      <input
+                        type="color"
+                        :value="getPlotStyle(channel).color"
+                        @input="(e) => updatePlotStyle(channel, { color: (e.target as HTMLInputElement).value })"
+                        class="color-picker"
+                      />
+                    </label>
+
+                    <!-- Line width -->
+                    <select
+                      :value="getPlotStyle(channel).lineWidth || 1.5"
+                      @change="(e) => updatePlotStyle(channel, { lineWidth: parseFloat((e.target as HTMLSelectElement).value) })"
+                      class="line-width-select"
+                      title="Line Width"
+                    >
+                      <option :value="0.5">Thin</option>
+                      <option :value="1">Normal</option>
+                      <option :value="1.5">Medium</option>
+                      <option :value="2">Thick</option>
+                      <option :value="3">Bold</option>
+                    </select>
+
+                    <!-- Visibility toggle -->
+                    <button
+                      type="button"
+                      class="visibility-btn"
+                      :class="{ hidden: getPlotStyle(channel).visible === false }"
+                      @click="updatePlotStyle(channel, { visible: getPlotStyle(channel).visible === false })"
+                      :title="getPlotStyle(channel).visible === false ? 'Show' : 'Hide'"
+                    >
+                      <svg v-if="getPlotStyle(channel).visible !== false" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1155,5 +1282,106 @@ function updateStyle(key: keyof WidgetStyle, value: string) {
 .form-group.half {
   flex: 1;
   margin-bottom: 12px;
+}
+
+/* Channel Styling Section */
+.channel-style-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.channel-style-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #0f0f1a;
+  border-radius: 4px;
+  border: 1px solid #2a2a4a;
+}
+
+.channel-style-preview {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.channel-style-name {
+  flex: 1;
+  font-size: 0.85rem;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-style-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-picker-label {
+  display: flex;
+  cursor: pointer;
+}
+
+.color-picker {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-picker::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.line-width-select {
+  width: auto;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 3px;
+  color: #ccc;
+}
+
+.visibility-btn {
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: all 0.15s;
+}
+
+.visibility-btn:hover {
+  color: #fff;
+  background: #2a2a4a;
+}
+
+.visibility-btn.hidden {
+  color: #666;
+}
+
+.visibility-btn.hidden:hover {
+  color: #ef4444;
 }
 </style>

@@ -210,10 +210,10 @@ export function useSafety() {
       alarm.acknowledged_by = user
 
       // Notify backend
-      mqtt.publish('nisystem/command/alarm/acknowledge', JSON.stringify({
+      mqtt.sendCommand('alarm/acknowledge', {
         alarm_id: alarmId,
         user
-      }))
+      })
 
       // Log to history
       addHistoryEntry({
@@ -278,10 +278,10 @@ export function useSafety() {
     if (!alarm) return
 
     // Notify backend
-    mqtt.publish('nisystem/command/alarm/reset', JSON.stringify({
+    mqtt.sendCommand('alarm/reset', {
       alarm_id: alarmId,
       user
-    }))
+    })
 
     // Log reset event
     addHistoryEntry({
@@ -328,12 +328,12 @@ export function useSafety() {
     alarm.shelve_reason = reason
 
     // Notify backend
-    mqtt.publish('nisystem/command/alarm/shelve', JSON.stringify({
+    mqtt.sendCommand('alarm/shelve', {
       alarm_id: alarmId,
       user,
       reason,
       duration_s: durationS
-    }))
+    })
 
     // Log
     addHistoryEntry({
@@ -363,10 +363,10 @@ export function useSafety() {
     alarm.shelve_reason = undefined
 
     // Notify backend
-    mqtt.publish('nisystem/command/alarm/unshelve', JSON.stringify({
+    mqtt.sendCommand('alarm/unshelve', {
       alarm_id: alarmId,
       user
-    }))
+    })
 
     // Log
     addHistoryEntry({

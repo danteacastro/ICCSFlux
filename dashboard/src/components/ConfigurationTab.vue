@@ -18,6 +18,7 @@ import {
 } from '../types/modules'
 import { useMqtt } from '../composables/useMqtt'
 import { useProjectManager } from '../composables/useProjectManager'
+import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 
 const store = useDashboardStore()
 
@@ -1240,6 +1241,13 @@ watch(() => Object.keys(store.channels), () => {
     </Transition>
 
     <div class="main-content">
+      <!-- Modbus Device Configuration (shown when MODBUS tab is active) -->
+      <ModbusDeviceConfig
+        v-if="activeTypeTab === 'modbus'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
       <!-- Channel Table -->
       <div class="table-container" :class="{ 'with-panel': showConfigPanel }">
         <table class="channel-table">

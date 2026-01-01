@@ -18,7 +18,7 @@ import pytest
 import time
 
 # Import test harness from conftest
-from conftest import SYSTEM_PREFIX
+from .conftest import SYSTEM_PREFIX
 
 
 class TestStartStopButtons:

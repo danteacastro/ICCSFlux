@@ -17,11 +17,13 @@ const hoveredPageId = ref<string | null>(null)
 const hoverTimeout = ref<ReturnType<typeof setTimeout> | null>(null)
 const HOVER_DELAY = 600 // ms to wait before switching page
 
+// Refs to page tab elements for hit testing during drag
+const pageTabRefs = ref<Map<string, HTMLElement>>(new Map())
+
 // Computed
 const pages = computed(() => store.sortedPages)
-const currentPage = computed(() => store.currentPage)
+// currentPage available via store.currentPage in template
 const hasMultiplePages = computed(() => pages.value.length > 1)
-const otherPages = computed(() => pages.value.filter(p => p.id !== store.currentPageId))
 
 // Actions
 function selectPage(pageId: string) {
@@ -104,6 +106,8 @@ function handleWidgetDragStart(event: Event) {
   const customEvent = event as CustomEvent<{ widgetId: string }>
   isDraggingWidget.value = true
   draggingWidgetId.value = customEvent.detail?.widgetId || null
+  // Start listening for mouse movement to detect tab hover
+  window.addEventListener('mousemove', handleMouseMoveDuringDrag)
 }
 
 function handleWidgetDragEnd() {
@@ -111,6 +115,39 @@ function handleWidgetDragEnd() {
   draggingWidgetId.value = null
   clearHoverTimeout()
   hoveredPageId.value = null
+  // Stop listening for mouse movement
+  window.removeEventListener('mousemove', handleMouseMoveDuringDrag)
+}
+
+// Track mouse position during drag to detect when over page tabs
+function handleMouseMoveDuringDrag(event: MouseEvent) {
+  if (!isDraggingWidget.value) return
+
+  const mouseX = event.clientX
+  const mouseY = event.clientY
+
+  // Check if mouse is over any page tab
+  let foundHoveredPage: string | null = null
+
+  for (const [pageId, element] of pageTabRefs.value.entries()) {
+    if (pageId === store.currentPageId) continue // Skip current page
+
+    const rect = element.getBoundingClientRect()
+    if (mouseX >= rect.left && mouseX <= rect.right &&
+        mouseY >= rect.top && mouseY <= rect.bottom) {
+      foundHoveredPage = pageId
+      break
+    }
+  }
+
+  // Handle hover state changes
+  if (foundHoveredPage !== hoveredPageId.value) {
+    if (foundHoveredPage) {
+      onPageTabDragEnter(foundHoveredPage)
+    } else {
+      onPageTabDragLeave()
+    }
+  }
 }
 
 function clearHoverTimeout() {
@@ -153,6 +190,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('widget-drag-start', handleWidgetDragStart)
   window.removeEventListener('widget-drag-end', handleWidgetDragEnd)
+  window.removeEventListener('mousemove', handleMouseMoveDuringDrag)
   clearHoverTimeout()
 })
 
@@ -163,53 +201,31 @@ defineExpose({
 </script>
 
 <template>
-  <div class="page-selector" @click.stop>
-    <!-- Page tabs - always visible when multiple pages, expand during drag -->
-    <div class="page-tabs" :class="{ 'drag-mode': isDraggingWidget, 'has-multiple': hasMultiplePages }">
-      <!-- Current page tab -->
-      <button
-        class="page-tab current"
-        :class="{ 'drop-target': isDraggingWidget }"
-        @click="showDropdown = !showDropdown"
+  <!-- Vertical page tabs on right edge, below header -->
+  <Teleport to="body">
+    <div class="page-tabs-container" :class="{ 'drag-mode': isDraggingWidget }">
+      <!-- Page tabs as vertical book tabs -->
+      <div
+        v-for="(page, index) in pages"
+        :key="page.id"
+        :ref="(el) => { if (el) pageTabRefs.set(page.id, el as HTMLElement); else pageTabRefs.delete(page.id) }"
+        class="page-tab"
+        :class="{
+          active: page.id === store.currentPageId,
+          'drop-target': isDraggingWidget && page.id !== store.currentPageId,
+          'hover-active': hoveredPageId === page.id
+        }"
+        @click="selectPage(page.id)"
+        @contextmenu.prevent="startRename(page.id, page.name)"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2"/>
-          <line x1="3" y1="9" x2="21" y2="9"/>
-        </svg>
-        <span class="tab-name">{{ currentPage?.name || 'Page 1' }}</span>
-        <svg v-if="!isDraggingWidget" class="chevron" :class="{ open: showDropdown }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="6 9 12 15 18 9"/>
-        </svg>
-      </button>
+        <span class="tab-number">{{ index + 1 }}</span>
+        <span class="tab-name">{{ page.name }}</span>
+        <!-- Progress indicator during hover -->
+        <div v-if="hoveredPageId === page.id" class="hover-progress" />
+      </div>
 
-      <!-- Other page tabs (visible when dragging or multiple pages) -->
-      <template v-if="hasMultiplePages">
-        <button
-          v-for="page in otherPages"
-          :key="page.id"
-          class="page-tab other"
-          :class="{
-            'drop-target': isDraggingWidget,
-            'hover-active': hoveredPageId === page.id,
-            'expanded': isDraggingWidget
-          }"
-          @click="selectPage(page.id)"
-          @mouseenter="onPageTabDragEnter(page.id)"
-          @mouseleave="onPageTabDragLeave"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="3" y1="9" x2="21" y2="9"/>
-          </svg>
-          <span class="tab-name">{{ page.name }}</span>
-          <!-- Progress indicator during hover -->
-          <div v-if="hoveredPageId === page.id" class="hover-progress" />
-        </button>
-      </template>
-
-      <!-- Add page button (compact) -->
+      <!-- Add page button -->
       <button
-        v-if="!isDraggingWidget"
         class="add-tab-btn"
         @click.stop="addNewPage"
         title="Add new page"
@@ -220,202 +236,194 @@ defineExpose({
       </button>
     </div>
 
-    <!-- Dropdown for page management -->
-    <Teleport to="body">
-      <div v-if="showDropdown && !isDraggingWidget" class="page-dropdown-overlay" @click="showDropdown = false">
-        <div class="page-dropdown" @click.stop>
-          <div class="dropdown-header">
-            <span>Dashboard Pages</span>
-            <button class="add-page-btn" @click="addNewPage" title="Add new page">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    <!-- Dropdown for page management (on right-click or long press) -->
+    <div v-if="showDropdown && !isDraggingWidget" class="page-dropdown-overlay" @click="showDropdown = false">
+      <div class="page-dropdown" @click.stop>
+        <div class="dropdown-header">
+          <span>Dashboard Pages</span>
+          <button class="add-page-btn" @click="addNewPage" title="Add new page">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="page-list">
+          <div
+            v-for="page in pages"
+            :key="page.id"
+            class="page-item"
+            :class="{ active: page.id === store.currentPageId }"
+            @click="selectPage(page.id)"
+          >
+            <div class="page-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <line x1="3" y1="9" x2="21" y2="9"/>
               </svg>
-            </button>
-          </div>
+            </div>
 
-          <div class="page-list">
-            <div
-              v-for="page in pages"
-              :key="page.id"
-              class="page-item"
-              :class="{ active: page.id === store.currentPageId }"
-              @click="selectPage(page.id)"
-            >
-              <div class="page-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2"/>
-                  <line x1="3" y1="9" x2="21" y2="9"/>
+            <div class="page-name-container">
+              <input
+                v-if="editingPageId === page.id"
+                ref="inputRef"
+                v-model="editingName"
+                class="rename-input"
+                @blur="finishRename"
+                @keydown="handleKeydown"
+                @click.stop
+              />
+              <span v-else class="page-item-name" @dblclick.stop="startRename(page.id, page.name)">
+                {{ page.name }}
+              </span>
+            </div>
+
+            <div class="page-actions">
+              <button class="action-btn" @click.stop="startRename(page.id, page.name)" title="Rename">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
-              </div>
-
-              <div class="page-name-container">
-                <input
-                  v-if="editingPageId === page.id"
-                  ref="inputRef"
-                  v-model="editingName"
-                  class="rename-input"
-                  @blur="finishRename"
-                  @keydown="handleKeydown"
-                  @click.stop
-                />
-                <span v-else class="page-item-name" @dblclick.stop="startRename(page.id, page.name)">
-                  {{ page.name }}
-                </span>
-              </div>
-
-              <div class="page-actions">
-                <button class="action-btn" @click.stop="startRename(page.id, page.name)" title="Rename">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                  </svg>
-                </button>
-                <button class="action-btn" @click="openInNewWindow(page.id, $event)" title="Open in new window">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-                    <polyline points="15 3 21 3 21 9"/>
-                    <line x1="10" y1="14" x2="21" y2="3"/>
-                  </svg>
-                </button>
-                <button class="action-btn" @click="duplicatePage(page.id, $event)" title="Duplicate page">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                  </svg>
-                </button>
-                <button
-                  v-if="hasMultiplePages"
-                  class="action-btn delete"
-                  @click="deletePage(page.id, $event)"
-                  title="Delete page"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                  </svg>
-                </button>
-              </div>
+              </button>
+              <button class="action-btn" @click="openInNewWindow(page.id, $event)" title="Open in new window">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+              </button>
+              <button class="action-btn" @click="duplicatePage(page.id, $event)" title="Duplicate page">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                </svg>
+              </button>
+              <button
+                v-if="hasMultiplePages"
+                class="action-btn delete"
+                @click="deletePage(page.id, $event)"
+                title="Delete page"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+              </button>
             </div>
           </div>
+        </div>
 
-          <div class="dropdown-footer">
-            <span class="hint">Double-click to rename • Drag widgets to tabs to move</span>
-          </div>
+        <div class="dropdown-footer">
+          <span class="hint">Double-click to rename • Drag widgets to tabs to move</span>
         </div>
       </div>
-    </Teleport>
-  </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
-.page-selector {
-  position: relative;
+/* Page tabs container - fixed position on right edge below header */
+.page-tabs-container {
+  position: fixed;
+  top: 48px; /* Below header */
+  right: 0;
+  z-index: 50;
   display: flex;
-  align-items: center;
-}
-
-/* Page tabs - inline display */
-.page-tabs {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 2px;
-  padding: 2px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  padding: 4px 0;
 }
 
-.page-tabs.drag-mode {
+.page-tabs-container.drag-mode {
   background: rgba(59, 130, 246, 0.1);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3);
+  box-shadow: -2px 0 8px rgba(59, 130, 246, 0.3);
 }
 
+/* Individual page tab - book tab style */
 .page-tab {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
+  gap: 6px;
+  padding: 6px 12px 6px 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
   color: #888;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.2s;
-  white-space: nowrap;
+  min-width: 80px;
+  position: relative;
+  margin-right: -1px;
 }
 
-.page-tab.current {
-  background: rgba(255, 255, 255, 0.1);
+.page-tab:hover {
+  background: #252540;
+  color: #ccc;
+  padding-left: 14px;
+}
+
+.page-tab.active {
+  background: #0f0f1a;
+  border-color: #3b82f6;
+  border-left: 3px solid #3b82f6;
   color: #fff;
-}
-
-.page-tab.other {
-  max-width: 0;
-  padding: 4px 0;
-  overflow: hidden;
-  opacity: 0;
-}
-
-/* Show other tabs when multiple pages exist */
-.page-tabs.has-multiple .page-tab.other {
-  max-width: 120px;
-  padding: 4px 8px;
-  opacity: 0.7;
-}
-
-.page-tabs.has-multiple .page-tab.other:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-/* Expand tabs during drag */
-.page-tab.other.expanded {
-  max-width: 150px;
-  padding: 4px 12px;
-  opacity: 1;
+  padding-left: 12px;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
+  z-index: 1;
 }
 
 .page-tab.drop-target {
   border: 1px dashed rgba(59, 130, 246, 0.5);
+  border-right: none;
 }
 
-.page-tab.other.drop-target:hover,
 .page-tab.hover-active {
   background: rgba(59, 130, 246, 0.3) !important;
   border-color: #3b82f6;
   color: #fff;
-  transform: scale(1.02);
+  transform: translateX(-4px);
+}
+
+.tab-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.page-tab.active .tab-number {
+  background: #3b82f6;
+  color: #fff;
 }
 
 .tab-name {
-  max-width: 80px;
+  max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.chevron {
-  transition: transform 0.2s;
-  opacity: 0.6;
-}
-
-.chevron.open {
-  transform: rotate(180deg);
+  white-space: nowrap;
 }
 
 /* Hover progress indicator */
 .hover-progress {
   position: absolute;
-  bottom: 0;
   left: 0;
-  height: 2px;
+  top: 0;
+  width: 3px;
   background: #3b82f6;
-  animation: progress-fill 0.6s linear forwards;
-  border-radius: 0 0 4px 4px;
+  animation: progress-fill-vertical 0.6s linear forwards;
+  border-radius: 6px 0 0 6px;
 }
 
-@keyframes progress-fill {
-  from { width: 0; }
-  to { width: 100%; }
+@keyframes progress-fill-vertical {
+  from { height: 0; }
+  to { height: 100%; }
 }
 
 /* Add tab button */
@@ -423,8 +431,9 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  margin: 4px 8px 4px auto;
   background: transparent;
   border: 1px dashed #444;
   border-radius: 4px;
@@ -448,9 +457,8 @@ defineExpose({
 
 .page-dropdown {
   position: fixed;
-  top: 56px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 100px;
+  right: 20px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 8px;

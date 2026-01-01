@@ -3,7 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { usePlayground } from '../composables/usePlayground'
 import { useScripts } from '../composables/useScripts'
 import { useDashboardStore } from '../stores/dashboard'
-import type { UserVariable, UserVariableType, ResetMode, EdgeType } from '../types'
+import FormulaEditor from './FormulaEditor.vue'
+import type { UserVariable, UserVariableType, ResetMode, EdgeType, SourceRateUnit, FormulaBlock } from '../types'
 
 const playground = usePlayground()
 const scripts = useScripts()
@@ -26,11 +27,20 @@ const newVariable = ref({
   sourceChannel: '',
   edgeType: 'increment' as EdgeType,
   scaleFactor: 1,
+  sourceRateUnit: 'per_minute' as SourceRateUnit,
   resetMode: 'manual' as ResetMode,
   resetTime: '00:00',
   resetElapsedS: 3600,
   formula: ''
 })
+
+// Rate unit options for UI
+const SOURCE_RATE_UNIT_INFO: Record<SourceRateUnit, { label: string; description: string }> = {
+  per_second: { label: 'Per Second', description: 'Source value is X per second' },
+  per_minute: { label: 'Per Minute', description: 'Source value is X per minute (e.g., GPM)' },
+  per_hour: { label: 'Per Hour', description: 'Source value is X per hour' },
+  per_day: { label: 'Per Day', description: 'Source value is X per day' }
+}
 
 // Available channels for source selection
 const availableChannels = computed(() => {
@@ -71,6 +81,7 @@ function openAddModal() {
     sourceChannel: '',
     edgeType: 'increment',
     scaleFactor: 1,
+    sourceRateUnit: 'per_minute',
     resetMode: 'manual',
     resetTime: '00:00',
     resetElapsedS: 3600,
@@ -92,6 +103,7 @@ function openEditModal(variable: UserVariable) {
     sourceChannel: variable.sourceChannel || '',
     edgeType: variable.edgeType || 'increment',
     scaleFactor: variable.scaleFactor || 1,
+    sourceRateUnit: variable.sourceRateUnit || 'per_minute',
     resetMode: variable.resetMode,
     resetTime: variable.resetTime || '00:00',
     resetElapsedS: variable.resetElapsedS || 3600,
@@ -129,8 +141,12 @@ function saveVariable() {
     varData.scaleFactor = newVariable.value.scaleFactor
   }
 
-  if (newVariable.value.variableType === 'accumulator' || newVariable.value.variableType === 'counter') {
+  if (newVariable.value.variableType === 'accumulator' || newVariable.value.variableType === 'counter' || newVariable.value.variableType === 'rolling') {
     varData.edgeType = newVariable.value.edgeType
+    // Include rate unit if using rate integration
+    if (newVariable.value.edgeType === 'rate') {
+      varData.sourceRateUnit = newVariable.value.sourceRateUnit
+    }
   }
 
   if (typeInfo.supportsFormula) {
@@ -203,9 +219,62 @@ const availableSequences = computed(() => scripts.sequences.value.filter(s => s.
 const availableTriggers = computed(() => scripts.triggers.value.filter(t => t.enabled))
 const availableSchedules = computed(() => scripts.schedules.value.filter(s => s.enabled))
 
+// ============================================================================
+// FORMULA BLOCKS
+// ============================================================================
+
+const showFormulaEditor = ref(false)
+const editingFormulaBlock = ref<FormulaBlock | null>(null)
+
+// Get all channel names for autocomplete
+const allChannelNames = computed(() => Object.keys(store.channels))
+const allVariableNames = computed(() => playground.variablesList.value.map(v => v.name))
+
+function openNewFormulaBlock() {
+  editingFormulaBlock.value = null
+  showFormulaEditor.value = true
+}
+
+function openEditFormulaBlock(block: FormulaBlock) {
+  editingFormulaBlock.value = block
+  showFormulaEditor.value = true
+}
+
+function saveFormulaBlock(block: FormulaBlock) {
+  if (editingFormulaBlock.value) {
+    playground.updateFormulaBlock(block.id, block)
+  } else {
+    playground.createFormulaBlock(block)
+  }
+  showFormulaEditor.value = false
+  editingFormulaBlock.value = null
+}
+
+function deleteFormulaBlock(block: FormulaBlock) {
+  if (confirm(`Delete formula block "${block.name}"?\n\nThis will remove all output variables:\n${Object.keys(block.outputs).join(', ')}`)) {
+    playground.deleteFormulaBlock(block.id)
+  }
+}
+
+function toggleFormulaBlockEnabled(block: FormulaBlock) {
+  playground.updateFormulaBlock(block.id, { enabled: !block.enabled })
+}
+
+function formatFormulaValue(value: number | undefined): string {
+  if (value === undefined || value === null) return '--'
+  if (Number.isNaN(value)) return '--'  // NaN = stale (condition returned None)
+  if (Math.abs(value) >= 1000000) return value.toExponential(2)
+  if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+  if (Math.abs(value) >= 1) return value.toFixed(2)
+  if (Math.abs(value) >= 0.01) return value.toFixed(3)
+  if (value === 0) return '0'
+  return value.toExponential(2)
+}
+
 onMounted(() => {
   playground.refreshVariables()
   playground.refreshSessionStatus()
+  playground.refreshFormulaBlocks()
 })
 </script>
 
@@ -337,6 +406,97 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Formula Blocks Section -->
+    <div class="formula-blocks-section">
+      <div class="section-header">
+        <h3>Formula Blocks</h3>
+        <div class="section-actions">
+          <button class="btn btn-sm" @click="playground.refreshFormulaBlocks()">
+            Refresh
+          </button>
+          <button class="btn btn-primary btn-sm" @click="openNewFormulaBlock">
+            + New Formula Block
+          </button>
+        </div>
+      </div>
+
+      <p class="section-description">
+        Write complex expressions with conditional logic. Each block can define multiple output variables.
+      </p>
+
+      <!-- Formula Blocks List -->
+      <div class="formula-blocks-list" v-if="playground.formulaBlocksList.value.length > 0">
+        <div
+          v-for="block in playground.formulaBlocksList.value"
+          :key="block.id"
+          class="formula-block-card"
+          :class="{ disabled: !block.enabled, error: block.lastError }"
+        >
+          <div class="block-header">
+            <div class="block-title">
+              <button
+                class="toggle-btn"
+                @click="toggleFormulaBlockEnabled(block)"
+                :title="block.enabled ? 'Disable' : 'Enable'"
+              >
+                <span :class="block.enabled ? 'toggle-on' : 'toggle-off'"></span>
+              </button>
+              <h4>{{ block.name }}</h4>
+              <span v-if="block.lastError" class="error-badge" title="Evaluation error">!</span>
+            </div>
+            <div class="block-actions">
+              <button class="btn btn-xs" @click="openEditFormulaBlock(block)">Edit</button>
+              <button class="btn btn-xs btn-danger" @click="deleteFormulaBlock(block)">Delete</button>
+            </div>
+          </div>
+
+          <div class="block-description" v-if="block.description">
+            {{ block.description }}
+          </div>
+
+          <div v-if="block.lastError" class="block-error">
+            {{ block.lastError }}
+          </div>
+
+          <!-- Output Variables Preview -->
+          <div class="block-outputs">
+            <div
+              v-for="(meta, outName) in block.outputs"
+              :key="outName"
+              class="output-item"
+              :class="{ stale: Number.isNaN(playground.formulaValues.value[block.id]?.[outName]) }"
+            >
+              <span class="output-name">{{ outName }}</span>
+              <span class="output-value">
+                {{ formatFormulaValue(playground.formulaValues.value[block.id]?.[outName]) }}
+              </span>
+              <span class="output-units" v-if="meta.units">{{ meta.units }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty-state" v-else>
+        <p>No formula blocks defined yet.</p>
+        <p>Click "New Formula Block" to create complex calculations with conditional logic.</p>
+      </div>
+    </div>
+
+    <!-- Formula Editor Modal -->
+    <Teleport to="body">
+      <div v-if="showFormulaEditor" class="modal-overlay" @click.self="showFormulaEditor = false">
+        <div class="modal formula-modal">
+          <FormulaEditor
+            :modelValue="editingFormulaBlock"
+            :channelNames="allChannelNames"
+            :variableNames="allVariableNames"
+            @save="saveFormulaBlock"
+            @cancel="showFormulaEditor = false"
+          />
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Add/Edit Variable Modal -->
     <Teleport to="body">
       <div v-if="showAddModal" class="modal-overlay" @click.self="showAddModal = false">
@@ -398,15 +558,26 @@ onMounted(() => {
               </select>
             </div>
 
-            <!-- Edge type (for accumulator/counter) -->
-            <div class="form-group" v-if="newVariable.variableType === 'accumulator' || newVariable.variableType === 'counter'">
-              <label>Edge Type</label>
+            <!-- Edge type (for accumulator/counter/rolling) -->
+            <div class="form-group" v-if="newVariable.variableType === 'accumulator' || newVariable.variableType === 'counter' || newVariable.variableType === 'rolling'">
+              <label>Signal Type</label>
               <select v-model="newVariable.edgeType">
                 <option v-for="(info, type) in playground.EDGE_TYPE_INFO" :key="type" :value="type">
                   {{ info.label }}
                 </option>
               </select>
               <small class="hint">{{ playground.EDGE_TYPE_INFO[newVariable.edgeType]?.description }}</small>
+            </div>
+
+            <!-- Source rate unit (for rate integration) -->
+            <div class="form-group" v-if="newVariable.edgeType === 'rate' && (newVariable.variableType === 'accumulator' || newVariable.variableType === 'rolling')">
+              <label>Source Rate Unit</label>
+              <select v-model="newVariable.sourceRateUnit">
+                <option v-for="(info, unit) in SOURCE_RATE_UNIT_INFO" :key="unit" :value="unit">
+                  {{ info.label }}
+                </option>
+              </select>
+              <small class="hint">{{ SOURCE_RATE_UNIT_INFO[newVariable.sourceRateUnit]?.description }}</small>
             </div>
 
             <!-- Scale factor -->
@@ -1040,5 +1211,199 @@ onMounted(() => {
   background: var(--bg-primary);
   border-radius: 4px;
   text-align: center;
+}
+
+/* ============================================
+   FORMULA BLOCKS
+   ============================================ */
+
+.formula-blocks-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1.5rem;
+}
+
+.section-description {
+  margin: 0 0 1rem 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.formula-blocks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.formula-block-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1rem;
+  transition: border-color 0.2s, opacity 0.2s;
+}
+
+.formula-block-card.disabled {
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+.formula-block-card.error {
+  border-color: var(--color-danger);
+}
+
+.block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.block-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.block-title h4 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  width: 24px;
+  height: 14px;
+  position: relative;
+}
+
+.toggle-on,
+.toggle-off {
+  display: block;
+  width: 24px;
+  height: 14px;
+  border-radius: 7px;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.toggle-on {
+  background: var(--color-success);
+}
+
+.toggle-off {
+  background: #666;
+}
+
+.toggle-on::after,
+.toggle-off::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: white;
+  top: 2px;
+  transition: left 0.2s;
+}
+
+.toggle-on::after {
+  left: 12px;
+}
+
+.toggle-off::after {
+  left: 2px;
+}
+
+.error-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: var(--color-danger);
+  color: white;
+  border-radius: 50%;
+  font-weight: bold;
+  font-size: 0.75rem;
+}
+
+.block-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.block-description {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.block-error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--color-danger);
+  margin-bottom: 0.75rem;
+}
+
+.block-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.output-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.output-item.stale {
+  opacity: 0.5;
+}
+
+.output-name {
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.85rem;
+  color: var(--color-primary);
+}
+
+.output-value {
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-success);
+}
+
+.output-item.stale .output-value {
+  color: var(--text-secondary);
+}
+
+.output-units {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* Formula Modal */
+.formula-modal {
+  max-width: 900px;
+  width: 90vw;
+  max-height: 85vh;
+  padding: 0;
+  overflow: hidden;
 }
 </style>

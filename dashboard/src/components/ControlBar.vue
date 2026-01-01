@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
+import { useTheme } from '../composables/useTheme'
 
 const safety = useSafety()
+const { theme, toggleTheme } = useTheme()
 
 defineProps<{
   showEditControls?: boolean
@@ -91,13 +93,14 @@ const recordingTime = computed(() => {
     </div>
 
 
-    <!-- Scheduler toggle - only show when scheduler is enabled -->
-    <div v-if="store.isSchedulerEnabled" class="control-group">
-      <div class="scheduler-toggle">
-        <span class="label">SCHEDULE</span>
+    <!-- Session toggle - controls automation engine (scheduler, sequences, patterns) -->
+    <div class="control-group">
+      <div class="session-toggle">
+        <span class="label">SESSION</span>
         <button
-          class="toggle-btn on"
-          @click="emit('schedule-disable')"
+          class="toggle-btn"
+          :class="{ on: store.isSchedulerEnabled }"
+          @click="store.isSchedulerEnabled ? emit('schedule-disable') : emit('schedule-enable')"
         >
           <span class="slider"></span>
         </button>
@@ -115,6 +118,20 @@ const recordingTime = computed(() => {
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
         ADD WIDGET
+      </button>
+
+      <!-- Draw Pipe (only in edit mode) -->
+      <button
+        v-if="store.editMode"
+        class="btn btn-pipe"
+        :class="{ active: store.pipeDrawingMode }"
+        @click="store.setPipeDrawingMode(!store.pipeDrawingMode)"
+        title="Draw P&ID pipe connections"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 12h6M14 12h6M10 12v-6h4v12h-4v-6"/>
+        </svg>
+        {{ store.pipeDrawingMode ? 'CANCEL' : 'PIPE' }}
       </button>
 
       <!-- Edit mode toggle -->
@@ -196,6 +213,26 @@ const recordingTime = computed(() => {
         SIM
       </div>
     </div>
+
+    <!-- Theme toggle -->
+    <button class="theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+      <!-- Sun icon (shown in dark mode) -->
+      <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="1" x2="12" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="23"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        <line x1="1" y1="12" x2="3" y2="12"/>
+        <line x1="21" y1="12" x2="23" y2="12"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+      <!-- Moon icon (shown in light mode) -->
+      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
 
   </div>
 </template>
@@ -293,6 +330,23 @@ const recordingTime = computed(() => {
   background: #047857;
 }
 
+.btn-pipe {
+  background: #6366f1;
+  color: #fff;
+}
+.btn-pipe:hover {
+  background: #4f46e5;
+}
+.btn-pipe.active {
+  background: #dc2626;
+  animation: pulse-pipe 1s infinite;
+}
+
+@keyframes pulse-pipe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 .btn-primary {
   background: #3b82f6;
   color: #fff;
@@ -301,13 +355,13 @@ const recordingTime = computed(() => {
   background: #2563eb;
 }
 
-.scheduler-toggle {
+.session-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.scheduler-toggle .label {
+.session-toggle .label {
   font-size: 0.7rem;
   color: #888;
   font-weight: 600;
@@ -435,5 +489,25 @@ const recordingTime = computed(() => {
 @keyframes pulse-safety {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+/* Theme toggle */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.theme-toggle:hover {
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 </style>

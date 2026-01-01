@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { getWidgetComponent } from '../widgets'
 import WidgetConfigModal from './WidgetConfigModal.vue'
-import type { WidgetConfig } from '../types'
+import PipeOverlay from './PipeOverlay.vue'
+import type { WidgetConfig, PipeConnection } from '../types'
+import { SYMBOL_PORTS, type ScadaSymbolType } from '../assets/symbols'
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
@@ -79,8 +81,9 @@ function onDragEnd() {
 }
 
 // Convert widgets to grid-layout format
-const layoutItems = computed(() =>
-  store.widgets.map(w => ({
+// Use a writable computed for v-model binding with grid-layout-plus
+const layoutItems = computed({
+  get: () => store.widgets.map(w => ({
     i: w.id,
     x: w.x,
     y: w.y,
@@ -88,8 +91,14 @@ const layoutItems = computed(() =>
     h: w.h,
     minW: w.minW || 1,
     minH: w.minH || 1,
-  }))
-)
+  })),
+  set: (newLayout) => {
+    // Update store when grid-layout-plus modifies the layout
+    newLayout.forEach(item => {
+      store.updateWidgetPosition(item.i, item.x, item.y, item.w, item.h)
+    })
+  }
+})
 
 function onLayoutUpdated(newLayout: { i: string; x: number; y: number; w: number; h: number }[]) {
   newLayout.forEach(item => {
@@ -184,10 +193,129 @@ function handleToggleChange(widgetId: string, value: boolean) {
   if (!widget?.channel) return
   mqtt.setOutput(widget.channel, value)
 }
+
+// Pipe management
+const selectedPipeId = ref<string | null>(null)
+
+function handlePipeUpdate(pipe: PipeConnection) {
+  store.updatePipe(pipe.id, pipe)
+}
+
+function handlePipeDelete(pipeId: string) {
+  store.removePipe(pipeId)
+  selectedPipeId.value = null
+}
+
+function handlePipeSelect(pipeId: string | null) {
+  selectedPipeId.value = pipeId
+}
+
+// Add a new pipe via click on grid (simplified - click two points)
+function handleGridClick(event: MouseEvent) {
+  if (!store.editMode || !store.pipeDrawingMode) return
+
+  const grid = event.currentTarget as HTMLElement
+  const rect = grid.getBoundingClientRect()
+  const x = event.clientX - rect.left
+  const y = event.clientY - rect.top
+
+  // Convert to grid coordinates
+  const cellWidth = rect.width / store.gridColumns
+  const gridX = Math.round(x / cellWidth)
+  const gridY = Math.round(y / store.rowHeight)
+
+  if (!store.pipeDrawingStart) {
+    // First click - start drawing
+    store.startPipeDrawing({ point: { x: gridX, y: gridY } })
+  } else {
+    // Second click - finish drawing
+    store.finishPipeDrawing({ point: { x: gridX, y: gridY } })
+  }
+}
+
+// Handle connection port clicks from SVG symbol widgets
+function handleSymbolPortClick(event: CustomEvent<{ widgetId: string; portId: string; direction: string }>) {
+  const { widgetId, portId, direction } = event.detail
+
+  // Find the widget to get its position
+  const widget = store.widgets.find(w => w.id === widgetId)
+  if (!widget) return
+
+  // Get port position from symbol definition
+  const symbolType = (widget.symbol || 'solenoidValve') as ScadaSymbolType
+  const ports = SYMBOL_PORTS[symbolType]
+  const port = ports?.find(p => p.id === portId)
+  if (!port) return
+
+  // Apply rotation if any
+  let relX = port.x
+  let relY = port.y
+  const rotation = widget.rotation || 0
+  if (rotation === 90) {
+    const temp = relX
+    relX = 1 - relY
+    relY = temp
+  } else if (rotation === 180) {
+    relX = 1 - relX
+    relY = 1 - relY
+  } else if (rotation === 270) {
+    const temp = relX
+    relX = relY
+    relY = 1 - temp
+  }
+
+  // Calculate grid position of the port
+  const portGridX = widget.x + relX * widget.w
+  const portGridY = widget.y + relY * widget.h
+
+  if (!store.pipeDrawingStart) {
+    // First click - start drawing from this port
+    store.startPipeDrawing({
+      widgetId,
+      port: direction as 'left' | 'right' | 'top' | 'bottom',
+      point: { x: Math.round(portGridX), y: Math.round(portGridY) }
+    })
+  } else {
+    // Second click - finish drawing to this port
+    store.finishPipeDrawing({
+      widgetId,
+      port: direction as 'left' | 'right' | 'top' | 'bottom',
+      point: { x: Math.round(portGridX), y: Math.round(portGridY) }
+    })
+  }
+}
+
+// Register event listener for symbol port clicks
+onMounted(() => {
+  window.addEventListener('symbol-port-click', handleSymbolPortClick as EventListener)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('symbol-port-click', handleSymbolPortClick as EventListener)
+})
 </script>
 
 <template>
-  <div class="dashboard-grid" :class="{ 'is-dragging': isDragging }">
+  <div
+    class="dashboard-grid"
+    :class="{
+      'is-dragging': isDragging,
+      'pipe-drawing': store.pipeDrawingMode
+    }"
+    @click="handleGridClick"
+  >
+    <!-- Pipe overlay (renders behind widgets) -->
+    <PipeOverlay
+      :pipes="store.pipes"
+      :grid-columns="store.gridColumns"
+      :row-height="store.rowHeight"
+      :margin="8"
+      :edit-mode="store.editMode"
+      @update:pipe="handlePipeUpdate"
+      @delete:pipe="handlePipeDelete"
+      @select:pipe="handlePipeSelect"
+    />
+
     <GridLayout
       v-model:layout="layoutItems"
       :col-num="store.gridColumns"
@@ -283,6 +411,27 @@ function handleToggleChange(widgetId: string, value: boolean) {
   height: 100%;
   padding: 8px;
   position: relative;
+}
+
+/* Pipe drawing mode */
+.dashboard-grid.pipe-drawing {
+  cursor: crosshair;
+}
+
+.dashboard-grid.pipe-drawing::before {
+  content: 'Click to place pipe endpoints';
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(59, 130, 246, 0.9);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  z-index: 100;
+  pointer-events: none;
 }
 
 .widget-wrapper {

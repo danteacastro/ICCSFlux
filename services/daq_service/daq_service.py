@@ -372,7 +372,7 @@ class DAQService:
             config = AlarmConfig(
                 id=f"alarm-{name}",
                 channel=name,
-                name=channel.display_name or name,
+                name=name,
                 description=channel.description or '',
                 enabled=True,  # Enable by default if limits are defined
                 severity=severity,
@@ -647,6 +647,9 @@ class DAQService:
             # Subscribe to channel control topics
             client.subscribe(f"{base}/channel/reset")
 
+            # Subscribe to output control topics
+            client.subscribe(f"{base}/output/set")
+
             # Subscribe to recording management topics
             client.subscribe(f"{base}/recording/config")
             client.subscribe(f"{base}/recording/config/get")
@@ -685,6 +688,16 @@ class DAQService:
             client.subscribe(f"{base}/test-session/config")
             client.subscribe(f"{base}/test-session/status")
 
+            # Subscribe to notebook topics
+            client.subscribe(f"{base}/notebook/save")
+            client.subscribe(f"{base}/notebook/load")
+
+            # Subscribe to chassis/device management topics (Modbus)
+            client.subscribe(f"{base}/chassis/add")
+            client.subscribe(f"{base}/chassis/update")
+            client.subscribe(f"{base}/chassis/delete")
+            client.subscribe(f"{base}/chassis/test")
+
             # Publish connection status
             self._publish_system_status()
 
@@ -694,6 +707,8 @@ class DAQService:
             # Publish user variable configuration
             self._publish_user_variables_config()
             self._publish_test_session_status()
+            # Publish formula blocks
+            self._publish_formula_blocks_config()
 
         else:
             logger.error(f"MQTT connection failed with code {reason_code}")
@@ -807,6 +822,10 @@ class DAQService:
         elif topic == f"{base}/channel/reset":
             self._handle_channel_reset(payload)
 
+        # === OUTPUT CONTROL ===
+        elif topic == f"{base}/output/set":
+            self._handle_output_set(payload)
+
         # === RECORDING MANAGEMENT ===
         elif topic == f"{base}/recording/config":
             self._handle_recording_config(payload)
@@ -872,6 +891,32 @@ class DAQService:
             self._handle_test_session_config(payload)
         elif topic == f"{base}/test-session/status":
             self._publish_test_session_status()
+
+        # === NOTEBOOK ===
+        elif topic == f"{base}/notebook/save":
+            self._handle_notebook_save(payload)
+        elif topic == f"{base}/notebook/load":
+            self._handle_notebook_load(payload)
+
+        # === FORMULA BLOCKS ===
+        elif topic == f"{base}/formulas/create":
+            self._handle_formula_create(payload)
+        elif topic == f"{base}/formulas/update":
+            self._handle_formula_update(payload)
+        elif topic == f"{base}/formulas/delete":
+            self._handle_formula_delete(payload)
+        elif topic == f"{base}/formulas/list":
+            self._publish_formula_blocks_config()
+
+        # === CHASSIS/DEVICE MANAGEMENT (Modbus) ===
+        elif topic == f"{base}/chassis/add":
+            self._handle_chassis_add(payload)
+        elif topic == f"{base}/chassis/update":
+            self._handle_chassis_update(payload)
+        elif topic == f"{base}/chassis/delete":
+            self._handle_chassis_delete(payload)
+        elif topic == f"{base}/chassis/test":
+            self._handle_chassis_test(payload)
 
         # === CHANNEL COMMANDS ===
         elif topic.startswith(f"{base}/commands/"):
@@ -1865,6 +1910,293 @@ class DAQService:
         self._handle_project_get()
 
     # =========================================================================
+    # NOTEBOOK HANDLERS
+    # =========================================================================
+
+    def _get_notebook_path(self) -> Path:
+        """Get the path to the notebook file"""
+        logs_dir = Path(self.config_path).parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return logs_dir / "notebook.json"
+
+    def _handle_notebook_save(self, payload: Any):
+        """Save notebook data to file"""
+        base = self.config.system.mqtt_base_topic
+
+        if not isinstance(payload, dict):
+            logger.warning("Invalid notebook save payload")
+            return
+
+        data = payload.get("data", {})
+        notebook_path = self._get_notebook_path()
+
+        try:
+            with open(notebook_path, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            logger.info(f"Saved notebook to {notebook_path}")
+            self.mqtt_client.publish(f"{base}/notebook/saved", json.dumps({
+                "success": True,
+                "filename": str(notebook_path)
+            }))
+
+        except Exception as e:
+            logger.error(f"Error saving notebook: {e}")
+            self.mqtt_client.publish(f"{base}/notebook/saved", json.dumps({
+                "success": False,
+                "error": str(e)
+            }))
+
+    def _handle_notebook_load(self, payload: Any):
+        """Load notebook data from file"""
+        base = self.config.system.mqtt_base_topic
+        notebook_path = self._get_notebook_path()
+
+        try:
+            if notebook_path.exists():
+                with open(notebook_path, 'r') as f:
+                    data = json.load(f)
+
+                logger.info(f"Loaded notebook from {notebook_path}")
+                self.mqtt_client.publish(f"{base}/notebook/loaded", json.dumps({
+                    "success": True,
+                    "data": data
+                }))
+            else:
+                # No file yet - that's OK
+                self.mqtt_client.publish(f"{base}/notebook/loaded", json.dumps({
+                    "success": True,
+                    "data": None
+                }))
+
+        except Exception as e:
+            logger.error(f"Error loading notebook: {e}")
+            self.mqtt_client.publish(f"{base}/notebook/loaded", json.dumps({
+                "success": False,
+                "error": str(e)
+            }))
+
+    # =========================================================================
+    # CHASSIS/DEVICE MANAGEMENT HANDLERS (Modbus)
+    # =========================================================================
+
+    def _publish_chassis_response(self, success: bool, message: str):
+        """Publish response to chassis management commands"""
+        base = self.config.system.mqtt_base_topic
+        self.mqtt_client.publish(f"{base}/chassis/response", json.dumps({
+            "success": success,
+            "message": message
+        }))
+
+    def _handle_chassis_add(self, payload: Any):
+        """Add a new chassis/device (e.g., Modbus TCP/RTU device)"""
+        if not isinstance(payload, dict):
+            self._publish_chassis_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_chassis_response(False, "Missing device name")
+            return
+
+        # Check if chassis already exists
+        if name in self.config.chassis:
+            self._publish_chassis_response(False, f"Chassis '{name}' already exists")
+            return
+
+        try:
+            from config_parser import ChassisConfig
+
+            # Determine chassis type based on connection
+            connection = payload.get('connection', 'TCP').upper()
+            if connection in ('TCP', 'MODBUS_TCP'):
+                chassis_type = 'modbus_tcp'
+            elif connection in ('RTU', 'MODBUS_RTU'):
+                chassis_type = 'modbus_rtu'
+            else:
+                chassis_type = payload.get('type', 'modbus_device')
+
+            # Create chassis config from payload
+            chassis = ChassisConfig(
+                name=name,
+                chassis_type=chassis_type,
+                serial=payload.get('serial', ''),
+                connection=connection,
+                ip_address=payload.get('ip_address', ''),
+                enabled=payload.get('enabled', True),
+                modbus_port=int(payload.get('modbus_port', 502)),
+                modbus_baudrate=int(payload.get('modbus_baudrate', 9600)),
+                modbus_parity=payload.get('modbus_parity', 'E'),
+                modbus_stopbits=int(payload.get('modbus_stopbits', 1)),
+                modbus_bytesize=int(payload.get('modbus_bytesize', 8)),
+                modbus_timeout=float(payload.get('modbus_timeout', 1.0)),
+                modbus_retries=int(payload.get('modbus_retries', 3))
+            )
+
+            # Add to config
+            self.config.chassis[name] = chassis
+            logger.info(f"Added chassis: {name} ({chassis.connection})")
+
+            # Re-initialize modbus reader if needed
+            if chassis.connection.upper() in ('TCP', 'RTU', 'MODBUS_TCP', 'MODBUS_RTU'):
+                self._init_modbus_reader()
+
+            # Publish updated config
+            self._publish_channel_config()
+            self._publish_chassis_response(True, f"Added device: {name}")
+
+        except Exception as e:
+            logger.error(f"Failed to add chassis: {e}")
+            self._publish_chassis_response(False, str(e))
+
+    def _handle_chassis_update(self, payload: Any):
+        """Update an existing chassis/device configuration"""
+        if not isinstance(payload, dict):
+            self._publish_chassis_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_chassis_response(False, "Missing device name")
+            return
+
+        if name not in self.config.chassis:
+            self._publish_chassis_response(False, f"Chassis '{name}' not found")
+            return
+
+        try:
+            chassis = self.config.chassis[name]
+
+            # Update fields if provided
+            if 'connection' in payload:
+                chassis.connection = payload['connection']
+            if 'ip_address' in payload:
+                chassis.ip_address = payload['ip_address']
+            if 'serial' in payload:
+                chassis.serial = payload['serial']
+            if 'enabled' in payload:
+                chassis.enabled = payload['enabled']
+            if 'modbus_port' in payload:
+                chassis.modbus_port = int(payload['modbus_port'])
+            if 'modbus_baudrate' in payload:
+                chassis.modbus_baudrate = int(payload['modbus_baudrate'])
+            if 'modbus_parity' in payload:
+                chassis.modbus_parity = payload['modbus_parity']
+            if 'modbus_stopbits' in payload:
+                chassis.modbus_stopbits = int(payload['modbus_stopbits'])
+            if 'modbus_bytesize' in payload:
+                chassis.modbus_bytesize = int(payload['modbus_bytesize'])
+            if 'modbus_timeout' in payload:
+                chassis.modbus_timeout = float(payload['modbus_timeout'])
+            if 'modbus_retries' in payload:
+                chassis.modbus_retries = int(payload['modbus_retries'])
+
+            logger.info(f"Updated chassis: {name}")
+
+            # Re-initialize modbus reader
+            if chassis.connection.upper() in ('TCP', 'RTU', 'MODBUS_TCP', 'MODBUS_RTU'):
+                self._init_modbus_reader()
+
+            # Publish updated config
+            self._publish_channel_config()
+            self._publish_chassis_response(True, f"Updated device: {name}")
+
+        except Exception as e:
+            logger.error(f"Failed to update chassis: {e}")
+            self._publish_chassis_response(False, str(e))
+
+    def _handle_chassis_delete(self, payload: Any):
+        """Delete a chassis/device"""
+        if not isinstance(payload, dict):
+            self._publish_chassis_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_chassis_response(False, "Missing device name")
+            return
+
+        if name not in self.config.chassis:
+            self._publish_chassis_response(False, f"Chassis '{name}' not found")
+            return
+
+        try:
+            # Check for channels using this chassis
+            channels_using = []
+            for ch_name, ch in self.config.channels.items():
+                module = self.config.modules.get(ch.module)
+                if module and module.chassis == name:
+                    channels_using.append(ch_name)
+
+            if channels_using:
+                self._publish_chassis_response(False,
+                    f"Cannot delete: channels depend on this device: {', '.join(channels_using[:5])}")
+                return
+
+            # Remove chassis
+            del self.config.chassis[name]
+            logger.info(f"Deleted chassis: {name}")
+
+            # Re-initialize modbus reader
+            self._init_modbus_reader()
+
+            # Publish updated config
+            self._publish_channel_config()
+            self._publish_chassis_response(True, f"Deleted device: {name}")
+
+        except Exception as e:
+            logger.error(f"Failed to delete chassis: {e}")
+            self._publish_chassis_response(False, str(e))
+
+    def _handle_chassis_test(self, payload: Any):
+        """Test connection to a chassis/device"""
+        if not isinstance(payload, dict):
+            self._publish_chassis_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_chassis_response(False, "Missing device name")
+            return
+
+        if name not in self.config.chassis:
+            self._publish_chassis_response(False, f"Chassis '{name}' not found")
+            return
+
+        try:
+            chassis = self.config.chassis[name]
+
+            # Check if it's a Modbus device
+            if chassis.connection.upper() not in ('TCP', 'RTU', 'MODBUS_TCP', 'MODBUS_RTU'):
+                self._publish_chassis_response(False, "Only Modbus devices can be tested")
+                return
+
+            # Test connection via modbus_reader
+            if self.modbus_reader and name in self.modbus_reader.connections:
+                conn = self.modbus_reader.connections[name]
+                if conn.connect():
+                    self._publish_chassis_response(True, f"Connection to {name} successful")
+                else:
+                    self._publish_chassis_response(False,
+                        f"Connection to {name} failed: {conn.last_error or 'Unknown error'}")
+            else:
+                self._publish_chassis_response(False, f"No connection configured for {name}")
+
+        except Exception as e:
+            logger.error(f"Failed to test chassis: {e}")
+            self._publish_chassis_response(False, str(e))
+
+    def _publish_modbus_status(self):
+        """Publish Modbus connection status"""
+        base = self.config.system.mqtt_base_topic
+        status = {}
+
+        if self.modbus_reader:
+            status = self.modbus_reader.get_connection_status()
+
+        self.mqtt_client.publish(f"{base}/modbus/status", json.dumps(status))
+
+    # =========================================================================
     # USER VARIABLES / PLAYGROUND HANDLERS
     # =========================================================================
 
@@ -2102,6 +2434,102 @@ class DAQService:
             f"{base}/test-session/status",
             json.dumps(status),
             retain=True
+        )
+
+    # =========================================================================
+    # FORMULA BLOCK HANDLERS
+    # =========================================================================
+
+    def _handle_formula_create(self, payload: Dict[str, Any]):
+        """Create a new formula block"""
+        if not isinstance(payload, dict):
+            self._publish_formula_response(False, "Invalid payload")
+            return
+
+        # Get channel names for validation
+        channel_names = list(self.config.channels.keys())
+
+        result = self.user_variables.create_formula_block(payload, channel_names)
+
+        if result.get('success'):
+            self._publish_formula_response(True, f"Created formula block with outputs: {result.get('outputs', [])}")
+            self._publish_formula_blocks_config()
+        else:
+            self._publish_formula_response(False, result.get('error', 'Failed to create formula block'))
+
+    def _handle_formula_update(self, payload: Dict[str, Any]):
+        """Update an existing formula block"""
+        if not isinstance(payload, dict):
+            self._publish_formula_response(False, "Invalid payload")
+            return
+
+        block_id = payload.get('id')
+        if not block_id:
+            self._publish_formula_response(False, "Block ID required")
+            return
+
+        # Get channel names for validation
+        channel_names = list(self.config.channels.keys())
+
+        result = self.user_variables.update_formula_block(block_id, payload, channel_names)
+
+        if result.get('success'):
+            self._publish_formula_response(True, "Updated formula block")
+            self._publish_formula_blocks_config()
+        else:
+            self._publish_formula_response(False, result.get('error', 'Failed to update formula block'))
+
+    def _handle_formula_delete(self, payload: Dict[str, Any]):
+        """Delete a formula block"""
+        if not isinstance(payload, dict):
+            self._publish_formula_response(False, "Invalid payload")
+            return
+
+        block_id = payload.get('id')
+        if not block_id:
+            self._publish_formula_response(False, "Block ID required")
+            return
+
+        if self.user_variables.delete_formula_block(block_id):
+            self._publish_formula_response(True, "Deleted formula block")
+            self._publish_formula_blocks_config()
+        else:
+            self._publish_formula_response(False, "Formula block not found")
+
+    def _publish_formula_blocks_config(self):
+        """Publish formula blocks configuration"""
+        if not self.user_variables:
+            return
+        base = self.config.system.mqtt_base_topic
+        blocks = self.user_variables.get_formula_blocks_dict()
+        self.mqtt_client.publish(
+            f"{base}/formulas/config",
+            json.dumps(blocks),
+            retain=True
+        )
+
+    def _publish_formula_blocks_values(self):
+        """Publish formula blocks computed values"""
+        if not self.user_variables:
+            return
+        base = self.config.system.mqtt_base_topic
+        values = self.user_variables.get_formula_values_dict()
+        self.mqtt_client.publish(
+            f"{base}/formulas/values",
+            json.dumps(values),
+            retain=True
+        )
+
+    def _publish_formula_response(self, success: bool, message: str):
+        """Publish formula block operation response"""
+        base = self.config.system.mqtt_base_topic
+        self.mqtt_client.publish(
+            f"{base}/formulas/response",
+            json.dumps({
+                "success": success,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            })
         )
 
     def _publish_project_response(self, success: bool, message: str):
@@ -3518,7 +3946,18 @@ class DAQService:
             config_data["chassis"][name] = {
                 "name": name,
                 "type": chassis.chassis_type,
-                "description": chassis.description
+                "description": chassis.description,
+                "connection": chassis.connection,
+                "enabled": chassis.enabled,
+                "ip_address": chassis.ip_address,
+                "serial": chassis.serial,
+                "modbus_port": chassis.modbus_port,
+                "modbus_baudrate": chassis.modbus_baudrate,
+                "modbus_parity": chassis.modbus_parity,
+                "modbus_stopbits": chassis.modbus_stopbits,
+                "modbus_bytesize": chassis.modbus_bytesize,
+                "modbus_timeout": chassis.modbus_timeout,
+                "modbus_retries": chassis.modbus_retries
             }
 
         self.mqtt_client.publish(
@@ -3696,6 +4135,105 @@ class DAQService:
         if alarm_id and self.alarm_manager:
             self.alarm_manager.unshelve_alarm(alarm_id, user)
             logger.info(f"Alarm unshelved: {alarm_id} by {user}")
+
+    def _publish_output_response(self, success: bool, channel: str = None,
+                                   value: Any = None, error: str = None):
+        """Publish response to output/set command"""
+        base = self.config.system.mqtt_base_topic
+        response = {"success": success}
+        if channel is not None:
+            response["channel"] = channel
+        if value is not None:
+            response["value"] = value
+        if error is not None:
+            response["error"] = error
+        self.mqtt_client.publish(f"{base}/output/response", json.dumps(response))
+
+    def _handle_output_set(self, payload: Any):
+        """Handle output/set command - set digital or analog output value
+
+        Payload format:
+        {
+            "channel": "SV1",      # Channel name
+            "value": true/false    # For digital, or numeric for analog
+        }
+
+        Response published to nisystem/output/response:
+        {
+            "channel": "SV1",
+            "value": true,
+            "success": true/false,
+            "error": "optional error message"
+        }
+        """
+        # Parse payload
+        if not isinstance(payload, dict):
+            self._publish_output_response(False, error="Invalid payload format - expected JSON object")
+            return
+
+        channel_name = payload.get('channel')
+        value = payload.get('value')
+
+        if not channel_name:
+            self._publish_output_response(False, error="Missing 'channel' in payload")
+            return
+
+        if value is None:
+            self._publish_output_response(False, channel=channel_name, error="Missing 'value' in payload")
+            return
+
+        # Check if channel exists
+        if channel_name not in self.config.channels:
+            self._publish_output_response(False, channel=channel_name,
+                                          error=f"Unknown channel: {channel_name}")
+            return
+
+        channel = self.config.channels[channel_name]
+
+        # Check if this is an output channel
+        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+            self._publish_output_response(False, channel=channel_name,
+                                          error=f"Channel {channel_name} is not an output channel (type: {channel.channel_type.value})")
+            return
+
+        # Check safety interlocks
+        if channel.safety_interlock:
+            if not self._check_interlock(channel.safety_interlock):
+                logger.warning(f"Safety interlock prevents write to {channel_name}")
+                self._publish_output_response(False, channel=channel_name, value=value,
+                                              error=f"Safety interlock active: {channel.safety_interlock}")
+                return
+
+        # Write the value
+        logger.info(f"Setting output {channel_name} = {value}")
+
+        try:
+            # Determine which backend handles this channel
+            is_modbus = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+
+            if is_modbus and self.modbus_reader:
+                self.modbus_reader.write_channel(channel_name, value)
+            elif self.simulator:
+                self.simulator.write_channel(channel_name, value)
+            elif self.hardware_reader:
+                self.hardware_reader.write_channel(channel_name, value)
+
+            # Update cache
+            with self.values_lock:
+                self.channel_values[channel_name] = value
+                self.channel_timestamps[channel_name] = time.time()
+
+            # Publish acknowledgment
+            self._publish_channel_value(channel_name, value)
+
+            # Publish success response
+            self._publish_output_response(True, channel=channel_name, value=value)
+
+            logger.info(f"Output {channel_name} set to {value}")
+
+        except Exception as e:
+            logger.error(f"Failed to set output {channel_name}: {e}")
+            self._publish_output_response(False, channel=channel_name, value=value, error=str(e))
 
     def _handle_channel_reset(self, payload: Any):
         """Reset a channel value (e.g., counter to zero)"""
@@ -3889,6 +4427,8 @@ class DAQService:
                     # Process user variables (accumulators, timers, stats, etc.)
                     if self.user_variables:
                         self.user_variables.process_scan(self.channel_values)
+                        # Process formula blocks (must be after process_scan so user vars are updated)
+                        self.user_variables.process_formula_blocks(self.channel_values)
 
                 except Exception as e:
                     logger.error(f"Error in scan loop: {e}")
@@ -3946,9 +4486,10 @@ class DAQService:
             status_publish_counter += 1
             if status_publish_counter >= self.config.system.publish_rate_hz:
                 self._publish_system_status()
-                # Publish user variable values (at 1 Hz, not full publish rate)
+                # Publish user variable values and formula block values (at 1 Hz, not full publish rate)
                 if self.user_variables:
                     self._publish_user_variables_values()
+                    self._publish_formula_blocks_values()
                 status_publish_counter = 0
 
             # Track loop timing

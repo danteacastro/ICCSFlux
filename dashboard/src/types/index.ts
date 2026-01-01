@@ -384,11 +384,37 @@ export interface WidgetConfig {
   style?: WidgetStyle
 }
 
+// Pipe/Connection point on grid
+export interface PipePoint {
+  x: number  // Grid x coordinate
+  y: number  // Grid y coordinate
+}
+
+// Pipe connection between widgets or free-form
+export interface PipeConnection {
+  id: string
+  // Waypoints define the path (orthogonal segments)
+  // First and last points can optionally be anchored to widgets
+  points: PipePoint[]
+  // Optional: anchor to widget connection ports
+  startWidgetId?: string
+  startPort?: 'top' | 'bottom' | 'left' | 'right'
+  endWidgetId?: string
+  endPort?: 'top' | 'bottom' | 'left' | 'right'
+  // Styling
+  color?: string
+  strokeWidth?: number
+  dashed?: boolean
+  animated?: boolean  // Animated flow direction
+  label?: string      // Optional pipe label (e.g., "Steam", "H2")
+}
+
 // Dashboard Page - each page has its own widget layout
 export interface DashboardPage {
   id: string
   name: string
   widgets: WidgetConfig[]
+  pipes?: PipeConnection[]  // P&ID pipe connections
   order: number           // Sort order
   createdAt?: string
 }
@@ -715,6 +741,13 @@ export type EdgeType =
   | 'rising'        // 0 -> 1 transition
   | 'falling'       // 1 -> 0 transition
   | 'both'          // Any transition
+  | 'rate'          // Rate signal (4-20mA, voltage) - integrate over time
+
+export type SourceRateUnit =
+  | 'per_second'    // Signal is X per second
+  | 'per_minute'    // Signal is X per minute (e.g., GPM)
+  | 'per_hour'      // Signal is X per hour
+  | 'per_day'       // Signal is X per day
 
 export interface UserVariable {
   id: string
@@ -730,6 +763,7 @@ export interface UserVariable {
   sourceChannels?: string[]   // Multiple channels (for cross_channel type)
   edgeType?: EdgeType
   scaleFactor?: number
+  sourceRateUnit?: SourceRateUnit  // For rate integration: what unit is the source signal?
 
   // Reset config
   resetMode: ResetMode
@@ -803,4 +837,37 @@ export interface UserVariableValue {
   last_update?: number
   timer_running?: boolean
   formatted?: string
+}
+
+// ============================================
+// Formula Block Types
+// ============================================
+
+export interface FormulaBlockOutput {
+  units: string
+  description: string
+}
+
+export interface FormulaBlock {
+  id: string
+  name: string
+  description: string
+  code: string                              // Multi-line Python-like code
+  enabled: boolean
+  outputs: Record<string, FormulaBlockOutput>  // output_name -> metadata
+  lastError?: string                        // Last evaluation error
+  lastValidated?: string                    // ISO timestamp of last validation
+}
+
+// Formula block computed values (updated each scan)
+export interface FormulaBlockValues {
+  [outputName: string]: number              // NaN if condition returned None
+}
+
+// Validation result from backend
+export interface FormulaValidationResult {
+  valid: boolean
+  outputs: string[]                         // Variable names that will be created
+  error?: string
+  errorLine?: number
 }

@@ -130,6 +130,7 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
         `${systemPrefix}/project/#`,  // Project management topics
         `${systemPrefix}/variables/#`,  // User variables / Playground
         `${systemPrefix}/test-session/#`,  // Test session management
+        `${systemPrefix}/formulas/#`,  // Formula blocks
         `${systemPrefix}/heartbeat`,  // Service heartbeat
         `${systemPrefix}/command/ack`,  // Command acknowledgments
         `${systemPrefix}/config/channel/deleted`,
@@ -192,6 +193,10 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
           handleVariablesValues(payload)
         } else if (topic === `${systemPrefix}/test-session/status`) {
           handleTestSessionStatus(payload)
+        } else if (topic === `${systemPrefix}/formulas/config`) {
+          handleFormulaBlocksConfig(payload)
+        } else if (topic === `${systemPrefix}/formulas/values`) {
+          handleFormulaBlocksValues(payload)
         } else if (topic === `${systemPrefix}/heartbeat`) {
           handleHeartbeat(payload)
         } else if (topic === `${systemPrefix}/command/ack`) {
@@ -420,6 +425,16 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
   function handleTestSessionStatus(payload: any) {
     console.log('MQTT: Received test session status:', payload)
     playground.handleTestSessionStatus(payload)
+  }
+
+  function handleFormulaBlocksConfig(payload: any) {
+    console.log('MQTT: Received formula blocks config:', Object.keys(payload).length, 'blocks')
+    playground.handleFormulaBlocksConfig(payload)
+  }
+
+  function handleFormulaBlocksValues(payload: any) {
+    console.log('MQTT: Received formula blocks values')
+    playground.handleFormulaBlocksValues(payload)
   }
 
   function handleHeartbeat(payload: any) {

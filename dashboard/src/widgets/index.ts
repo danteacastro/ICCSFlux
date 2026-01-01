@@ -25,6 +25,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   svg_symbol: defineAsyncComponent(() => import('./SvgSymbolWidget.vue')),
   text_label: defineAsyncComponent(() => import('./TextLabelWidget.vue')),
   value_table: defineAsyncComponent(() => import('./ValueTableWidget.vue')),
+  crio_status: defineAsyncComponent(() => import('./CrioStatusWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -201,7 +202,7 @@ export const availableWidgets: WidgetTypeInfo[] = [
     name: 'P&ID Symbol',
     icon: '⚙',
     description: 'SCADA equipment symbol (valve, pump, sensor)',
-    needsChannel: true,
+    needsChannel: false,  // Channel is optional - pick symbol first
     defaultSize: { w: 2, h: 2 }
   },
   {
@@ -219,5 +220,13 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Compact table of multiple values (industrial style)',
     needsChannel: false, // Uses channels array, not single channel
     defaultSize: { w: 3, h: 4 }
+  },
+  {
+    type: 'crio_status',
+    name: 'cRIO Status',
+    icon: '⚡',
+    description: 'cRIO controller safety status and I/O',
+    needsChannel: false,
+    defaultSize: { w: 2, h: 3 }
   }
 ]

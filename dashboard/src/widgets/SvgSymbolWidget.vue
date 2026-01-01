@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
-import { SCADA_SYMBOLS, type ScadaSymbolType } from '../assets/symbols'
+import { SCADA_SYMBOLS, SYMBOL_PORTS, type ScadaSymbolType, type SymbolPort } from '../assets/symbols'
 
 const props = defineProps<{
   channel?: string
@@ -14,6 +14,7 @@ const props = defineProps<{
   accentColor?: string
   size?: 'small' | 'medium' | 'large'
   rotation?: 0 | 90 | 180 | 270
+  widgetId?: string
 }>()
 
 const store = useDashboardStore()
@@ -81,6 +82,63 @@ const symbolColor = computed(() => {
 })
 
 const rotation = computed(() => props.rotation || 0)
+
+// Connection ports for this symbol
+const symbolPorts = computed((): SymbolPort[] => {
+  const sym = props.symbol || 'solenoidValve'
+  return SYMBOL_PORTS[sym] || []
+})
+
+// Get port position with rotation applied
+function getPortStyle(port: SymbolPort): Record<string, string> {
+  let x = port.x
+  let y = port.y
+
+  // Apply rotation transformation
+  const rot = rotation.value
+  if (rot === 90) {
+    const temp = x
+    x = 1 - y
+    y = temp
+  } else if (rot === 180) {
+    x = 1 - x
+    y = 1 - y
+  } else if (rot === 270) {
+    const temp = x
+    x = y
+    y = 1 - temp
+  }
+
+  return {
+    left: `${x * 100}%`,
+    top: `${y * 100}%`
+  }
+}
+
+// Handle port click (for starting/ending pipe connections)
+function onPortClick(port: SymbolPort, event: MouseEvent) {
+  if (!store.editMode || !store.pipeDrawingMode) return
+  event.stopPropagation()
+
+  // Emit event for pipe connection
+  // The port position will be computed by the parent based on widget position
+  const portDirection = getRotatedDirection(port.direction)
+
+  window.dispatchEvent(new CustomEvent('symbol-port-click', {
+    detail: {
+      widgetId: props.widgetId,
+      portId: port.id,
+      direction: portDirection
+    }
+  }))
+}
+
+function getRotatedDirection(dir: 'left' | 'right' | 'top' | 'bottom'): 'left' | 'right' | 'top' | 'bottom' {
+  const order: ('top' | 'right' | 'bottom' | 'left')[] = ['top', 'right', 'bottom', 'left']
+  const idx = order.indexOf(dir)
+  const steps = (rotation.value / 90) % 4
+  return order[(idx + steps) % 4] as 'left' | 'right' | 'top' | 'bottom'
+}
 </script>
 
 <template>
@@ -106,6 +164,21 @@ const rotation = computed(() => props.rotation || 0)
         :style="{ color: symbolColor, transform: rotation ? `rotate(${rotation}deg)` : undefined }"
         v-html="symbolSvg"
       />
+
+      <!-- Connection ports (only visible in edit mode with pipe drawing) -->
+      <template v-if="store.editMode && store.pipeDrawingMode">
+        <div
+          v-for="port in symbolPorts"
+          :key="port.id"
+          class="connection-port"
+          :class="[`port-${getRotatedDirection(port.direction)}`]"
+          :style="getPortStyle(port)"
+          :title="port.label || port.id"
+          @click="onPortClick(port, $event)"
+        >
+          <span class="port-indicator"></span>
+        </div>
+      </template>
 
       <!-- Value inside symbol (overlay) -->
       <div v-if="showValue !== false && valuePosition === 'inside'" class="value-display inside">
@@ -277,5 +350,49 @@ const rotation = computed(() => props.rotation || 0)
 .value-left .symbol-container,
 .value-right .symbol-container {
   flex-direction: row;
+}
+
+/* Connection ports for pipe drawing */
+.connection-port {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  cursor: crosshair;
+  z-index: 10;
+}
+
+.port-indicator {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.connection-port:hover .port-indicator {
+  transform: scale(1.3);
+  background: #60a5fa;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.8);
+}
+
+/* Direction-based port styling (visual hint for pipe direction) */
+.port-left .port-indicator,
+.port-right .port-indicator {
+  border-radius: 50% 50% 50% 50%;
+}
+
+.port-top .port-indicator,
+.port-bottom .port-indicator {
+  border-radius: 50% 50% 50% 50%;
+}
+
+/* Active state when clicked */
+.connection-port:active .port-indicator {
+  background: #22c55e;
+  transform: scale(1.1);
 }
 </style>

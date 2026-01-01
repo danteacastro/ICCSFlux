@@ -27,7 +27,8 @@ const alarmConfigs = ref<Record<string, AlarmConfig>>({})
 
 // Sync from safety composable
 watch(() => safety.alarmConfigs.value, (configs) => {
-  alarmConfigs.value = { ...configs }
+  // Deep clone to break readonly constraint
+  alarmConfigs.value = JSON.parse(JSON.stringify(configs))
 }, { immediate: true, deep: true })
 
 // Sync back to safety composable on changes
@@ -128,13 +129,14 @@ function processAlarms() {
 
       if (isExceeded && !existingAlarm) {
         // Check delay
-        if (config.delay_seconds > 0) {
+        const delaySeconds = config.delay_seconds ?? 0
+        if (delaySeconds > 0) {
           if (!delayTimers.value[alarmKey]) {
             delayTimers.value[alarmKey] = { type: check.type, startTime: Date.now() }
             return
           }
           const elapsed = (Date.now() - delayTimers.value[alarmKey].startTime) / 1000
-          if (elapsed < config.delay_seconds) return
+          if (elapsed < delaySeconds) return
         }
 
         // Trigger new alarm
@@ -358,7 +360,8 @@ const channelList = computed(() => {
 // alarmCounts comes from safety composable (already assigned above)
 
 // Format duration
-function formatDuration(seconds: number): string {
+function formatDuration(seconds: number | undefined): string {
+  if (seconds === undefined || seconds === null) return '--'
   if (seconds < 60) return `${Math.floor(seconds)}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
@@ -638,11 +641,11 @@ function getControlDescription(ctrl: InterlockControl): string {
             <span class="count">{{ alarmCounts.critical }}</span>
             <span class="label">Critical</span>
           </div>
-          <div class="summary-item alarm" :class="{ pulse: (alarmCounts.high || alarmCounts.active) > 0 }">
-            <span class="count">{{ alarmCounts.high || alarmCounts.active }}</span>
+          <div class="summary-item alarm" :class="{ pulse: ((alarmCounts.high ?? 0) || (alarmCounts.active ?? 0)) > 0 }">
+            <span class="count">{{ alarmCounts.high || alarmCounts.active || 0 }}</span>
             <span class="label">High</span>
           </div>
-          <div class="summary-item warning" :class="{ pulse: (alarmCounts.medium || alarmCounts.warnings) > 0 }">
+          <div class="summary-item warning" :class="{ pulse: ((alarmCounts.medium ?? 0) || (alarmCounts.warnings ?? 0)) > 0 }">
             <span class="count">{{ alarmCounts.medium || alarmCounts.warnings || 0 }}</span>
             <span class="label">Medium</span>
           </div>

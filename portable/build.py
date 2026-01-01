@@ -8,10 +8,12 @@ Run on dev machine: python portable/build.py
 
 Output: portable/dist/NISystem/
   - nisystem-server.exe  <- Run this from command line
-  - config/
-  - www/
-  - runtime/
-  - ...
+  - config/              <- INI files (hardware config)
+  - projects/            <- JSON project files (frontend state)
+  - www/                 <- Dashboard frontend
+  - runtime/             <- Python + Mosquitto
+  - logs/                <- Runtime logs
+  - data/                <- Recorded data
 
 Usage on target PC:
   > nisystem-server.exe
@@ -140,6 +142,7 @@ def copy_services():
     shutil.copytree(PROJECT_ROOT / "config", DIST_DIR / "config")
     (DIST_DIR / "logs").mkdir(exist_ok=True)
     (DIST_DIR / "data").mkdir(exist_ok=True)
+    (DIST_DIR / "projects").mkdir(exist_ok=True)  # Project files (JSON)
 
     # Set simulation_mode = false for production
     config_file = DIST_DIR / "config" / "system.ini"

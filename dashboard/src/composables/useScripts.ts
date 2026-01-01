@@ -43,7 +43,7 @@ import { UNIT_CONVERSIONS, FUNCTION_BLOCK_TEMPLATES, FUNCTION_BLOCKS_STORAGE_KEY
 // SINGLETON STATE - exists outside the composable function
 // ==========================================================================
 
-const activeSubTab = ref<ScriptsSubTabExtended>('formulas')
+const activeSubTab = ref<ScriptsSubTabExtended>('session')
 const calculatedParams = ref<CalculatedParam[]>([])
 const sequences = ref<Sequence[]>([])
 const runningSequenceId = ref<string | null>(null)

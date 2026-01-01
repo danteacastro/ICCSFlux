@@ -8,7 +8,9 @@ import type {
   LayoutConfig,
   WidgetType,
   WidgetStyle,
-  DashboardPage
+  DashboardPage,
+  PipeConnection,
+  PipePoint
 } from '../types'
 
 export const useDashboardStore = defineStore('dashboard', () => {
@@ -39,6 +41,27 @@ export const useDashboardStore = defineStore('dashboard', () => {
       }
     }
   })
+
+  // Pipes for current page (P&ID connections)
+  const pipes = computed({
+    get: () => {
+      const page = pages.value.find(p => p.id === currentPageId.value)
+      return page?.pipes || []
+    },
+    set: (newPipes: PipeConnection[]) => {
+      const pageIndex = pages.value.findIndex(p => p.id === currentPageId.value)
+      if (pageIndex !== -1) {
+        if (!pages.value[pageIndex]!.pipes) {
+          pages.value[pageIndex]!.pipes = []
+        }
+        pages.value[pageIndex]!.pipes = newPipes
+      }
+    }
+  })
+
+  // Pipe drawing mode state
+  const pipeDrawingMode = ref(false)
+  const pipeDrawingStart = ref<{ widgetId?: string; port?: string; point?: PipePoint } | null>(null)
 
   // Grid settings
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
@@ -371,6 +394,81 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   // ========================================================================
+  // PIPE/CONNECTION ACTIONS (P&ID routing)
+  // ========================================================================
+
+  function addPipe(pipe: Omit<PipeConnection, 'id'>): string {
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page) return ''
+
+    if (!page.pipes) {
+      page.pipes = []
+    }
+
+    const id = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const newPipe: PipeConnection = { id, ...pipe }
+    page.pipes.push(newPipe)
+    return id
+  }
+
+  function updatePipe(pipeId: string, updates: Partial<PipeConnection>) {
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page?.pipes) return
+
+    const pipe = page.pipes.find(p => p.id === pipeId)
+    if (pipe) {
+      Object.assign(pipe, updates)
+    }
+  }
+
+  function removePipe(pipeId: string) {
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page?.pipes) return
+
+    const index = page.pipes.findIndex(p => p.id === pipeId)
+    if (index !== -1) {
+      page.pipes.splice(index, 1)
+    }
+  }
+
+  function setPipeDrawingMode(enabled: boolean) {
+    pipeDrawingMode.value = enabled
+    if (!enabled) {
+      pipeDrawingStart.value = null
+    }
+  }
+
+  function startPipeDrawing(start: { widgetId?: string; port?: string; point?: PipePoint }) {
+    pipeDrawingStart.value = start
+  }
+
+  function finishPipeDrawing(end: { widgetId?: string; port?: string; point?: PipePoint }) {
+    if (!pipeDrawingStart.value) return
+
+    // Create pipe with at least 2 points
+    const startPoint = pipeDrawingStart.value.point || { x: 0, y: 0 }
+    const endPoint = end.point || { x: 5, y: 5 }
+
+    const newPipe: Omit<PipeConnection, 'id'> = {
+      points: [startPoint, endPoint],
+      startWidgetId: pipeDrawingStart.value.widgetId,
+      startPort: pipeDrawingStart.value.port as PipeConnection['startPort'],
+      endWidgetId: end.widgetId,
+      endPort: end.port as PipeConnection['endPort'],
+      color: '#60a5fa',
+      strokeWidth: 3
+    }
+
+    addPipe(newPipe)
+    pipeDrawingStart.value = null
+    pipeDrawingMode.value = false
+  }
+
+  function cancelPipeDrawing() {
+    pipeDrawingStart.value = null
+  }
+
+  // ========================================================================
   // LAYOUT PERSISTENCE (with multi-page support)
   // ========================================================================
 
@@ -392,7 +490,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Handle multi-page layouts
     if (layout.pages && layout.pages.length > 0) {
       pages.value = layout.pages
-      currentPageId.value = layout.currentPageId || layout.pages[0]!.id
+      // Always start on Page 1 (first page by order), not last viewed page
+      const firstPage = [...layout.pages].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+      currentPageId.value = firstPage?.id || layout.pages[0]!.id
     } else {
       // Legacy single-page layout - migrate to multi-page
       pages.value = [{
@@ -775,6 +875,18 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Channel lifecycle
     findOrphanedWidgets,
     handleChannelDeleted,
-    cleanupOrphanedWidgets
+    cleanupOrphanedWidgets,
+
+    // Pipes (P&ID connections)
+    pipes,
+    pipeDrawingMode,
+    pipeDrawingStart,
+    addPipe,
+    updatePipe,
+    removePipe,
+    setPipeDrawingMode,
+    startPipeDrawing,
+    finishPipeDrawing,
+    cancelPipeDrawing
   }
 })

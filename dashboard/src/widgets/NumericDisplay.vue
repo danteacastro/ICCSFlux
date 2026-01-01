@@ -35,7 +35,7 @@ const displayValue = computed(() => {
 })
 
 const unit = computed(() => {
-  // Show unit if channel has one configured (non-empty string)
+  // Channel config uses 'unit' (singular) - mapped from backend 'units' in useMqtt.ts
   return channelConfig.value?.unit || ''
 })
 
@@ -68,17 +68,14 @@ const customStyles = computed(() => {
   return styles
 })
 
-// Whether to show label and unit
-const shouldShowLabel = computed(() => props.showLabel !== false)
-const shouldShowUnit = computed(() => props.showUnit !== false && unit.value)
 </script>
 
 <template>
   <div class="numeric-display" :class="[statusClass, modeClasses]" :style="customStyles">
-    <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+    <div class="label">{{ displayLabel }}</div>
     <div class="value-container">
       <span class="value">{{ displayValue }}</span>
-      <span class="unit" v-if="shouldShowUnit">{{ unit }}</span>
+      <span class="unit" v-if="unit">{{ unit }}</span>
     </div>
   </div>
 </template>

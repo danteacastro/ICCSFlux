@@ -650,6 +650,284 @@ export const Ejector = `
 `
 
 // =============================================================================
+// HYDROGEN & FUEL CELL EQUIPMENT
+// =============================================================================
+
+// PEM/SOFC Fuel Cell Stack
+export const FuelCell = `
+<svg viewBox="0 0 70 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="8" width="50" height="44" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="10" y1="18" x2="60" y2="18" stroke="currentColor" stroke-width="1.5"/>
+  <line x1="10" y1="28" x2="60" y2="28" stroke="currentColor" stroke-width="1.5"/>
+  <line x1="10" y1="38" x2="60" y2="38" stroke="currentColor" stroke-width="1.5"/>
+  <line x1="10" y1="48" x2="60" y2="48" stroke="currentColor" stroke-width="1.5"/>
+  <rect x="0" y="20" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="60" y="20" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="0" y="36" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="60" y="36" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <text x="35" y="6" text-anchor="middle" font-size="6" fill="currentColor">H₂</text>
+  <circle cx="25" cy="23" r="3" fill="currentColor" opacity="0.4"/>
+  <circle cx="45" cy="23" r="3" fill="currentColor" opacity="0.4"/>
+  <circle cx="25" cy="43" r="3" fill="currentColor" opacity="0.4"/>
+  <circle cx="45" cy="43" r="3" fill="currentColor" opacity="0.4"/>
+  <path d="M28 33 L35 28 L42 33 L35 38 Z" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Water Electrolyzer (PEM/Alkaline)
+export const Electrolyzer = `
+<svg viewBox="0 0 60 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="15" width="40" height="45" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="18" y="0" width="8" height="15" fill="currentColor" opacity="0.3"/>
+  <rect x="34" y="0" width="8" height="15" fill="currentColor" opacity="0.3"/>
+  <line x1="22" y1="0" x2="22" y2="8" stroke="currentColor" stroke-width="2"/>
+  <line x1="38" y1="0" x2="38" y2="8" stroke="currentColor" stroke-width="2"/>
+  <text x="22" y="12" text-anchor="middle" font-size="5" fill="currentColor">+</text>
+  <text x="38" y="12" text-anchor="middle" font-size="5" fill="currentColor">-</text>
+  <line x1="30" y1="20" x2="30" y2="55" stroke="currentColor" stroke-width="2" stroke-dasharray="3,2"/>
+  <circle cx="20" cy="30" r="2" fill="currentColor" opacity="0.5"/>
+  <circle cx="18" cy="38" r="2" fill="currentColor" opacity="0.5"/>
+  <circle cx="22" cy="45" r="2" fill="currentColor" opacity="0.5"/>
+  <circle cx="40" cy="32" r="2" fill="currentColor" opacity="0.5"/>
+  <circle cx="38" cy="42" r="2" fill="currentColor" opacity="0.5"/>
+  <circle cx="42" cy="48" r="2" fill="currentColor" opacity="0.5"/>
+  <text x="20" y="65" text-anchor="middle" font-size="5" fill="currentColor">H₂</text>
+  <text x="40" y="65" text-anchor="middle" font-size="5" fill="currentColor">O₂</text>
+  <rect x="26" y="60" width="8" height="10" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Steam Methane Reformer (SMR)
+export const SteamReformer = `
+<svg viewBox="0 0 70 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="15" y="10" width="40" height="55" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="20" y="15" width="30" height="20" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.1"/>
+  <text x="35" y="28" text-anchor="middle" font-size="6" fill="currentColor">CAT</text>
+  <path d="M20 45 L25 40 L30 50 L35 40 L40 50 L45 40 L50 45" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="22" y="52" width="26" height="8" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.2"/>
+  <rect x="0" y="18" width="15" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="55" y="18" width="15" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="0" y="28" width="15" height="6" fill="currentColor" opacity="0.3"/>
+  <text x="7" y="16" text-anchor="middle" font-size="5" fill="currentColor">CH₄</text>
+  <text x="7" y="38" text-anchor="middle" font-size="5" fill="currentColor">H₂O</text>
+  <text x="63" y="16" text-anchor="middle" font-size="5" fill="currentColor">H₂</text>
+  <rect x="31" y="65" width="8" height="15" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// High-Pressure Hydrogen Storage Tank
+export const HydrogenTank = `
+<svg viewBox="0 0 50 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="25" cy="15" rx="18" ry="10" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="25" cy="65" rx="18" ry="10" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="7" y1="15" x2="7" y2="65" stroke="currentColor" stroke-width="2"/>
+  <line x1="43" y1="15" x2="43" y2="65" stroke="currentColor" stroke-width="2"/>
+  <text x="25" y="43" text-anchor="middle" font-size="12" font-weight="bold" fill="currentColor">H₂</text>
+  <rect x="21" y="0" width="8" height="8" fill="currentColor" opacity="0.3"/>
+  <circle cx="25" cy="8" r="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <line x1="15" y1="25" x2="35" y2="25" stroke="currentColor" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="15" y1="55" x2="35" y2="55" stroke="currentColor" stroke-width="1" stroke-dasharray="2,2"/>
+</svg>
+`
+
+// Hydrogen Fuel Dispenser
+export const FuelDispenser = `
+<svg viewBox="0 0 50 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="8" y="5" width="34" height="50" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="14" y="12" width="22" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.1"/>
+  <text x="25" y="22" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">H₂</text>
+  <circle cx="25" cy="40" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="25" y="43" text-anchor="middle" font-size="6" fill="currentColor">PSI</text>
+  <path d="M42 25 Q50 25 50 35 L50 55 Q50 60 45 60 L40 60" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="40" cy="60" r="4" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.3"/>
+  <rect x="18" y="55" width="14" height="15" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// =============================================================================
+// GASIFICATION & BIOMASS EQUIPMENT
+// =============================================================================
+
+// Fluidized Bed Gasifier (U-GAS style)
+export const Gasifier = `
+<svg viewBox="0 0 60 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M15 20 Q15 10 30 10 Q45 10 45 20 L45 60 L50 70 L50 80 L10 80 L10 70 L15 60 Z" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="30" cy="50" rx="12" ry="5" stroke="currentColor" stroke-width="1" fill="none" stroke-dasharray="2,2"/>
+  <circle cx="22" cy="55" r="2" fill="currentColor" opacity="0.4"/>
+  <circle cx="30" cy="52" r="2" fill="currentColor" opacity="0.4"/>
+  <circle cx="38" cy="56" r="2" fill="currentColor" opacity="0.4"/>
+  <circle cx="25" cy="62" r="2" fill="currentColor" opacity="0.4"/>
+  <circle cx="35" cy="60" r="2" fill="currentColor" opacity="0.4"/>
+  <rect x="0" y="30" width="15" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="45" y="25" width="15" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="26" y="0" width="8" height="10" fill="currentColor" opacity="0.3"/>
+  <path d="M20 35 L25 30 L30 38 L35 28 L40 35" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="30" y="78" text-anchor="middle" font-size="5" fill="currentColor">ASH</text>
+</svg>
+`
+
+// Syngas Cleanup / Gas Scrubber
+export const SyngasCleanup = `
+<svg viewBox="0 0 50 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10 15 Q10 5 25 5 Q40 5 40 15 L40 65 Q40 75 25 75 Q10 75 10 65 Z" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="25" cy="25" rx="10" ry="4" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.2"/>
+  <ellipse cx="25" cy="40" rx="10" ry="4" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.2"/>
+  <ellipse cx="25" cy="55" rx="10" ry="4" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.2"/>
+  <rect x="0" y="60" width="10" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="40" y="18" width="10" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="21" y="75" width="8" height="5" fill="currentColor" opacity="0.3"/>
+  <path d="M18 15 L20 12 L22 15 M25 13 L27 10 L29 13 M32 15 L34 12 L36 15" stroke="currentColor" stroke-width="1" fill="none"/>
+</svg>
+`
+
+// Biomass Hopper/Feeder
+export const Hopper = `
+<svg viewBox="0 0 50 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="5,5 45,5 45,30 35,55 15,55 5,30" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="18" y="55" width="14" height="15" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="5" y1="15" x2="45" y2="15" stroke="currentColor" stroke-width="1"/>
+  <circle cx="15" cy="22" r="3" fill="currentColor" opacity="0.3"/>
+  <circle cx="25" cy="20" r="4" fill="currentColor" opacity="0.3"/>
+  <circle cx="35" cy="23" r="3" fill="currentColor" opacity="0.3"/>
+  <circle cx="20" cy="30" r="3" fill="currentColor" opacity="0.3"/>
+  <circle cx="30" cy="28" r="3" fill="currentColor" opacity="0.3"/>
+  <circle cx="25" cy="38" r="3" fill="currentColor" opacity="0.3"/>
+  <path d="M22 60 L22 65 M25 58 L25 65 M28 60 L28 65" stroke="currentColor" stroke-width="1.5"/>
+</svg>
+`
+
+// =============================================================================
+// HEATING & COMBUSTION EQUIPMENT
+// =============================================================================
+
+// Fire-Tube/Water-Tube Boiler
+export const Boiler = `
+<svg viewBox="0 0 80 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="15" cy="30" rx="12" ry="25" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="65" cy="30" rx="12" ry="25" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="15" y1="5" x2="65" y2="5" stroke="currentColor" stroke-width="2"/>
+  <line x1="15" y1="55" x2="65" y2="55" stroke="currentColor" stroke-width="2"/>
+  <line x1="20" y1="20" x2="60" y2="20" stroke="currentColor" stroke-width="1"/>
+  <line x1="20" y1="30" x2="60" y2="30" stroke="currentColor" stroke-width="1"/>
+  <line x1="20" y1="40" x2="60" y2="40" stroke="currentColor" stroke-width="1"/>
+  <path d="M25 48 L30 44 L35 50 L40 44 L45 50 L50 44 L55 48" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <rect x="36" y="0" width="8" height="5" fill="currentColor" opacity="0.3"/>
+  <path d="M38 0 L40 -5 L42 0" stroke="currentColor" stroke-width="1" fill="none"/>
+  <rect x="0" y="27" width="8" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="72" y="27" width="8" height="6" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Industrial Furnace
+export const Furnace = `
+<svg viewBox="0 0 70 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="50" height="40" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="15" y="15" width="40" height="25" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.15"/>
+  <path d="M20 35 L25 28 L30 38 L35 25 L40 38 L45 28 L50 35" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <rect x="30" y="0" width="10" height="10" fill="currentColor" opacity="0.3"/>
+  <path d="M33 5 L35 0 L37 5" stroke="currentColor" stroke-width="1" fill="none"/>
+  <rect x="0" y="22" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="60" y="22" width="10" height="8" fill="currentColor" opacity="0.3"/>
+  <line x1="10" y1="50" x2="25" y2="50" stroke="currentColor" stroke-width="2"/>
+  <line x1="45" y1="50" x2="60" y2="50" stroke="currentColor" stroke-width="2"/>
+  <rect x="25" y="48" width="20" height="12" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.2"/>
+</svg>
+`
+
+// Regenerative Burner
+export const Burner = `
+<svg viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="25" cy="30" r="18" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="25" cy="30" r="10" stroke="currentColor" stroke-width="1.5" fill="currentColor" opacity="0.2"/>
+  <path d="M22 30 Q22 22 25 18 Q28 22 28 30" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M20 32 Q20 26 25 20 Q30 26 30 32" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.3"/>
+  <rect x="21" y="0" width="8" height="12" fill="currentColor" opacity="0.3"/>
+  <rect x="0" y="27" width="7" height="6" fill="currentColor" opacity="0.3"/>
+  <circle cx="25" cy="30" r="3" fill="currentColor"/>
+</svg>
+`
+
+// Heating/Cooling Coil
+export const Coil = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="5" width="50" height="40" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M10 15 Q15 10 20 15 Q25 20 30 15 Q35 10 40 15 Q45 20 50 15" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M10 25 Q15 20 20 25 Q25 30 30 25 Q35 20 40 25 Q45 30 50 25" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M10 35 Q15 30 20 35 Q25 40 30 35 Q35 30 40 35 Q45 40 50 35" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="0" y="12" width="5" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="55" y="32" width="5" height="6" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Tankless/Tank Water Heater
+export const WaterHeater = `
+<svg viewBox="0 0 45 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="8" y="10" width="30" height="50" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M15 45 L18 40 L21 48 L24 38 L27 48 L30 40 L33 45" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <circle cx="23" cy="25" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="23" y="28" text-anchor="middle" font-size="7" fill="currentColor">T</text>
+  <rect x="12" y="0" width="6" height="10" fill="currentColor" opacity="0.3"/>
+  <rect x="28" y="0" width="6" height="10" fill="currentColor" opacity="0.3"/>
+  <rect x="19" y="60" width="8" height="10" fill="currentColor" opacity="0.3"/>
+  <line x1="8" y1="55" x2="38" y2="55" stroke="currentColor" stroke-width="1"/>
+</svg>
+`
+
+// =============================================================================
+// POWER GENERATION EQUIPMENT
+// =============================================================================
+
+// Combined Heat & Power (CHP) Unit
+export const CHPUnit = `
+<svg viewBox="0 0 80 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="10" width="70" height="40" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="40" y1="10" x2="40" y2="50" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <circle cx="22" cy="30" r="12" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="22" y="34" text-anchor="middle" font-size="8" font-weight="bold" fill="currentColor">G</text>
+  <rect x="48" y="18" width="20" height="24" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M52 35 L55 30 L58 38 L61 28 L64 35" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="0" y="25" width="5" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="75" y="18" width="5" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="75" y="36" width="5" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="18" y="0" width="8" height="10" fill="currentColor" opacity="0.3"/>
+  <path d="M20 5 L22 0 L24 5" stroke="currentColor" stroke-width="1" fill="none"/>
+  <line x1="10" y1="30" x2="34" y2="30" stroke="currentColor" stroke-width="1"/>
+</svg>
+`
+
+// Gas/Steam Turbine
+export const Turbine = `
+<svg viewBox="0 0 70 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="25" cy="25" rx="8" ry="20" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="50" cy="25" rx="8" ry="15" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M33 10 L42 13" stroke="currentColor" stroke-width="2"/>
+  <path d="M33 40 L42 37" stroke="currentColor" stroke-width="2"/>
+  <path d="M33 25 L42 25" stroke="currentColor" stroke-width="2"/>
+  <line x1="58" y1="25" x2="70" y2="25" stroke="currentColor" stroke-width="3"/>
+  <rect x="0" y="21" width="17" height="8" fill="currentColor" opacity="0.3"/>
+  <path d="M20 15 L25 25 L20 35" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M25 12 L30 25 L25 38" stroke="currentColor" stroke-width="1" fill="none"/>
+  <circle cx="25" cy="25" r="4" fill="currentColor" opacity="0.4"/>
+</svg>
+`
+
+// Electric Generator
+export const Generator = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="35" cy="25" r="18" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="35" cy="25" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="35" y="29" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">G</text>
+  <line x1="0" y1="25" x2="17" y2="25" stroke="currentColor" stroke-width="3"/>
+  <rect x="53" y="15" width="7" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="53" y="29" width="7" height="6" fill="currentColor" opacity="0.3"/>
+  <path d="M55 12 L58 8 L61 12" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M55 38 L58 42 L61 38" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <line x1="53" y1="18" x2="60" y2="18" stroke="currentColor" stroke-width="1"/>
+  <line x1="53" y1="32" x2="60" y2="32" stroke="currentColor" stroke-width="1"/>
+</svg>
+`
+
+// =============================================================================
 // OFF-PAGE CONNECTORS (P&ID Reference Tags)
 // =============================================================================
 
@@ -716,6 +994,289 @@ export const FlowArrowUp = `
 <svg viewBox="0 0 30 50" fill="none" xmlns="http://www.w3.org/2000/svg">
   <line x1="15" y1="10" x2="15" y2="45" stroke="currentColor" stroke-width="3"/>
   <polygon points="8,15 15,2 22,15" fill="currentColor"/>
+</svg>
+`
+
+// =============================================================================
+// ADDITIONAL SYMBOLS
+// =============================================================================
+
+// Horizontal Drum (accumulator/receiver)
+export const Drum = `
+<svg viewBox="0 0 80 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="10" cy="25" rx="10" ry="20" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="70" cy="25" rx="10" ry="20" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="10" y1="5" x2="70" y2="5" stroke="currentColor" stroke-width="2"/>
+  <line x1="10" y1="45" x2="70" y2="45" stroke="currentColor" stroke-width="2"/>
+  <rect x="35" y="45" width="10" height="5" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Agitator/Impeller (for reactor vessels)
+export const Agitator = `
+<svg viewBox="0 0 40 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="17" y="0" width="6" height="8" fill="currentColor"/>
+  <line x1="20" y1="8" x2="20" y2="35" stroke="currentColor" stroke-width="2"/>
+  <path d="M8 35 L20 42 L32 35" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M8 45 L20 52 L32 45" stroke="currentColor" stroke-width="2" fill="none"/>
+</svg>
+`
+
+// VFD/Variable Frequency Drive
+export const VFD = `
+<svg viewBox="0 0 50 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="5" width="40" height="50" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <text x="25" y="25" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">VFD</text>
+  <rect x="12" y="32" width="26" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+  <circle cx="15" cy="48" r="3" fill="currentColor" opacity="0.5"/>
+  <circle cx="25" cy="48" r="3" fill="currentColor" opacity="0.5"/>
+  <circle cx="35" cy="48" r="3" fill="currentColor" opacity="0.5"/>
+</svg>
+`
+
+// Orifice Plate (flow restriction)
+export const OrificePlate = `
+<svg viewBox="0 0 50 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="35" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <line x1="20" y1="5" x2="20" y2="35" stroke="currentColor" stroke-width="2"/>
+  <line x1="30" y1="5" x2="30" y2="35" stroke="currentColor" stroke-width="2"/>
+  <path d="M20 15 Q25 20 30 15" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M20 25 Q25 20 30 25" stroke="currentColor" stroke-width="1.5" fill="none"/>
+</svg>
+`
+
+// Diaphragm Valve
+export const DiaphragmValve = `
+<svg viewBox="0 0 60 45" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="25" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="45" y="25" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="15" y="20" width="30" height="18" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M20 29 Q30 22 40 29" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="30" y1="20" x2="30" y2="8" stroke="currentColor" stroke-width="2"/>
+  <circle cx="30" cy="6" r="5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+</svg>
+`
+
+// Plug Valve
+export const PlugValve = `
+<svg viewBox="0 0 60 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="45" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <circle cx="30" cy="20" r="12" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="26" y="14" width="8" height="12" fill="currentColor" opacity="0.4"/>
+  <line x1="30" y1="8" x2="30" y2="2" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Pressure Regulator
+export const PressureRegulator = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="26" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="45" y="26" width="15" height="8" fill="currentColor" opacity="0.3"/>
+  <path d="M15 22 L30 30 L15 38 Z" fill="currentColor"/>
+  <path d="M45 22 L30 30 L45 38 Z" fill="currentColor"/>
+  <line x1="30" y1="22" x2="30" y2="12" stroke="currentColor" stroke-width="2"/>
+  <rect x="22" y="2" width="16" height="10" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <text x="30" y="10" text-anchor="middle" font-size="6" fill="currentColor">REG</text>
+</svg>
+`
+
+// Centrifuge
+export const Centrifuge = `
+<svg viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="30" cy="35" r="22" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="30" cy="35" r="12" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <line x1="30" y1="13" x2="30" y2="5" stroke="currentColor" stroke-width="2"/>
+  <rect x="26" y="0" width="8" height="6" fill="currentColor"/>
+  <path d="M22 35 L30 28 L38 35 L30 42 Z" stroke="currentColor" stroke-width="1" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Evaporator
+export const Evaporator = `
+<svg viewBox="0 0 60 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="15" width="40" height="45" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M20 35 Q25 30 30 35 Q35 40 40 35" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M20 45 Q25 40 30 45 Q35 50 40 45" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <line x1="30" y1="0" x2="30" y2="15" stroke="currentColor" stroke-width="2"/>
+  <line x1="30" y1="60" x2="30" y2="70" stroke="currentColor" stroke-width="2"/>
+  <rect x="5" y="22" width="5" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="50" y="22" width="5" height="8" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Scrubber (gas cleaning)
+export const Scrubber = `
+<svg viewBox="0 0 50 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10 15 L10 65 Q10 75 25 75 Q40 75 40 65 L40 15 Q40 5 25 5 Q10 5 10 15" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="15" y1="25" x2="35" y2="25" stroke="currentColor" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="15" y1="40" x2="35" y2="40" stroke="currentColor" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="15" y1="55" x2="35" y2="55" stroke="currentColor" stroke-width="1" stroke-dasharray="2,2"/>
+  <rect x="0" y="60" width="10" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="40" y="30" width="10" height="6" fill="currentColor" opacity="0.3"/>
+  <line x1="25" y1="75" x2="25" y2="80" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Absorber Tower
+export const Absorber = `
+<svg viewBox="0 0 50 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M10 10 L10 75 Q10 85 25 85 Q40 85 40 75 L40 10 Q40 0 25 0 Q10 0 10 10" stroke="currentColor" stroke-width="2" fill="none"/>
+  <ellipse cx="25" cy="20" rx="12" ry="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <ellipse cx="25" cy="40" rx="12" ry="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <ellipse cx="25" cy="60" rx="12" ry="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="0" y="45" width="10" height="6" fill="currentColor" opacity="0.3"/>
+  <rect x="40" y="25" width="10" height="6" fill="currentColor" opacity="0.3"/>
+</svg>
+`
+
+// Diaphragm Pump
+export const DiaphragmPump = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="21" width="12" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="48" y="21" width="12" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="15" y="10" width="30" height="30" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M25 15 L25 35" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M35 15 L35 35" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M25 25 Q30 18 35 25" stroke="currentColor" stroke-width="2" fill="none"/>
+  <rect x="26" y="0" width="8" height="10" fill="currentColor"/>
+</svg>
+`
+
+// Gear Pump
+export const GearPump = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="21" width="12" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="48" y="21" width="12" height="8" fill="currentColor" opacity="0.3"/>
+  <rect x="15" y="10" width="30" height="30" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="25" cy="25" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <circle cx="35" cy="25" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <circle cx="25" cy="25" r="3" fill="currentColor" opacity="0.4"/>
+  <circle cx="35" cy="25" r="3" fill="currentColor" opacity="0.4"/>
+</svg>
+`
+
+// Axial Fan
+export const AxialFan = `
+<svg viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="25" cy="25" r="22" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="25" cy="25" r="5" fill="currentColor"/>
+  <path d="M25 8 Q30 15 25 20" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M25 30 Q20 35 25 42" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M8 25 Q15 20 20 25" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M30 25 Q35 30 42 25" stroke="currentColor" stroke-width="2" fill="none"/>
+</svg>
+`
+
+// Load Cell / Weight Scale
+export const LoadCell = `
+<svg viewBox="0 0 50 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="25" width="40" height="10" rx="1" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="25" y1="5" x2="25" y2="25" stroke="currentColor" stroke-width="2"/>
+  <polygon points="20,5 25,0 30,5" fill="currentColor"/>
+  <polygon points="20,5 25,10 30,5" fill="currentColor"/>
+  <circle cx="15" cy="30" r="2" fill="currentColor"/>
+  <circle cx="35" cy="30" r="2" fill="currentColor"/>
+</svg>
+`
+
+// Vibration Sensor
+export const VibrationSensor = `
+<svg viewBox="0 0 40 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="20" cy="15" r="12" stroke="currentColor" stroke-width="2" fill="none"/>
+  <text x="20" y="19" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">VT</text>
+  <line x1="20" y1="27" x2="20" y2="40" stroke="currentColor" stroke-width="2"/>
+  <rect x="15" y="40" width="10" height="6" fill="currentColor" opacity="0.5"/>
+  <path d="M8 15 Q12 10 8 5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M32 15 Q28 10 32 5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+</svg>
+`
+
+// Spectacle Blind
+export const SpectacleBlind = `
+<svg viewBox="0 0 60 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="15" cy="15" r="12" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="45" cy="15" r="12" stroke="currentColor" stroke-width="2" fill="currentColor" opacity="0.3"/>
+  <line x1="27" y1="15" x2="33" y2="15" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Pipe Cross
+export const PipeCross = `
+<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="15" y="0" width="10" height="40" fill="currentColor" opacity="0.3"/>
+  <rect x="0" y="15" width="40" height="10" fill="currentColor" opacity="0.3"/>
+  <rect x="15" y="15" width="10" height="10" stroke="currentColor" stroke-width="1" fill="none"/>
+</svg>
+`
+
+// Pipe Cap
+export const PipeCap = `
+<svg viewBox="0 0 30 25" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="10" height="15" fill="currentColor" opacity="0.3"/>
+  <path d="M5 10 Q15 0 25 10" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="5" y1="10" x2="25" y2="10" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Power Supply
+export const PowerSupply = `
+<svg viewBox="0 0 50 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="5" width="40" height="30" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <text x="25" y="24" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">PWR</text>
+  <line x1="10" y1="35" x2="10" y2="40" stroke="currentColor" stroke-width="2"/>
+  <line x1="25" y1="35" x2="25" y2="40" stroke="currentColor" stroke-width="2"/>
+  <line x1="40" y1="35" x2="40" y2="40" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Circuit Breaker
+export const CircuitBreaker = `
+<svg viewBox="0 0 40 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="5" y="10" width="30" height="30" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="20" y1="0" x2="20" y2="10" stroke="currentColor" stroke-width="2"/>
+  <line x1="20" y1="40" x2="20" y2="50" stroke="currentColor" stroke-width="2"/>
+  <path d="M12 20 L20 25 L28 20" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="20" cy="32" r="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+</svg>
+`
+
+// Transformer
+export const Transformer = `
+<svg viewBox="0 0 50 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="18" cy="30" r="12" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="32" cy="30" r="12" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="6" y1="30" x2="0" y2="30" stroke="currentColor" stroke-width="2"/>
+  <line x1="44" y1="30" x2="50" y2="30" stroke="currentColor" stroke-width="2"/>
+  <line x1="18" y1="18" x2="18" y2="10" stroke="currentColor" stroke-width="2"/>
+  <line x1="32" y1="42" x2="32" y2="50" stroke="currentColor" stroke-width="2"/>
+</svg>
+`
+
+// Conveyor
+export const Conveyor = `
+<svg viewBox="0 0 80 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="18" r="8" stroke="currentColor" stroke-width="2" fill="none"/>
+  <circle cx="68" cy="18" r="8" stroke="currentColor" stroke-width="2" fill="none"/>
+  <line x1="12" y1="10" x2="68" y2="10" stroke="currentColor" stroke-width="2"/>
+  <line x1="12" y1="26" x2="68" y2="26" stroke="currentColor" stroke-width="2"/>
+  <circle cx="12" cy="18" r="3" fill="currentColor"/>
+  <circle cx="68" cy="18" r="3" fill="currentColor"/>
+  <path d="M25 6 L35 6 L30 2 Z" fill="currentColor"/>
+</svg>
+`
+
+// Dryer
+export const Dryer = `
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="40" height="30" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <path d="M18 20 Q23 25 18 30" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M28 20 Q33 25 28 30" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <path d="M38 20 Q43 25 38 30" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <line x1="30" y1="0" x2="30" y2="10" stroke="currentColor" stroke-width="2"/>
+  <line x1="30" y1="40" x2="30" y2="50" stroke="currentColor" stroke-width="2"/>
+  <rect x="0" y="22" width="10" height="6" fill="currentColor" opacity="0.3"/>
 </svg>
 `
 
@@ -788,6 +1349,26 @@ export const SCADA_SYMBOLS = {
   staticMixer: StaticMixer,
   sprayNozzle: SprayNozzle,
   ejector: Ejector,
+  // Hydrogen & Fuel Cell
+  fuelCell: FuelCell,
+  electrolyzer: Electrolyzer,
+  steamReformer: SteamReformer,
+  hydrogenTank: HydrogenTank,
+  fuelDispenser: FuelDispenser,
+  // Gasification & Biomass
+  gasifier: Gasifier,
+  syngasCleanup: SyngasCleanup,
+  hopper: Hopper,
+  // Heating & Combustion
+  boiler: Boiler,
+  furnace: Furnace,
+  burner: Burner,
+  coil: Coil,
+  waterHeater: WaterHeater,
+  // Power Generation
+  chpUnit: CHPUnit,
+  turbine: Turbine,
+  generator: Generator,
   // Off-Page Connectors
   offPageRight: OffPageConnectorRight,
   offPageLeft: OffPageConnectorLeft,
@@ -797,6 +1378,31 @@ export const SCADA_SYMBOLS = {
   flowArrowLeft: FlowArrowLeft,
   flowArrowDown: FlowArrowDown,
   flowArrowUp: FlowArrowUp,
+  // Additional Equipment
+  drum: Drum,
+  agitator: Agitator,
+  vfd: VFD,
+  orificePlate: OrificePlate,
+  diaphragmValve: DiaphragmValve,
+  plugValve: PlugValve,
+  pressureRegulator: PressureRegulator,
+  centrifuge: Centrifuge,
+  evaporator: Evaporator,
+  scrubber: Scrubber,
+  absorber: Absorber,
+  diaphragmPump: DiaphragmPump,
+  gearPump: GearPump,
+  axialFan: AxialFan,
+  loadCell: LoadCell,
+  vibrationSensor: VibrationSensor,
+  spectacleBlind: SpectacleBlind,
+  pipeCross: PipeCross,
+  pipeCap: PipeCap,
+  powerSupply: PowerSupply,
+  circuitBreaker: CircuitBreaker,
+  transformer: Transformer,
+  conveyor: Conveyor,
+  dryer: Dryer,
 } as const
 
 export type ScadaSymbolType = keyof typeof SCADA_SYMBOLS
@@ -867,6 +1473,26 @@ export const SYMBOL_INFO: Record<ScadaSymbolType, { label: string; category: str
   staticMixer: { label: 'Static Mixer', category: 'Miscellaneous' },
   sprayNozzle: { label: 'Spray Nozzle', category: 'Miscellaneous' },
   ejector: { label: 'Ejector/Eductor', category: 'Miscellaneous' },
+  // Hydrogen & Fuel Cell
+  fuelCell: { label: 'Fuel Cell Stack', category: 'Hydrogen & Fuel Cell' },
+  electrolyzer: { label: 'Electrolyzer', category: 'Hydrogen & Fuel Cell' },
+  steamReformer: { label: 'Steam Methane Reformer', category: 'Hydrogen & Fuel Cell' },
+  hydrogenTank: { label: 'Hydrogen Storage Tank', category: 'Hydrogen & Fuel Cell' },
+  fuelDispenser: { label: 'H₂ Fuel Dispenser', category: 'Hydrogen & Fuel Cell' },
+  // Gasification & Biomass
+  gasifier: { label: 'Gasifier', category: 'Gasification & Biomass' },
+  syngasCleanup: { label: 'Syngas Cleanup', category: 'Gasification & Biomass' },
+  hopper: { label: 'Hopper/Feeder', category: 'Gasification & Biomass' },
+  // Heating & Combustion
+  boiler: { label: 'Boiler', category: 'Heating & Combustion' },
+  furnace: { label: 'Industrial Furnace', category: 'Heating & Combustion' },
+  burner: { label: 'Burner', category: 'Heating & Combustion' },
+  coil: { label: 'Heating/Cooling Coil', category: 'Heating & Combustion' },
+  waterHeater: { label: 'Water Heater', category: 'Heating & Combustion' },
+  // Power Generation
+  chpUnit: { label: 'CHP Unit', category: 'Power Generation' },
+  turbine: { label: 'Gas/Steam Turbine', category: 'Power Generation' },
+  generator: { label: 'Electric Generator', category: 'Power Generation' },
   // Off-Page Connectors
   offPageRight: { label: 'Off-Page → (to right)', category: 'Off-Page Connectors' },
   offPageLeft: { label: 'Off-Page ← (from left)', category: 'Off-Page Connectors' },
@@ -876,6 +1502,31 @@ export const SYMBOL_INFO: Record<ScadaSymbolType, { label: string; category: str
   flowArrowLeft: { label: 'Flow Arrow ←', category: 'Off-Page Connectors' },
   flowArrowDown: { label: 'Flow Arrow ↓', category: 'Off-Page Connectors' },
   flowArrowUp: { label: 'Flow Arrow ↑', category: 'Off-Page Connectors' },
+  // Additional Equipment
+  drum: { label: 'Drum/Accumulator', category: 'Vessels' },
+  agitator: { label: 'Agitator/Impeller', category: 'Equipment' },
+  vfd: { label: 'VFD (Variable Frequency Drive)', category: 'Electrical' },
+  orificePlate: { label: 'Orifice Plate', category: 'Instruments' },
+  diaphragmValve: { label: 'Diaphragm Valve', category: 'Valves' },
+  plugValve: { label: 'Plug Valve', category: 'Valves' },
+  pressureRegulator: { label: 'Pressure Regulator', category: 'Valves' },
+  centrifuge: { label: 'Centrifuge', category: 'Equipment' },
+  evaporator: { label: 'Evaporator', category: 'Heat Exchangers' },
+  scrubber: { label: 'Scrubber', category: 'Vessels' },
+  absorber: { label: 'Absorber Tower', category: 'Vessels' },
+  diaphragmPump: { label: 'Diaphragm Pump', category: 'Equipment' },
+  gearPump: { label: 'Gear Pump', category: 'Equipment' },
+  axialFan: { label: 'Axial Fan', category: 'Equipment' },
+  loadCell: { label: 'Load Cell/Scale', category: 'Instruments' },
+  vibrationSensor: { label: 'Vibration Sensor (VT)', category: 'Instruments' },
+  spectacleBlind: { label: 'Spectacle Blind', category: 'Piping' },
+  pipeCross: { label: 'Pipe Cross', category: 'Piping' },
+  pipeCap: { label: 'Pipe Cap/Plug', category: 'Piping' },
+  powerSupply: { label: 'Power Supply', category: 'Electrical' },
+  circuitBreaker: { label: 'Circuit Breaker', category: 'Electrical' },
+  transformer: { label: 'Transformer', category: 'Electrical' },
+  conveyor: { label: 'Conveyor', category: 'Equipment' },
+  dryer: { label: 'Dryer', category: 'Equipment' },
 }
 
 // Get symbols by category
@@ -888,4 +1539,539 @@ export function getSymbolsByCategory(): Record<string, ScadaSymbolType[]> {
     result[info.category]!.push(key as ScadaSymbolType)
   }
   return result
+}
+
+// =============================================================================
+// CONNECTION PORTS - Defines pipe connection points for each symbol
+// =============================================================================
+// Ports are defined as relative positions (0-1) within the symbol's bounding box
+// x: 0 = left, 1 = right
+// y: 0 = top, 1 = bottom
+
+export interface SymbolPort {
+  id: string           // Unique port identifier
+  x: number           // Relative X position (0-1)
+  y: number           // Relative Y position (0-1)
+  direction: 'left' | 'right' | 'top' | 'bottom'  // Preferred pipe direction
+  label?: string      // Optional label for the port
+}
+
+export const SYMBOL_PORTS: Record<ScadaSymbolType, SymbolPort[]> = {
+  // Valves - typically have left/right flow ports
+  solenoidValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  controlValve: [
+    { id: 'inlet', x: 0, y: 0.6, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.6, direction: 'right', label: 'Out' },
+  ],
+  manualValve: [
+    { id: 'inlet', x: 0, y: 0.55, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.55, direction: 'right', label: 'Out' },
+  ],
+  checkValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  ballValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  butterflyValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  reliefValve: [
+    { id: 'inlet', x: 0.5, y: 1, direction: 'bottom', label: 'In' },
+    { id: 'vent', x: 0.5, y: 0, direction: 'top', label: 'Vent' },
+  ],
+  threeWayValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet1', x: 1, y: 0.5, direction: 'right', label: 'Out1' },
+    { id: 'outlet2', x: 0.5, y: 1, direction: 'bottom', label: 'Out2' },
+  ],
+  gateValve: [
+    { id: 'inlet', x: 0, y: 0.55, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.55, direction: 'right', label: 'Out' },
+  ],
+  needleValve: [
+    { id: 'inlet', x: 0, y: 0.55, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.55, direction: 'right', label: 'Out' },
+  ],
+
+  // Instruments - typically have one process connection
+  pressureTransducer: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  temperatureElement: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  flowMeter: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  levelTransmitter: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  flowSwitch: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  pressureSwitch: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  thermowell: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  analyzer: [
+    { id: 'inlet', x: 0.28, y: 1, direction: 'bottom', label: 'In' },
+    { id: 'outlet', x: 0.72, y: 1, direction: 'bottom', label: 'Out' },
+  ],
+  phSensor: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  conductivitySensor: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  pressureGauge: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+  temperatureIndicator: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+
+  // Equipment - pumps, compressors, etc.
+  pump: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 0.58, y: 0, direction: 'top', label: 'Discharge' },
+  ],
+  pdPump: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+  compressor: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+  blower: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+  motor: [
+    { id: 'shaft', x: 1, y: 0.5, direction: 'right', label: 'Shaft' },
+  ],
+  mixer: [
+    { id: 'shaft', x: 0.5, y: 0, direction: 'top', label: 'Motor' },
+  ],
+  filter: [
+    { id: 'inlet', x: 0.5, y: 0, direction: 'top', label: 'In' },
+    { id: 'outlet', x: 0.5, y: 1, direction: 'bottom', label: 'Out' },
+  ],
+  heater: [
+    { id: 'inlet', x: 0.3, y: 1, direction: 'bottom', label: 'In' },
+    { id: 'outlet', x: 0.7, y: 1, direction: 'bottom', label: 'Out' },
+  ],
+  cooler: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+  ],
+
+  // Heat Exchangers
+  heatExchanger: [
+    { id: 'shell_in', x: 0, y: 0.5, direction: 'left', label: 'Shell In' },
+    { id: 'shell_out', x: 1, y: 0.5, direction: 'right', label: 'Shell Out' },
+    { id: 'tube_in', x: 0.25, y: 0, direction: 'top', label: 'Tube In' },
+    { id: 'tube_out', x: 0.75, y: 1, direction: 'bottom', label: 'Tube Out' },
+  ],
+  plateHeatExchanger: [
+    { id: 'hot_in', x: 0, y: 0.2, direction: 'left', label: 'Hot In' },
+    { id: 'cold_out', x: 1, y: 0.85, direction: 'right', label: 'Cold Out' },
+  ],
+  condenser: [
+    { id: 'vapor_in', x: 0.5, y: 0, direction: 'top', label: 'Vapor In' },
+    { id: 'liquid_out', x: 0.5, y: 1, direction: 'bottom', label: 'Liquid Out' },
+    { id: 'coolant_in', x: 0, y: 0.5, direction: 'left', label: 'Coolant In' },
+    { id: 'coolant_out', x: 1, y: 0.5, direction: 'right', label: 'Coolant Out' },
+  ],
+  airCooler: [
+    { id: 'inlet', x: 0, y: 0.75, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.75, direction: 'right', label: 'Out' },
+  ],
+
+  // Vessels
+  tank: [
+    { id: 'inlet', x: 0.5, y: 0, direction: 'top', label: 'Inlet' },
+    { id: 'outlet', x: 0.5, y: 1, direction: 'bottom', label: 'Outlet' },
+    { id: 'side', x: 0, y: 0.5, direction: 'left', label: 'Side' },
+  ],
+  horizontalTank: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'Inlet' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Outlet' },
+    { id: 'top', x: 0.5, y: 0, direction: 'top', label: 'Top' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom', label: 'Bottom' },
+  ],
+  reactor: [
+    { id: 'feed', x: 0.5, y: 0, direction: 'top', label: 'Feed' },
+    { id: 'product', x: 0.5, y: 1, direction: 'bottom', label: 'Product' },
+    { id: 'jacket_in', x: 0, y: 0.3, direction: 'left', label: 'Jacket In' },
+    { id: 'jacket_out', x: 0, y: 0.7, direction: 'left', label: 'Jacket Out' },
+  ],
+  column: [
+    { id: 'feed', x: 0, y: 0.5, direction: 'left', label: 'Feed' },
+    { id: 'overhead', x: 0.5, y: 0, direction: 'top', label: 'Overhead' },
+    { id: 'bottoms', x: 0.5, y: 1, direction: 'bottom', label: 'Bottoms' },
+    { id: 'reflux', x: 1, y: 0.15, direction: 'right', label: 'Reflux' },
+    { id: 'reboiler', x: 1, y: 0.85, direction: 'right', label: 'Reboiler' },
+  ],
+  cyclone: [
+    { id: 'inlet', x: 0, y: 0.2, direction: 'left', label: 'Inlet' },
+    { id: 'gas_out', x: 0.5, y: 0, direction: 'top', label: 'Gas Out' },
+    { id: 'solids_out', x: 0.5, y: 1, direction: 'bottom', label: 'Solids' },
+  ],
+  separator: [
+    { id: 'inlet', x: 0, y: 0.48, direction: 'left', label: 'Inlet' },
+    { id: 'vapor_out', x: 1, y: 0.15, direction: 'right', label: 'Vapor' },
+    { id: 'liquid_out', x: 0.5, y: 1, direction: 'bottom', label: 'Liquid' },
+  ],
+  sphere: [
+    { id: 'inlet', x: 0.5, y: 0, direction: 'top', label: 'Inlet' },
+    { id: 'outlet', x: 0.5, y: 1, direction: 'bottom', label: 'Outlet' },
+  ],
+
+  // Piping components
+  pipeHorizontal: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right' },
+  ],
+  pipeVertical: [
+    { id: 'top', x: 0.5, y: 0, direction: 'top' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  elbow90: [
+    { id: 'vertical', x: 0.3, y: 0, direction: 'top' },
+    { id: 'horizontal', x: 1, y: 0.7, direction: 'right' },
+  ],
+  pipeTee: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right' },
+    { id: 'branch', x: 0.5, y: 0, direction: 'top' },
+  ],
+  reducer: [
+    { id: 'large', x: 0, y: 0.5, direction: 'left' },
+    { id: 'small', x: 1, y: 0.5, direction: 'right' },
+  ],
+  flange: [
+    { id: 'top', x: 0.5, y: 0, direction: 'top' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  blindFlange: [
+    { id: 'connection', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  expansionJoint: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right' },
+  ],
+
+  // Miscellaneous
+  ruptureDisc: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Process' },
+    { id: 'vent', x: 0.5, y: 0, direction: 'top', label: 'Vent' },
+  ],
+  flameArrestor: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right' },
+  ],
+  strainer: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right' },
+  ],
+  sightGlass: [
+    { id: 'top', x: 0.5, y: 0, direction: 'top' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  staticMixer: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right' },
+  ],
+  sprayNozzle: [
+    { id: 'inlet', x: 0.5, y: 0, direction: 'top', label: 'Inlet' },
+  ],
+  ejector: [
+    { id: 'motive', x: 0, y: 0.5, direction: 'left', label: 'Motive' },
+    { id: 'suction', x: 0.48, y: 0, direction: 'top', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+
+  // Hydrogen & Fuel Cell
+  fuelCell: [
+    { id: 'h2_in', x: 0, y: 0.35, direction: 'left', label: 'H2 In' },
+    { id: 'air_in', x: 0, y: 0.65, direction: 'left', label: 'Air In' },
+    { id: 'exhaust1', x: 1, y: 0.35, direction: 'right', label: 'Exhaust' },
+    { id: 'exhaust2', x: 1, y: 0.65, direction: 'right', label: 'H2O Out' },
+  ],
+  electrolyzer: [
+    { id: 'water_in', x: 0.5, y: 1, direction: 'bottom', label: 'H2O In' },
+    { id: 'h2_out', x: 0.35, y: 0, direction: 'top', label: 'H2 Out' },
+    { id: 'o2_out', x: 0.65, y: 0, direction: 'top', label: 'O2 Out' },
+  ],
+  steamReformer: [
+    { id: 'ch4_in', x: 0, y: 0.25, direction: 'left', label: 'CH4 In' },
+    { id: 'steam_in', x: 0, y: 0.38, direction: 'left', label: 'Steam In' },
+    { id: 'h2_out', x: 1, y: 0.25, direction: 'right', label: 'H2 Out' },
+    { id: 'flue', x: 0.5, y: 1, direction: 'bottom', label: 'Flue' },
+  ],
+  hydrogenTank: [
+    { id: 'connection', x: 0.5, y: 0, direction: 'top', label: 'H2' },
+  ],
+  fuelDispenser: [
+    { id: 'supply', x: 0.5, y: 1, direction: 'bottom', label: 'Supply' },
+    { id: 'hose', x: 1, y: 0.85, direction: 'right', label: 'Hose' },
+  ],
+
+  // Gasification & Biomass
+  gasifier: [
+    { id: 'feed', x: 0, y: 0.35, direction: 'left', label: 'Feed' },
+    { id: 'air', x: 1, y: 0.32, direction: 'right', label: 'Air/O2' },
+    { id: 'syngas', x: 0.5, y: 0, direction: 'top', label: 'Syngas' },
+    { id: 'ash', x: 0.5, y: 1, direction: 'bottom', label: 'Ash' },
+  ],
+  syngasCleanup: [
+    { id: 'gas_in', x: 1, y: 0.25, direction: 'right', label: 'Dirty Gas' },
+    { id: 'gas_out', x: 0, y: 0.8, direction: 'left', label: 'Clean Gas' },
+    { id: 'drain', x: 0.5, y: 1, direction: 'bottom', label: 'Drain' },
+  ],
+  hopper: [
+    { id: 'feed', x: 0.5, y: 0, direction: 'top', label: 'Feed' },
+    { id: 'discharge', x: 0.5, y: 1, direction: 'bottom', label: 'Discharge' },
+  ],
+
+  // Heating & Combustion
+  boiler: [
+    { id: 'feedwater', x: 0, y: 0.5, direction: 'left', label: 'Feedwater' },
+    { id: 'steam', x: 0.5, y: 0, direction: 'top', label: 'Steam' },
+    { id: 'blowdown', x: 1, y: 0.5, direction: 'right', label: 'Blowdown' },
+  ],
+  furnace: [
+    { id: 'fuel', x: 0, y: 0.45, direction: 'left', label: 'Fuel' },
+    { id: 'air', x: 0.5, y: 0, direction: 'top', label: 'Air' },
+    { id: 'exhaust', x: 1, y: 0.45, direction: 'right', label: 'Exhaust' },
+  ],
+  burner: [
+    { id: 'fuel', x: 0, y: 0.56, direction: 'left', label: 'Fuel' },
+    { id: 'air', x: 0.5, y: 0, direction: 'top', label: 'Air' },
+  ],
+  coil: [
+    { id: 'inlet', x: 0, y: 0.35, direction: 'left', label: 'Inlet' },
+    { id: 'outlet', x: 1, y: 0.75, direction: 'right', label: 'Outlet' },
+  ],
+  waterHeater: [
+    { id: 'cold_in', x: 0.3, y: 0, direction: 'top', label: 'Cold In' },
+    { id: 'hot_out', x: 0.68, y: 0, direction: 'top', label: 'Hot Out' },
+    { id: 'drain', x: 0.5, y: 1, direction: 'bottom', label: 'Drain' },
+  ],
+
+  // Power Generation
+  chpUnit: [
+    { id: 'fuel', x: 0, y: 0.5, direction: 'left', label: 'Fuel' },
+    { id: 'exhaust', x: 0.28, y: 0, direction: 'top', label: 'Exhaust' },
+    { id: 'heat_supply', x: 1, y: 0.35, direction: 'right', label: 'Heat Supply' },
+    { id: 'heat_return', x: 1, y: 0.68, direction: 'right', label: 'Heat Return' },
+  ],
+  turbine: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'Steam/Gas In' },
+    { id: 'exhaust', x: 0.75, y: 0.5, direction: 'right', label: 'Exhaust' },
+    { id: 'shaft', x: 1, y: 0.5, direction: 'right', label: 'Shaft' },
+  ],
+  generator: [
+    { id: 'shaft', x: 0, y: 0.5, direction: 'left', label: 'Shaft' },
+    { id: 'power_pos', x: 1, y: 0.35, direction: 'right', label: '+' },
+    { id: 'power_neg', x: 1, y: 0.7, direction: 'right', label: '-' },
+  ],
+
+  // Off-Page Connectors
+  offPageRight: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left' },
+  ],
+  offPageLeft: [
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right' },
+  ],
+  offPageTo: [
+    { id: 'connection', x: 0.5, y: 0, direction: 'top' },
+  ],
+  offPageFrom: [
+    { id: 'connection', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  flowArrowRight: [
+    { id: 'tail', x: 0, y: 0.5, direction: 'left' },
+    { id: 'head', x: 1, y: 0.5, direction: 'right' },
+  ],
+  flowArrowLeft: [
+    { id: 'head', x: 0, y: 0.5, direction: 'left' },
+    { id: 'tail', x: 1, y: 0.5, direction: 'right' },
+  ],
+  flowArrowDown: [
+    { id: 'tail', x: 0.5, y: 0, direction: 'top' },
+    { id: 'head', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  flowArrowUp: [
+    { id: 'head', x: 0.5, y: 0, direction: 'top' },
+    { id: 'tail', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+
+  // Additional Equipment Ports
+  drum: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'Inlet' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Outlet' },
+    { id: 'drain', x: 0.5, y: 1, direction: 'bottom', label: 'Drain' },
+  ],
+  agitator: [
+    { id: 'shaft', x: 0.5, y: 0, direction: 'top', label: 'Motor' },
+  ],
+  vfd: [
+    { id: 'power_in', x: 0.5, y: 0, direction: 'top', label: 'Power In' },
+    { id: 'motor_out', x: 0.5, y: 1, direction: 'bottom', label: 'Motor Out' },
+  ],
+  orificePlate: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  diaphragmValve: [
+    { id: 'inlet', x: 0, y: 0.65, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.65, direction: 'right', label: 'Out' },
+  ],
+  plugValve: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Out' },
+  ],
+  pressureRegulator: [
+    { id: 'inlet', x: 0, y: 0.6, direction: 'left', label: 'In' },
+    { id: 'outlet', x: 1, y: 0.6, direction: 'right', label: 'Out' },
+  ],
+  centrifuge: [
+    { id: 'feed', x: 0.5, y: 0, direction: 'top', label: 'Feed' },
+    { id: 'light', x: 0, y: 0.58, direction: 'left', label: 'Light' },
+    { id: 'heavy', x: 1, y: 0.58, direction: 'right', label: 'Heavy' },
+  ],
+  evaporator: [
+    { id: 'feed', x: 0.5, y: 0, direction: 'top', label: 'Feed' },
+    { id: 'concentrate', x: 0.5, y: 1, direction: 'bottom', label: 'Concentrate' },
+    { id: 'steam_in', x: 0, y: 0.4, direction: 'left', label: 'Steam In' },
+    { id: 'condensate', x: 1, y: 0.4, direction: 'right', label: 'Condensate' },
+  ],
+  scrubber: [
+    { id: 'gas_in', x: 0, y: 0.78, direction: 'left', label: 'Gas In' },
+    { id: 'gas_out', x: 1, y: 0.4, direction: 'right', label: 'Gas Out' },
+    { id: 'liquid_out', x: 0.5, y: 1, direction: 'bottom', label: 'Liquid Out' },
+  ],
+  absorber: [
+    { id: 'gas_in', x: 0, y: 0.55, direction: 'left', label: 'Gas In' },
+    { id: 'liquid_in', x: 1, y: 0.3, direction: 'right', label: 'Liquid In' },
+    { id: 'gas_out', x: 0.5, y: 0, direction: 'top', label: 'Gas Out' },
+    { id: 'liquid_out', x: 0.5, y: 1, direction: 'bottom', label: 'Liquid Out' },
+  ],
+  diaphragmPump: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+  gearPump: [
+    { id: 'suction', x: 0, y: 0.5, direction: 'left', label: 'Suction' },
+    { id: 'discharge', x: 1, y: 0.5, direction: 'right', label: 'Discharge' },
+  ],
+  axialFan: [
+    { id: 'inlet', x: 0, y: 0.5, direction: 'left', label: 'Inlet' },
+    { id: 'outlet', x: 1, y: 0.5, direction: 'right', label: 'Outlet' },
+  ],
+  loadCell: [
+    { id: 'process', x: 0.5, y: 0, direction: 'top', label: 'Load' },
+  ],
+  vibrationSensor: [
+    { id: 'process', x: 0.5, y: 1, direction: 'bottom', label: 'Mount' },
+  ],
+  spectacleBlind: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right' },
+  ],
+  pipeCross: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right' },
+    { id: 'top', x: 0.5, y: 0, direction: 'top' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  pipeCap: [
+    { id: 'inlet', x: 0.5, y: 1, direction: 'bottom' },
+  ],
+  powerSupply: [
+    { id: 'output1', x: 0.2, y: 1, direction: 'bottom' },
+    { id: 'output2', x: 0.5, y: 1, direction: 'bottom' },
+    { id: 'output3', x: 0.8, y: 1, direction: 'bottom' },
+  ],
+  circuitBreaker: [
+    { id: 'line', x: 0.5, y: 0, direction: 'top', label: 'Line' },
+    { id: 'load', x: 0.5, y: 1, direction: 'bottom', label: 'Load' },
+  ],
+  transformer: [
+    { id: 'primary', x: 0, y: 0.5, direction: 'left', label: 'Primary' },
+    { id: 'secondary', x: 1, y: 0.5, direction: 'right', label: 'Secondary' },
+  ],
+  conveyor: [
+    { id: 'inlet', x: 0, y: 0.6, direction: 'left', label: 'Feed' },
+    { id: 'outlet', x: 1, y: 0.6, direction: 'right', label: 'Discharge' },
+  ],
+  dryer: [
+    { id: 'inlet', x: 0.5, y: 0, direction: 'top', label: 'Wet Feed' },
+    { id: 'outlet', x: 0.5, y: 1, direction: 'bottom', label: 'Dry Product' },
+    { id: 'air', x: 0, y: 0.5, direction: 'left', label: 'Hot Air' },
+  ],
+}
+
+// Get port position in widget coordinates (accounting for widget size and rotation)
+export function getPortPosition(
+  symbolType: ScadaSymbolType,
+  portId: string,
+  widgetX: number,
+  widgetY: number,
+  widgetW: number,
+  widgetH: number,
+  rotation: 0 | 90 | 180 | 270 = 0
+): { x: number; y: number; direction: 'left' | 'right' | 'top' | 'bottom' } | null {
+  const ports = SYMBOL_PORTS[symbolType]
+  const port = ports?.find(p => p.id === portId)
+  if (!port) return null
+
+  let relX = port.x
+  let relY = port.y
+  let direction = port.direction
+
+  // Apply rotation transformation
+  if (rotation === 90) {
+    const temp = relX
+    relX = 1 - relY
+    relY = temp
+    direction = rotateDirection(direction, 90)
+  } else if (rotation === 180) {
+    relX = 1 - relX
+    relY = 1 - relY
+    direction = rotateDirection(direction, 180)
+  } else if (rotation === 270) {
+    const temp = relX
+    relX = relY
+    relY = 1 - temp
+    direction = rotateDirection(direction, 270)
+  }
+
+  return {
+    x: widgetX + relX * widgetW,
+    y: widgetY + relY * widgetH,
+    direction
+  }
+}
+
+function rotateDirection(
+  dir: 'left' | 'right' | 'top' | 'bottom',
+  degrees: 90 | 180 | 270
+): 'left' | 'right' | 'top' | 'bottom' {
+  const order: ('top' | 'right' | 'bottom' | 'left')[] = ['top', 'right', 'bottom', 'left']
+  const idx = order.indexOf(dir)
+  const steps = degrees / 90
+  return order[(idx + steps) % 4] as 'left' | 'right' | 'top' | 'bottom'
 }

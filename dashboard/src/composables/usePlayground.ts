@@ -6,7 +6,9 @@ import type {
   TestSession,
   TestSessionConfig,
   ResetMode,
-  EdgeType
+  EdgeType,
+  FormulaBlock,
+  FormulaBlockValues
 } from '../types'
 
 // ==========================================================================
@@ -24,6 +26,10 @@ const testSession = ref<TestSession>({
     resetVariables: []
   }
 })
+
+// Formula blocks state
+const formulaBlocks = ref<Record<string, FormulaBlock>>({})
+const formulaValues = ref<Record<string, FormulaBlockValues>>({})
 
 // MQTT handlers - will be set by setMqttHandlers
 let mqttPublish: ((topic: string, payload: any) => void) | null = null
@@ -78,6 +84,7 @@ export function usePlayground() {
       source_channel: config.sourceChannel || null,
       edge_type: config.edgeType || 'increment',
       scale_factor: config.scaleFactor ?? 1.0,
+      source_rate_unit: config.sourceRateUnit || 'per_second',
       reset_time: config.resetTime || null,
       reset_elapsed_s: config.resetElapsedS || null,
       formula: config.formula || null,
@@ -100,6 +107,7 @@ export function usePlayground() {
     if (updates.sourceChannel !== undefined) payload.source_channel = updates.sourceChannel
     if (updates.edgeType !== undefined) payload.edge_type = updates.edgeType
     if (updates.scaleFactor !== undefined) payload.scale_factor = updates.scaleFactor
+    if (updates.sourceRateUnit !== undefined) payload.source_rate_unit = updates.sourceRateUnit
     if (updates.resetTime !== undefined) payload.reset_time = updates.resetTime
     if (updates.resetElapsedS !== undefined) payload.reset_elapsed_s = updates.resetElapsedS
     if (updates.formula !== undefined) payload.formula = updates.formula
@@ -172,6 +180,41 @@ export function usePlayground() {
   }
 
   // ========================================================================
+  // FORMULA BLOCK MANAGEMENT
+  // ========================================================================
+
+  function createFormulaBlock(block: FormulaBlock): void {
+    // Convert camelCase to snake_case for backend
+    const payload = {
+      id: block.id,
+      name: block.name,
+      description: block.description,
+      code: block.code,
+      enabled: block.enabled,
+      outputs: block.outputs,
+    }
+    publish('nisystem/formulas/create', payload)
+  }
+
+  function updateFormulaBlock(blockId: string, updates: Partial<FormulaBlock>): void {
+    const payload: Record<string, any> = { id: blockId }
+    if (updates.name !== undefined) payload.name = updates.name
+    if (updates.description !== undefined) payload.description = updates.description
+    if (updates.code !== undefined) payload.code = updates.code
+    if (updates.enabled !== undefined) payload.enabled = updates.enabled
+    if (updates.outputs !== undefined) payload.outputs = updates.outputs
+    publish('nisystem/formulas/update', payload)
+  }
+
+  function deleteFormulaBlock(blockId: string): void {
+    publish('nisystem/formulas/delete', { id: blockId })
+  }
+
+  function refreshFormulaBlocks(): void {
+    publish('nisystem/formulas/list', {})
+  }
+
+  // ========================================================================
   // MQTT MESSAGE HANDLERS (called by useMqtt)
   // ========================================================================
 
@@ -236,6 +279,28 @@ export function usePlayground() {
     }
   }
 
+  function handleFormulaBlocksConfig(payload: Record<string, any>): void {
+    // Convert snake_case to camelCase for frontend
+    const converted: Record<string, FormulaBlock> = {}
+    for (const [id, data] of Object.entries(payload)) {
+      converted[id] = {
+        id: data.id,
+        name: data.name,
+        description: data.description || '',
+        code: data.code || '',
+        enabled: data.enabled ?? true,
+        outputs: data.outputs || {},
+        lastError: data.last_error,
+        lastValidated: data.last_validated,
+      }
+    }
+    formulaBlocks.value = converted
+  }
+
+  function handleFormulaBlocksValues(payload: Record<string, FormulaBlockValues>): void {
+    formulaValues.value = payload
+  }
+
   // ========================================================================
   // COMPUTED PROPERTIES
   // ========================================================================
@@ -274,6 +339,30 @@ export function usePlayground() {
   const isSessionActive = computed(() => testSession.value.active)
 
   const sessionElapsed = computed(() => testSession.value.elapsedFormatted || '00:00:00')
+
+  const formulaBlocksList = computed(() => Object.values(formulaBlocks.value))
+
+  const formulaBlocksEnabled = computed(() =>
+    formulaBlocksList.value.filter(b => b.enabled)
+  )
+
+  // Get all formula output values flattened for display
+  const allFormulaOutputs = computed(() => {
+    const outputs: Record<string, { blockId: string; blockName: string; value: number; units: string; description: string }> = {}
+    for (const block of formulaBlocksList.value) {
+      const blockValues = formulaValues.value[block.id] || {}
+      for (const [outName, metadata] of Object.entries(block.outputs)) {
+        outputs[outName] = {
+          blockId: block.id,
+          blockName: block.name,
+          value: blockValues[outName] ?? NaN,
+          units: metadata.units,
+          description: metadata.description
+        }
+      }
+    }
+    return outputs
+  })
 
   // ========================================================================
   // VARIABLE TYPE HELPERS
@@ -412,7 +501,8 @@ export function usePlayground() {
     increment: { label: 'Increment', description: 'Any increase in value' },
     rising: { label: 'Rising Edge', description: '0 → 1 transition' },
     falling: { label: 'Falling Edge', description: '1 → 0 transition' },
-    both: { label: 'Any Edge', description: 'Any transition' }
+    both: { label: 'Any Edge', description: 'Any transition' },
+    rate: { label: 'Rate', description: 'Rate signal (4-20mA, voltage) - integrate over time' }
   }
 
   // ========================================================================
@@ -459,12 +549,17 @@ export function usePlayground() {
     variables,
     variableValues,
     testSession,
+    formulaBlocks,
+    formulaValues,
 
     // Computed
     variablesList,
     variablesByType,
     isSessionActive,
     sessionElapsed,
+    formulaBlocksList,
+    formulaBlocksEnabled,
+    allFormulaOutputs,
 
     // Variable operations
     createVariable,
@@ -483,11 +578,19 @@ export function usePlayground() {
     updateSessionConfig,
     refreshSessionStatus,
 
+    // Formula block operations
+    createFormulaBlock,
+    updateFormulaBlock,
+    deleteFormulaBlock,
+    refreshFormulaBlocks,
+
     // MQTT handlers
     setMqttHandlers,
     handleVariablesConfig,
     handleVariablesValues,
     handleTestSessionStatus,
+    handleFormulaBlocksConfig,
+    handleFormulaBlocksValues,
 
     // Constants
     VARIABLE_TYPE_INFO,

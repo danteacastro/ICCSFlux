@@ -10,7 +10,7 @@ import ConfigurationTab from './components/ConfigurationTab.vue'
 import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
 import SafetyTab from './components/SafetyTab.vue'
-import PlaygroundTab from './components/PlaygroundTab.vue'
+import NotebookTab from './components/NotebookTab.vue'
 import PageSelector from './components/PageSelector.vue'
 import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
@@ -313,18 +313,16 @@ function handleRetryConnection() {
           </button>
           <button
             class="tab-btn"
-            :class="{ active: activeTab === 'playground' }"
-            @click="activeTab = 'playground'"
+            :class="{ active: activeTab === 'notebook' }"
+            @click="activeTab = 'notebook'"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 3v18h18"/>
-              <path d="M7 12l4-4 4 4 4-4"/>
-              <circle cx="7" cy="12" r="1.5"/>
-              <circle cx="11" cy="8" r="1.5"/>
-              <circle cx="15" cy="12" r="1.5"/>
-              <circle cx="19" cy="8" r="1.5"/>
+              <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
+              <line x1="8" y1="7" x2="16" y2="7"/>
+              <line x1="8" y1="11" x2="14" y2="11"/>
             </svg>
-            Playground
+            Notebook
           </button>
         </nav>
       </div>
@@ -355,7 +353,7 @@ function handleRetryConnection() {
       <ScriptsTab v-else-if="activeTab === 'scripts'" />
       <DataTab v-else-if="activeTab === 'data'" />
       <SafetyTab v-else-if="activeTab === 'safety'" />
-      <PlaygroundTab v-else-if="activeTab === 'playground'" />
+      <NotebookTab v-else-if="activeTab === 'notebook'" />
     </main>
 
     <!-- Notifications Toast -->

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
+import PlaygroundTab from './PlaygroundTab.vue'
 import type {
   CalculatedParam,
   Sequence,
@@ -33,6 +34,7 @@ const scripts = useScripts()
 // =============================================================================
 
 const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
+  { id: 'session', label: 'Session', icon: 'var' },
   { id: 'formulas', label: 'Formulas', icon: 'fx' },
   { id: 'functionBlocks', label: 'Blocks', icon: 'blocks' },
   { id: 'sequences', label: 'Sequences', icon: 'list' },
@@ -49,6 +51,7 @@ const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
 
 function getTabIcon(icon: string): string {
   const icons: Record<string, string> = {
+    'var': '𝑥',
     'fx': 'ƒx',
     'blocks': '🧩',
     'list': '☰',
@@ -1625,6 +1628,13 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
           ●
         </span>
       </button>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- SESSION TAB (Playground) -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'session'" class="tab-content session-tab">
+      <PlaygroundTab />
     </div>
 
     <!-- ===================================================================== -->

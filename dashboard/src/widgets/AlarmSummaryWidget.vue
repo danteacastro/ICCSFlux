@@ -43,11 +43,11 @@ const blockedCount = computed(() =>
         </div>
 
         <!-- Warnings -->
-        <div class="stat warning" :class="{ active: safety.alarmCounts.value.warnings > 0 }">
+        <div class="stat warning" :class="{ active: (safety.alarmCounts.value.warnings ?? 0) > 0 }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2L1 21h22L12 2zm0 3.5l8.5 14.5H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
           </svg>
-          <span class="count">{{ safety.alarmCounts.value.warnings }}</span>
+          <span class="count">{{ safety.alarmCounts.value.warnings ?? 0 }}</span>
           <span class="label">Warnings</span>
         </div>
 
