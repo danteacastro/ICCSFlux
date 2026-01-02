@@ -36,6 +36,8 @@ export interface ConfigFile {
   active: boolean
 }
 
+import type { DashboardPage } from '../types'
+
 export interface ProjectData {
   type: 'nisystem-project'
   version: string
@@ -44,7 +46,9 @@ export interface ProjectData {
   created: string
   modified: string
   layout: {
-    widgets: any[]
+    widgets?: any[]                // Optional for legacy single-page
+    pages?: DashboardPage[]        // Multi-page support
+    currentPageId?: string         // Current page ID
     gridColumns: number
     rowHeight: number
   }
@@ -242,6 +246,8 @@ export function useProjectFiles() {
     return {
       layout: {
         widgets: layout.widgets,
+        pages: layout.pages,                    // Multi-page support
+        currentPageId: layout.currentPageId,    // Current page ID
         gridColumns: layout.gridColumns,
         rowHeight: layout.rowHeight
       },
@@ -266,11 +272,13 @@ export function useProjectFiles() {
 
   // Apply loaded project data to frontend
   function applyProjectData(data: ProjectData) {
-    // Apply layout
+    // Apply layout (supports both legacy single-page and multi-page)
     if (data.layout) {
       store.setLayout({
         system_id: store.systemId,
-        widgets: data.layout.widgets || [],
+        widgets: data.layout.widgets || [],      // Legacy single-page
+        pages: data.layout.pages,                 // Multi-page support
+        currentPageId: data.layout.currentPageId, // Current page ID
         gridColumns: data.layout.gridColumns || 12,
         rowHeight: data.layout.rowHeight || 80
       })

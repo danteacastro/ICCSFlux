@@ -121,8 +121,8 @@ const filteredChannels = computed(() => {
 const mqtt = useMqtt('nisystem')
 
 onMounted(() => {
-  // Connect to MQTT broker via WebSocket
-  mqtt.connect('ws://localhost:9001')
+  // Connect to MQTT broker via WebSocket (port 9002 per mosquitto_ws.conf)
+  mqtt.connect('ws://localhost:9002')
 
   // Wire up scripts MQTT handlers for hardware control
   scripts.setMqttHandlers({

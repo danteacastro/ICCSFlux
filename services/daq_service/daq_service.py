@@ -117,10 +117,10 @@ class DAQService:
         self._config_backup: Optional[NISystemConfig] = None
         self._config_path_backup: Optional[str] = None
 
-        # Project state
-        self.current_project: Optional[str] = None  # Current project filename
+        # Project state - stores FULL PATH, not just filename
+        self.current_project_path: Optional[Path] = None  # Full path to current project
         self.current_project_data: Dict[str, Any] = {}  # Current project data
-        self.projects_dir: Optional[Path] = None  # Projects directory
+        self.projects_dir: Optional[Path] = None  # Default projects directory (for listing)
 
         # Loop timing for status display
         self.last_scan_dt_ms = 0.0
@@ -666,6 +666,8 @@ class DAQService:
             # Subscribe to project management topics
             client.subscribe(f"{base}/project/list")
             client.subscribe(f"{base}/project/load")
+            client.subscribe(f"{base}/project/import")  # Import from any path
+            client.subscribe(f"{base}/project/close")   # Close to empty state
             client.subscribe(f"{base}/project/save")
             client.subscribe(f"{base}/project/delete")
             client.subscribe(f"{base}/project/get")
@@ -861,6 +863,10 @@ class DAQService:
             self._handle_project_get()
         elif topic == f"{base}/project/get-current":
             self._handle_project_get_current()
+        elif topic == f"{base}/project/import":
+            self._handle_project_import(payload)
+        elif topic == f"{base}/project/close":
+            self._handle_project_close(payload)
 
         # === USER VARIABLES / PLAYGROUND ===
         elif topic == f"{base}/variables/create":
@@ -1702,40 +1708,92 @@ class DAQService:
     # =========================================================================
 
     def _get_projects_dir(self) -> Path:
-        """Get or create the projects directory"""
+        """Get or create the default projects directory (config/projects/)"""
         if self.projects_dir is None:
             config_dir = Path(self.config_path).parent
-            self.projects_dir = config_dir.parent / "projects"
+            self.projects_dir = config_dir / "projects"
             self.projects_dir.mkdir(parents=True, exist_ok=True)
         return self.projects_dir
 
+    def _get_settings_path(self) -> Path:
+        """Get path to settings file that stores last project path etc."""
+        config_dir = Path(self.config_path).parent
+        return config_dir / "nisystem_settings.json"
+
+    def _save_last_project_path(self, project_path: Optional[Path]):
+        """Save the last loaded project path to settings"""
+        settings_path = self._get_settings_path()
+        try:
+            settings = {}
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+
+            settings["last_project_path"] = str(project_path) if project_path else None
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            logger.info(f"Saved last project path: {project_path}")
+        except Exception as e:
+            logger.warning(f"Could not save settings: {e}")
+
+    def _load_last_project_path(self) -> Optional[Path]:
+        """Load the last project path from settings"""
+        settings_path = self._get_settings_path()
+        try:
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                path_str = settings.get("last_project_path")
+                if path_str:
+                    return Path(path_str)
+        except Exception as e:
+            logger.warning(f"Could not load settings: {e}")
+        return None
+
+    def _try_load_last_project(self):
+        """Try to load the last project on startup, fail gracefully to empty state"""
+        last_path = self._load_last_project_path()
+        if last_path and last_path.exists():
+            logger.info(f"Auto-loading last project: {last_path}")
+            self._load_project_from_path(last_path, publish=False)
+        elif last_path:
+            logger.warning(f"Last project not found: {last_path} - starting with empty state")
+            self._save_last_project_path(None)  # Clear invalid path
+        else:
+            logger.info("No last project configured - starting with empty state")
+
     def _handle_project_list(self):
-        """List available project files"""
+        """List available project files from default projects directory"""
         base = self.config.system.mqtt_base_topic
         projects_dir = self._get_projects_dir()
 
         projects = []
+        current_name = self.current_project_path.name if self.current_project_path else None
+
         for f in projects_dir.glob("*.json"):
             try:
                 with open(f, 'r') as fp:
                     data = json.load(fp)
                 projects.append({
                     "filename": f.name,
+                    "path": str(f),  # Full path for import
                     "name": data.get("name", f.stem),
                     "config": data.get("config", ""),
                     "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
                     "created": data.get("created", ""),
-                    "active": f.name == self.current_project
+                    "active": f.name == current_name
                 })
             except Exception as e:
                 logger.warning(f"Could not read project file {f}: {e}")
                 projects.append({
                     "filename": f.name,
+                    "path": str(f),
                     "name": f.stem,
                     "config": "",
                     "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
                     "created": "",
-                    "active": f.name == self.current_project,
+                    "active": f.name == current_name,
                     "error": str(e)
                 })
 
@@ -1744,26 +1802,14 @@ class DAQService:
             json.dumps({"projects": projects})
         )
 
-    def _handle_project_load(self, payload: Any):
-        """Load a project file"""
+    def _load_project_from_path(self, project_path: Path, publish: bool = True) -> bool:
+        """Core function to load a project from any path"""
         base = self.config.system.mqtt_base_topic
 
-        filename = None
-        if isinstance(payload, dict):
-            filename = payload.get("filename")
-        elif isinstance(payload, str):
-            filename = payload
-
-        if not filename:
-            self._publish_project_response(False, "No filename provided")
-            return
-
-        projects_dir = self._get_projects_dir()
-        project_path = projects_dir / filename
-
         if not project_path.exists():
-            self._publish_project_response(False, f"Project not found: {filename}")
-            return
+            if publish:
+                self._publish_project_response(False, f"Project not found: {project_path}")
+            return False
 
         try:
             with open(project_path, 'r') as f:
@@ -1771,71 +1817,149 @@ class DAQService:
 
             # Validate project structure
             if project_data.get("type") != "nisystem-project":
-                self._publish_project_response(False, "Invalid project file format")
-                return
+                if publish:
+                    self._publish_project_response(False, "Invalid project file format - missing 'type: nisystem-project'")
+                return False
 
             # Check if we need to switch config files
             project_config = project_data.get("config", "")
             if project_config and project_config != Path(self.config_path).name:
-                # Need to load different config first
                 if self.acquiring:
-                    self._publish_project_response(False, "Stop acquisition before loading project with different config")
-                    return
+                    if publish:
+                        self._publish_project_response(False, "Stop acquisition before loading project with different config")
+                    return False
 
                 config_dir = Path(self.config_path).parent
                 new_config_path = config_dir / project_config
 
                 if new_config_path.exists():
-                    # Load the new config
                     self._handle_config_load({"filename": project_config})
                 else:
                     logger.warning(f"Project config {project_config} not found, using current config")
 
-            # Store project data
-            self.current_project = filename
+            # Store project data with FULL PATH
+            self.current_project_path = project_path
             self.current_project_data = project_data
 
-            logger.info(f"Loaded project: {filename}")
+            # Persist the path for next startup
+            self._save_last_project_path(project_path)
 
-            # Publish the loaded project data to frontend
-            self.mqtt_client.publish(
-                f"{base}/project/loaded",
-                json.dumps({
-                    "success": True,
-                    "filename": filename,
-                    "project": project_data
-                })
-            )
+            logger.info(f"Loaded project: {project_path}")
+
+            if publish:
+                self.mqtt_client.publish(
+                    f"{base}/project/loaded",
+                    json.dumps({
+                        "success": True,
+                        "filename": project_path.name,
+                        "path": str(project_path),
+                        "project": project_data
+                    })
+                )
+            return True
 
         except json.JSONDecodeError as e:
-            self._publish_project_response(False, f"Invalid JSON in project file: {e}")
+            if publish:
+                self._publish_project_response(False, f"Invalid JSON in project file: {e}")
+            return False
         except Exception as e:
             logger.error(f"Error loading project: {e}")
-            self._publish_project_response(False, str(e))
+            if publish:
+                self._publish_project_response(False, str(e))
+            return False
+
+    def _handle_project_load(self, payload: Any):
+        """Load a project file - supports both filename (from default dir) and full path"""
+        # Extract filename or path from payload
+        filename = None
+        full_path = None
+
+        if isinstance(payload, dict):
+            filename = payload.get("filename")
+            full_path = payload.get("path")  # Full path takes priority
+        elif isinstance(payload, str):
+            # Could be filename or full path
+            if '/' in payload or '\\' in payload:
+                full_path = payload
+            else:
+                filename = payload
+
+        # Determine the actual path to load
+        if full_path:
+            project_path = Path(full_path)
+        elif filename:
+            projects_dir = self._get_projects_dir()
+            project_path = projects_dir / filename
+        else:
+            self._publish_project_response(False, "No filename or path provided")
+            return
+
+        self._load_project_from_path(project_path)
+
+    def _handle_project_import(self, payload: Any):
+        """Import a project from any location (USB, OneDrive, etc.)"""
+        if isinstance(payload, dict):
+            full_path = payload.get("path")
+        elif isinstance(payload, str):
+            full_path = payload
+        else:
+            self._publish_project_response(False, "Invalid payload - need 'path' to import")
+            return
+
+        if not full_path:
+            self._publish_project_response(False, "No path provided for import")
+            return
+
+        project_path = Path(full_path)
+        self._load_project_from_path(project_path)
+
+    def _handle_project_close(self, payload: Any):
+        """Close current project and clear to empty state"""
+        base = self.config.system.mqtt_base_topic
+
+        self.current_project_path = None
+        self.current_project_data = {}
+        self._save_last_project_path(None)  # Clear persisted path
+
+        logger.info("Project closed - now in empty state")
+
+        self.mqtt_client.publish(
+            f"{base}/project/closed",
+            json.dumps({"success": True, "message": "Project closed"})
+        )
 
     def _handle_project_save(self, payload: Any):
-        """Save project to file"""
+        """Save project to file - saves to current path or specified path"""
         base = self.config.system.mqtt_base_topic
 
         if not isinstance(payload, dict):
             self._publish_project_response(False, "Invalid payload")
             return
 
-        filename = payload.get("filename")
         project_data = payload.get("data", {})
+        save_path = payload.get("path")  # Optional full path
+        filename = payload.get("filename")
 
-        if not filename:
-            self._publish_project_response(False, "No filename provided")
+        # Determine where to save
+        if save_path:
+            project_path = Path(save_path)
+        elif filename:
+            # Ensure .json extension
+            if not filename.endswith(".json"):
+                filename += ".json"
+            projects_dir = self._get_projects_dir()
+            project_path = projects_dir / filename
+        elif self.current_project_path:
+            # Save to current project location
+            project_path = self.current_project_path
+        else:
+            self._publish_project_response(False, "No save location specified")
             return
 
-        # Ensure .json extension
-        if not filename.endswith(".json"):
-            filename += ".json"
-
-        projects_dir = self._get_projects_dir()
-        project_path = projects_dir / filename
-
         try:
+            # Ensure parent directory exists
+            project_path.parent.mkdir(parents=True, exist_ok=True)
+
             # Add metadata
             project_data["type"] = "nisystem-project"
             project_data["version"] = "1.0"
@@ -1849,11 +1973,12 @@ class DAQService:
             with open(project_path, 'w') as f:
                 json.dump(project_data, f, indent=2)
 
-            self.current_project = filename
+            self.current_project_path = project_path
             self.current_project_data = project_data
+            self._save_last_project_path(project_path)
 
-            logger.info(f"Saved project: {filename}")
-            self._publish_project_response(True, f"Project saved: {filename}")
+            logger.info(f"Saved project: {project_path}")
+            self._publish_project_response(True, f"Project saved: {project_path.name}")
 
         except Exception as e:
             logger.error(f"Error saving project: {e}")
@@ -1861,33 +1986,38 @@ class DAQService:
 
     def _handle_project_delete(self, payload: Any):
         """Delete a project file"""
-        filename = None
+        delete_path = None
         if isinstance(payload, dict):
-            filename = payload.get("filename")
+            delete_path = payload.get("path") or payload.get("filename")
         elif isinstance(payload, str):
-            filename = payload
+            delete_path = payload
 
-        if not filename:
-            self._publish_project_response(False, "No filename provided")
+        if not delete_path:
+            self._publish_project_response(False, "No path or filename provided")
             return
 
-        projects_dir = self._get_projects_dir()
-        project_path = projects_dir / filename
+        # If just filename, look in default projects dir
+        if '/' not in delete_path and '\\' not in delete_path:
+            projects_dir = self._get_projects_dir()
+            project_path = projects_dir / delete_path
+        else:
+            project_path = Path(delete_path)
 
         if not project_path.exists():
-            self._publish_project_response(False, f"Project not found: {filename}")
+            self._publish_project_response(False, f"Project not found: {project_path}")
             return
 
         try:
             project_path.unlink()
 
             # Clear current project if it was the deleted one
-            if self.current_project == filename:
-                self.current_project = None
+            if self.current_project_path and self.current_project_path == project_path:
+                self.current_project_path = None
                 self.current_project_data = {}
+                self._save_last_project_path(None)
 
-            logger.info(f"Deleted project: {filename}")
-            self._publish_project_response(True, f"Project deleted: {filename}")
+            logger.info(f"Deleted project: {project_path}")
+            self._publish_project_response(True, f"Project deleted: {project_path.name}")
 
         except Exception as e:
             logger.error(f"Error deleting project: {e}")
@@ -1900,8 +2030,9 @@ class DAQService:
         self.mqtt_client.publish(
             f"{base}/project/current",
             json.dumps({
-                "filename": self.current_project,
-                "project": self.current_project_data if self.current_project else None
+                "filename": self.current_project_path.name if self.current_project_path else None,
+                "path": str(self.current_project_path) if self.current_project_path else None,
+                "project": self.current_project_data if self.current_project_path else None
             })
         )
 
@@ -4553,6 +4684,9 @@ class DAQService:
             self.scheduler.start()
 
         logger.info("DAQ Service started")
+
+        # Try to load last project (if one was saved)
+        self._try_load_last_project()
 
     def stop(self):
         """Stop the DAQ service gracefully"""
