@@ -42,7 +42,7 @@ const tableData = computed(() => {
 
     return {
       name: channelName,
-      displayName: config?.display_name || channelName,
+      displayName: channelName,  // TAG is the only identifier
       value: isStale ? null : (value?.value ?? null),
       unit: config?.unit || '',
       alarm: isStale ? false : (value?.alarm ?? false),

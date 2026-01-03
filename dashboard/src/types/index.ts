@@ -39,10 +39,12 @@ export type WidgetType =
   | 'svg_symbol'
   | 'text_label'
   | 'value_table'
+  | 'crio_status'
+  | 'latch_switch'
 
 export interface ChannelConfig {
-  name: string
-  display_name: string
+  name: string                    // TAG - the only identifier (ISA-5.1 compliant)
+  // display_name removed - use name (TAG) everywhere
   channel_type: ChannelType
   physical_channel?: string  // NI-DAQmx hardware address (e.g., cDAQ1Mod1/ai0)
   unit: string
@@ -150,6 +152,32 @@ export interface ChannelConfig {
   safety_action?: string
   safety_interlock?: string
 
+  // ============================================
+  // Alarm Configuration (ISA-18.2 compliant)
+  // ============================================
+
+  // Master alarm enable - if false, no limit checking for this channel
+  alarm_enabled?: boolean
+
+  // Alarm setpoints (ISA-18.2 naming: HiHi, Hi, Lo, LoLo)
+  // Note: low_limit/high_limit above are legacy aliases for hi_limit/lo_limit
+  hihi_limit?: number    // High-High (critical) - most severe
+  hi_limit?: number      // High (warning)
+  lo_limit?: number      // Low (warning)
+  lolo_limit?: number    // Low-Low (critical) - most severe
+
+  // Alarm priority level
+  alarm_priority?: 'diagnostic' | 'low' | 'medium' | 'high' | 'critical'
+
+  // Deadband (hysteresis) - prevents alarm chatter at threshold
+  alarm_deadband?: number
+
+  // On-delay - value must exceed limit for this duration before alarm triggers
+  alarm_delay_sec?: number
+
+  // Off-delay - value must be within limits for this duration before alarm clears
+  alarm_clear_delay_sec?: number
+
   // Logging
   log?: boolean
   log_interval_ms?: number
@@ -162,6 +190,8 @@ export interface ChannelValue {
   timestamp: number
   alarm?: boolean
   warning?: boolean
+  quality?: 'good' | 'bad' | 'alarm' | 'warning'  // Data quality indicator
+  disconnected?: boolean  // True when hardware device is not connected
 }
 
 export interface SystemStatus {
@@ -500,8 +530,60 @@ export type AlarmBehavior = 'latch' | 'auto_clear' | 'timed_latch'
 // Alarm lifecycle states
 export type AlarmState = 'normal' | 'active' | 'acknowledged' | 'returned' | 'shelved' | 'out_of_service'
 
-// Threshold types
-export type ThresholdType = 'high_high' | 'high' | 'low' | 'low_low' | 'rate'
+// Threshold types (includes digital_state for DI alarms)
+export type ThresholdType = 'high_high' | 'high' | 'low' | 'low_low' | 'rate' | 'digital_state'
+
+// ============================================
+// Safety Action Types (ISA-18.2 / IEC 62682)
+// ============================================
+
+/**
+ * Safety action executed when alarm triggers
+ * Maps alarm severity to automatic responses
+ */
+export type SafetyActionType =
+  | 'trip_system'           // Full system trip - all outputs to safe state
+  | 'stop_session'          // Stop test session only
+  | 'stop_recording'        // Stop recording only
+  | 'set_output_safe'       // Set specific output(s) to safe state
+  | 'run_sequence'          // Run a safety sequence
+  | 'custom'                // Custom action via MQTT
+
+export interface SafetyAction {
+  id: string
+  name: string
+  description?: string
+  type: SafetyActionType
+  enabled: boolean
+
+  // For set_output_safe: which outputs and what state
+  outputChannels?: string[]
+  safeValue?: number        // 0 for OFF, 1 for ON (for DO)
+  analogSafeValue?: number  // For AO channels
+
+  // For run_sequence
+  sequenceId?: string
+
+  // For custom action
+  mqttTopic?: string
+  mqttPayload?: any
+
+  // Audit
+  lastTriggeredAt?: string
+  lastTriggeredBy?: string  // Alarm ID that triggered it
+}
+
+/**
+ * Digital input alarm configuration
+ * Supports inverted logic (normally-closed vs normally-open)
+ */
+export interface DigitalAlarmConfig {
+  // Expected "safe" state - alarm triggers when state != expected
+  expectedState: boolean    // true = expect HIGH (1), false = expect LOW (0)
+  invert: boolean           // Invert the input before comparison
+  // Debounce to prevent chatter
+  debounceMs?: number
+}
 
 export interface AlarmConfig {
   id: string               // Unique alarm ID
@@ -555,6 +637,12 @@ export interface AlarmConfig {
   // Shelving
   max_shelve_time_s?: number  // Max time alarm can be shelved (default 1 hour)
   shelve_allowed?: boolean
+
+  // Safety action (ISA-18.2 high-severity response)
+  safety_action?: string     // SafetyAction ID to execute when alarm triggers
+
+  // Digital input alarm configuration
+  digital_alarm?: DigitalAlarmConfig
 }
 
 export interface ActiveAlarm {
@@ -584,6 +672,9 @@ export interface ActiveAlarm {
   shelved_by?: string
   shelve_expires_at?: string
   shelve_reason?: string
+
+  // Safety action (from AlarmConfig)
+  safety_action?: string     // SafetyAction ID to execute
 }
 
 export interface AlarmHistoryEntry {
@@ -659,6 +750,8 @@ export interface InterlockCondition {
   channel?: string
   operator?: InterlockOperator
   value?: number | boolean
+  // For digital_input: invert the input before comparison (NC vs NO)
+  invert?: boolean
   // Human-readable description (auto-generated if not provided)
   description?: string
 }

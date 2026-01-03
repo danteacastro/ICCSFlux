@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { useSafety } from '../composables/useSafety'
 
 const props = defineProps<{
   channel: string
@@ -13,9 +14,15 @@ const emit = defineEmits<{
 }>()
 
 const store = useDashboardStore()
+const safety = useSafety()
 
 const channelConfig = computed(() => store.channels[props.channel])
 const channelValue = computed(() => store.values[props.channel])
+
+// Check if output is blocked by interlocks (e.g., latched alarms)
+const blockStatus = computed(() => safety.isOutputBlocked(props.channel))
+const isBlocked = computed(() => blockStatus.value.blocked)
+const blockedBy = computed(() => blockStatus.value.blockedBy.map(s => s.name).join(', '))
 
 // Check if data is stale
 const isStale = computed(() => {
@@ -30,10 +37,17 @@ const isOn = computed(() => {
 })
 
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel
+  props.label || props.channel
 )
 
-const canToggle = computed(() => !props.disabled && store.isAcquiring)
+// Block toggle if: disabled, not acquiring, OR blocked by interlocks
+const canToggle = computed(() => !props.disabled && store.isAcquiring && !isBlocked.value)
+
+const statusText = computed(() => {
+  if (isBlocked.value) return `Blocked: ${blockedBy.value}`
+  if (!store.isAcquiring) return 'Not acquiring'
+  return ''
+})
 
 function toggle() {
   if (!canToggle.value) return
@@ -42,7 +56,7 @@ function toggle() {
 </script>
 
 <template>
-  <div class="toggle-switch" :class="{ disabled: !canToggle }">
+  <div class="toggle-switch" :class="{ disabled: !canToggle, blocked: isBlocked }" :title="statusText">
     <div class="label">{{ displayLabel }}</div>
     <button
       class="switch"
@@ -52,11 +66,13 @@ function toggle() {
     >
       <span class="slider"></span>
     </button>
+    <div v-if="isBlocked" class="blocked-indicator">🔒</div>
   </div>
 </template>
 
 <style scoped>
 .toggle-switch {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -116,5 +132,20 @@ function toggle() {
 
 .switch.on .slider {
   transform: translateX(20px);
+}
+
+.toggle-switch.blocked {
+  border-color: #dc2626;
+}
+
+.toggle-switch.blocked .switch {
+  background: #7f1d1d;
+}
+
+.blocked-indicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 0.6rem;
 }
 </style>

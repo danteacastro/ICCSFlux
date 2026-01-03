@@ -38,7 +38,7 @@ const isOn = computed(() => {
 })
 
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel
+  props.label || props.channel
 )
 
 const onColor = computed(() => props.style?.onColor || '#22c55e')

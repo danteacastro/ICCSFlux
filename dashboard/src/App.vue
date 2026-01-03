@@ -84,8 +84,7 @@ function addWidget() {
 
   if (wt.needsChannel && selectedChannel.value) {
     newWidget.channel = selectedChannel.value
-    const chConfig = store.channels[selectedChannel.value]
-    newWidget.label = chConfig?.display_name || selectedChannel.value
+    newWidget.label = selectedChannel.value  // TAG is the only identifier
   }
 
   if (wt.type === 'title') {
@@ -145,42 +144,70 @@ onMounted(() => {
     store.setStatus(status)
   })
 
+  // One-time migration: Clear corrupted showLabel/showUnit from localStorage
+  // TODO: Remove this after January 2026
+  const MIGRATION_KEY = 'nisystem-migration-v1-showlabel-fix'
+  if (!localStorage.getItem(MIGRATION_KEY)) {
+    console.log('[APP] Running one-time localStorage migration...')
+    // Clear all nisystem layout data to force fresh load from project
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('nisystem-layout-')) {
+        localStorage.removeItem(key)
+        console.log('[APP] Cleared corrupted layout:', key)
+      }
+    })
+    localStorage.setItem(MIGRATION_KEY, Date.now().toString())
+  }
+
+  // Track if project has been loaded from backend
+  let projectLoadHandled = false
+
+  // When a project is loaded from backend, apply it
+  projectFiles.onProjectLoaded((data) => {
+    console.log('[APP] Project loaded from backend:', data.name)
+    projectLoadHandled = true
+    scripts.loadAll()
+    scripts.startEvaluation()
+
+    // Log final state after a tick
+    setTimeout(() => {
+      console.log('[APP] Final state - pages:', store.pages.length, 'widgets on current page:', store.widgets.length)
+      const urlPageId = getPageFromUrl()
+      if (urlPageId && store.pages.some(p => p.id === urlPageId)) {
+        store.switchPage(urlPageId)
+      }
+    }, 100)
+  })
+
   // Watch for channel config and load project
   const checkChannels = setInterval(() => {
     if (Object.keys(mqtt.channelConfigs.value).length > 0) {
       store.setChannels(mqtt.channelConfigs.value)
-
-      // Request current project from backend
-      // If backend has a loaded project, it will send project/current with the data
-      // The useProjectFiles composable will apply it automatically
-      projectFiles.getCurrentProject()
-
-      // Give time for project data to arrive, then fall back to layout from storage
-      setTimeout(() => {
-        if (!projectFiles.currentProjectData.value) {
-          // No project loaded from backend, use local storage
-          if (!store.loadLayoutFromStorage()) {
-            store.generateDefaultLayout()
-          }
-        }
-
-        // Check URL for page parameter (multi-window support)
-        const urlPageId = getPageFromUrl()
-        if (urlPageId && store.pages.some(p => p.id === urlPageId)) {
-          store.switchPage(urlPageId)
-        }
-      }, 500)
+      console.log('[APP] Channels loaded, requesting current project...')
 
       clearInterval(checkChannels)
+
+      // Request current project from backend
+      projectFiles.getCurrentProject()
+
+      // Wait 2 seconds for backend response, then fall back to localStorage
+      setTimeout(() => {
+        if (!projectLoadHandled && !projectFiles.currentProjectData.value) {
+          console.log('[APP] No project from backend after 2s, trying localStorage...')
+          if (!store.loadLayoutFromStorage()) {
+            console.log('[APP] No saved layout, generating default')
+            store.generateDefaultLayout()
+          }
+
+          const urlPageId = getPageFromUrl()
+          if (urlPageId && store.pages.some(p => p.id === urlPageId)) {
+            store.switchPage(urlPageId)
+          }
+          console.log('[APP] Fallback complete - pages:', store.pages.length, 'widgets:', store.widgets.length)
+        }
+      }, 2000)
     }
   }, 100)
-
-  // When a project is loaded, reload scripts
-  projectFiles.onProjectLoaded((data) => {
-    console.log('Project loaded:', data.name)
-    scripts.loadAll()  // Reload scripts from localStorage (where project data was applied)
-    scripts.startEvaluation()
-  })
 
   // Handle channel deletion - clean up widgets
   mqtt.onChannelDeleted((channelName: string) => {
@@ -232,7 +259,7 @@ function handleScheduleDisable() {
 function handleRetryConnection() {
   mqtt.disconnect()
   setTimeout(() => {
-    mqtt.connect('ws://localhost:9001')
+    mqtt.connect('ws://localhost:9002')
   }, 100)
 }
 
@@ -339,10 +366,6 @@ function handleRetryConnection() {
           @schedule-disable="handleScheduleDisable"
           @add-widget="openAddPanel"
         />
-        <span class="system-name">{{ store.systemName }}</span>
-        <span class="connection-status" :class="{ connected: mqtt.connected.value }">
-          {{ mqtt.connected.value ? 'Connected' : 'Disconnected' }}
-        </span>
       </div>
     </header>
 
@@ -394,7 +417,7 @@ function handleRetryConnection() {
             <select v-model="selectedChannel">
               <option value="">-- Select --</option>
               <option v-for="[name, ch] in filteredChannels" :key="name" :value="name">
-                {{ ch.display_name || name }} ({{ ch.unit }})
+                {{ name }} ({{ ch.unit }})
               </option>
             </select>
           </div>
@@ -511,8 +534,9 @@ function handleRetryConnection() {
 }
 
 .app-main {
+  min-height: 0;  /* Allow flex shrinking for nested scroll containers */
   flex: 1;
-  overflow: auto;
+  overflow: hidden;  /* Let child components handle their own scrolling */
 }
 
 .tab-placeholder {

@@ -24,7 +24,9 @@ import type {
   Interlock,
   InterlockCondition,
   InterlockStatus,
-  InterlockControlType
+  InterlockControlType,
+  SafetyAction,
+  SafetyActionType
 } from '../types'
 
 // ============================================
@@ -35,6 +37,12 @@ const alarmConfigs = ref<Record<string, AlarmConfig>>({})
 const activeAlarms = ref<ActiveAlarm[]>([])
 const alarmHistory = ref<AlarmHistoryEntry[]>([])
 const interlocks = ref<Interlock[]>([])
+
+// Safety Actions Registry (ISA-18.2 automatic responses)
+const safetyActions = ref<Record<string, SafetyAction>>({})
+
+// Auto-execute safety actions (configurable)
+const autoExecuteSafetyActions = ref(true)
 
 // First-out tracking
 const firstOutAlarmId = ref<string | null>(null)
@@ -62,7 +70,7 @@ export function useSafety() {
     return {
       id: `alarm-${channel}`,
       channel,
-      name: channelConfig?.display_name || channel,
+      name: channel,  // TAG is the only identifier
       description: '',
       enabled: false,
       severity: 'medium' as AlarmSeverityLevel,
@@ -568,13 +576,12 @@ export function useSafety() {
           case '=': satisfied = channelValue === numValue; break
           case '!=': satisfied = channelValue !== numValue; break
         }
-        const channelName = store.channels[condition.channel]?.display_name || condition.channel
         return {
           satisfied,
           currentValue: channelValue,
           reason: satisfied
-            ? `${channelName} = ${channelValue.toFixed(2)} (OK)`
-            : `${channelName} = ${channelValue.toFixed(2)} (requires ${condition.operator} ${numValue})`
+            ? `${condition.channel} = ${channelValue.toFixed(2)} (OK)`
+            : `${condition.channel} = ${channelValue.toFixed(2)} (requires ${condition.operator} ${numValue})`
         }
 
       case 'digital_input':
@@ -582,16 +589,18 @@ export function useSafety() {
           return { satisfied: false, reason: 'Invalid digital input condition' }
         }
         const diValue = store.values[condition.channel]?.value
+        const rawDiState = diValue === 1
+        // Apply invert logic (for NC sensors: invert=true means ON when signal is LOW)
+        const actualDiState = condition.invert ? !rawDiState : rawDiState
         const expectedValue = condition.value === true || condition.value === 1
-        const actualDiState = diValue === 1
         const diSatisfied = actualDiState === expectedValue
-        const diName = store.channels[condition.channel]?.display_name || condition.channel
+        const invertNote = condition.invert ? ' [inverted]' : ''
         return {
           satisfied: diSatisfied,
           currentValue: diValue,
           reason: diSatisfied
-            ? `${diName} = ${actualDiState ? 'ON' : 'OFF'} (OK)`
-            : `${diName} = ${actualDiState ? 'ON' : 'OFF'} (requires ${expectedValue ? 'ON' : 'OFF'})`
+            ? `${condition.channel} = ${actualDiState ? 'ON' : 'OFF'}${invertNote} (OK)`
+            : `${condition.channel} = ${actualDiState ? 'ON' : 'OFF'}${invertNote} (requires ${expectedValue ? 'ON' : 'OFF'})`
         }
 
       default:
@@ -694,6 +703,259 @@ export function useSafety() {
   }
 
   // ============================================
+  // Interlock Trip System
+  // ============================================
+
+  // Check if any enabled interlock has failed (not satisfied and not bypassed)
+  const hasFailedInterlocks = computed(() => {
+    return interlockStatuses.value.some(s => s.enabled && !s.satisfied && !s.bypassed)
+  })
+
+  // Get all failed interlocks
+  const failedInterlocks = computed(() => {
+    return interlockStatuses.value.filter(s => s.enabled && !s.satisfied && !s.bypassed)
+  })
+
+  // Trip state
+  const isTripped = ref(false)
+  const lastTripTime = ref<string | null>(null)
+  const lastTripReason = ref<string | null>(null)
+
+  // Safe state configuration (which outputs to reset on trip)
+  const safeStateConfig = ref<{
+    resetDigitalOutputs: boolean
+    resetAnalogOutputs: boolean
+    stopSession: boolean
+    digitalOutputChannels: string[]  // Empty = all DO channels
+    analogOutputChannels: string[]   // Empty = all AO channels
+    analogSafeValue: number          // Default safe value for AO (usually 0)
+  }>({
+    resetDigitalOutputs: true,
+    resetAnalogOutputs: true,
+    stopSession: true,
+    digitalOutputChannels: [],  // All by default
+    analogOutputChannels: [],   // All by default
+    analogSafeValue: 0
+  })
+
+  // Load safe state config from localStorage
+  function loadSafeStateConfig() {
+    const saved = localStorage.getItem('nisystem-safe-state-config')
+    if (saved) {
+      try {
+        Object.assign(safeStateConfig.value, JSON.parse(saved))
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Save safe state config
+  function saveSafeStateConfig() {
+    localStorage.setItem('nisystem-safe-state-config', JSON.stringify(safeStateConfig.value))
+  }
+
+  // Update safe state config
+  function updateSafeStateConfig(config: Partial<typeof safeStateConfig.value>) {
+    Object.assign(safeStateConfig.value, config)
+    saveSafeStateConfig()
+  }
+
+  /**
+   * Trip the system - set all outputs to safe state
+   * Called when an interlock fails while latch is armed
+   */
+  function tripSystem(reason: string) {
+    console.log(`[SAFETY] SYSTEM TRIP: ${reason}`)
+
+    isTripped.value = true
+    lastTripTime.value = new Date().toISOString()
+    lastTripReason.value = reason
+
+    const config = safeStateConfig.value
+
+    // Stop session first
+    if (config.stopSession) {
+      mqtt.sendCommand('test-session/stop', {})
+    }
+
+    // Reset digital outputs to OFF
+    if (config.resetDigitalOutputs) {
+      const doChannels = config.digitalOutputChannels.length > 0
+        ? config.digitalOutputChannels
+        : Object.keys(store.channels).filter(ch => store.channels[ch]?.channel_type === 'digital_output')
+
+      for (const channel of doChannels) {
+        mqtt.setOutput(channel, 0)
+      }
+    }
+
+    // Reset analog outputs to safe value
+    if (config.resetAnalogOutputs) {
+      const aoChannels = config.analogOutputChannels.length > 0
+        ? config.analogOutputChannels
+        : Object.keys(store.channels).filter(ch => store.channels[ch]?.channel_type === 'analog_output')
+
+      for (const channel of aoChannels) {
+        mqtt.setOutput(channel, config.analogSafeValue)
+      }
+    }
+
+    // Publish trip event
+    mqtt.sendCommand('safety/trip', {
+      reason,
+      timestamp: lastTripTime.value,
+      resetDigitalOutputs: config.resetDigitalOutputs,
+      resetAnalogOutputs: config.resetAnalogOutputs,
+      stoppedSession: config.stopSession
+    })
+  }
+
+  /**
+   * Reset the trip state (after operator acknowledges and clears interlocks)
+   */
+  function resetTrip() {
+    if (hasFailedInterlocks.value) {
+      console.log('[SAFETY] Cannot reset trip - interlocks still failed')
+      return false
+    }
+    isTripped.value = false
+    lastTripReason.value = null
+    console.log('[SAFETY] Trip state reset')
+    return true
+  }
+
+  // Load safe state config on init
+  loadSafeStateConfig()
+
+  // ============================================
+  // Safety Action Management (ISA-18.2)
+  // ============================================
+
+  function addSafetyAction(action: Omit<SafetyAction, 'id'>): string {
+    const id = `safety-action-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const newAction: SafetyAction = {
+      ...action,
+      id
+    }
+    safetyActions.value[id] = newAction
+    saveSafetyActions()
+    return id
+  }
+
+  function updateSafetyAction(id: string, updates: Partial<SafetyAction>) {
+    if (safetyActions.value[id]) {
+      Object.assign(safetyActions.value[id], updates)
+      saveSafetyActions()
+    }
+  }
+
+  function removeSafetyAction(id: string) {
+    if (safetyActions.value[id]) {
+      delete safetyActions.value[id]
+      saveSafetyActions()
+    }
+  }
+
+  function getSafetyAction(id: string): SafetyAction | undefined {
+    return safetyActions.value[id]
+  }
+
+  /**
+   * Execute a safety action (triggered by alarm or manually)
+   * This is the frontend execution - backend publishes 'safety_action' via MQTT
+   */
+  function executeSafetyAction(actionId: string, triggeredBy?: string) {
+    const action = safetyActions.value[actionId]
+    if (!action || !action.enabled) {
+      console.warn(`[SAFETY] Cannot execute safety action ${actionId}: not found or disabled`)
+      return false
+    }
+
+    console.warn(`[SAFETY] EXECUTING SAFETY ACTION: ${action.name} (${action.type})`)
+
+    // Update last triggered info
+    action.lastTriggeredAt = new Date().toISOString()
+    action.lastTriggeredBy = triggeredBy
+
+    switch (action.type) {
+      case 'trip_system':
+        // Full system trip - set all outputs to safe state
+        tripSystem(`Safety action: ${action.name}`)
+        break
+
+      case 'stop_session':
+        // Stop test session only
+        mqtt.sendCommand('test-session/stop', {})
+        break
+
+      case 'stop_recording':
+        // Stop recording only
+        mqtt.sendCommand('recording/stop', {})
+        break
+
+      case 'set_output_safe':
+        // Set specific outputs to safe state
+        if (action.outputChannels) {
+          for (const channel of action.outputChannels) {
+            const channelConfig = store.channels[channel]
+            if (channelConfig?.channel_type === 'digital_output') {
+              mqtt.setOutput(channel, action.safeValue ?? 0)
+            } else if (channelConfig?.channel_type === 'analog_output') {
+              mqtt.setOutput(channel, action.analogSafeValue ?? 0)
+            }
+          }
+        }
+        break
+
+      case 'run_sequence':
+        // Run a safety sequence
+        if (action.sequenceId) {
+          mqtt.sendCommand('sequence/start', { sequenceId: action.sequenceId })
+        }
+        break
+
+      case 'custom':
+        // Custom MQTT action
+        if (action.mqttTopic) {
+          mqtt.sendCommand(action.mqttTopic, action.mqttPayload || {})
+        }
+        break
+    }
+
+    saveSafetyActions()
+    return true
+  }
+
+  function saveSafetyActions() {
+    localStorage.setItem('nisystem-safety-actions', JSON.stringify(safetyActions.value))
+  }
+
+  function loadSafetyActions() {
+    const saved = localStorage.getItem('nisystem-safety-actions')
+    if (saved) {
+      try {
+        safetyActions.value = JSON.parse(saved)
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Toggle auto-execute mode
+  function setAutoExecuteSafetyActions(enabled: boolean) {
+    autoExecuteSafetyActions.value = enabled
+    localStorage.setItem('nisystem-auto-execute-safety-actions', String(enabled))
+  }
+
+  function loadAutoExecuteSetting() {
+    const saved = localStorage.getItem('nisystem-auto-execute-safety-actions')
+    if (saved !== null) {
+      autoExecuteSafetyActions.value = saved === 'true'
+    }
+  }
+
+  // Load safety actions on init
+  loadSafetyActions()
+  loadAutoExecuteSetting()
+
+  // ============================================
   // Persistence
   // ============================================
 
@@ -777,6 +1039,8 @@ export function useSafety() {
     loadAlarmConfigs()
     loadInterlocks()
     loadHistory()
+    loadSafetyActions()
+    loadAutoExecuteSetting()
 
     // Watch for channel changes to add new configs
     watch(() => store.channels, () => {
@@ -796,7 +1060,152 @@ export function useSafety() {
     // Check shelve expiry every minute
     setInterval(checkShelveExpiry, 60000)
 
+    // Subscribe to backend alarm events via MQTT
+    mqtt.onAlarm((alarm, event) => {
+      handleBackendAlarm(alarm, event)
+    })
+
+    // Subscribe to backend safety_action events via MQTT
+    // Backend AlarmManager publishes these when alarms with safety_action trigger
+    mqtt.subscribe('nisystem/safety/action', (payload: any) => {
+      handleBackendSafetyAction(payload)
+    })
+
     initialized = true
+  }
+
+  /**
+   * Handle safety action requests from backend (AlarmManager)
+   * This allows backend-initiated safety actions to be executed by frontend
+   */
+  function handleBackendSafetyAction(payload: any) {
+    const actionId = payload.action_id
+    const alarmId = payload.alarm_id
+    const channel = payload.channel
+
+    console.warn(`[SAFETY] Backend requested safety action: ${actionId} (triggered by alarm ${alarmId} on ${channel})`)
+
+    if (!autoExecuteSafetyActions.value) {
+      console.warn(`[SAFETY] Auto-execute disabled, ignoring backend safety action request`)
+      return
+    }
+
+    // Execute the safety action
+    const success = executeSafetyAction(actionId, alarmId)
+    if (success) {
+      console.warn(`[SAFETY] Successfully executed safety action: ${actionId}`)
+    } else {
+      console.error(`[SAFETY] Failed to execute safety action: ${actionId}`)
+    }
+  }
+
+  /**
+   * Handle alarms received from the backend via MQTT
+   */
+  function handleBackendAlarm(alarm: any, event: 'triggered' | 'updated' | 'cleared') {
+    const alarmId = alarm.alarm_id || alarm.id
+
+    if (event === 'cleared') {
+      // Remove from active alarms
+      const index = activeAlarms.value.findIndex(a =>
+        a.id === alarmId || a.alarm_id === alarmId
+      )
+      if (index >= 0) {
+        const cleared = activeAlarms.value[index]
+        if (cleared) {
+          addHistoryEntry({
+            id: `${alarmId}-cleared-${Date.now()}`,
+            alarm_id: alarmId,
+            channel: cleared.channel,
+            event_type: 'cleared',
+            severity: cleared.severity,
+            value: cleared.current_value || cleared.value,
+            triggered_at: cleared.triggered_at,
+            cleared_at: new Date().toISOString(),
+            duration_seconds: alarm.duration_seconds
+          })
+        }
+        activeAlarms.value.splice(index, 1)
+
+        // Clear first-out if this was it
+        if (firstOutAlarmId.value === alarmId) {
+          firstOutAlarmId.value = null
+          cascadeStartTime.value = null
+        }
+      }
+      return
+    }
+
+    // Find existing alarm
+    const existingIndex = activeAlarms.value.findIndex(a =>
+      a.id === alarmId || a.alarm_id === alarmId
+    )
+
+    if (existingIndex >= 0) {
+      // Update existing alarm
+      const existing = activeAlarms.value[existingIndex]
+      if (existing) {
+        existing.state = alarm.state || existing.state
+        existing.current_value = alarm.current_value
+        existing.acknowledged_at = alarm.acknowledged_at
+        existing.acknowledged_by = alarm.acknowledged_by
+        existing.shelved_at = alarm.shelved_at
+        existing.shelved_by = alarm.shelved_by
+        existing.shelve_expires_at = alarm.shelve_expires_at
+        existing.shelve_reason = alarm.shelve_reason
+        existing.duration_seconds = alarm.duration_seconds
+      }
+    } else {
+      // New alarm from backend
+      const activeAlarm: ActiveAlarm = {
+        id: alarmId,
+        alarm_id: alarmId,
+        channel: alarm.channel,
+        name: alarm.name,
+        severity: alarm.severity as AlarmSeverityLevel,
+        state: alarm.state || 'active',
+        threshold_type: alarm.threshold_type,
+        threshold: alarm.threshold,
+        value: alarm.value,
+        current_value: alarm.current_value,
+        triggered_at: alarm.triggered_at,
+        acknowledged_at: alarm.acknowledged_at,
+        acknowledged_by: alarm.acknowledged_by,
+        sequence_number: alarm.sequence_number || 0,
+        is_first_out: alarm.is_first_out || false,
+        message: alarm.message || '',
+        safety_action: alarm.safety_action,
+        duration_seconds: alarm.duration_seconds || 0
+      }
+
+      // Set first-out
+      if (alarm.is_first_out) {
+        firstOutAlarmId.value = alarmId
+        cascadeStartTime.value = Date.now()
+      }
+
+      activeAlarms.value.push(activeAlarm)
+
+      // Log to history
+      addHistoryEntry({
+        id: `${alarmId}-triggered-${Date.now()}`,
+        alarm_id: alarmId,
+        channel: alarm.channel,
+        event_type: 'triggered',
+        severity: alarm.severity,
+        value: alarm.value,
+        threshold: alarm.threshold,
+        threshold_type: alarm.threshold_type,
+        triggered_at: alarm.triggered_at,
+        message: alarm.message
+      })
+
+      // Auto-execute safety action if configured (ISA-18.2 automatic response)
+      if (autoExecuteSafetyActions.value && alarm.safety_action) {
+        console.warn(`[SAFETY] Alarm ${alarmId} has safety_action: ${alarm.safety_action}`)
+        executeSafetyAction(alarm.safety_action, alarmId)
+      }
+    }
   }
 
   // Initialize on first use
@@ -858,6 +1267,27 @@ export function useSafety() {
     isAcquisitionBlocked,
     isOutputBlocked,
     isButtonBlocked,
-    evaluateCondition
+    evaluateCondition,
+
+    // Interlock trip system
+    hasFailedInterlocks,
+    failedInterlocks,
+    isTripped: readonly(isTripped),
+    lastTripTime: readonly(lastTripTime),
+    lastTripReason: readonly(lastTripReason),
+    safeStateConfig: readonly(safeStateConfig),
+    tripSystem,
+    resetTrip,
+    updateSafeStateConfig,
+
+    // Safety Actions (ISA-18.2 automatic responses)
+    safetyActions: readonly(safetyActions),
+    autoExecuteSafetyActions: readonly(autoExecuteSafetyActions),
+    addSafetyAction,
+    updateSafetyAction,
+    removeSafetyAction,
+    getSafetyAction,
+    executeSafetyAction,
+    setAutoExecuteSafetyActions
   }
 }

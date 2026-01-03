@@ -32,6 +32,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const widgets = computed({
     get: () => {
       const page = pages.value.find(p => p.id === currentPageId.value)
+      if (!page && pages.value.length > 0) {
+        // currentPageId doesn't match any page - auto-correct to first page
+        console.warn('[STORE] currentPageId mismatch, correcting to first page')
+        currentPageId.value = pages.value[0]!.id
+        return pages.value[0]!.widgets || []
+      }
       return page?.widgets || []
     },
     set: (newWidgets: WidgetConfig[]) => {
@@ -148,7 +154,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   // Update values from scripts (calculated params, transformations)
-  function updateScriptValues(scriptValues: Record<string, { value: number; name: string; displayName: string }>) {
+  function updateScriptValues(scriptValues: Record<string, { value: number; name: string }>) {
     const timestamp = Date.now()
 
     Object.entries(scriptValues).forEach(([name, data]) => {
@@ -164,8 +170,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
       // Add virtual channel config if not exists
       if (!channels.value[name]) {
         channels.value[name] = {
-          name,
-          display_name: data.displayName,
+          name,  // TAG is the only identifier
           channel_type: 'script',
           unit: '',
           group: 'Scripts',
@@ -484,24 +489,55 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function setLayout(layout: LayoutConfig) {
+    console.log('[DASHBOARD STORE] setLayout called with:', {
+      gridColumns: layout.gridColumns,
+      rowHeight: layout.rowHeight,
+      hasPages: !!layout.pages && layout.pages.length > 0,
+      pageCount: layout.pages?.length || 0,
+      hasLegacyWidgets: !!layout.widgets && layout.widgets.length > 0,
+      legacyWidgetCount: layout.widgets?.length || 0
+    })
+
     gridColumns.value = layout.gridColumns
     rowHeight.value = layout.rowHeight
 
     // Handle multi-page layouts
     if (layout.pages && layout.pages.length > 0) {
+      console.log('[DASHBOARD STORE] Setting multi-page layout with', layout.pages.length, 'pages')
       pages.value = layout.pages
+
+      // Log each page
+      layout.pages.forEach((page, idx) => {
+        console.log(`[DASHBOARD STORE] Page ${idx}: ${page.name} (id: ${page.id}, widgets: ${page.widgets?.length || 0})`)
+      })
+
       // Always start on Page 1 (first page by order), not last viewed page
       const firstPage = [...layout.pages].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
       currentPageId.value = firstPage?.id || layout.pages[0]!.id
-    } else {
+      console.log('[DASHBOARD STORE] Current page set to:', currentPageId.value)
+    } else if (layout.widgets && layout.widgets.length > 0) {
       // Legacy single-page layout - migrate to multi-page
+      console.log('[DASHBOARD STORE] Migrating legacy single-page layout to multi-page (widgets:', layout.widgets.length, ')')
       pages.value = [{
         id: 'default',
         name: 'Page 1',
-        widgets: layout.widgets || [],
+        widgets: layout.widgets,
         order: 0
       }]
       currentPageId.value = 'default'
+    } else {
+      // No pages and no widgets - create empty default page
+      console.warn('[DASHBOARD STORE] ⚠️ No pages or widgets provided - creating empty default page')
+      ensureDefaultPage()
+    }
+
+    console.log('[DASHBOARD STORE] ✅ Layout set successfully. Total pages:', pages.value.length)
+    console.log('[DASHBOARD STORE] Current page widgets:', widgets.value.length)
+
+    // Validation: Ensure we always have at least one page
+    if (pages.value.length === 0) {
+      console.error('[DASHBOARD STORE] ❌ CRITICAL: No pages after setLayout! Creating default page...')
+      ensureDefaultPage()
     }
   }
 
@@ -515,12 +551,20 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (stored) {
       try {
         const layout = JSON.parse(stored) as LayoutConfig
-        // Migration: fix showUnit=false to undefined (show by default)
+        // Migration: Remove boolean props that default to true when set to false
+        // This fixes checkboxes that saved false instead of leaving undefined
         const migrateWidgets = (widgetList: WidgetConfig[]) => {
+          const propsToClean = [
+            'showLabel', 'showUnit', 'showUnits', 'showValue',
+            'showGrid', 'showLegend', 'yAxisAuto', 'showDate',
+            'showToggle', 'showControls', 'showAckButton'
+          ]
           widgetList.forEach(w => {
-            if (w.showUnit === false) {
-              delete (w as any).showUnit
-            }
+            propsToClean.forEach(prop => {
+              if ((w as any)[prop] === false) {
+                delete (w as any)[prop]
+              }
+            })
           })
         }
 
@@ -576,7 +620,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
           y: currentY,
           w: defaults.w,
           h: defaults.h,
-          label: channel.display_name || channel.name
+          label: channel.name  // TAG is the only identifier
         })
 
         x += defaults.w

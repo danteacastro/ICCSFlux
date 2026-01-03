@@ -211,6 +211,9 @@ class TestSessionConfig:
     reset_variables: List[str] = field(default_factory=list)  # Variable IDs to reset on start
     run_sequence_id: Optional[str] = None  # Optional sequence to run at start
     stop_sequence_id: Optional[str] = None  # Optional sequence to run at stop
+    # Safety interlock requirements
+    require_latch_armed: bool = False  # If True, all latched alarms must be cleared to start
+    require_no_active_alarms: bool = False  # If True, no active alarms allowed to start
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -224,6 +227,8 @@ class TestSessionConfig:
             reset_variables=data.get('reset_variables', []),
             run_sequence_id=data.get('run_sequence_id'),
             stop_sequence_id=data.get('stop_sequence_id'),
+            require_latch_armed=data.get('require_latch_armed', False),
+            require_no_active_alarms=data.get('require_no_active_alarms', False),
         )
 
 
@@ -857,17 +862,44 @@ class UserVariableManager:
         """Get current session configuration"""
         return self.session.config.to_dict()
 
-    def start_session(self, acquiring: bool, started_by: str = "user") -> Dict[str, Any]:
+    def start_session(self, acquiring: bool, started_by: str = "user",
+                       latched_alarm_count: int = 0, active_alarm_count: int = 0,
+                       require_no_latched: bool = False, require_no_active: bool = False) -> Dict[str, Any]:
         """
-        Start a test session.
+        Start a test session with state validation.
+
+        Args:
+            acquiring: Whether DAQ is currently acquiring data
+            started_by: User/operator identifier
+            latched_alarm_count: Number of latched alarms requiring reset
+            active_alarm_count: Number of active (unacknowledged) alarms
+            require_no_latched: If True, reject start if any latched alarms exist
+                               (set True only when a safety latch widget is configured)
+            require_no_active: If True, reject start if any active alarms exist
+
         Returns status dict with success/error info.
         """
         with self.lock:
+            # STATE VALIDATION
+            logger.info(f"[STATE MACHINE] Session start requested (active={self.session.active}, acquiring={acquiring}, latched={latched_alarm_count}, active_alarms={active_alarm_count})")
+
             if self.session.active:
+                logger.warning("[STATE MACHINE] Session start rejected - already active")
                 return {'success': False, 'error': 'Session already active'}
 
             if not acquiring:
+                logger.error("[STATE MACHINE] Session start rejected - acquisition not running (PREREQUISITE FAILED)")
                 return {'success': False, 'error': 'Acquisition must be running to start session'}
+
+            # Check for latched alarms - these must be cleared before session start
+            if require_no_latched and latched_alarm_count > 0:
+                logger.error(f"[STATE MACHINE] Session start rejected - {latched_alarm_count} latched alarm(s) require reset")
+                return {'success': False, 'error': f'{latched_alarm_count} latched alarm(s) must be reset before starting session'}
+
+            # Optionally check for active alarms
+            if require_no_active and active_alarm_count > 0:
+                logger.error(f"[STATE MACHINE] Session start rejected - {active_alarm_count} active alarm(s)")
+                return {'success': False, 'error': f'{active_alarm_count} active alarm(s) must be acknowledged before starting session'}
 
             # Reset configured variables
             if self.session.config.reset_variables:
@@ -923,13 +955,17 @@ class UserVariableManager:
             self.session.started_at = datetime.now().isoformat()
             self.session.started_by = started_by
 
-        logger.info(f"Test session started by {started_by}")
+        logger.info(f"[STATE MACHINE] Session started successfully by {started_by} at {self.session.started_at}")
         return {'success': True, 'started_at': self.session.started_at}
 
     def stop_session(self) -> Dict[str, Any]:
-        """Stop the current test session"""
+        """Stop the current test session with state validation"""
         with self.lock:
+            # STATE VALIDATION
+            logger.info(f"[STATE MACHINE] Session stop requested (active={self.session.active})")
+
             if not self.session.active:
+                logger.warning("[STATE MACHINE] Session stop rejected - not active")
                 return {'success': False, 'error': 'No active session'}
 
             # Stop all timers
@@ -975,7 +1011,7 @@ class UserVariableManager:
             self.session.started_at = None
             self.session.started_by = None
 
-        logger.info("Test session stopped")
+        logger.info(f"[STATE MACHINE] Session stopped successfully at {stopped_at}")
         return {
             'success': True,
             'stopped_at': stopped_at,

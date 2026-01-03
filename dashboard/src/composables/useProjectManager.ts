@@ -44,6 +44,7 @@ export interface ProjectFile {
     watchdogs: any[]
     reportTemplates: any[]
     scheduledReports: any[]
+    pythonScripts: any[]  // Pyodide-based Python scripts
   }
 
   // Recording configuration
@@ -143,6 +144,9 @@ export function useProjectManager() {
     REPORT_TEMPLATES: 'dcflux-report-templates',
     SCHEDULED_REPORTS: 'dcflux-scheduled-reports',
 
+    // Python scripts
+    PYTHON_SCRIPTS: 'nisystem-python-scripts',
+
     // Recording
     RECORDING_CONFIG: 'nisystem-recording-config',
     RECORDING_CHANNELS: 'nisystem-recording-channels',
@@ -189,7 +193,8 @@ export function useProjectManager() {
         stateMachines: safeParseJSON(localStorage.getItem(STORAGE_KEYS.STATE_MACHINES), []),
         watchdogs: safeParseJSON(localStorage.getItem(STORAGE_KEYS.WATCHDOGS), []),
         reportTemplates: safeParseJSON(localStorage.getItem(STORAGE_KEYS.REPORT_TEMPLATES), []),
-        scheduledReports: safeParseJSON(localStorage.getItem(STORAGE_KEYS.SCHEDULED_REPORTS), [])
+        scheduledReports: safeParseJSON(localStorage.getItem(STORAGE_KEYS.SCHEDULED_REPORTS), []),
+        pythonScripts: safeParseJSON(localStorage.getItem(STORAGE_KEYS.PYTHON_SCRIPTS), [])
       },
 
       recording: {
@@ -262,6 +267,9 @@ export function useProjectManager() {
       }
       if (data.scripts.scheduledReports) {
         localStorage.setItem(STORAGE_KEYS.SCHEDULED_REPORTS, JSON.stringify(data.scripts.scheduledReports))
+      }
+      if (data.scripts.pythonScripts) {
+        localStorage.setItem(STORAGE_KEYS.PYTHON_SCRIPTS, JSON.stringify(data.scripts.pythonScripts))
       }
     }
 
@@ -393,7 +401,8 @@ export function useProjectManager() {
         stateMachines: [],
         watchdogs: [],
         reportTemplates: [],
-        scheduledReports: []
+        scheduledReports: [],
+        pythonScripts: []
       },
 
       recording: {

@@ -2,17 +2,25 @@
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   channel: string
   label?: string
   decimals?: number
-  compact?: boolean        // Compact mode: horizontal layout, smaller
-  industrial?: boolean     // Industrial theme: flat, square, dense
-  showLabel?: boolean      // Show/hide label (default true)
-  showUnit?: boolean       // Show/hide unit (default true)
-  valueColor?: string      // Custom value color
-  backgroundColor?: string // Custom background color
-}>()
+  compact?: boolean
+  industrial?: boolean
+  showLabel?: boolean      // Show label - defaults to true
+  showUnit?: boolean       // Show unit - defaults to true
+  valueColor?: string
+  backgroundColor?: string
+  style?: {
+    backgroundColor?: string
+    textColor?: string
+    [key: string]: any
+  }
+}>(), {
+  showLabel: true,
+  showUnit: true
+})
 
 const store = useDashboardStore()
 
@@ -26,24 +34,36 @@ const isStale = computed(() => {
   return (Date.now() - channelValue.value.timestamp) > 5000
 })
 
+// Check if channel is disconnected (hardware not connected)
+const isDisconnected = computed(() => {
+  if (!channelValue.value) return false
+  // Check for NaN value or disconnected flag
+  return channelValue.value.disconnected ||
+         channelValue.value.quality === 'bad' ||
+         (typeof channelValue.value.value === 'number' && Number.isNaN(channelValue.value.value))
+})
+
 const displayValue = computed(() => {
   if (!channelValue.value) return '--'
+  if (isDisconnected.value) return 'NaN'  // Show NaN when disconnected
   if (isStale.value) return '--'
   const val = channelValue.value.value
+  if (typeof val !== 'number' || Number.isNaN(val)) return 'NaN'
   const dec = props.decimals ?? 2
   return val.toFixed(dec)
 })
 
 const unit = computed(() => {
-  // Channel config uses 'unit' (singular) - mapped from backend 'units' in useMqtt.ts
   return channelConfig.value?.unit || ''
 })
 
+// Label: use explicit label prop, or fall back to channel name (TAG)
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel
+  props.label || props.channel
 )
 
 const statusClass = computed(() => {
+  if (isDisconnected.value) return 'disconnected'
   if (!channelValue.value || isStale.value) return 'stale'
   if (channelValue.value.alarm) return 'alarm'
   if (channelValue.value.warning) return 'warning'
@@ -56,26 +76,27 @@ const modeClasses = computed(() => ({
   industrial: props.industrial
 }))
 
-// Custom styles
+// Custom styles - support both direct props and style object
 const customStyles = computed(() => {
   const styles: Record<string, string> = {}
-  if (props.backgroundColor) {
-    styles['--widget-bg'] = props.backgroundColor
+  const bgColor = props.style?.backgroundColor || props.backgroundColor
+  if (bgColor) {
+    styles['--widget-bg'] = bgColor
   }
-  if (props.valueColor) {
-    styles['--custom-value-color'] = props.valueColor
+  const textColor = props.style?.textColor || props.valueColor
+  if (textColor) {
+    styles['--custom-value-color'] = textColor
   }
   return styles
 })
-
 </script>
 
 <template>
   <div class="numeric-display" :class="[statusClass, modeClasses]" :style="customStyles">
-    <div class="label">{{ displayLabel }}</div>
+    <div class="label" v-if="showLabel">{{ displayLabel }}</div>
     <div class="value-container">
       <span class="value">{{ displayValue }}</span>
-      <span class="unit" v-if="unit">{{ unit }}</span>
+      <span class="unit" v-if="showUnit && unit">{{ unit }}</span>
     </div>
   </div>
 </template>
@@ -87,38 +108,42 @@ const customStyles = computed(() => {
   justify-content: center;
   align-items: center;
   height: 100%;
-  padding: 4px;
+  padding: 4px 6px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
+  box-sizing: border-box;
 }
 
 .label {
-  font-size: 0.7rem;
-  color: var(--label-color, #888);
+  font-size: 0.6rem;
+  color: #aaa;
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+  line-height: 1.2;
+  margin-bottom: 2px;
 }
 
 .value-container {
   display: flex;
   align-items: baseline;
-  gap: 2px;
+  gap: 3px;
 }
 
 .value {
-  font-size: 1.4rem;
+  font-size: 1.1rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   color: var(--value-color, #fff);
+  line-height: 1;
 }
 
 .unit {
-  font-size: 0.7rem;
-  color: var(--unit-color, #888);
+  font-size: 0.55rem;
+  color: #888;
 }
 
 .normal .value {
@@ -127,6 +152,15 @@ const customStyles = computed(() => {
 
 .stale .value {
   color: #666;
+}
+
+/* Disconnected - hardware not connected (amber/orange) */
+.disconnected {
+  border-color: #f97316;
+}
+.disconnected .value {
+  color: #f97316;
+  font-style: italic;
 }
 
 .warning {
@@ -145,42 +179,36 @@ const customStyles = computed(() => {
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background-color: #1a1a2e; }
+  0%, 100% { background-color: var(--widget-bg, #1a1a2e); }
   50% { background-color: #3f1515; }
 }
 
 /* ========================================
-   COMPACT MODE
-   Horizontal layout, smaller, denser
+   COMPACT MODE - horizontal layout
    ======================================== */
 .compact {
   flex-direction: row;
   justify-content: space-between;
-  padding: 2px 6px;
-  gap: 4px;
+  align-items: center;
+  padding: 2px 8px;
+  gap: 8px;
 }
 
 .compact .label {
-  font-size: 0.65rem;
-  margin: 0;
-  flex-shrink: 0;
-}
-
-.compact .value-container {
-  flex-shrink: 0;
-}
-
-.compact .value {
-  font-size: 0.9rem;
-}
-
-.compact .unit {
+  margin-bottom: 0;
   font-size: 0.6rem;
 }
 
+.compact .value {
+  font-size: 0.95rem;
+}
+
+.compact .unit {
+  font-size: 0.5rem;
+}
+
 /* ========================================
-   INDUSTRIAL MODE
-   Flat, square, LabVIEW-style
+   INDUSTRIAL MODE - LabVIEW style
    ======================================== */
 .industrial {
   border-radius: 0;
@@ -189,8 +217,7 @@ const customStyles = computed(() => {
 }
 
 .industrial .label {
-  font-size: 0.6rem;
-  color: #aaa;
+  color: #999;
   letter-spacing: 0.5px;
 }
 
@@ -214,6 +241,16 @@ const customStyles = computed(() => {
   border-color: #444;
 }
 
+.industrial.disconnected {
+  background: linear-gradient(180deg, #4a3a2d 0%, #2e251a 100%);
+  border-color: #5a4a3a;
+}
+
+.industrial.disconnected .value {
+  color: #f97316;
+  font-style: italic;
+}
+
 .industrial.warning {
   background: linear-gradient(180deg, #4a4a2d 0%, #2e2e1a 100%);
   border-color: #5a5a3a;
@@ -226,8 +263,7 @@ const customStyles = computed(() => {
 
 /* Compact + Industrial combo */
 .compact.industrial {
-  padding: 1px 4px;
-  border-width: 1px;
+  padding: 2px 6px;
 }
 
 .compact.industrial .value {

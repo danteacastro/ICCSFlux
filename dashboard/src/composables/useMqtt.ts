@@ -1,7 +1,8 @@
-import { ref, onUnmounted, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import mqtt, { type MqttClient, type IClientOptions } from 'mqtt'
 import type { ChannelValue, SystemStatus, ChannelConfig, RecordingConfig, RecordedFile } from '../types'
 import { usePlayground } from './usePlayground'
+import { usePythonScripts } from './usePythonScripts'
 
 // Stale data threshold in milliseconds
 const STALE_DATA_THRESHOLD_MS = 10000 // 10 seconds
@@ -18,80 +19,91 @@ interface PendingCommand {
   reject: (error: Error) => void
 }
 
-export function useMqtt(systemPrefix: string = 'nisystem') {
-  const client = ref<MqttClient | null>(null)
-  const connected = ref(false)
-  const error = ref<string | null>(null)
-  const reconnectAttempts = ref(0)
-  const lastMessageTime = ref<number>(0)
+// ============================================================================
+// SINGLETON STATE - Shared across all useMqtt() calls
+// ============================================================================
+const client = ref<MqttClient | null>(null)
+const connected = ref(false)
+const error = ref<string | null>(null)
+const reconnectAttempts = ref(0)
+const lastMessageTime = ref<number>(0)
 
-  // Stale data detection
-  const dataIsStale = computed(() => {
-    if (!connected.value) return true
-    if (lastMessageTime.value === 0) return false
-    return Date.now() - lastMessageTime.value > STALE_DATA_THRESHOLD_MS
-  })
+// Reactive data (shared)
+const channelValues = ref<Record<string, ChannelValue>>({})
+const systemStatus = ref<SystemStatus | null>(null)
+const channelConfigs = ref<Record<string, ChannelConfig>>({})
 
-  // Reactive data
-  const channelValues = ref<Record<string, ChannelValue>>({})
-  const systemStatus = ref<SystemStatus | null>(null)
-  const channelConfigs = ref<Record<string, ChannelConfig>>({})
+// Discovery state (shared)
+const discoveryResult = ref<any>(null)
+const discoveryChannels = ref<any[]>([])
+const isScanning = ref(false)
 
-  // Discovery state
-  const discoveryResult = ref<any>(null)
-  const discoveryChannels = ref<any[]>([])
-  const isScanning = ref(false)
+// Channel lifecycle callbacks (shared)
+const channelDeletedCallbacks: ((channelName: string) => void)[] = []
+const channelCreatedCallbacks: ((channels: string[]) => void)[] = []
 
-  // Channel lifecycle callbacks
-  const channelDeletedCallbacks: ((channelName: string) => void)[] = []
-  const channelCreatedCallbacks: ((channels: string[]) => void)[] = []
+// Recording state (shared)
+const recordingConfig = ref<Partial<RecordingConfig>>({})
+const recordedFiles = ref<RecordedFile[]>([])
 
-  // Recording state
-  const recordingConfig = ref<Partial<RecordingConfig>>({})
-  const recordedFiles = ref<RecordedFile[]>([])
+// Full config callbacks (shared)
+const fullConfigCallbacks: ((config: any) => void)[] = []
 
-  // Watchdog state
-  const watchdogStatus = ref<{
-    status: 'online' | 'offline' | 'unknown'
-    daqOnline: boolean
-    failsafeTriggered: boolean
-    failsafeTriggerTime: string | null
-    lastHeartbeat: string | null
-    timeoutSec: number
-    timestamp: string | null
-  }>({
-    status: 'unknown',
-    daqOnline: false,
-    failsafeTriggered: false,
-    failsafeTriggerTime: null,
-    lastHeartbeat: null,
-    timeoutSec: 10,
-    timestamp: null
-  })
+// Heartbeat state (shared)
+const lastHeartbeat = ref<any>(null)
+const lastHeartbeatTime = ref<number>(0)
 
-  // Heartbeat state
-  const lastHeartbeat = ref<{
-    sequence: number
-    timestamp: string
-    acquiring: boolean
-    recording: boolean
-    uptime_seconds: number
-  } | null>(null)
-  const lastHeartbeatTime = ref<number>(0)
+// Pending commands for acknowledgment (shared) - NOT a ref, just a Map
+const pendingCommands = new Map<string, PendingCommand>()
 
-  // Command acknowledgment tracking
-  const pendingCommands = new Map<string, PendingCommand>()
+// Track if MQTT handlers are initialized
+let handlersInitialized = false
 
-  // Callbacks
-  const dataCallbacks: ((data: Record<string, number>) => void)[] = []
-  const statusCallbacks: ((status: SystemStatus) => void)[] = []
-  const discoveryCallbacks: ((result: any) => void)[] = []
-  const configUpdateCallbacks: ((result: any) => void)[] = []
-  const recordingCallbacks: ((result: any) => void)[] = []
-  const fullConfigCallbacks: ((config: any) => void)[] = []
+// System prefix (shared)
+let systemPrefix = 'nisystem'
 
-  // Generic topic subscriptions
-  const topicCallbacks: Map<string, ((payload: any) => void)[]> = new Map()
+// Stale data detection
+const dataIsStale = computed(() => {
+  if (!connected.value) return true
+  if (lastMessageTime.value === 0) return false
+  return Date.now() - lastMessageTime.value > STALE_DATA_THRESHOLD_MS
+})
+
+// Watchdog state (shared)
+const watchdogStatus = ref<{
+  status: 'online' | 'offline' | 'unknown'
+  daqOnline: boolean
+  failsafeTriggered: boolean
+  failsafeTriggerTime: string | null
+  lastHeartbeat: string | null
+  timeoutSec: number
+  timestamp: string | null
+}>({
+  status: 'unknown',
+  daqOnline: false,
+  failsafeTriggered: false,
+  failsafeTriggerTime: null,
+  lastHeartbeat: null,
+  timeoutSec: 10,
+  timestamp: null
+})
+
+// Callbacks (shared)
+const dataCallbacks: ((data: Record<string, number>) => void)[] = []
+const statusCallbacks: ((status: SystemStatus) => void)[] = []
+const discoveryCallbacks: ((result: any) => void)[] = []
+const configUpdateCallbacks: ((result: any) => void)[] = []
+const recordingCallbacks: ((result: any) => void)[] = []
+const alarmCallbacks: ((alarm: any, event: 'triggered' | 'updated' | 'cleared') => void)[] = []
+
+// Generic topic subscriptions (shared)
+const topicCallbacks: Map<string, ((payload: any) => void)[]> = new Map()
+
+export function useMqtt(prefix: string = 'nisystem') {
+  // Store the prefix (first caller wins)
+  if (!handlersInitialized) {
+    systemPrefix = prefix
+  }
 
   // Calculate exponential backoff delay
   function getReconnectDelay(): number {
@@ -225,20 +237,33 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
 
   function handleChannelValue(channelName: string, payload: any) {
     const config = channelConfigs.value[channelName]
-    const value = payload.value
     const timestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now()
+
+    // Handle NaN values - backend sends value: null with value_string: "NaN"
+    // and quality: "bad" when hardware is disconnected
+    const isNaN = payload.value === null && payload.value_string === 'NaN'
+    const isDisconnected = payload.status === 'disconnected' || payload.quality === 'bad'
+    const value = isNaN ? NaN : payload.value
 
     channelValues.value[channelName] = {
       name: channelName,
       value,
       timestamp,
-      alarm: payload.quality === 'alarm' || (config ? isAlarm(value, config) : false),
-      warning: payload.quality === 'warning' || (config ? isWarning(value, config) : false)
+      alarm: payload.quality === 'alarm' || (config && !isNaN ? isAlarm(value, config) : false),
+      warning: payload.quality === 'warning' || (config && !isNaN ? isWarning(value, config) : false),
+      // Additional quality indicators
+      quality: payload.quality || 'good',
+      disconnected: isDisconnected
     }
 
     // Call data callbacks with aggregated format for compatibility
+    // Use NaN for disconnected values so charts can handle gaps
     const data: Record<string, number> = { [channelName]: value }
     dataCallbacks.forEach(cb => cb(data))
+
+    // Notify Python scripts that new scan data is available
+    // This triggers any awaiting next_scan() calls
+    pythonScripts.onScanData()
   }
 
   function handleStatus(status: SystemStatus) {
@@ -253,17 +278,27 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     if (payload.channels) {
       Object.entries(payload.channels).forEach(([name, ch]) => {
         configs[name] = {
-          name: ch.name || name,
-          display_name: ch.name || name,  // TAG = channel name/ID
+          name: ch.name || name,  // TAG is the only identifier
+          // display_name removed - use name (TAG) everywhere
           channel_type: ch.channel_type || ch.type as any,
           unit: ch.units || '',
           group: ch.group || ch.module || 'Ungrouped',
-          description: ch.description,  // Description is separate documentation
+          description: ch.description,  // Description is for tooltips/docs
           visible: ch.visible !== false, // Default to true if not specified
+          // Legacy limits (backward compatibility)
           low_limit: ch.low_limit,
           high_limit: ch.high_limit,
           low_warning: ch.low_warning,
           high_warning: ch.high_warning,
+          // ISA-18.2 Alarm Configuration
+          alarm_enabled: ch.alarm_enabled,
+          hihi_limit: ch.hihi_limit,
+          hi_limit: ch.hi_limit,
+          lo_limit: ch.lo_limit,
+          lolo_limit: ch.lolo_limit,
+          alarm_priority: ch.alarm_priority,
+          alarm_deadband: ch.alarm_deadband,
+          alarm_delay_sec: ch.alarm_delay_sec,
           chartable: ['thermocouple', 'voltage', 'current'].includes(ch.channel_type || ch.type),
           // Scaling parameters
           scale_slope: ch.scale_slope,
@@ -305,7 +340,50 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
   }
 
   function handleAlarm(topic: string, payload: any) {
-    console.warn('ALARM:', topic, payload)
+    // Parse topic: nisystem/alarms/active/{alarm_id}
+    const topicParts = topic.split('/')
+    const alarmId = topicParts[topicParts.length - 1]
+
+    // Check if this is a cleared alarm
+    if (payload.active === false || payload.state === 'cleared') {
+      console.log('ALARM CLEARED:', alarmId)
+      alarmCallbacks.forEach(cb => cb({ alarm_id: alarmId, ...payload }, 'cleared'))
+      return
+    }
+
+    // Normalize backend alarm format to frontend format
+    const alarm = {
+      id: alarmId,
+      alarm_id: payload.alarm_id || alarmId,
+      channel: payload.channel || '',
+      name: payload.name || payload.channel || alarmId,
+      severity: (payload.severity || 'medium').toLowerCase(),
+      state: payload.state || 'active',
+      threshold_type: payload.threshold_type,
+      threshold: payload.threshold_value,
+      value: payload.triggered_value ?? payload.current_value,
+      current_value: payload.current_value,
+      triggered_at: payload.triggered_at || new Date().toISOString(),
+      acknowledged_at: payload.acknowledged_at,
+      acknowledged_by: payload.acknowledged_by,
+      cleared_at: payload.cleared_at,
+      sequence_number: payload.sequence_number || 0,
+      is_first_out: payload.is_first_out || false,
+      shelved_at: payload.shelved_at,
+      shelved_by: payload.shelved_by,
+      shelve_expires_at: payload.shelve_expires_at,
+      shelve_reason: payload.shelve_reason,
+      message: payload.message || '',
+      duration_seconds: payload.duration_seconds
+    }
+
+    // Determine event type
+    const eventType = payload.acknowledged_at && !payload.cleared_at
+      ? 'updated'
+      : 'triggered'
+
+    console.warn('ALARM:', eventType.toUpperCase(), alarm.name, '-', alarm.message)
+    alarmCallbacks.forEach(cb => cb(alarm, eventType))
   }
 
   function handleDiscoveryResult(payload: any) {
@@ -412,28 +490,109 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     }
   })
 
+  // ========================================================================
+  // Python Scripts Integration
+  // ========================================================================
+
+  // Get Python scripts composable instance (singleton)
+  const pythonScripts = usePythonScripts()
+
+  // Wire up Python scripts MQTT handlers
+  pythonScripts.setMqttHandlers({
+    publish: (topic: string, payload: any) => {
+      if (client.value && connected.value) {
+        client.value.publish(topic, JSON.stringify(payload))
+      } else {
+        console.warn('MQTT not connected, cannot publish:', topic)
+      }
+    },
+    setOutput: (channel: string, value: number | boolean) => {
+      setOutput(channel, value)
+    },
+    getChannelValues: () => {
+      // Return all current channel values as a simple Record<string, number>
+      const values: Record<string, number> = {}
+      for (const [name, cv] of Object.entries(channelValues.value)) {
+        values[name] = cv.value
+      }
+      return values
+    },
+    getChannelTimestamps: () => {
+      // Return all channel timestamps (backend acquisition time in ms)
+      const timestamps: Record<string, number> = {}
+      for (const [name, cv] of Object.entries(channelValues.value)) {
+        timestamps[name] = cv.timestamp
+      }
+      return timestamps
+    },
+    getChannelUnits: () => {
+      // Return all channel units
+      const units: Record<string, string> = {}
+      for (const [name, cfg] of Object.entries(channelConfigs.value)) {
+        units[name] = cfg.unit || ''
+      }
+      return units
+    },
+    getSessionActive: () => {
+      // Session is active if system status shows acquiring
+      return systemStatus.value?.state === 'acquiring' || systemStatus.value?.state === 'running'
+    },
+    getSessionElapsed: () => {
+      // Return elapsed time if available from system status
+      return systemStatus.value?.elapsed ?? 0
+    }
+  })
+
+  // ========================================================================
+  // Python Script Lifecycle - Watch for state changes
+  // ========================================================================
+
+  // Track previous state for edge detection
+  let previousAcquisitionState: boolean = false
+
+  // Watch for acquisition state changes to trigger Python scripts
+  watch(
+    () => systemStatus.value?.state,
+    (newState, oldState) => {
+      const isAcquiring = newState === 'acquiring' || newState === 'running'
+      const wasAcquiring = oldState === 'acquiring' || oldState === 'running'
+
+      // Acquisition started
+      if (isAcquiring && !wasAcquiring) {
+        console.log('[Python Scripts] Acquisition started - triggering onAcquisitionStart')
+        pythonScripts.onAcquisitionStart()
+      }
+
+      // Acquisition stopped
+      if (!isAcquiring && wasAcquiring) {
+        console.log('[Python Scripts] Acquisition stopped - triggering onAcquisitionStop')
+        pythonScripts.onAcquisitionStop()
+      }
+    }
+  )
+
   function handleVariablesConfig(payload: any) {
-    console.log('MQTT: Received variables config:', payload)
+    // console.log('MQTT: Received variables config:', payload)
     playground.handleVariablesConfig(payload)
   }
 
   function handleVariablesValues(payload: any) {
-    console.log('MQTT: Received variables values:', Object.keys(payload).length, 'variables')
+    // Muted - floods console during debug
     playground.handleVariablesValues(payload)
   }
 
   function handleTestSessionStatus(payload: any) {
-    console.log('MQTT: Received test session status:', payload)
+    // Muted - too noisy, floods console
     playground.handleTestSessionStatus(payload)
   }
 
   function handleFormulaBlocksConfig(payload: any) {
-    console.log('MQTT: Received formula blocks config:', Object.keys(payload).length, 'blocks')
+    // Muted - floods console during debug
     playground.handleFormulaBlocksConfig(payload)
   }
 
   function handleFormulaBlocksValues(payload: any) {
-    console.log('MQTT: Received formula blocks values')
+    // Muted - floods console during debug
     playground.handleFormulaBlocksValues(payload)
   }
 
@@ -526,12 +685,28 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
   }
 
   function isAlarm(value: number, config: ChannelConfig): boolean {
+    // Check ISA-18.2 alarm_enabled flag first
+    if (config.alarm_enabled === false) return false
+
+    // ISA-18.2 critical limits (HiHi/LoLo)
+    if (config.hihi_limit !== undefined && value >= config.hihi_limit) return true
+    if (config.lolo_limit !== undefined && value <= config.lolo_limit) return true
+
+    // Legacy limits (backward compatibility)
     if (config.low_limit !== undefined && value < config.low_limit) return true
     if (config.high_limit !== undefined && value > config.high_limit) return true
     return false
   }
 
   function isWarning(value: number, config: ChannelConfig): boolean {
+    // Check ISA-18.2 alarm_enabled flag first
+    if (config.alarm_enabled === false) return false
+
+    // ISA-18.2 warning limits (Hi/Lo)
+    if (config.hi_limit !== undefined && value >= config.hi_limit) return true
+    if (config.lo_limit !== undefined && value <= config.lo_limit) return true
+
+    // Legacy limits (backward compatibility)
     if (config.low_warning !== undefined && value < config.low_warning) return true
     if (config.high_warning !== undefined && value > config.high_warning) return true
     return false
@@ -791,6 +966,17 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     statusCallbacks.push(callback)
   }
 
+  function onAlarm(callback: (alarm: any, event: 'triggered' | 'updated' | 'cleared') => void): () => void {
+    alarmCallbacks.push(callback)
+    // Return unsubscribe function
+    return () => {
+      const idx = alarmCallbacks.indexOf(callback)
+      if (idx > -1) {
+        alarmCallbacks.splice(idx, 1)
+      }
+    }
+  }
+
   function disconnect() {
     if (client.value) {
       client.value.end()
@@ -799,9 +985,9 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     connected.value = false
   }
 
-  onUnmounted(() => {
-    disconnect()
-  })
+  // NOTE: Removed onUnmounted hook - with singleton pattern, we don't want
+  // individual components to disconnect the shared MQTT connection when they unmount.
+  // The connection should persist for the lifetime of the app.
 
   return {
     // State
@@ -874,6 +1060,7 @@ export function useMqtt(systemPrefix: string = 'nisystem') {
     // Events
     onData,
     onStatus,
+    onAlarm,
 
     // Sequence control (for backend integration)
     startSequence: (sequenceId: string, steps: any[]) => {

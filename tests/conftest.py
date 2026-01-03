@@ -13,13 +13,34 @@ import time
 import json
 import threading
 from typing import Dict, List, Any, Optional
+import configparser
+from pathlib import Path
 import paho.mqtt.client as mqtt
 
 
-# Test configuration
-MQTT_HOST = "localhost"
-MQTT_PORT = 1883
-SYSTEM_PREFIX = "nisystem"
+def _load_system_settings() -> dict:
+    """Load MQTT settings from config/system.ini"""
+    config_path = Path(__file__).parent.parent / "config" / "system.ini"
+    settings = {
+        "mqtt_host": "localhost",
+        "mqtt_port": 1883,
+        "mqtt_base_topic": "nisystem"
+    }
+    if config_path.exists():
+        parser = configparser.RawConfigParser()
+        parser.read(config_path)
+        if 'system' in parser:
+            settings["mqtt_host"] = parser['system'].get('mqtt_broker', settings["mqtt_host"])
+            settings["mqtt_port"] = int(parser['system'].get('mqtt_port', settings["mqtt_port"]))
+            settings["mqtt_base_topic"] = parser['system'].get('mqtt_base_topic', settings["mqtt_base_topic"])
+    return settings
+
+
+# Load test configuration from system.ini
+_system_settings = _load_system_settings()
+MQTT_HOST = _system_settings["mqtt_host"]
+MQTT_PORT = _system_settings["mqtt_port"]
+SYSTEM_PREFIX = _system_settings["mqtt_base_topic"]
 
 
 class MQTTTestHarness:

@@ -4,11 +4,21 @@ import { usePlayground } from '../composables/usePlayground'
 import { useScripts } from '../composables/useScripts'
 import { useDashboardStore } from '../stores/dashboard'
 import FormulaEditor from './FormulaEditor.vue'
+import PythonScriptsTab from './PythonScriptsTab.vue'
 import type { UserVariable, UserVariableType, ResetMode, EdgeType, SourceRateUnit, FormulaBlock } from '../types'
 
 const playground = usePlayground()
 const scripts = useScripts()
 const store = useDashboardStore()
+
+// Subtab navigation
+type PlaygroundSubTab = 'variables' | 'python'
+const activeSubTab = ref<PlaygroundSubTab>('variables')
+
+const subTabs: { id: PlaygroundSubTab; label: string; icon: string }[] = [
+  { id: 'variables', label: 'Variables', icon: '𝑥' },
+  { id: 'python', label: 'Python', icon: '🐍' }
+]
 
 // UI state
 const showAddModal = ref(false)
@@ -48,7 +58,7 @@ const availableChannels = computed(() => {
     .filter(([_, ch]) => ch.visible !== false)
     .map(([name, ch]) => ({
       name,
-      displayName: ch.display_name || name,
+      displayName: name,  // TAG is the only identifier
       unit: ch.unit,
       type: ch.channel_type
     }))
@@ -280,13 +290,37 @@ onMounted(() => {
 
 <template>
   <div class="playground-tab">
-    <!-- Header -->
+    <!-- Header with Subtabs -->
     <div class="tab-header">
-      <h2>Data Playground</h2>
-      <button class="btn btn-primary" @click="openAddModal">
+      <div class="header-left">
+        <h2>Data Playground</h2>
+        <div class="subtab-nav">
+          <button
+            v-for="tab in subTabs"
+            :key="tab.id"
+            class="subtab-btn"
+            :class="{ active: activeSubTab === tab.id }"
+            @click="activeSubTab = tab.id"
+          >
+            <span class="subtab-icon">{{ tab.icon }}</span>
+            <span class="subtab-label">{{ tab.label }}</span>
+          </button>
+        </div>
+      </div>
+      <button
+        v-if="activeSubTab === 'variables'"
+        class="btn btn-primary"
+        @click="openAddModal"
+      >
         + Add Variable
       </button>
     </div>
+
+    <!-- Python Scripts Tab -->
+    <PythonScriptsTab v-if="activeSubTab === 'python'" />
+
+    <!-- Variables Tab Content -->
+    <template v-if="activeSubTab === 'variables'">
 
     <!-- Test Session Panel -->
     <div class="session-panel" :class="{ active: playground.isSessionActive.value }">
@@ -481,6 +515,7 @@ onMounted(() => {
         <p>Click "New Formula Block" to create complex calculations with conditional logic.</p>
       </div>
     </div>
+    </template>
 
     <!-- Formula Editor Modal -->
     <Teleport to="body">
@@ -786,6 +821,18 @@ onMounted(() => {
   padding: 1rem;
   max-width: 1400px;
   margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Python scripts tab needs to fill available space */
+.playground-tab > :deep(.python-scripts-container) {
+  flex: 1;
+  min-height: 0;
+  margin: -1rem;
+  margin-top: 0;
 }
 
 .tab-header {
@@ -795,10 +842,57 @@ onMounted(() => {
   margin-bottom: 1.5rem;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
 .tab-header h2 {
   margin: 0;
   font-size: 1.5rem;
   color: var(--text-primary);
+}
+
+/* Subtab Navigation */
+.subtab-nav {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-secondary);
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.subtab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+
+.subtab-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.subtab-btn.active {
+  background: var(--color-primary);
+  color: white;
+}
+
+.subtab-icon {
+  font-size: 14px;
+}
+
+.subtab-label {
+  font-weight: 500;
 }
 
 /* Session Panel */

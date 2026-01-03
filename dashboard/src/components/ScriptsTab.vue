@@ -17,9 +17,6 @@ import type {
   FunctionBlock,
   FunctionBlockTemplate,
   FunctionBlockCategory,
-  StateMachine,
-  ReportTemplate,
-  ScheduledReport,
   Watchdog,
   Draw,
   DrawPattern
@@ -39,13 +36,11 @@ const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
   { id: 'functionBlocks', label: 'Blocks', icon: 'blocks' },
   { id: 'sequences', label: 'Sequences', icon: 'list' },
   { id: 'drawPatterns', label: 'Draw Patterns', icon: 'valve' },
-  { id: 'stateMachines', label: 'States', icon: 'state' },
   { id: 'schedule', label: 'Schedule', icon: 'clock' },
   { id: 'alarms', label: 'Alarms', icon: 'bell' },
   { id: 'transformations', label: 'Transforms', icon: 'chart' },
   { id: 'triggers', label: 'Triggers', icon: 'zap' },
   { id: 'watchdogs', label: 'Watchdog', icon: 'eye' },
-  { id: 'reports', label: 'Reports', icon: 'file' },
   { id: 'templates', label: 'Templates', icon: 'book' }
 ]
 
@@ -351,9 +346,9 @@ const activeDrawPattern = computed(() => {
 const digitalOutputChannels = computed(() => {
   return Object.entries(store.channels)
     .filter(([_, config]) => config.channel_type === 'digital_output')
-    .map(([name, config]) => ({
+    .map(([name]) => ({
       name,
-      displayName: config.display_name || name
+      displayName: name  // TAG is the only identifier
     }))
 })
 
@@ -367,7 +362,7 @@ const flowChannels = computed(() => {
     )
     .map(([name, config]) => ({
       name,
-      displayName: config.display_name || name,
+      displayName: name,  // TAG is the only identifier
       unit: config.unit || ''
     }))
 })
@@ -527,7 +522,7 @@ function formatVolume(volume: number, unit: string): string {
 const channelVariables = computed(() => {
   return Object.entries(store.channels).map(([name, config]) => ({
     name,
-    displayName: config.display_name || name,
+    displayName: name,  // TAG is the only identifier
     variable: `ch.${name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
     type: config.channel_type,
     unit: config.unit
@@ -1293,10 +1288,10 @@ const bindingOptions = computed(() => {
   const options: Array<{ value: string; label: string; group: string }> = []
 
   // Add channels
-  Object.entries(store.channels).forEach(([name, config]) => {
+  Object.entries(store.channels).forEach(([name]) => {
     options.push({
       value: name,
-      label: config.display_name || name,
+      label: name,  // TAG is the only identifier
       group: 'Channels'
     })
   })
@@ -1373,79 +1368,27 @@ const templateCategories = computed(() => {
 })
 
 // =============================================================================
-// STATE MACHINE METHODS
-// =============================================================================
-
-function createStateMachine() {
-  const id = `sm-${Date.now()}`
-  const now = new Date().toISOString()
-  const initialStateId = `state-${Date.now()}-init`
-
-  const newSm: StateMachine = {
-    id,
-    name: 'New State Machine',
-    description: '',
-    enabled: true,
-    states: [
-      {
-        id: initialStateId,
-        name: 'Initial',
-        description: 'Initial state',
-        color: '#3b82f6',
-        entryActions: [],
-        exitActions: []
-      }
-    ],
-    initialStateId,
-    transitions: [],
-    currentStateId: initialStateId,
-    isRunning: false,
-    stateHistory: [],
-    createdAt: now,
-    modifiedAt: now
-  }
-
-  scripts.stateMachines.value.push(newSm)
-  saveStateMachines()
-}
-
-function editStateMachine(sm: StateMachine) {
-  // TODO: Open state machine editor modal
-  console.log('Edit state machine:', sm.id)
-}
-
-function toggleStateMachine(sm: StateMachine) {
-  sm.isRunning = !sm.isRunning
-  if (sm.isRunning) {
-    sm.stateEnteredAt = Date.now()
-  }
-  saveStateMachines()
-}
-
-function deleteStateMachine(id: string) {
-  if (confirm('Delete this state machine?')) {
-    scripts.stateMachines.value = scripts.stateMachines.value.filter(sm => sm.id !== id)
-    saveStateMachines()
-  }
-}
-
-function saveStateMachines() {
-  try {
-    localStorage.setItem('dcflux-state-machines', JSON.stringify(scripts.stateMachines.value))
-  } catch (e) {
-    console.error('Failed to save state machines:', e)
-  }
-}
-
-// =============================================================================
 // WATCHDOG METHODS
 // =============================================================================
 
-function createWatchdog() {
-  const id = `wd-${Date.now()}`
+const showWatchdogEditor = ref(false)
+const selectedWatchdog = ref<string | null>(null)
+const watchdogForm = ref<Partial<Watchdog>>({
+  name: '',
+  description: '',
+  enabled: true,
+  channels: [],
+  condition: {
+    type: 'stale_data',
+    maxStaleMs: 5000
+  },
+  actions: [],
+  autoRecover: true,
+  cooldownMs: 10000
+})
 
-  const newWd: Watchdog = {
-    id,
+function createWatchdog() {
+  watchdogForm.value = {
     name: 'New Watchdog',
     description: '',
     enabled: true,
@@ -1456,17 +1399,96 @@ function createWatchdog() {
     },
     actions: [],
     autoRecover: true,
-    isTriggered: false,
     cooldownMs: 10000
   }
-
-  scripts.watchdogs.value.push(newWd)
-  saveWatchdogs()
+  selectedWatchdog.value = null
+  showWatchdogEditor.value = true
 }
 
 function editWatchdog(wd: Watchdog) {
-  // TODO: Open watchdog editor modal
-  console.log('Edit watchdog:', wd.id)
+  watchdogForm.value = {
+    name: wd.name,
+    description: wd.description,
+    enabled: wd.enabled,
+    channels: [...wd.channels],
+    condition: { ...wd.condition },
+    actions: wd.actions.map(a => ({ ...a })),
+    autoRecover: wd.autoRecover,
+    cooldownMs: wd.cooldownMs
+  }
+  selectedWatchdog.value = wd.id
+  showWatchdogEditor.value = true
+}
+
+function saveWatchdog() {
+  if (selectedWatchdog.value) {
+    // Update existing
+    const index = scripts.watchdogs.value.findIndex(wd => wd.id === selectedWatchdog.value)
+    if (index >= 0) {
+      scripts.watchdogs.value[index] = {
+        ...scripts.watchdogs.value[index],
+        ...watchdogForm.value
+      } as Watchdog
+    }
+  } else {
+    // Create new
+    const newWd: Watchdog = {
+      id: `wd-${Date.now()}`,
+      name: watchdogForm.value.name || 'New Watchdog',
+      description: watchdogForm.value.description || '',
+      enabled: watchdogForm.value.enabled ?? true,
+      channels: watchdogForm.value.channels || [],
+      condition: watchdogForm.value.condition || { type: 'stale_data', maxStaleMs: 5000 },
+      actions: watchdogForm.value.actions || [],
+      autoRecover: watchdogForm.value.autoRecover ?? true,
+      isTriggered: false,
+      cooldownMs: watchdogForm.value.cooldownMs || 10000
+    }
+    scripts.watchdogs.value.push(newWd)
+  }
+  saveWatchdogs()
+  showWatchdogEditor.value = false
+}
+
+function closeWatchdogEditor() {
+  showWatchdogEditor.value = false
+  selectedWatchdog.value = null
+}
+
+function addWatchdogChannel(channelName: string) {
+  if (!watchdogForm.value.channels) {
+    watchdogForm.value.channels = []
+  }
+  if (!watchdogForm.value.channels.includes(channelName)) {
+    watchdogForm.value.channels.push(channelName)
+  }
+}
+
+function removeWatchdogChannel(index: number) {
+  watchdogForm.value.channels?.splice(index, 1)
+}
+
+function addWatchdogAction() {
+  if (!watchdogForm.value.actions) {
+    watchdogForm.value.actions = []
+  }
+  watchdogForm.value.actions.push({
+    type: 'notification',
+    message: '',
+    alarmSeverity: 'warning'
+  })
+}
+
+function removeWatchdogAction(index: number) {
+  watchdogForm.value.actions?.splice(index, 1)
+}
+
+function clearWatchdogTrigger(wd: Watchdog) {
+  wd.isTriggered = false
+  wd.triggeredAt = undefined
+  wd.triggeredChannels = []
+  saveWatchdogs()
+  scripts.addNotification('info', 'Watchdog Cleared', `Manually cleared trigger on "${wd.name}"`)
 }
 
 function deleteWatchdog(id: string) {
@@ -1499,113 +1521,6 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   }
 }
 
-// =============================================================================
-// REPORT METHODS
-// =============================================================================
-
-function createReportTemplate() {
-  const id = `rpt-${Date.now()}`
-
-  const newTemplate: ReportTemplate = {
-    id,
-    name: 'New Report',
-    description: '',
-    format: 'pdf',
-    sections: [
-      {
-        id: `sec-${Date.now()}`,
-        type: 'summary',
-        title: 'Summary',
-        enabled: true
-      }
-    ],
-    includeHeader: true,
-    includeFooter: true,
-    period: 'last_24h'
-  }
-
-  scripts.reportTemplates.value.push(newTemplate)
-  saveReportTemplates()
-}
-
-function editReportTemplate(template: ReportTemplate) {
-  // TODO: Open report template editor modal
-  console.log('Edit report template:', template.id)
-}
-
-function deleteReportTemplate(id: string) {
-  if (confirm('Delete this report template?')) {
-    scripts.reportTemplates.value = scripts.reportTemplates.value.filter(t => t.id !== id)
-    saveReportTemplates()
-  }
-}
-
-function generateReport(template: ReportTemplate) {
-  // TODO: Implement report generation
-  console.log('Generate report from template:', template.id)
-  scripts.addNotification('info', 'Report', `Generating ${template.name}...`)
-}
-
-function saveReportTemplates() {
-  try {
-    localStorage.setItem('dcflux-report-templates', JSON.stringify(scripts.reportTemplates.value))
-  } catch (e) {
-    console.error('Failed to save report templates:', e)
-  }
-}
-
-function createScheduledReport() {
-  const id = `sr-${Date.now()}`
-
-  const newSr: ScheduledReport = {
-    id,
-    name: 'New Scheduled Report',
-    templateId: scripts.reportTemplates.value[0]?.id || '',
-    enabled: false,
-    schedule: 'daily',
-    time: '08:00'
-  }
-
-  scripts.scheduledReports.value.push(newSr)
-  saveScheduledReports()
-}
-
-function editScheduledReport(sr: ScheduledReport) {
-  // TODO: Open scheduled report editor modal
-  console.log('Edit scheduled report:', sr.id)
-}
-
-function deleteScheduledReport(id: string) {
-  if (confirm('Delete this scheduled report?')) {
-    scripts.scheduledReports.value = scripts.scheduledReports.value.filter(sr => sr.id !== id)
-    saveScheduledReports()
-  }
-}
-
-function saveScheduledReports() {
-  try {
-    localStorage.setItem('dcflux-scheduled-reports', JSON.stringify(scripts.scheduledReports.value))
-  } catch (e) {
-    console.error('Failed to save scheduled reports:', e)
-  }
-}
-
-function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): string {
-  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-  switch (schedule) {
-    case 'daily':
-      return `Daily at ${time || '00:00'}`
-    case 'weekly':
-      return `${days[dayOfWeek || 0]} at ${time || '00:00'}`
-    case 'monthly':
-      return `Monthly at ${time || '00:00'}`
-    case 'on_recording_stop':
-      return 'When recording stops'
-    default:
-      return schedule
-  }
-}
 </script>
 
 <template>
@@ -3723,73 +3638,6 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
       </div>
     </div>
 
-    <!-- ===================================================================== -->
-    <!-- STATE MACHINES TAB -->
-    <!-- ===================================================================== -->
-    <div v-if="scripts.activeSubTab.value === 'stateMachines'" class="tab-content">
-      <div class="toolbar">
-        <button class="btn btn-primary" @click="createStateMachine">
-          + New State Machine
-        </button>
-        <div class="spacer"></div>
-      </div>
-
-      <div class="main-content">
-        <div v-if="scripts.stateMachines.value.length === 0" class="empty-state">
-          <div class="empty-icon">🔄</div>
-          <h3>No State Machines</h3>
-          <p>State machines define system modes with automatic transitions based on conditions.</p>
-          <button class="btn btn-primary" @click="createStateMachine">Create Your First State Machine</button>
-        </div>
-
-        <div v-else class="state-machines-grid">
-          <div
-            v-for="sm in scripts.stateMachines.value"
-            :key="sm.id"
-            class="state-machine-card"
-            :class="{ running: sm.isRunning, disabled: !sm.enabled }"
-          >
-            <div class="card-header">
-              <h4>{{ sm.name }}</h4>
-              <div class="card-actions">
-                <button
-                  class="icon-btn"
-                  :class="{ active: sm.isRunning }"
-                  @click="toggleStateMachine(sm)"
-                  :title="sm.isRunning ? 'Stop' : 'Start'"
-                >
-                  {{ sm.isRunning ? '⏹' : '▶' }}
-                </button>
-                <button v-if="false" class="icon-btn" @click="editStateMachine(sm)" title="Edit">✏️</button>
-                <button class="icon-btn danger" @click="deleteStateMachine(sm.id)" title="Delete">🗑️</button>
-              </div>
-            </div>
-            <p class="card-desc">{{ sm.description }}</p>
-            <div class="state-diagram-mini">
-              <div class="states-row">
-                <div
-                  v-for="state in sm.states.slice(0, 5)"
-                  :key="state.id"
-                  class="state-node-mini"
-                  :class="{ current: sm.currentStateId === state.id, fault: state.isFaultState }"
-                  :style="{ backgroundColor: state.color || '#374151' }"
-                >
-                  {{ state.name.slice(0, 3) }}
-                </div>
-                <div v-if="sm.states.length > 5" class="more-states">+{{ sm.states.length - 5 }}</div>
-              </div>
-            </div>
-            <div class="card-footer">
-              <span class="state-count">{{ sm.states.length }} states</span>
-              <span class="transition-count">{{ sm.transitions.length }} transitions</span>
-              <span v-if="sm.isRunning" class="current-state">
-                Current: <strong>{{ sm.states.find(s => s.id === sm.currentStateId)?.name || 'Unknown' }}</strong>
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- ===================================================================== -->
     <!-- WATCHDOGS TAB -->
@@ -3800,6 +3648,7 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
           + New Watchdog
         </button>
         <div class="spacer"></div>
+        <div class="count">{{ scripts.watchdogs.value.length }} watchdogs</div>
       </div>
 
       <div class="main-content">
@@ -3823,19 +3672,20 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
                 <h4>{{ wd.name }}</h4>
               </div>
               <div class="card-actions">
+                <button v-if="wd.isTriggered" class="icon-btn warning" @click="clearWatchdogTrigger(wd)" title="Clear Trigger">🔄</button>
                 <label class="toggle-switch small">
                   <input type="checkbox" v-model="wd.enabled" @change="saveWatchdogs">
                   <span class="toggle-slider"></span>
                 </label>
-                <button v-if="false" class="icon-btn" @click="editWatchdog(wd)" title="Edit">✏️</button>
+                <button class="icon-btn" @click="editWatchdog(wd)" title="Edit">✏️</button>
                 <button class="icon-btn danger" @click="deleteWatchdog(wd.id)" title="Delete">🗑️</button>
               </div>
             </div>
-            <p class="card-desc">{{ wd.description }}</p>
+            <p class="card-desc">{{ wd.description || 'No description' }}</p>
             <div class="watchdog-details">
               <div class="detail-row">
                 <span class="detail-label">Monitoring:</span>
-                <span class="detail-value">{{ wd.channels.join(', ') }}</span>
+                <span class="detail-value">{{ wd.channels.length ? wd.channels.join(', ') : '(no channels)' }}</span>
               </div>
               <div class="detail-row">
                 <span class="detail-label">Condition:</span>
@@ -3845,6 +3695,10 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
                 <span class="detail-label">Actions:</span>
                 <span class="detail-value">{{ wd.actions.length }} action(s)</span>
               </div>
+              <div class="detail-row">
+                <span class="detail-label">Auto-recover:</span>
+                <span class="detail-value">{{ wd.autoRecover ? 'Yes' : 'No' }}</span>
+              </div>
             </div>
             <div v-if="wd.isTriggered" class="triggered-banner">
               ⚠️ TRIGGERED at {{ new Date(wd.triggeredAt || 0).toLocaleTimeString() }}
@@ -3852,88 +3706,196 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
             </div>
           </div>
         </div>
-      </div>
-    </div>
 
-    <!-- ===================================================================== -->
-    <!-- REPORTS TAB -->
-    <!-- ===================================================================== -->
-    <div v-if="scripts.activeSubTab.value === 'reports'" class="tab-content">
-      <div class="toolbar">
-        <button class="btn btn-primary" @click="createReportTemplate">
-          + New Report Template
-        </button>
-        <button class="btn btn-secondary" @click="createScheduledReport">
-          + Schedule Report
-        </button>
-        <div class="spacer"></div>
-      </div>
-
-      <div class="main-content reports-layout">
-        <!-- Report Templates -->
-        <div class="reports-section">
-          <h3>Report Templates</h3>
-          <div v-if="scripts.reportTemplates.value.length === 0" class="empty-state small">
-            <p>No report templates defined. Create one to generate reports from recorded data.</p>
+        <!-- Watchdog Editor Modal -->
+        <div class="editor-panel wide" :class="{ visible: showWatchdogEditor }">
+          <div class="editor-header">
+            <h3>{{ selectedWatchdog ? 'Edit' : 'New' }} Watchdog</h3>
+            <button class="close-btn" @click="closeWatchdogEditor">✕</button>
           </div>
-          <div v-else class="templates-grid">
-            <div
-              v-for="template in scripts.reportTemplates.value"
-              :key="template.id"
-              class="report-template-card"
-            >
-              <div class="card-header">
-                <h4>{{ template.name }}</h4>
-                <div class="card-actions">
-                  <button v-if="false" class="icon-btn" @click="generateReport(template)" title="Generate Now">📄</button>
-                  <button v-if="false" class="icon-btn" @click="editReportTemplate(template)" title="Edit">✏️</button>
-                  <button class="icon-btn danger" @click="deleteReportTemplate(template.id)" title="Delete">🗑️</button>
-                </div>
+          <div class="editor-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Name</label>
+                <input v-model="watchdogForm.name" type="text" placeholder="e.g., Sensor Stale Check" />
               </div>
-              <p class="card-desc">{{ template.description }}</p>
-              <div class="template-meta">
-                <span class="format-badge">{{ template.format.toUpperCase() }}</span>
-                <span>{{ template.sections.length }} sections</span>
+              <div class="form-group">
+                <label>Description</label>
+                <input v-model="watchdogForm.description" type="text" placeholder="e.g., Alert if temperature sensors stop updating" />
+              </div>
+            </div>
+
+            <!-- Channels to Monitor -->
+            <div class="form-group">
+              <label>Channels to Monitor</label>
+              <div class="channels-select-area">
+                <div class="selected-channels">
+                  <span
+                    v-for="(ch, idx) in watchdogForm.channels"
+                    :key="ch"
+                    class="channel-tag"
+                  >
+                    {{ ch }}
+                    <button class="remove-tag" @click="removeWatchdogChannel(idx)">✕</button>
+                  </span>
+                  <span v-if="!watchdogForm.channels?.length" class="no-channels">No channels selected</span>
+                </div>
+                <select @change="addWatchdogChannel(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+                  <option value="">+ Add channel...</option>
+                  <option
+                    v-for="ch in channelVariables.filter(c => !watchdogForm.channels?.includes(c.name))"
+                    :key="ch.name"
+                    :value="ch.name"
+                  >
+                    {{ ch.displayName }} ({{ ch.type }})
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Condition Type -->
+            <div class="form-group">
+              <label>Condition Type</label>
+              <select v-model="watchdogForm.condition!.type">
+                <option value="stale_data">Stale Data (no updates)</option>
+                <option value="out_of_range">Out of Range (min/max)</option>
+                <option value="rate_exceeded">Rate Exceeded (change too fast)</option>
+                <option value="stuck_value">Stuck Value (no change)</option>
+              </select>
+            </div>
+
+            <!-- Condition Parameters -->
+            <div class="form-row" v-if="watchdogForm.condition?.type === 'stale_data'">
+              <div class="form-group">
+                <label>Max Stale Time (seconds)</label>
+                <input
+                  type="number"
+                  :value="(watchdogForm.condition?.maxStaleMs || 5000) / 1000"
+                  @input="watchdogForm.condition!.maxStaleMs = parseFloat(($event.target as HTMLInputElement).value) * 1000"
+                  min="1"
+                  step="1"
+                />
+              </div>
+            </div>
+
+            <div class="form-row" v-if="watchdogForm.condition?.type === 'out_of_range'">
+              <div class="form-group">
+                <label>Minimum Value</label>
+                <input type="number" v-model.number="watchdogForm.condition!.minValue" step="0.1" />
+              </div>
+              <div class="form-group">
+                <label>Maximum Value</label>
+                <input type="number" v-model.number="watchdogForm.condition!.maxValue" step="0.1" />
+              </div>
+            </div>
+
+            <div class="form-row" v-if="watchdogForm.condition?.type === 'rate_exceeded'">
+              <div class="form-group">
+                <label>Max Rate (per minute)</label>
+                <input type="number" v-model.number="watchdogForm.condition!.maxRatePerMin" min="0" step="0.1" />
+              </div>
+            </div>
+
+            <div class="form-row" v-if="watchdogForm.condition?.type === 'stuck_value'">
+              <div class="form-group">
+                <label>Stuck Duration (seconds)</label>
+                <input
+                  type="number"
+                  :value="(watchdogForm.condition?.stuckDurationMs || 60000) / 1000"
+                  @input="watchdogForm.condition!.stuckDurationMs = parseFloat(($event.target as HTMLInputElement).value) * 1000"
+                  min="1"
+                  step="1"
+                />
+              </div>
+              <div class="form-group">
+                <label>Stuck Tolerance (±)</label>
+                <input type="number" v-model.number="watchdogForm.condition!.stuckTolerance" min="0" step="0.01" />
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="form-group">
+              <label>Actions when Triggered</label>
+              <div class="actions-list">
+                <div
+                  v-for="(action, idx) in watchdogForm.actions"
+                  :key="idx"
+                  class="action-row"
+                >
+                  <select v-model="action.type">
+                    <option value="notification">Notification</option>
+                    <option value="alarm">Alarm</option>
+                    <option value="setOutput">Set Output</option>
+                    <option value="stopSequence">Stop Sequence</option>
+                    <option value="stopRecording">Stop Recording</option>
+                  </select>
+                  <input
+                    v-if="action.type === 'notification' || action.type === 'alarm'"
+                    v-model="action.message"
+                    type="text"
+                    placeholder="Alert message..."
+                    class="action-message"
+                  />
+                  <select
+                    v-if="action.type === 'alarm'"
+                    v-model="action.alarmSeverity"
+                    class="severity-select"
+                  >
+                    <option value="info">Info</option>
+                    <option value="warning">Warning</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                  <select
+                    v-if="action.type === 'setOutput'"
+                    v-model="action.channel"
+                    class="channel-select"
+                  >
+                    <option value="">Select output...</option>
+                    <option v-for="ch in outputChannels" :key="ch.name" :value="ch.name">
+                      {{ ch.displayName }}
+                    </option>
+                  </select>
+                  <input
+                    v-if="action.type === 'setOutput'"
+                    v-model.number="action.value"
+                    type="number"
+                    placeholder="Value"
+                    class="action-value"
+                  />
+                  <button class="remove-action" @click="removeWatchdogAction(idx)">✕</button>
+                </div>
+                <button class="btn btn-secondary btn-small" @click="addWatchdogAction">+ Add Action</button>
+              </div>
+            </div>
+
+            <!-- Recovery Options -->
+            <div class="form-row">
+              <div class="form-group checkbox-group">
+                <label>
+                  <input type="checkbox" v-model="watchdogForm.autoRecover" />
+                  Auto-recover when condition clears
+                </label>
+              </div>
+              <div class="form-group">
+                <label>Cooldown (seconds)</label>
+                <input
+                  type="number"
+                  :value="(watchdogForm.cooldownMs || 10000) / 1000"
+                  @input="watchdogForm.cooldownMs = parseFloat(($event.target as HTMLInputElement).value) * 1000"
+                  min="1"
+                  step="1"
+                />
               </div>
             </div>
           </div>
-        </div>
-
-        <!-- Scheduled Reports -->
-        <div class="reports-section">
-          <h3>Scheduled Reports</h3>
-          <div v-if="scripts.scheduledReports.value.length === 0" class="empty-state small">
-            <p>No scheduled reports. Schedule automatic report generation.</p>
-          </div>
-          <div v-else class="scheduled-list">
-            <div
-              v-for="sr in scripts.scheduledReports.value"
-              :key="sr.id"
-              class="scheduled-report-card"
-              :class="{ disabled: !sr.enabled }"
-            >
-              <div class="card-header">
-                <h4>{{ sr.name }}</h4>
-                <div class="card-actions">
-                  <label class="toggle-switch small">
-                    <input type="checkbox" v-model="sr.enabled" @change="saveScheduledReports">
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <button v-if="false" class="icon-btn" @click="editScheduledReport(sr)" title="Edit">✏️</button>
-                  <button class="icon-btn danger" @click="deleteScheduledReport(sr.id)" title="Delete">🗑️</button>
-                </div>
-              </div>
-              <div class="schedule-info">
-                <span class="schedule-badge">{{ formatSchedule(sr.schedule, sr.time, sr.dayOfWeek) }}</span>
-                <span v-if="sr.lastGenerated" class="last-run">
-                  Last: {{ new Date(sr.lastGenerated).toLocaleDateString() }}
-                </span>
-              </div>
-            </div>
+          <div class="editor-actions">
+            <button class="btn btn-secondary" @click="closeWatchdogEditor">Cancel</button>
+            <button class="btn btn-primary" @click="saveWatchdog" :disabled="!watchdogForm.name || !watchdogForm.channels?.length">Save</button>
           </div>
         </div>
       </div>
     </div>
+
   </div>
 </template>
 
@@ -5603,82 +5565,6 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
 }
 
 /* ============================================
-   STATE MACHINES TAB
-   ============================================ */
-
-.state-machines-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 16px;
-  padding: 16px;
-}
-
-.state-machine-card {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.state-machine-card.running {
-  border-color: #22c55e;
-}
-
-.state-machine-card.disabled {
-  opacity: 0.5;
-}
-
-.state-diagram-mini {
-  margin: 12px 0;
-}
-
-.states-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.state-node-mini {
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  color: #fff;
-  font-weight: 500;
-}
-
-.state-node-mini.current {
-  box-shadow: 0 0 8px currentColor;
-  animation: pulse 1s infinite;
-}
-
-.state-node-mini.fault {
-  border: 2px solid #ef4444;
-}
-
-.more-states {
-  padding: 4px 8px;
-  background: #374151;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  color: #888;
-}
-
-.card-footer {
-  display: flex;
-  gap: 12px;
-  font-size: 0.75rem;
-  color: #888;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #2a2a4a;
-}
-
-.current-state {
-  margin-left: auto;
-  color: #22c55e;
-}
-
-/* ============================================
    WATCHDOGS TAB
    ============================================ */
 
@@ -5756,77 +5642,135 @@ function formatSchedule(schedule: string, time?: string, dayOfWeek?: number): st
   color: #fff;
 }
 
-/* ============================================
-   REPORTS TAB
-   ============================================ */
-
-.reports-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  padding: 16px;
-}
-
-.reports-section h3 {
-  margin: 0 0 12px;
-  font-size: 1rem;
-  color: #fff;
-}
-
-.templates-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.report-template-card,
-.scheduled-report-card {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.template-meta {
-  display: flex;
-  gap: 12px;
-  margin-top: 8px;
-  font-size: 0.75rem;
-  color: #888;
-}
-
-.format-badge {
-  padding: 2px 6px;
-  background: #3b82f6;
-  border-radius: 4px;
-  color: #fff;
-  font-size: 0.65rem;
-  font-weight: 600;
-}
-
-.scheduled-list {
+/* Watchdog Editor Styles */
+.channels-select-area {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.schedule-info {
+.selected-channels {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 8px;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+}
+
+.channel-tag {
+  display: inline-flex;
   align-items: center;
-  margin-top: 8px;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #3b82f6;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.channel-tag .remove-tag {
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.channel-tag .remove-tag:hover {
+  opacity: 1;
+}
+
+.no-channels {
+  color: #666;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+}
+
+.action-row select {
+  min-width: 120px;
+}
+
+.action-row .action-message {
+  flex: 1;
+  min-width: 150px;
+}
+
+.action-row .severity-select {
+  width: 90px;
+}
+
+.action-row .channel-select {
+  min-width: 140px;
+}
+
+.action-row .action-value {
+  width: 80px;
+}
+
+.action-row .remove-action {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
   font-size: 0.8rem;
 }
 
-.schedule-badge {
-  padding: 4px 8px;
-  background: #374151;
-  border-radius: 4px;
-  color: #fff;
+.action-row .remove-action:hover {
+  background: #dc2626;
 }
 
-.last-run {
-  color: #888;
+.btn-small {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.icon-btn.warning {
+  color: #f59e0b;
+}
+
+.icon-btn.warning:hover {
+  background: rgba(245, 158, 11, 0.1);
 }
 
 /* Common card styles */

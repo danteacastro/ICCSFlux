@@ -38,7 +38,7 @@ const maxValue = computed(() => {
 })
 
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel
+  props.label || props.channel
 )
 
 const unit = computed(() => channelConfig.value?.unit || '')

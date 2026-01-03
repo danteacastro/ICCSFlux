@@ -91,7 +91,7 @@ const currentValues = computed(() => {
     const config = store.channels[ch]
     return {
       channel: ch,
-      name: config?.display_name || ch,
+      name: ch,  // TAG is the only identifier
       value: data?.value,
       unit: config?.unit || '',
       color: getChannelColor(ch, idx),
@@ -121,7 +121,7 @@ function initChart() {
     ...props.channels.map((ch, i) => {
       const visible = isChannelVisible(ch)
       return {
-        label: store.channels[ch]?.display_name || ch,
+        label: ch,  // TAG is the only identifier
         stroke: getChannelColor(ch, i),
         width: getChannelLineWidth(ch),
         show: visible,
@@ -606,7 +606,7 @@ function toggleChannelVisibility(channel: string) {
             class="cursor-reading"
             :style="{ color: getChannelColor(cv.channel, idx) }"
           >
-            {{ store.channels[cv.channel]?.display_name || cv.channel }}:
+            {{ cv.channel }}:
             {{ cv.value?.toFixed(2) ?? '--' }}
           </span>
         </div>

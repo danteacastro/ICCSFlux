@@ -19,7 +19,8 @@ import paho.mqtt.client as mqtt
 
 from config_parser import (
     load_config, load_config_safe, validate_config, NISystemConfig, ChannelConfig, ChannelType,
-    get_input_channels, get_output_channels, ConfigValidationError, ValidationResult
+    get_input_channels, get_output_channels, ConfigValidationError, ValidationResult,
+    SystemConfig, ThermocoupleType
 )
 from simulator import HardwareSimulator
 from hardware_reader import HardwareReader, NIDAQMX_AVAILABLE as HW_READER_AVAILABLE
@@ -72,6 +73,11 @@ class DAQService:
         self._running = threading.Event()
         self._acquiring = threading.Event()
         self._shutdown_requested = threading.Event()
+
+        # CRITICAL: Explicitly ensure acquiring starts as False
+        # This prevents auto-start of data acquisition on service startup
+        self._acquiring.clear()
+        logger.info("Acquisition state initialized: acquiring=False (safe startup)")
 
         # Service start time for uptime tracking
         self._start_time: Optional[datetime] = None
@@ -146,6 +152,18 @@ class DAQService:
 
         # Enhanced alarm manager
         self.alarm_manager: Optional[AlarmManager] = None
+
+        # Resource monitoring
+        self._cpu_percent = 0.0
+        self._memory_mb = 0.0
+        self._resource_monitor_enabled = False
+        try:
+            import psutil
+            self._process = psutil.Process()
+            self._resource_monitor_enabled = True
+        except ImportError:
+            logger.warning("psutil not installed - resource monitoring disabled")
+            self._process = None
 
         self._load_config()
         self._init_scheduler()
@@ -251,6 +269,150 @@ class DAQService:
             logger.error(f"Configuration validation failed: {e}")
             raise
 
+    def _apply_project_config(self, project_data: Dict[str, Any]) -> bool:
+        """Apply configuration from project JSON (channels, system settings)
+
+        This replaces the need for a separate .ini file - all config is in the project JSON.
+
+        Args:
+            project_data: The loaded project JSON dict
+
+        Returns:
+            True if config was applied successfully
+        """
+        try:
+            # Parse system settings from project
+            sys_data = project_data.get("system", {})
+            system = SystemConfig(
+                mqtt_broker=sys_data.get("mqtt_broker", "localhost"),
+                mqtt_port=int(sys_data.get("mqtt_port", 1883)),
+                mqtt_base_topic=sys_data.get("mqtt_base_topic", "nisystem"),
+                scan_rate_hz=min(float(sys_data.get("scan_rate_hz", 20)), 100.0),
+                publish_rate_hz=min(float(sys_data.get("publish_rate_hz", 4)), 10.0),
+                simulation_mode=sys_data.get("simulation_mode", False),
+                log_directory=sys_data.get("log_directory", "./logs"),
+                config_reload_topic=sys_data.get("config_reload_topic", "nisystem/config/reload")
+            )
+
+            # Parse channels from project
+            channels_data = project_data.get("channels", {})
+            channels: Dict[str, ChannelConfig] = {}
+
+            for name, ch_data in channels_data.items():
+                # Determine channel type
+                ch_type_str = ch_data.get("channel_type", "voltage")
+                channel_type = ChannelType(ch_type_str)
+
+                # Parse thermocouple type if present
+                tc_type = None
+                if "thermocouple_type" in ch_data:
+                    tc_type = ThermocoupleType(ch_data["thermocouple_type"])
+
+                channels[name] = ChannelConfig(
+                    name=name,
+                    module=ch_data.get("module", ""),
+                    physical_channel=ch_data.get("physical_channel", ""),
+                    channel_type=channel_type,
+                    description=ch_data.get("description", ""),  # For tooltips/documentation only
+                    units=ch_data.get("units", ""),
+                    visible=ch_data.get("visible", True),
+                    group=ch_data.get("group", ""),
+                    scale_slope=float(ch_data.get("scale_slope", 1.0)),
+                    scale_offset=float(ch_data.get("scale_offset", 0.0)),
+                    scale_type=ch_data.get("scale_type", "none"),
+                    four_twenty_scaling=ch_data.get("four_twenty_scaling", False),
+                    eng_units_min=float(ch_data["eng_units_min"]) if "eng_units_min" in ch_data else None,
+                    eng_units_max=float(ch_data["eng_units_max"]) if "eng_units_max" in ch_data else None,
+                    pre_scaled_min=float(ch_data["pre_scaled_min"]) if "pre_scaled_min" in ch_data else None,
+                    pre_scaled_max=float(ch_data["pre_scaled_max"]) if "pre_scaled_max" in ch_data else None,
+                    scaled_min=float(ch_data["scaled_min"]) if "scaled_min" in ch_data else None,
+                    scaled_max=float(ch_data["scaled_max"]) if "scaled_max" in ch_data else None,
+                    voltage_range=float(ch_data.get("voltage_range", 10.0)),
+                    current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
+                    terminal_config=ch_data.get("terminal_config", "RSE"),
+                    thermocouple_type=tc_type,
+                    cjc_source=ch_data.get("cjc_source", "internal"),
+                    # RTD
+                    rtd_type=ch_data.get("rtd_type", "Pt100"),
+                    rtd_resistance=float(ch_data.get("rtd_resistance", 100.0)),
+                    rtd_wiring=ch_data.get("rtd_wiring", ch_data.get("resistance_config", "4-wire")),
+                    rtd_current=float(ch_data.get("rtd_current", ch_data.get("excitation_current", 0.001))),
+                    # Digital
+                    invert=ch_data.get("invert", False),
+                    default_state=ch_data.get("default_state", False),
+                    default_value=float(ch_data.get("default_value", 0.0)),
+                    # Legacy limits (for backward compatibility)
+                    low_limit=float(ch_data["low_limit"]) if "low_limit" in ch_data else None,
+                    high_limit=float(ch_data["high_limit"]) if "high_limit" in ch_data else None,
+                    low_warning=float(ch_data["low_warning"]) if "low_warning" in ch_data else None,
+                    high_warning=float(ch_data["high_warning"]) if "high_warning" in ch_data else None,
+                    # ISA-18.2 Alarm Configuration
+                    alarm_enabled=ch_data.get("alarm_enabled", False),
+                    hihi_limit=float(ch_data["hihi_limit"]) if "hihi_limit" in ch_data else None,
+                    hi_limit=float(ch_data["hi_limit"]) if "hi_limit" in ch_data else None,
+                    lo_limit=float(ch_data["lo_limit"]) if "lo_limit" in ch_data else None,
+                    lolo_limit=float(ch_data["lolo_limit"]) if "lolo_limit" in ch_data else None,
+                    alarm_priority=ch_data.get("alarm_priority", "medium"),
+                    alarm_deadband=float(ch_data.get("alarm_deadband", 1.0)),
+                    alarm_delay_sec=float(ch_data.get("alarm_delay_sec", 0.0)),
+                    # Safety
+                    safety_action=ch_data.get("safety_action"),
+                    safety_interlock=ch_data.get("safety_interlock"),
+                    # Logging
+                    log=ch_data.get("log", True),
+                    log_interval_ms=int(ch_data.get("log_interval_ms", 1000))
+                )
+
+            # Create new config with parsed data
+            # Keep existing chassis/modules/safety_actions if available
+            self.config = NISystemConfig(
+                system=system,
+                chassis=self.config.chassis if self.config else {},
+                modules=self.config.modules if self.config else {},
+                channels=channels,
+                safety_actions=self.config.safety_actions if self.config else {}
+            )
+
+            # Reinitialize hardware reader or simulator based on new config
+            if self.config.system.simulation_mode:
+                logger.info("Simulation mode enabled - using hardware simulator")
+                self.simulator = HardwareSimulator(self.config)
+                self.hardware_reader = None
+            elif not HW_READER_AVAILABLE:
+                logger.warning("nidaqmx not available - falling back to simulator")
+                self.simulator = HardwareSimulator(self.config)
+                self.hardware_reader = None
+            else:
+                # Real hardware mode
+                logger.info("Initializing hardware reader for real NI hardware")
+                try:
+                    self.hardware_reader = HardwareReader(self.config)
+                    self.simulator = None
+                    logger.info("Hardware reader initialized successfully")
+                except Exception as e:
+                    logger.error(f"Failed to initialize hardware reader: {e}")
+                    logger.warning("Falling back to simulator")
+                    self.hardware_reader = None
+                    self.simulator = HardwareSimulator(self.config)
+
+            # Initialize channel values
+            for name, channel in self.config.channels.items():
+                if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                    self.channel_values[name] = channel.default_state
+                elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
+                    self.channel_values[name] = channel.default_value
+                else:
+                    self.channel_values[name] = 0.0
+
+            logger.info(f"Applied project config: {len(channels)} channels")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to apply project config: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def _init_modbus_reader(self):
         """Initialize Modbus reader if Modbus devices are configured"""
         if not PYMODBUS_AVAILABLE:
@@ -346,42 +508,70 @@ class DAQService:
         logger.info("User variable manager initialized")
 
     def _init_alarm_manager(self):
-        """Initialize the enhanced alarm manager"""
+        """Initialize the enhanced alarm manager with ISA-18.2 compliant alarm configuration"""
         data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
         self.alarm_manager = AlarmManager(
             data_dir=data_dir,
             publish_callback=self._alarm_manager_publish
         )
 
-        # Auto-create alarm configs from channel configs that have limits defined
+        # Auto-create alarm configs from channel configs
         for name, channel in self.config.channels.items():
-            # Skip if no limits defined
-            if not any([channel.high_limit, channel.low_limit, channel.high_warning, channel.low_warning]):
-                continue
-
             # Check if config already exists
             if self.alarm_manager.get_alarm_config(f"alarm-{name}"):
                 continue
 
-            # Determine severity based on channel config
-            severity = AlarmSeverity.MEDIUM
-            if channel.safety_action:
-                severity = AlarmSeverity.HIGH  # Channels with safety actions are high priority
+            # Check for ISA-18.2 alarm configuration (preferred)
+            has_isa_limits = any([channel.hihi_limit, channel.hi_limit, channel.lo_limit, channel.lolo_limit])
+            # Also support legacy limits for backward compatibility
+            has_legacy_limits = any([channel.high_limit, channel.low_limit, channel.high_warning, channel.low_warning])
 
-            # Create alarm config from channel limits
+            # Skip if no limits defined at all
+            if not has_isa_limits and not has_legacy_limits:
+                continue
+
+            # Determine if alarms are enabled
+            # ISA-18.2: respect alarm_enabled flag
+            # Legacy: enable by default if limits are defined
+            alarm_enabled = channel.alarm_enabled if has_isa_limits else has_legacy_limits
+
+            if not alarm_enabled:
+                continue  # Skip disabled alarms
+
+            # Determine severity from alarm_priority or safety_action
+            severity = AlarmSeverity.MEDIUM
+            priority_map = {
+                'diagnostic': AlarmSeverity.LOW,
+                'low': AlarmSeverity.LOW,
+                'medium': AlarmSeverity.MEDIUM,
+                'high': AlarmSeverity.HIGH,
+                'critical': AlarmSeverity.CRITICAL
+            }
+            severity = priority_map.get(channel.alarm_priority, AlarmSeverity.MEDIUM)
+            # Upgrade severity if safety action is configured
+            if channel.safety_action and severity.value > AlarmSeverity.HIGH.value:
+                severity = AlarmSeverity.HIGH
+
+            # Use ISA-18.2 limits if available, otherwise fall back to legacy
+            high_high = channel.hihi_limit if channel.hihi_limit is not None else channel.high_limit
+            high = channel.hi_limit if channel.hi_limit is not None else channel.high_warning
+            low = channel.lo_limit if channel.lo_limit is not None else channel.low_warning
+            low_low = channel.lolo_limit if channel.lolo_limit is not None else channel.low_limit
+
+            # Create alarm config
             config = AlarmConfig(
                 id=f"alarm-{name}",
                 channel=name,
                 name=name,
                 description=channel.description or '',
-                enabled=True,  # Enable by default if limits are defined
+                enabled=True,
                 severity=severity,
-                high_high=channel.high_limit,
-                high=channel.high_warning,
-                low=channel.low_warning,
-                low_low=channel.low_limit,
-                deadband=0,
-                on_delay_s=0,
+                high_high=high_high,
+                high=high,
+                low=low,
+                low_low=low_low,
+                deadband=channel.alarm_deadband,
+                on_delay_s=channel.alarm_delay_sec,
                 off_delay_s=0,
                 latch_behavior=LatchBehavior.AUTO_CLEAR,
                 group=channel.group or '',
@@ -415,10 +605,25 @@ class DAQService:
                 qos=1
             )
         elif event_type == 'action':
-            # Execute safety action
+            # Legacy action handler (config-defined safety actions)
             action_id = data.get('action_id')
+            trigger_source = data.get('alarm_id', 'unknown')
             if action_id and action_id in self.config.safety_actions:
-                self._execute_safety_action(action_id)
+                self._execute_safety_action(action_id, trigger_source)
+        elif event_type == 'safety_action':
+            # ISA-18.2 safety action from AlarmManager
+            # Publish to MQTT so frontend can execute (frontend-defined actions)
+            self.mqtt_client.publish(
+                f"{base}/safety/action",
+                json.dumps(data),
+                qos=1
+            )
+            logger.warning(f"SAFETY ACTION published: {data.get('action_id')} by alarm {data.get('alarm_id')}")
+            # Also try backend execution for actions defined in config
+            action_id = data.get('action_id')
+            trigger_source = data.get('alarm_id', 'unknown')
+            if action_id and action_id in self.config.safety_actions:
+                self._execute_safety_action(action_id, trigger_source)
 
     def _on_test_session_start(self):
         """Custom callback when test session starts"""
@@ -615,6 +820,7 @@ class DAQService:
             client.subscribe(f"{base}/config/save")
             client.subscribe(f"{base}/config/load")
             client.subscribe(f"{base}/config/list")
+            client.subscribe(f"{base}/config/apply")  # Reinitialize tasks without starting acquisition
             client.subscribe(f"{base}/config/channel/update")
             client.subscribe(f"{base}/config/channel/create")
             client.subscribe(f"{base}/config/channel/delete")
@@ -765,6 +971,8 @@ class DAQService:
             self._handle_config_load(payload)
         elif topic == f"{base}/config/list":
             self._handle_config_list()
+        elif topic == f"{base}/config/apply":
+            self._handle_config_apply(payload)
         elif topic == f"{base}/config/channel/update":
             self._handle_channel_update(payload)
         elif topic == f"{base}/config/channel/create":
@@ -932,7 +1140,12 @@ class DAQService:
         # Handle legacy config reload
         elif topic == f"{base}/config/reload":
             logger.info("Reloading configuration...")
-            self._load_config()
+            # If a project is loaded, reload it instead of system.ini
+            if self.current_project_path and self.current_project_path.exists():
+                logger.info(f"Reloading project: {self.current_project_path.name}")
+                self._load_project_from_path(self.current_project_path, publish=False)
+            else:
+                self._load_config()
             self._publish_channel_config()
 
         # Handle simulation events (for testing)
@@ -1215,60 +1428,92 @@ class DAQService:
     # =========================================================================
 
     def _handle_acquire_start(self, request_id: Optional[str] = None):
-        """Start data acquisition with command acknowledgment"""
+        """Start data acquisition with command acknowledgment and state validation"""
         try:
+            # STATE VALIDATION: Check current state
+            logger.info(f"[STATE MACHINE] Acquisition start requested (current state: acquiring={self.acquiring})")
+
             if self.acquiring:
-                logger.info("Acquisition already running")
+                logger.warning("[STATE MACHINE] Acquisition start rejected - already running")
                 self._publish_command_ack("acquire/start", request_id, False, "Already acquiring")
                 return
 
-            # Reload config to pick up any changes made while stopped
-            logger.info("Reloading configuration before starting acquisition...")
-            self._load_config()
+            # STATE TRANSITION: stopped → starting
+            logger.info("[STATE MACHINE] Transitioning: stopped → starting")
+
+            # Only reload from system.ini if no project is loaded
+            # If a project is loaded, its config is already applied and should not be overwritten
+            if self.current_project_path:
+                logger.info(f"Using project config: {self.current_project_path.name} ({len(self.config.channels)} channels)")
+            else:
+                # No project loaded - reload from system.ini to pick up any changes
+                logger.info("No project loaded - reloading configuration from system.ini...")
+                self._load_config()
             self._publish_channel_config()
 
-            logger.info("Starting data acquisition")
+            # STATE TRANSITION: starting → acquiring
+            logger.info("[STATE MACHINE] Transitioning: starting → acquiring")
             self.acquiring = True
+            logger.info(f"[STATE MACHINE] Acquisition started successfully (acquiring={self.acquiring})")
+
             self._publish_system_status()
             self._publish_command_ack("acquire/start", request_id, True)
 
         except Exception as e:
-            logger.error(f"Error starting acquisition: {e}")
+            logger.error(f"[STATE MACHINE] Error starting acquisition: {e}", exc_info=True)
+            # STATE ROLLBACK: Ensure we're in stopped state on error
+            self.acquiring = False
+            logger.error(f"[STATE MACHINE] Rolled back to stopped state (acquiring={self.acquiring})")
             self._publish_command_ack("acquire/start", request_id, False, str(e))
 
     def _handle_acquire_stop(self, request_id: Optional[str] = None):
-        """Stop data acquisition with command acknowledgment"""
+        """Stop data acquisition with command acknowledgment and state validation"""
         try:
+            # STATE VALIDATION: Check current state
+            logger.info(f"[STATE MACHINE] Acquisition stop requested (current state: acquiring={self.acquiring}, recording={self.recording})")
+
             if not self.acquiring:
-                logger.info("Acquisition not running")
+                logger.warning("[STATE MACHINE] Acquisition stop rejected - not running")
                 self._publish_command_ack("acquire/stop", request_id, False, "Not acquiring")
                 return
 
-            logger.info("Stopping data acquisition")
-            self.acquiring = False
+            # STATE TRANSITION: acquiring → stopping
+            logger.info("[STATE MACHINE] Transitioning: acquiring → stopping")
 
-            # Also stop recording if active
+            # First stop recording if active (cascade stop)
             if self.recording:
+                logger.info("[STATE MACHINE] Cascading stop to recording")
                 self._handle_recording_stop()
+
+            # STATE TRANSITION: stopping → stopped
+            logger.info("[STATE MACHINE] Transitioning: stopping → stopped")
+            self.acquiring = False
+            logger.info(f"[STATE MACHINE] Acquisition stopped successfully (acquiring={self.acquiring})")
 
             self._publish_system_status()
             self._publish_command_ack("acquire/stop", request_id, True)
 
         except Exception as e:
-            logger.error(f"Error stopping acquisition: {e}")
+            logger.error(f"[STATE MACHINE] Error stopping acquisition: {e}", exc_info=True)
             self._publish_command_ack("acquire/stop", request_id, False, str(e))
 
     def _handle_recording_start(self, payload: Any):
-        """Start data recording"""
+        """Start data recording with state validation"""
+        # STATE VALIDATION: Check prerequisites
+        logger.info(f"[STATE MACHINE] Recording start requested (acquiring={self.acquiring}, recording={self.recording})")
+
         if not self.acquiring:
-            logger.warning("Cannot start recording - acquisition not running")
-            self._publish_recording_response(False, "Acquisition not running")
+            logger.error("[STATE MACHINE] Recording start rejected - acquisition not running (PREREQUISITE FAILED)")
+            self._publish_recording_response(False, "Acquisition must be running to start recording")
             return
 
         if self.recording_manager.recording:
-            logger.info("Recording already active")
+            logger.warning("[STATE MACHINE] Recording start rejected - already recording")
             self._publish_recording_response(False, "Recording already active")
             return
+
+        # STATE TRANSITION: idle → starting
+        logger.info("[STATE MACHINE] Recording transitioning: idle → starting")
 
         # Get optional filename from payload
         filename = None
@@ -1278,33 +1523,45 @@ class DAQService:
             # Also apply any config from payload
             config_updates = {k: v for k, v in payload.items() if k != 'filename'}
             if config_updates:
+                logger.info(f"[STATE MACHINE] Applying recording config updates: {list(config_updates.keys())}")
                 self.recording_manager.configure(config_updates)
 
-        # Start recording via manager
+        # STATE TRANSITION: starting → recording
         if self.recording_manager.start(filename):
             self.recording = True
             self.recording_start_time = self.recording_manager.recording_start_time
             self.recording_filename = self.recording_manager.current_file.name if self.recording_manager.current_file else None
+            logger.info(f"[STATE MACHINE] Recording started successfully (file: {self.recording_filename})")
             self._publish_recording_response(True, f"Recording started: {self.recording_filename}")
             self._publish_system_status()
         else:
+            logger.error("[STATE MACHINE] Recording start failed - manager returned False")
             self._publish_recording_response(False, "Failed to start recording")
 
     def _handle_recording_stop(self):
-        """Stop data recording"""
+        """Stop data recording with state validation"""
+        # STATE VALIDATION: Check current state
+        logger.info(f"[STATE MACHINE] Recording stop requested (recording={self.recording})")
+
         if not self.recording_manager.recording:
-            logger.info("Recording not active")
+            logger.warning("[STATE MACHINE] Recording stop rejected - not recording")
             self._publish_recording_response(False, "Recording not active")
             return
 
-        # Stop recording via manager
+        # STATE TRANSITION: recording → stopping
+        logger.info("[STATE MACHINE] Recording transitioning: recording → stopping")
+        filename_for_log = self.recording_filename
+
+        # STATE TRANSITION: stopping → idle
         if self.recording_manager.stop():
             self.recording = False
             self.recording_start_time = None
             self.recording_filename = None
+            logger.info(f"[STATE MACHINE] Recording stopped successfully (file: {filename_for_log})")
             self._publish_recording_response(True, "Recording stopped")
             self._publish_system_status()
         else:
+            logger.error("[STATE MACHINE] Recording stop failed - manager returned False")
             self._publish_recording_response(False, "Failed to stop recording")
 
     def _handle_recording_config(self, payload: Any):
@@ -1464,8 +1721,17 @@ class DAQService:
         )
 
     def _publish_system_status(self):
-        """Publish comprehensive system status"""
+        """Publish comprehensive system status with resource monitoring"""
         base = self.config.system.mqtt_base_topic
+
+        # Update resource monitoring
+        if self._resource_monitor_enabled and self._process:
+            try:
+                self._cpu_percent = self._process.cpu_percent(interval=None)
+                mem_info = self._process.memory_info()
+                self._memory_mb = mem_info.rss / (1024 * 1024)  # Convert to MB
+            except Exception as e:
+                logger.warning(f"Resource monitoring error: {e}")
 
         # Get recording status from manager
         rec_status = self.recording_manager.get_status() if self.recording_manager else {}
@@ -1501,7 +1767,11 @@ class DAQService:
             "config_path": self.config_path,
             # Sequence status
             "sequences_active": self._get_active_sequence_count(),
-            "sequences_total": len(self.sequence_manager.sequences) if self.sequence_manager else 0
+            "sequences_total": len(self.sequence_manager.sequences) if self.sequence_manager else 0,
+            # Resource monitoring
+            "cpu_percent": round(self._cpu_percent, 1) if self._resource_monitor_enabled else None,
+            "memory_mb": round(self._memory_mb, 1) if self._resource_monitor_enabled else None,
+            "resource_monitoring": self._resource_monitor_enabled
         }
 
         self.mqtt_client.publish(
@@ -1703,6 +1973,59 @@ class DAQService:
             json.dumps({"configs": configs})
         )
 
+    def _handle_config_apply(self, payload: Any):
+        """Apply configuration changes - reinitialize hardware tasks without starting acquisition.
+
+        This is the preferred way to apply config changes during development:
+        1. Saves current config to disk
+        2. Reloads config and reinitializes hardware readers
+        3. Does NOT start acquisition (user must explicitly start)
+
+        Payload options:
+            restart_acquisition: bool (default False) - if True, restart acquisition after apply
+        """
+        base = self.config.system.mqtt_base_topic
+
+        try:
+            logger.info("Applying configuration changes...")
+
+            # Parse options
+            restart_acq = False
+            if isinstance(payload, dict):
+                restart_acq = payload.get('restart_acquisition', False)
+
+            # Stop acquisition if running
+            was_acquiring = self.acquiring
+            if was_acquiring:
+                logger.info("Stopping acquisition to apply config changes")
+                self._stop_acquire()
+
+            # Reload config (reinitializes hardware reader)
+            # If a project is loaded, reload it instead of system.ini
+            if self.current_project_path and self.current_project_path.exists():
+                logger.info(f"Reloading project config: {self.current_project_path.name}")
+                self._load_project_from_path(self.current_project_path, publish=False)
+            else:
+                self._load_config()
+
+            # Publish updated channel config to frontend
+            self._publish_channel_config()
+
+            # Publish status update
+            self._publish_status()
+
+            # Optionally restart acquisition
+            if restart_acq and was_acquiring:
+                logger.info("Restarting acquisition after config apply")
+                self._start_acquire()
+
+            logger.info("Configuration applied successfully")
+            self._publish_config_response(True, "Configuration applied - hardware tasks reinitialized")
+
+        except Exception as e:
+            logger.error(f"Failed to apply configuration: {e}")
+            self._publish_config_response(False, f"Apply failed: {str(e)}")
+
     # =========================================================================
     # PROJECT FILE MANAGEMENT
     # =========================================================================
@@ -1803,7 +2126,12 @@ class DAQService:
         )
 
     def _load_project_from_path(self, project_path: Path, publish: bool = True) -> bool:
-        """Core function to load a project from any path"""
+        """Core function to load a project from any path
+
+        Supports two formats:
+        1. New format: Project JSON contains embedded 'channels' and 'system' sections
+        2. Legacy format: Project JSON contains 'config' field pointing to separate .ini file
+        """
         base = self.config.system.mqtt_base_topic
 
         if not project_path.exists():
@@ -1821,21 +2149,33 @@ class DAQService:
                     self._publish_project_response(False, "Invalid project file format - missing 'type: nisystem-project'")
                 return False
 
-            # Check if we need to switch config files
-            project_config = project_data.get("config", "")
-            if project_config and project_config != Path(self.config_path).name:
-                if self.acquiring:
+            # Check if acquisition is running - need to stop before changing config
+            if self._acquiring.is_set():
+                if publish:
+                    self._publish_project_response(False, "Stop acquisition before loading project")
+                return False
+
+            # Check for new format (embedded channels) vs legacy format (separate .ini)
+            has_embedded_channels = "channels" in project_data and project_data["channels"]
+
+            if has_embedded_channels:
+                # New format: Apply channels and system settings from project JSON
+                logger.info(f"Loading project with embedded config: {len(project_data['channels'])} channels")
+                if not self._apply_project_config(project_data):
                     if publish:
-                        self._publish_project_response(False, "Stop acquisition before loading project with different config")
+                        self._publish_project_response(False, "Failed to apply project configuration")
                     return False
+            else:
+                # Legacy format: Check if we need to switch config files
+                project_config = project_data.get("config", "")
+                if project_config and project_config != Path(self.config_path).name:
+                    config_dir = Path(self.config_path).parent
+                    new_config_path = config_dir / project_config
 
-                config_dir = Path(self.config_path).parent
-                new_config_path = config_dir / project_config
-
-                if new_config_path.exists():
-                    self._handle_config_load({"filename": project_config})
-                else:
-                    logger.warning(f"Project config {project_config} not found, using current config")
+                    if new_config_path.exists():
+                        self._handle_config_load({"filename": project_config})
+                    else:
+                        logger.warning(f"Project config {project_config} not found, using current config")
 
             # Store project data with FULL PATH
             self.current_project_path = project_path
@@ -1843,6 +2183,9 @@ class DAQService:
 
             # Persist the path for next startup
             self._save_last_project_path(project_path)
+
+            # Publish channel config so frontend gets updated channel list
+            self._publish_channel_config()
 
             logger.info(f"Loaded project: {project_path}")
 
@@ -2518,10 +2861,36 @@ class DAQService:
     # =========================================================================
 
     def _handle_test_session_start(self, payload: Dict[str, Any]):
-        """Start a test session"""
+        """Start a test session with safety interlock validation"""
         started_by = payload.get('started_by', 'user') if isinstance(payload, dict) else 'user'
 
-        result = self.user_variables.start_session(self.acquiring, started_by)
+        # Get alarm counts for safety interlock validation
+        latched_count = 0
+        active_count = 0
+        if self.alarm_manager:
+            counts = self.alarm_manager.get_alarm_counts()
+            # 'returned' = condition cleared but latched (awaiting reset)
+            # 'active' = condition present and unacknowledged
+            latched_count = counts.get('returned', 0)
+            active_count = counts.get('active', 0)
+
+        # Get latch requirements from session config (persistent settings)
+        session_config = self.user_variables.get_session_config() if self.user_variables else {}
+        config_require_latch = session_config.get('require_latch_armed', False)
+        config_require_no_active = session_config.get('require_no_active_alarms', False)
+
+        # Payload can override session config (for one-time bypass or enforcement)
+        require_no_latched = payload.get('require_no_latched', config_require_latch) if isinstance(payload, dict) else config_require_latch
+        require_no_active = payload.get('require_no_active', config_require_no_active) if isinstance(payload, dict) else config_require_no_active
+
+        result = self.user_variables.start_session(
+            acquiring=self.acquiring,
+            started_by=started_by,
+            latched_alarm_count=latched_count,
+            active_alarm_count=active_count,
+            require_no_latched=require_no_latched,
+            require_no_active=require_no_active
+        )
 
         if result.get('success'):
             self._publish_variable_response(True, "Test session started")
@@ -4026,13 +4395,14 @@ class DAQService:
         }
 
         for name, channel in self.config.channels.items():
+            # display_name removed - use name (TAG) everywhere per ISA-5.1
             config_data["channels"][name] = {
-                "name": name,
+                "name": name,  # TAG is the only identifier
                 "module": channel.module,
                 "physical_channel": channel.physical_channel,
                 "type": channel.channel_type.value,
                 "channel_type": channel.channel_type.value,
-                "description": channel.description,
+                "description": channel.description,  # For tooltips/documentation only
                 "units": channel.units,
                 "visible": channel.visible,
                 "group": channel.group or channel.module or "Ungrouped",
@@ -4101,26 +4471,46 @@ class DAQService:
 
     def _publish_channel_value(self, channel_name: str, value: Any):
         """Publish a single channel value with scaling info for validation"""
+        import math
         try:
             base = self.config.system.mqtt_base_topic
             channel = self.config.channels[channel_name]
 
+            # Check for NaN values (indicates hardware not connected or read failure)
+            is_nan = False
+            if isinstance(value, float) and math.isnan(value):
+                is_nan = True
+
             # Convert bool to int for comparison
-            numeric_value = float(value) if isinstance(value, (int, float)) else (1.0 if value else 0.0)
+            if is_nan:
+                numeric_value = None
+            else:
+                numeric_value = float(value) if isinstance(value, (int, float)) else (1.0 if value else 0.0)
 
             # Get raw value if available
             raw_value = self.channel_raw_values.get(channel_name)
 
-            payload = {
-                "value": value,
-                "timestamp": datetime.now().isoformat(),
-                "units": channel.units,
-                "quality": "good",
-                "status": "normal"
-            }
+            # Handle NaN - JSON doesn't support NaN, so use null and set quality to "bad"
+            if is_nan:
+                payload = {
+                    "value": None,  # JSON null
+                    "value_string": "NaN",  # Human readable
+                    "timestamp": datetime.now().isoformat(),
+                    "units": channel.units,
+                    "quality": "bad",
+                    "status": "disconnected"
+                }
+            else:
+                payload = {
+                    "value": value,
+                    "timestamp": datetime.now().isoformat(),
+                    "units": channel.units,
+                    "quality": "good",
+                    "status": "normal"
+                }
 
             # Include raw value and scaling info for validation/debugging
-            if raw_value is not None and raw_value != value:
+            if raw_value is not None and raw_value != value and not is_nan:
                 payload["raw_value"] = raw_value
                 scaling_info = get_scaling_info(channel)
                 payload["scaling"] = {
@@ -4128,8 +4518,8 @@ class DAQService:
                     "applied": scaling_info['type'] != 'none'
                 }
 
-            # Check limits and add status (only for numeric channels with limits)
-            if channel.low_limit is not None and channel.high_limit is not None:
+            # Check limits and add status (only for numeric channels with limits, skip NaN)
+            if not is_nan and channel.low_limit is not None and channel.high_limit is not None:
                 if numeric_value < channel.low_limit:
                     payload["status"] = "low_limit"
                     payload["quality"] = "alarm"
@@ -4796,6 +5186,12 @@ class DAQService:
 
 def main():
     import argparse
+    import sys
+
+    # Import single instance guard
+    launcher_path = Path(__file__).parent.parent.parent / "launcher"
+    sys.path.insert(0, str(launcher_path))
+    from single_instance import SingleInstance
 
     parser = argparse.ArgumentParser(description='NISystem DAQ Service')
     parser.add_argument(
@@ -4808,11 +5204,62 @@ def main():
         action='store_true',
         help='Enable verbose logging'
     )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force start by killing existing instance'
+    )
 
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    # Enforce single instance
+    instance = SingleInstance("NISystemDAQService")
+    if not instance.acquire():
+        if args.force:
+            logger.warning("Another DAQ service instance detected. Force mode enabled - attempting cleanup...")
+            # Try to kill stale instance
+            try:
+                import psutil
+                current_pid = os.getpid()
+                killed = False
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        if proc.pid == current_pid:
+                            continue
+                        cmdline = proc.info.get('cmdline') or []
+                        if any('daq_service.py' in str(arg) for arg in cmdline):
+                            logger.warning(f"Killing stale DAQ service process (PID: {proc.pid})")
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            killed = True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                        pass
+
+                if killed:
+                    import time
+                    time.sleep(2)  # Wait for cleanup
+                    # Try to acquire again
+                    if not instance.acquire():
+                        logger.error("ERROR: Could not acquire lock even after cleanup.")
+                        sys.exit(1)
+                else:
+                    logger.error("ERROR: No stale process found to kill.")
+                    sys.exit(1)
+            except ImportError:
+                logger.error("ERROR: psutil not installed. Cannot use --force mode.")
+                logger.error("       Install with: pip install psutil")
+                sys.exit(1)
+        else:
+            logger.error("ERROR: Another instance of DAQ Service is already running.")
+            logger.error("       Use --force to kill existing instance and start new one.")
+            sys.exit(1)
+
+    logger.info("=" * 80)
+    logger.info("DAQ Service Single Instance Lock Acquired")
+    logger.info("=" * 80)
 
     service = DAQService(args.config)
     service.run()

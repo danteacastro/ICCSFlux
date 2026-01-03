@@ -26,6 +26,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   text_label: defineAsyncComponent(() => import('./TextLabelWidget.vue')),
   value_table: defineAsyncComponent(() => import('./ValueTableWidget.vue')),
   crio_status: defineAsyncComponent(() => import('./CrioStatusWidget.vue')),
+  latch_switch: defineAsyncComponent(() => import('./LatchSwitchWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -228,5 +229,13 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'cRIO controller safety status and I/O',
     needsChannel: false,
     defaultSize: { w: 2, h: 3 }
+  },
+  {
+    type: 'latch_switch',
+    name: 'Safety Latch',
+    icon: '🔒',
+    description: 'Safety latch that must be armed before outputs/session',
+    needsChannel: false,
+    defaultSize: { w: 2, h: 2 }
   }
 ]

@@ -95,6 +95,16 @@ class AlarmConfig:
     max_shelve_time_s: float = 3600.0  # Max time alarm can be shelved (1 hour default)
     shelve_allowed: bool = True
 
+    # Safety action (ISA-18.2) - action ID to execute when alarm triggers
+    safety_action: Optional[str] = None
+
+    # Digital input alarm configuration
+    # For DI channels: alarm when state != expected_state (after invert)
+    digital_alarm_enabled: bool = False
+    digital_expected_state: bool = True   # Expected "safe" state (True=HIGH, False=LOW)
+    digital_invert: bool = False          # Invert input before comparison (NC vs NO)
+    digital_debounce_ms: float = 100.0    # Debounce time in ms
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization"""
         return {
@@ -119,7 +129,12 @@ class AlarmConfig:
             'group': self.group,
             'priority': self.priority,
             'max_shelve_time_s': self.max_shelve_time_s,
-            'shelve_allowed': self.shelve_allowed
+            'shelve_allowed': self.shelve_allowed,
+            'safety_action': self.safety_action,
+            'digital_alarm_enabled': self.digital_alarm_enabled,
+            'digital_expected_state': self.digital_expected_state,
+            'digital_invert': self.digital_invert,
+            'digital_debounce_ms': self.digital_debounce_ms
         }
 
     @staticmethod
@@ -147,7 +162,12 @@ class AlarmConfig:
             group=d.get('group', ''),
             priority=d.get('priority', 0),
             max_shelve_time_s=d.get('max_shelve_time_s', 3600.0),
-            shelve_allowed=d.get('shelve_allowed', True)
+            shelve_allowed=d.get('shelve_allowed', True),
+            safety_action=d.get('safety_action'),
+            digital_alarm_enabled=d.get('digital_alarm_enabled', False),
+            digital_expected_state=d.get('digital_expected_state', True),
+            digital_invert=d.get('digital_invert', False),
+            digital_debounce_ms=d.get('digital_debounce_ms', 100.0)
         )
 
 
@@ -181,6 +201,9 @@ class ActiveAlarm:
 
     message: str = ""
 
+    # Safety action to execute (from AlarmConfig)
+    safety_action: Optional[str] = None
+
     def to_dict(self) -> dict:
         """Convert to dictionary for MQTT/JSON"""
         return {
@@ -204,7 +227,8 @@ class ActiveAlarm:
             'shelve_expires_at': self.shelve_expires_at.isoformat() if self.shelve_expires_at else None,
             'shelve_reason': self.shelve_reason,
             'message': self.message,
-            'duration_seconds': (datetime.now() - self.triggered_at).total_seconds()
+            'duration_seconds': (datetime.now() - self.triggered_at).total_seconds(),
+            'safety_action': self.safety_action
         }
 
 
@@ -273,6 +297,10 @@ class AlarmManager:
 
         # Rate of change tracking
         self.value_history: Dict[str, List[tuple]] = {}  # channel -> [(time, value), ...]
+
+        # Digital input debounce tracking
+        self.digital_debounce_timers: Dict[str, float] = {}  # alarm_id -> state_change_time
+        self.digital_last_states: Dict[str, bool] = {}       # alarm_id -> last_debounced_state
 
         # First-out tracking
         self.alarm_sequence = 0
@@ -389,16 +417,22 @@ class AlarmManager:
         alarm_id = config.id
         current_alarm = self.active_alarms.get(alarm_id)
 
-        # Check if alarm condition is met
-        condition_met, threshold_type, threshold_value = self._check_thresholds(config, value)
+        # Check for digital input alarm first
+        if config.digital_alarm_enabled:
+            condition_met, threshold_type, threshold_value = self._check_digital_alarm(
+                config, value, timestamp
+            )
+        else:
+            # Check analog thresholds
+            condition_met, threshold_type, threshold_value = self._check_thresholds(config, value)
 
-        # Also check rate-of-change
-        if not condition_met and config.rate_limit is not None:
-            rate = self._get_rate_of_change(config.channel, config.rate_window_s)
-            if rate is not None and abs(rate) > config.rate_limit:
-                condition_met = True
-                threshold_type = 'rate'
-                threshold_value = config.rate_limit
+            # Also check rate-of-change for analog
+            if not condition_met and config.rate_limit is not None:
+                rate = self._get_rate_of_change(config.channel, config.rate_window_s)
+                if rate is not None and abs(rate) > config.rate_limit:
+                    condition_met = True
+                    threshold_type = 'rate'
+                    threshold_value = config.rate_limit
 
         if condition_met:
             # Alarm condition is active
@@ -406,6 +440,66 @@ class AlarmManager:
         else:
             # Alarm condition is clear
             self._handle_clear_condition(config, value, timestamp)
+
+    def _check_digital_alarm(self, config: AlarmConfig, value: float, timestamp: float) -> tuple:
+        """
+        Check digital input alarm with debounce and invert logic.
+
+        Logic:
+        1. Convert value to boolean (0 = False, non-zero = True)
+        2. Apply invert if configured (for NC sensors)
+        3. Compare to expected_state
+        4. Apply debounce to prevent chatter
+        5. Alarm triggers when state != expected_state (after debounce)
+        """
+        alarm_id = config.id
+
+        # Convert value to boolean
+        raw_state = value != 0
+
+        # Apply invert (for normally-closed sensors)
+        actual_state = not raw_state if config.digital_invert else raw_state
+
+        # Get last debounced state
+        last_state = self.digital_last_states.get(alarm_id)
+
+        # Check if state changed
+        if last_state is None:
+            # First reading - initialize
+            self.digital_last_states[alarm_id] = actual_state
+            self.digital_debounce_timers.pop(alarm_id, None)
+            last_state = actual_state
+        elif actual_state != last_state:
+            # State changed - check debounce
+            debounce_start = self.digital_debounce_timers.get(alarm_id)
+            if debounce_start is None:
+                # Start debounce timer
+                self.digital_debounce_timers[alarm_id] = timestamp
+                # Keep using last state until debounce complete
+                actual_state = last_state
+            else:
+                # Check if debounce complete
+                elapsed_ms = (timestamp - debounce_start) * 1000
+                if elapsed_ms >= config.digital_debounce_ms:
+                    # Debounce complete - accept new state
+                    self.digital_last_states[alarm_id] = actual_state
+                    self.digital_debounce_timers.pop(alarm_id, None)
+                else:
+                    # Still in debounce - keep using last state
+                    actual_state = last_state
+        else:
+            # State unchanged - clear any debounce timer
+            self.digital_debounce_timers.pop(alarm_id, None)
+
+        # Alarm condition: actual state != expected state
+        expected = config.digital_expected_state
+        condition_met = actual_state != expected
+
+        if condition_met:
+            # Use the actual state as the threshold value for display
+            return True, 'digital_state', 1.0 if expected else 0.0
+        else:
+            return False, None, None
 
     def _check_thresholds(self, config: AlarmConfig, value: float) -> tuple:
         """Check if value exceeds any threshold"""
@@ -432,6 +526,11 @@ class AlarmManager:
         elif threshold_type == 'rate':
             rate = self._get_rate_of_change(config.channel, config.rate_window_s)
             return rate is None or abs(rate) <= config.rate_limit * 0.8  # 20% hysteresis
+        elif threshold_type == 'digital_state':
+            # For digital alarms, check if current state matches expected
+            raw_state = value != 0
+            actual_state = not raw_state if config.digital_invert else raw_state
+            return actual_state == config.digital_expected_state
 
         return True
 
@@ -577,9 +676,18 @@ class AlarmManager:
 
         self.alarm_sequence += 1
 
-        # Create message
-        direction = "exceeded" if threshold_type.startswith('high') else "fell below"
-        message = f"{config.name} {direction} {threshold_type.replace('_', ' ')} limit: {value:.2f} (limit: {threshold_value})"
+        # Create message based on alarm type
+        if threshold_type == 'digital_state':
+            # Digital input alarm message
+            raw_state = value != 0
+            actual_state = not raw_state if config.digital_invert else raw_state
+            state_str = "HIGH" if actual_state else "LOW"
+            expected_str = "HIGH" if config.digital_expected_state else "LOW"
+            message = f"{config.name} is {state_str} (expected {expected_str})"
+        else:
+            # Analog threshold alarm message
+            direction = "exceeded" if threshold_type.startswith('high') else "fell below"
+            message = f"{config.name} {direction} {threshold_type.replace('_', ' ')} limit: {value:.2f} (limit: {threshold_value})"
 
         alarm = ActiveAlarm(
             alarm_id=config.id,
@@ -594,7 +702,8 @@ class AlarmManager:
             triggered_at=now,
             sequence_number=self.alarm_sequence,
             is_first_out=is_first_out,
-            message=message
+            message=message,
+            safety_action=config.safety_action  # Include safety action from config
         )
 
         self.active_alarms[config.id] = alarm
@@ -608,6 +717,10 @@ class AlarmManager:
 
         # Execute actions
         self._execute_actions(config.actions, alarm)
+
+        # Execute safety action if configured (ISA-18.2 automatic response)
+        if config.safety_action:
+            self._execute_safety_action(config.safety_action, alarm)
 
         logger.warning(f"ALARM TRIGGERED: {message}")
 
@@ -814,6 +927,31 @@ class AlarmManager:
                     })
                 except Exception as e:
                     logger.error(f"Error executing action {action_id}: {e}")
+
+    def _execute_safety_action(self, safety_action_id: str, alarm: ActiveAlarm):
+        """
+        Execute a safety action when alarm triggers (ISA-18.2 automatic response).
+
+        Safety actions are defined in the frontend and executed via MQTT callback.
+        The DAQ service handles the actual execution (trip, set outputs, etc.)
+        """
+        if not self.publish_callback:
+            logger.warning(f"Cannot execute safety action {safety_action_id}: no publish callback")
+            return
+
+        try:
+            self.publish_callback('safety_action', {
+                'action_id': safety_action_id,
+                'alarm_id': alarm.alarm_id,
+                'channel': alarm.channel,
+                'severity': alarm.severity.name,
+                'threshold_type': alarm.threshold_type,
+                'triggered_at': alarm.triggered_at.isoformat(),
+                'message': alarm.message
+            })
+            logger.warning(f"SAFETY ACTION TRIGGERED: {safety_action_id} by alarm {alarm.alarm_id}")
+        except Exception as e:
+            logger.error(f"Error executing safety action {safety_action_id}: {e}")
 
     def _log_event(self, alarm: ActiveAlarm, event_type: str, value: Optional[float],
                    threshold: Optional[float], user: Optional[str], duration: Optional[float] = None):

@@ -31,7 +31,7 @@ const blockStatus = computed(() => safety.isOutputBlocked(props.channel))
 const isBlocked = computed(() => blockStatus.value.blocked)
 
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel
+  props.label || props.channel
 )
 
 const unit = computed(() => {

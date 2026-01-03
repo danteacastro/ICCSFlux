@@ -60,13 +60,14 @@ def get_terminal_config(config_str: str):
     if not NIDAQMX_AVAILABLE:
         return None
 
+    # nidaqmx API uses DIFF and PSEUDO_DIFF (not DIFFERENTIAL/PSEUDODIFFERENTIAL)
     config_map = {
         'RSE': TerminalConfiguration.RSE,
-        'DIFF': TerminalConfiguration.DIFFERENTIAL,
-        'DIFFERENTIAL': TerminalConfiguration.DIFFERENTIAL,
+        'DIFF': TerminalConfiguration.DIFF,
+        'DIFFERENTIAL': TerminalConfiguration.DIFF,
         'NRSE': TerminalConfiguration.NRSE,
-        'PSEUDO_DIFF': TerminalConfiguration.PSEUDODIFFERENTIAL,
-        'PSEUDODIFFERENTIAL': TerminalConfiguration.PSEUDODIFFERENTIAL,
+        'PSEUDO_DIFF': TerminalConfiguration.PSEUDO_DIFF,
+        'PSEUDODIFFERENTIAL': TerminalConfiguration.PSEUDO_DIFF,
         'DEFAULT': TerminalConfiguration.DEFAULT,
     }
 
@@ -142,7 +143,18 @@ class HardwareReader:
         """
         Build the full physical channel path from module and channel config.
         E.g., "cDAQ1Mod1/ai0" from module in slot 1 with physical_channel "ai0"
+
+        If physical_channel already contains '/' (full path), return it directly.
+        This supports both:
+        - Legacy: module reference + short physical_channel (e.g., "ai0")
+        - New: full physical_channel path (e.g., "cDAQ-9189-DHWSIMMod1/ai0")
         """
+        # Check if physical_channel is already a full path (contains '/')
+        if '/' in channel.physical_channel:
+            logger.debug(f"Using direct physical channel path: {channel.physical_channel}")
+            return channel.physical_channel
+
+        # Legacy mode: build path from module/chassis config
         module = self.config.modules.get(channel.module)
         if not module:
             raise ValueError(f"Module {channel.module} not found for channel {channel.name}")
@@ -214,24 +226,47 @@ class HardwareReader:
         logger.warning(f"Using fallback device name: {fallback} - configure 'device_name' in chassis config for reliability")
         return fallback
 
+    def _extract_module_from_path(self, physical_channel: str) -> str:
+        """
+        Extract module/device name from a full physical channel path.
+        E.g., "cDAQ-9189-DHWSIMMod1/ai0" -> "cDAQ-9189-DHWSIMMod1"
+        """
+        if '/' in physical_channel:
+            return physical_channel.split('/')[0]
+        return ""
+
     def _create_tasks(self):
         """Create nidaqmx tasks for all input channels, grouped by module"""
 
         # Group channels by module and type
+        # For channels with direct paths (containing '/'), extract module from path
         module_channels: Dict[str, Dict[ChannelType, List[ChannelConfig]]] = {}
+        direct_path_modules: set = set()  # Track modules that come from direct paths
 
         for name, channel in self.config.channels.items():
-            if channel.module not in module_channels:
-                module_channels[channel.module] = {}
-            if channel.channel_type not in module_channels[channel.module]:
-                module_channels[channel.module][channel.channel_type] = []
-            module_channels[channel.module][channel.channel_type].append(channel)
+            # Determine the module key for grouping
+            if '/' in channel.physical_channel:
+                # Direct path - extract module from physical_channel
+                module_key = self._extract_module_from_path(channel.physical_channel)
+                direct_path_modules.add(module_key)
+            else:
+                # Legacy - use configured module reference
+                module_key = channel.module
+
+            if module_key not in module_channels:
+                module_channels[module_key] = {}
+            if channel.channel_type not in module_channels[module_key]:
+                module_channels[module_key][channel.channel_type] = []
+            module_channels[module_key][channel.channel_type].append(channel)
 
         # Create tasks for each module/type combination
         for module_name, type_channels in module_channels.items():
-            module = self.config.modules.get(module_name)
-            if not module or not module.enabled:
-                continue
+            # For direct-path modules, skip the module config check
+            if module_name not in direct_path_modules:
+                module = self.config.modules.get(module_name)
+                if not module or not module.enabled:
+                    logger.debug(f"Skipping module {module_name} - not found or not enabled")
+                    continue
 
             for channel_type, channels in type_channels.items():
                 try:
@@ -423,7 +458,7 @@ class HardwareReader:
                     resistance_config=wiring,
                     current_excit_source=ExcitationSource.INTERNAL,
                     current_excit_val=channel.rtd_current,
-                    r0=channel.rtd_resistance
+                    r_0=channel.rtd_resistance  # Note: r_0 not r0 in newer nidaqmx
                 )
                 channel_names.append(channel.name)
                 logger.info(f"Added RTD channel: {channel.name} -> {phys_chan} "
@@ -575,7 +610,7 @@ class HardwareReader:
 
                 task.di_channels.add_di_chan(
                     phys_chan,
-                    name_to_assign_to_channel=channel.name
+                    name_to_assign_to_lines=channel.name  # Note: lines not channel in nidaqmx
                 )
                 channel_names.append(channel.name)
                 logger.info(f"Added digital input channel: {channel.name} -> {phys_chan}")
@@ -599,7 +634,7 @@ class HardwareReader:
 
                 task.do_channels.add_do_chan(
                     phys_chan,
-                    name_to_assign_to_channel=channel.name
+                    name_to_assign_to_lines=channel.name  # Note: lines not channel in nidaqmx
                 )
 
                 self.output_tasks[channel.name] = task

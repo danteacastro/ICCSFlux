@@ -1,0 +1,92 @@
+{
+  "type": "nisystem-project",
+  "version": "1.0",
+  "name": "Comprehensive Test Project",
+  "description": "Auto-generated test project with complex data",
+  "config": "system.ini",
+  "created": "2026-01-01T23:51:25.532582",
+  "modified": "2026-01-01T23:51:27.303971",
+  "layout": {
+    "pages": [
+      {
+        "id": "page-1",
+        "name": "Test Page 1",
+        "order": 0,
+        "widgets": [
+          {
+            "id": "widget-1",
+            "type": "gauge",
+            "channel": "Tank_1",
+            "x": 0,
+            "y": 0,
+            "w": 6,
+            "h": 6
+          },
+          {
+            "id": "widget-2",
+            "type": "chart",
+            "channels": [
+              "Tank_1",
+              "Tank_2"
+            ],
+            "x": 6,
+            "y": 0,
+            "w": 12,
+            "h": 6
+          }
+        ]
+      },
+      {
+        "id": "page-2",
+        "name": "Test Page 2",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "widget-3",
+            "type": "text-label",
+            "channel": "T_flu",
+            "x": 0,
+            "y": 0,
+            "w": 4,
+            "h": 2
+          }
+        ]
+      }
+    ],
+    "currentPageId": "page-1",
+    "gridColumns": 24,
+    "rowHeight": 30
+  },
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [],
+    "schedules": [],
+    "triggers": [],
+    "transformations": [],
+    "functionBlocks": [],
+    "drawPatterns": {
+      "patterns": [],
+      "history": []
+    },
+    "stateMachines": [],
+    "watchdogs": [],
+    "reportTemplates": [],
+    "scheduledReports": []
+  },
+  "recording": {
+    "config": {
+      "sampleInterval": 100,
+      "sampleIntervalUnit": "ms"
+    },
+    "selectedChannels": [
+      "Tank_1",
+      "Tank_2",
+      "T_flu"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": {},
+    "interlocks": [],
+    "alarms": []
+  }
+}

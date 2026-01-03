@@ -17,6 +17,59 @@
 import { ref, computed } from 'vue'
 import { useMqtt } from './useMqtt'
 import { useDashboardStore } from '../stores/dashboard'
+import type { ChannelConfig, ChannelType } from '../types'
+
+// Channel config as stored in the project JSON file
+export interface ProjectChannelConfig {
+  physical_channel: string
+  channel_type: string  // 'rtd', 'thermocouple', 'voltage', 'digital_output', etc.
+  // display_name removed - use name (TAG) everywhere
+  unit?: string
+  group?: string
+  description?: string  // For tooltips/documentation only
+
+  // Legacy limit names (for backward compatibility)
+  low_limit?: number
+  high_limit?: number
+  low_warning?: number
+  high_warning?: number
+
+  // ISA-18.2 Alarm Configuration
+  alarm_enabled?: boolean           // Master enable for limit checking
+  hihi_limit?: number               // High-High (critical)
+  hi_limit?: number                 // High (warning)
+  lo_limit?: number                 // Low (warning)
+  lolo_limit?: number               // Low-Low (critical)
+  alarm_priority?: 'diagnostic' | 'low' | 'medium' | 'high' | 'critical'
+  alarm_deadband?: number           // Hysteresis to prevent chatter
+  alarm_delay_sec?: number          // On-delay before triggering
+  alarm_clear_delay_sec?: number    // Off-delay before clearing
+  safety_action?: string            // Reference to safety action (null = visual only)
+
+  chartable?: boolean
+  color?: string
+  visible?: boolean
+  scale_slope?: number
+  scale_offset?: number
+  // Type-specific fields
+  rtd_type?: string
+  thermocouple_type?: string
+  resistance_config?: string
+  // Digital output settings
+  invert?: boolean
+}
+
+// System config as stored in the project JSON file
+export interface ProjectSystemConfig {
+  mqtt_broker: string
+  mqtt_port: number
+  scan_rate_hz: number
+  simulation_mode: boolean
+  device_name: string
+  default_tc_type?: string
+  default_rtd_type?: string
+  default_resistance_config?: string
+}
 
 export interface ProjectFile {
   filename: string
@@ -42,9 +95,13 @@ export interface ProjectData {
   type: 'nisystem-project'
   version: string
   name: string
-  config: string
+  config?: string  // Legacy: external .ini file reference (optional for merged configs)
   created: string
   modified: string
+  // Embedded system config (v2.0+)
+  system?: ProjectSystemConfig
+  // Embedded channel definitions (v2.0+)
+  channels?: Record<string, ProjectChannelConfig>
   layout: {
     widgets?: any[]                // Optional for legacy single-page
     pages?: DashboardPage[]        // Multi-page support
@@ -98,15 +155,33 @@ export function useProjectFiles() {
     })
 
     mqtt.subscribe(`${prefix}/project/loaded`, (payload: any) => {
+      console.log('[PROJECT LOADING] Received project/loaded message:', {
+        success: payload.success,
+        hasProject: !!payload.project,
+        filename: payload.filename
+      })
+
       if (payload.success && payload.project) {
         currentProject.value = payload.filename
         currentProjectData.value = payload.project
 
-        // Apply project data to frontend
-        applyProjectData(payload.project)
+        try {
+          // Apply project data to frontend
+          console.log('[PROJECT LOADING] Calling applyProjectData...')
+          applyProjectData(payload.project)
+          console.log('[PROJECT LOADING] ✅ Project applied successfully')
 
-        // Notify callbacks
-        projectLoadedCallbacks.forEach(cb => cb(payload.project))
+          // Notify callbacks
+          projectLoadedCallbacks.forEach(cb => cb(payload.project))
+        } catch (err) {
+          console.error('[PROJECT LOADING] ❌ Error applying project data:', err)
+          error.value = `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`
+        }
+      } else {
+        console.error('[PROJECT LOADING] ❌ Project load failed or missing data')
+        if (!payload.success) {
+          error.value = payload.message || 'Project load failed'
+        }
       }
       isLoading.value = false
     })
@@ -121,8 +196,28 @@ export function useProjectFiles() {
     })
 
     mqtt.subscribe(`${prefix}/project/current`, (payload: any) => {
+      console.log('[PROJECT LOADING] Received project/current message:', {
+        hasProject: !!payload.project,
+        filename: payload.filename
+      })
+
       currentProject.value = payload.filename
       currentProjectData.value = payload.project
+
+      // Apply project data if present (same as project/loaded)
+      if (payload.project) {
+        try {
+          console.log('[PROJECT LOADING] Applying current project data...')
+          applyProjectData(payload.project)
+          console.log('[PROJECT LOADING] ✅ Current project applied successfully')
+          projectLoadedCallbacks.forEach(cb => cb(payload.project))
+        } catch (err) {
+          console.error('[PROJECT LOADING] ❌ Error applying current project:', err)
+          error.value = `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`
+        }
+      } else {
+        console.log('[PROJECT LOADING] No current project to apply')
+      }
     })
 
     mqtt.subscribe(`${prefix}/config/list/response`, (payload: any) => {
@@ -270,18 +365,102 @@ export function useProjectFiles() {
     }
   }
 
+  // Convert project channel config to store channel config
+  function convertProjectChannel(name: string, pch: ProjectChannelConfig): ChannelConfig {
+    return {
+      name,  // TAG is the only identifier
+      // display_name removed - use name (TAG) everywhere
+      channel_type: pch.channel_type as ChannelType,
+      physical_channel: pch.physical_channel,
+      unit: pch.unit || '',
+      group: pch.group || 'Ungrouped',
+      description: pch.description,  // For tooltips/documentation only
+
+      // Legacy limit names (backward compatibility)
+      low_limit: pch.low_limit,
+      high_limit: pch.high_limit,
+      low_warning: pch.low_warning,
+      high_warning: pch.high_warning,
+
+      // ISA-18.2 Alarm Configuration
+      alarm_enabled: pch.alarm_enabled,
+      hihi_limit: pch.hihi_limit,
+      hi_limit: pch.hi_limit,
+      lo_limit: pch.lo_limit,
+      lolo_limit: pch.lolo_limit,
+      alarm_priority: pch.alarm_priority,
+      alarm_deadband: pch.alarm_deadband,
+      alarm_delay_sec: pch.alarm_delay_sec,
+      alarm_clear_delay_sec: pch.alarm_clear_delay_sec,
+      safety_action: pch.safety_action,
+
+      chartable: pch.chartable !== false && pch.channel_type !== 'digital_output',
+      color: pch.color,
+      visible: pch.visible !== false,
+      scale_slope: pch.scale_slope,
+      scale_offset: pch.scale_offset,
+      invert: pch.invert
+    }
+  }
+
   // Apply loaded project data to frontend
   function applyProjectData(data: ProjectData) {
+    console.log('[PROJECT LOADING] Starting to apply project data...')
+    console.log('[PROJECT LOADING] Project name:', data.name)
+    console.log('[PROJECT LOADING] Project version:', data.version)
+    console.log('[PROJECT LOADING] Project config:', data.config)
+    console.log('[PROJECT LOADING] Has embedded channels:', !!data.channels)
+
+    // Apply embedded channels if present (v2.0+ merged config format)
+    if (data.channels && Object.keys(data.channels).length > 0) {
+      console.log('[PROJECT LOADING] Applying embedded channels...')
+      const channelConfigs: Record<string, ChannelConfig> = {}
+
+      for (const [name, pch] of Object.entries(data.channels)) {
+        channelConfigs[name] = convertProjectChannel(name, pch)
+      }
+
+      console.log('[PROJECT LOADING] Converted channels:', Object.keys(channelConfigs).length)
+      store.setChannels(channelConfigs)
+      console.log('[PROJECT LOADING] ✅ Channels applied to store')
+    }
+
     // Apply layout (supports both legacy single-page and multi-page)
     if (data.layout) {
-      store.setLayout({
-        system_id: store.systemId,
-        widgets: data.layout.widgets || [],      // Legacy single-page
-        pages: data.layout.pages,                 // Multi-page support
-        currentPageId: data.layout.currentPageId, // Current page ID
-        gridColumns: data.layout.gridColumns || 12,
-        rowHeight: data.layout.rowHeight || 80
+      console.log('[PROJECT LOADING] Applying layout...')
+      console.log('[PROJECT LOADING] Layout structure:', {
+        hasLegacyWidgets: !!data.layout.widgets && data.layout.widgets.length > 0,
+        legacyWidgetCount: data.layout.widgets?.length || 0,
+        hasPages: !!data.layout.pages && data.layout.pages.length > 0,
+        pageCount: data.layout.pages?.length || 0,
+        currentPageId: data.layout.currentPageId,
+        gridColumns: data.layout.gridColumns,
+        rowHeight: data.layout.rowHeight
       })
+
+      // Log detailed page info
+      if (data.layout.pages && data.layout.pages.length > 0) {
+        data.layout.pages.forEach((page: any, idx: number) => {
+          console.log(`[PROJECT LOADING] Page ${idx}: ${page.name} (id: ${page.id}, widgets: ${page.widgets?.length || 0})`)
+        })
+      }
+
+      try {
+        store.setLayout({
+          system_id: store.systemId,
+          widgets: data.layout.widgets || [],      // Legacy single-page
+          pages: data.layout.pages,                 // Multi-page support
+          currentPageId: data.layout.currentPageId, // Current page ID
+          gridColumns: data.layout.gridColumns || 12,
+          rowHeight: data.layout.rowHeight || 80
+        })
+        console.log('[PROJECT LOADING] ✅ Layout applied successfully')
+      } catch (error) {
+        console.error('[PROJECT LOADING] ❌ Error applying layout:', error)
+        throw error
+      }
+    } else {
+      console.warn('[PROJECT LOADING] ⚠️ No layout data found in project')
     }
 
     // Apply scripts to localStorage (useScripts will pick them up)

@@ -659,7 +659,7 @@ class DeviceDiscovery:
                 "physical_channel": ch["physical_channel"],
                 "channel_type": ch["channel_type"],
                 "module": module_name,
-                "display_name": ch_name,
+                # display_name removed - use name (TAG) everywhere
                 "unit": self._get_default_unit(ch["channel_type"]),
                 "enabled": True
             }

@@ -93,9 +93,9 @@ class ModuleConfig:
 @dataclass
 class ChannelConfig:
     name: str
-    module: str
     physical_channel: str
     channel_type: ChannelType
+    module: str = ""  # Optional - empty for channels with full physical_channel paths (e.g., "cDAQ-9189-DHWSIMMod1/ai0")
     description: str = ""
     units: str = ""
 
@@ -179,11 +179,21 @@ class ChannelConfig:
     default_state: bool = False
     default_value: float = 0.0
 
-    # Limits and warnings
+    # Limits and warnings (legacy - use ISA-18.2 fields below)
     low_limit: Optional[float] = None
     high_limit: Optional[float] = None
     low_warning: Optional[float] = None
     high_warning: Optional[float] = None
+
+    # ISA-18.2 Alarm Configuration
+    alarm_enabled: bool = False              # Master enable for alarm checking
+    hihi_limit: Optional[float] = None       # High-High (critical)
+    hi_limit: Optional[float] = None         # High (warning)
+    lo_limit: Optional[float] = None         # Low (warning)
+    lolo_limit: Optional[float] = None       # Low-Low (critical)
+    alarm_priority: str = "medium"           # diagnostic, low, medium, high, critical
+    alarm_deadband: float = 1.0              # Hysteresis to prevent chatter
+    alarm_delay_sec: float = 0.0             # On-delay before triggering
 
     # Safety
     safety_action: Optional[str] = None
@@ -257,15 +267,48 @@ def parse_actions(actions_str: str) -> Dict[str, Any]:
     return actions
 
 
+def _get_system_ini_path(config_path: str) -> Path:
+    """Get the path to system.ini based on the config file location"""
+    config_dir = Path(config_path).resolve().parent
+    # If config is in a subdirectory of config/, go up to config/
+    if config_dir.name != 'config':
+        config_dir = config_dir.parent
+    return config_dir / 'system.ini'
+
+
 def load_config(config_path: str) -> NISystemConfig:
-    """Load and parse the INI configuration file"""
+    """Load and parse the INI configuration file
+
+    System settings (MQTT, logging, etc.) are always read from config/system.ini
+    Channel definitions are read from the specified config file.
+    """
 
     # Use RawConfigParser to avoid interpolation issues with % characters
-    # (e.g., units = %RH for relative humidity)
     parser = configparser.RawConfigParser()
-    parser.read(config_path)
 
-    # Parse system config
+    # First, load system.ini for system-wide settings
+    system_ini_path = _get_system_ini_path(config_path)
+    if system_ini_path.exists():
+        parser.read(system_ini_path)
+        logger.info(f"Loaded system settings from {system_ini_path}")
+    else:
+        logger.warning(f"system.ini not found at {system_ini_path}, using defaults")
+
+    # Then load the project-specific config (channels, etc.)
+    project_parser = configparser.RawConfigParser()
+    project_parser.read(config_path)
+
+    # Merge project config into parser (skip [system] - always use system.ini)
+    for section in project_parser.sections():
+        if section == 'system':
+            logger.debug(f"Ignoring [system] section in {config_path} - using system.ini")
+            continue
+        if not parser.has_section(section):
+            parser.add_section(section)
+        for key, value in project_parser.items(section):
+            parser.set(section, key, value)
+
+    # Parse system config (from system.ini)
     system = SystemConfig()
     if 'system' in parser:
         sys_section = parser['system']
@@ -485,9 +528,12 @@ def validate_config(config: NISystemConfig, strict: bool = True) -> ValidationRe
             errors.append(f"Module '{module_name}' references non-existent chassis '{module.chassis}'")
 
     # 2. Validate channel references to modules
+    # Skip validation for channels with direct physical paths (contain '/')
     for channel_name, channel in config.channels.items():
         if channel.module and channel.module not in config.modules:
-            errors.append(f"Channel '{channel_name}' references non-existent module '{channel.module}'")
+            # Check if channel uses direct path - if so, module reference is not needed
+            if '/' not in channel.physical_channel:
+                errors.append(f"Channel '{channel_name}' references non-existent module '{channel.module}'")
 
     # 3. CRITICAL: Validate safety action references from channels
     for channel_name, channel in config.channels.items():

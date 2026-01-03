@@ -37,6 +37,10 @@ const widget = computed(() => {
 watch(() => props.widgetId, () => {
   if (widget.value) {
     localWidget.value = { ...widget.value }
+    // Initialize boolean toggles to true if undefined (matches component defaults)
+    if (localWidget.value.showLabel === undefined) localWidget.value.showLabel = true
+    if (localWidget.value.showUnit === undefined) localWidget.value.showUnit = true
+    if (localWidget.value.showValue === undefined) localWidget.value.showValue = true
   }
 }, { immediate: true })
 
@@ -212,13 +216,13 @@ const selectedChartChannels = computed(() => {
         </div>
 
         <div class="modal-body">
-          <!-- Common: Label -->
+          <!-- Common: Custom Label (overrides TAG display) -->
           <div class="form-group">
-            <label>Label</label>
+            <label>Custom Label</label>
             <input
               type="text"
               v-model="localWidget.label"
-              placeholder="Widget label"
+              placeholder="Leave empty to show TAG"
             />
           </div>
 
@@ -228,7 +232,7 @@ const selectedChartChannels = computed(() => {
             <select v-model="localWidget.channel">
               <option value="">-- Select Channel --</option>
               <option v-for="[name, config] in availableChannels" :key="name" :value="name">
-                {{ config.display_name || name }} ({{ config.unit || 'no unit' }})
+                {{ name }} ({{ config.unit || 'no unit' }})
               </option>
             </select>
           </div>
@@ -244,15 +248,19 @@ const selectedChartChannels = computed(() => {
                 max="6"
               />
             </div>
-            <div class="form-group checkbox">
-              <label>
-                <input
-                  type="checkbox"
-                  :checked="localWidget.showUnit !== false"
-                  @change="localWidget.showUnit = ($event.target as HTMLInputElement).checked"
-                />
-                Show Unit
-              </label>
+            <div class="form-row">
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showLabel" />
+                  Show Tag
+                </label>
+              </div>
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showUnit" />
+                  Show Unit
+                </label>
+              </div>
             </div>
           </template>
 
@@ -294,7 +302,7 @@ const selectedChartChannels = computed(() => {
                     :checked="localWidget.channels?.includes(name)"
                     @change="toggleChannel(name, ($event.target as HTMLInputElement).checked)"
                   />
-                  <span>{{ config.display_name || name }}</span>
+                  <span>{{ name }}</span>
                 </label>
               </div>
             </div>
@@ -305,7 +313,7 @@ const selectedChartChannels = computed(() => {
             <div class="form-row">
               <div class="form-group half checkbox">
                 <label>
-                  <input type="checkbox" :checked="localWidget.showUnits !== false" @change="localWidget.showUnits = ($event.target as HTMLInputElement).checked" />
+                  <input type="checkbox" v-model="localWidget.showUnits" />
                   Show Units
                 </label>
               </div>
@@ -367,8 +375,7 @@ const selectedChartChannels = computed(() => {
                 <label>
                   <input
                     type="checkbox"
-                    :checked="localWidget.yAxisAuto !== false"
-                    @change="localWidget.yAxisAuto = ($event.target as HTMLInputElement).checked"
+                    v-model="localWidget.yAxisAuto"
                   />
                   Auto-scale
                 </label>
@@ -394,8 +401,7 @@ const selectedChartChannels = computed(() => {
                 <label>
                   <input
                     type="checkbox"
-                    :checked="localWidget.showGrid !== false"
-                    @change="localWidget.showGrid = ($event.target as HTMLInputElement).checked"
+                    v-model="localWidget.showGrid"
                   />
                   Show Grid Lines
                 </label>
@@ -404,8 +410,7 @@ const selectedChartChannels = computed(() => {
                 <label>
                   <input
                     type="checkbox"
-                    :checked="localWidget.showLegend !== false"
-                    @change="localWidget.showLegend = ($event.target as HTMLInputElement).checked"
+                    v-model="localWidget.showLegend"
                   />
                   Show Legend
                 </label>
@@ -451,7 +456,7 @@ const selectedChartChannels = computed(() => {
                         }
                       }"
                     />
-                    <span>{{ config.display_name || name }}</span>
+                    <span>{{ name }}</span>
                   </label>
                 </div>
               </div>
@@ -467,7 +472,7 @@ const selectedChartChannels = computed(() => {
                   class="channel-style-row"
                 >
                   <div class="channel-style-preview" :style="{ backgroundColor: getPlotStyle(channel).color }"></div>
-                  <span class="channel-style-name">{{ store.channels[channel]?.display_name || channel }}</span>
+                  <span class="channel-style-name">{{ channel }}</span>
 
                   <div class="channel-style-controls">
                     <!-- Color picker -->
@@ -536,18 +541,14 @@ const selectedChartChannels = computed(() => {
                       }
                     }"
                   />
-                  <span>{{ config.display_name || name }} ({{ config.unit || '-' }})</span>
+                  <span>{{ name }} ({{ config.unit || '-' }})</span>
                 </label>
               </div>
               <p class="hint">If no channels selected, displays first 10 analog channels</p>
             </div>
             <div class="form-group checkbox">
               <label>
-                <input
-                  type="checkbox"
-                  :checked="localWidget.showUnit !== false"
-                  @change="localWidget.showUnit = ($event.target as HTMLInputElement).checked"
-                />
+                <input type="checkbox" v-model="localWidget.showUnit" />
                 Show Units
               </label>
             </div>
@@ -685,7 +686,7 @@ const selectedChartChannels = computed(() => {
                 >
                   <option value="">-- Select Channel --</option>
                   <option v-for="[name, config] in digitalOutputChannels" :key="name" :value="name">
-                    {{ config.display_name || name }}
+                    {{ name }}
                   </option>
                 </select>
               </div>
@@ -932,13 +933,13 @@ const selectedChartChannels = computed(() => {
             </div>
             <div class="form-group checkbox">
               <label>
-                <input type="checkbox" :checked="localWidget.showValue !== false" @change="localWidget.showValue = ($event.target as HTMLInputElement).checked" />
+                <input type="checkbox" v-model="localWidget.showValue" />
                 Show Value
               </label>
             </div>
             <div class="form-group checkbox">
               <label>
-                <input type="checkbox" :checked="localWidget.showLabel !== false" @change="localWidget.showLabel = ($event.target as HTMLInputElement).checked" />
+                <input type="checkbox" v-model="localWidget.showLabel" />
                 Show Label
               </label>
             </div>

@@ -18,12 +18,20 @@ import {
 } from '../types/modules'
 import { useMqtt } from '../composables/useMqtt'
 import { useProjectManager } from '../composables/useProjectManager'
+import { useTheme } from '../composables/useTheme'
+import { useSafety } from '../composables/useSafety'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 
 const store = useDashboardStore()
 
 // MQTT connection - get from parent or create new
 const mqtt = useMqtt()
+
+// Theme toggle
+const { theme, toggleTheme } = useTheme()
+
+// Safety system - for safety action dropdown
+const safety = useSafety()
 
 // Project manager for export/import
 const projectManager = useProjectManager()
@@ -34,6 +42,9 @@ const importFileInput = ref<HTMLInputElement | null>(null)
 // Edit mode - only allow editing when explicitly enabled and not acquiring
 const editMode = ref(false)
 const canEdit = computed(() => editMode.value && !store.isAcquiring)
+
+// Limit colors toggle - show alarm/warning colors based on channel limits
+const showLimitColors = ref(true)
 
 async function exportProject() {
   isExporting.value = true
@@ -122,10 +133,10 @@ const newChannelForm = ref({
   name: '',
   physical_channel: '',
   channel_type: 'thermocouple' as ChannelType,
-  display_name: '',
+  // display_name removed - use name (TAG) everywhere
   unit: '',
   group: '',
-  description: ''
+  description: ''  // For tooltips/documentation only
 })
 
 // System Settings State
@@ -133,6 +144,127 @@ const showSystemSettings = ref(false)
 const systemSettingsForm = ref({
   scan_rate_hz: 100,
   publish_rate_hz: 10
+})
+
+// Safety Actions Management State
+const showSafetyActionsModal = ref(false)
+const editingSafetyAction = ref<{
+  id: string
+  name: string
+  description: string
+  type: 'trip_system' | 'stop_session' | 'stop_recording' | 'set_output_safe' | 'run_sequence' | 'custom'
+  enabled: boolean
+  outputChannels: string[]
+  safeValue: number
+  analogSafeValue: number
+  sequenceId: string
+  mqttTopic: string
+  mqttPayload: string
+} | null>(null)
+const isNewSafetyAction = ref(false)
+
+function openSafetyActionsModal() {
+  showSafetyActionsModal.value = true
+}
+
+function startNewSafetyAction() {
+  editingSafetyAction.value = {
+    id: `action-${Date.now()}`,
+    name: '',
+    description: '',
+    type: 'trip_system',
+    enabled: true,
+    outputChannels: [],
+    safeValue: 0,
+    analogSafeValue: 0,
+    sequenceId: '',
+    mqttTopic: '',
+    mqttPayload: '{}'
+  }
+  isNewSafetyAction.value = true
+}
+
+function editSafetyAction(actionId: string) {
+  const action = safety.getSafetyAction(actionId)
+  if (action) {
+    editingSafetyAction.value = {
+      id: actionId,
+      name: action.name,
+      description: action.description || '',
+      type: action.type,
+      enabled: action.enabled,
+      outputChannels: action.outputChannels || [],
+      safeValue: action.safeValue ?? 0,
+      analogSafeValue: action.analogSafeValue ?? 0,
+      sequenceId: action.sequenceId || '',
+      mqttTopic: action.mqttTopic || '',
+      mqttPayload: action.mqttPayload ? JSON.stringify(action.mqttPayload) : '{}'
+    }
+    isNewSafetyAction.value = false
+  }
+}
+
+function saveSafetyAction() {
+  if (!editingSafetyAction.value) return
+
+  const action = editingSafetyAction.value
+  let payload: any = {}
+  try {
+    payload = JSON.parse(action.mqttPayload || '{}')
+  } catch { /* ignore */ }
+
+  if (isNewSafetyAction.value) {
+    safety.addSafetyAction({
+      name: action.name,
+      description: action.description,
+      type: action.type,
+      enabled: action.enabled,
+      outputChannels: action.outputChannels,
+      safeValue: action.safeValue,
+      analogSafeValue: action.analogSafeValue,
+      sequenceId: action.sequenceId,
+      mqttTopic: action.mqttTopic,
+      mqttPayload: payload
+    })
+  } else {
+    safety.updateSafetyAction(action.id, {
+      name: action.name,
+      description: action.description,
+      type: action.type,
+      enabled: action.enabled,
+      outputChannels: action.outputChannels,
+      safeValue: action.safeValue,
+      analogSafeValue: action.analogSafeValue,
+      sequenceId: action.sequenceId,
+      mqttTopic: action.mqttTopic,
+      mqttPayload: payload
+    })
+  }
+
+  editingSafetyAction.value = null
+  showFeedback('success', `Safety action ${isNewSafetyAction.value ? 'created' : 'updated'}`)
+}
+
+function deleteSafetyAction(actionId: string) {
+  if (confirm('Delete this safety action?')) {
+    safety.removeSafetyAction(actionId)
+    showFeedback('success', 'Safety action deleted')
+  }
+}
+
+function cancelEditSafetyAction() {
+  editingSafetyAction.value = null
+}
+
+// Get available output channels for safety action configuration
+const outputChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, config]) => config.channel_type === 'digital_output' || config.channel_type === 'analog_output')
+    .map(([name, config]) => ({
+      name,
+      displayName: name,  // TAG is the only identifier
+      type: config.channel_type
+    }))
 })
 
 // Channel enable states (tracked separately for reactivity)
@@ -176,7 +308,7 @@ function openAddChannelModal() {
     name: '',
     physical_channel: '',
     channel_type: 'thermocouple',
-    display_name: '',
+    // display_name removed - use name (TAG) everywhere
     unit: '',
     group: '',
     description: ''
@@ -196,10 +328,10 @@ function addNewChannel() {
   }
 
   const config = {
-    name: newChannelForm.value.name,
+    name: newChannelForm.value.name,  // TAG is the only identifier
     physical_channel: newChannelForm.value.physical_channel || newChannelForm.value.name,
     channel_type: newChannelForm.value.channel_type,
-    display_name: newChannelForm.value.display_name || newChannelForm.value.name,
+    // display_name removed - use name (TAG) everywhere
     unit: newChannelForm.value.unit || getDefaultUnit(newChannelForm.value.channel_type),
     group: newChannelForm.value.group || 'Default',
     description: newChannelForm.value.description,
@@ -330,7 +462,70 @@ mqtt.onDiscovery((result) => {
   }
 })
 
-// Add discovered channels to config
+// Generate smart channel name from physical channel
+function generateSmartChannelName(physicalChannel: string, channelType: string, index: number): string {
+  // Extract module number and channel index from physical channel
+  // e.g., "cDAQ1Mod1/ai0" -> "TC_01" for thermocouple
+  const match = physicalChannel.match(/Mod(\d+)\/([a-z]+)(\d+)/i)
+  if (!match) return physicalChannel.replace(/[^a-zA-Z0-9_]/g, '_')
+
+  const moduleNum = match[1]
+  const chanType = match[2].toLowerCase()
+  const chanNum = parseInt(match[3])
+
+  // Generate prefix based on measurement type
+  const prefixes: Record<string, string> = {
+    thermocouple: 'TC',
+    rtd: 'RTD',
+    voltage: 'AI',
+    current: 'mA',
+    strain: 'STR',
+    iepe: 'IEPE',
+    counter: 'CTR',
+    digital_input: 'DI',
+    digital_output: 'DO',
+    analog_output: 'AO',
+  }
+
+  const prefix = prefixes[channelType] || chanType.toUpperCase()
+  return `${prefix}_${String(chanNum + 1).padStart(2, '0')}`
+}
+
+// Get default limits based on channel type
+function getDefaultLimits(channelType: string): { low: number, high: number, lowWarn?: number, highWarn?: number } {
+  const limits: Record<string, { low: number, high: number, lowWarn?: number, highWarn?: number }> = {
+    thermocouple: { low: 0, high: 500, lowWarn: 32, highWarn: 450 },
+    rtd: { low: -50, high: 300, lowWarn: 0, highWarn: 250 },
+    voltage: { low: -10, high: 10 },
+    current: { low: 0, high: 20, lowWarn: 4, highWarn: 20 },
+    strain: { low: -5000, high: 5000 },
+    iepe: { low: -50, high: 50 },
+    counter: { low: 0, high: 1000000 },
+    digital_input: { low: 0, high: 1 },
+    digital_output: { low: 0, high: 1 },
+    analog_output: { low: -10, high: 10 },
+  }
+  return limits[channelType] || { low: 0, high: 100 }
+}
+
+// Get default group name based on module/type
+function getDefaultGroupName(channelType: string, moduleName: string): string {
+  const groupNames: Record<string, string> = {
+    thermocouple: 'Temperature',
+    rtd: 'Temperature',
+    voltage: 'Analog Inputs',
+    current: 'Current Inputs',
+    strain: 'Strain Gauges',
+    iepe: 'Vibration',
+    counter: 'Counters',
+    digital_input: 'Digital Inputs',
+    digital_output: 'Digital Outputs',
+    analog_output: 'Analog Outputs',
+  }
+  return groupNames[channelType] || moduleName || 'Ungrouped'
+}
+
+// Add discovered channels to config with smart defaults
 function addSelectedChannels() {
   const channels = discoveryChannels.value.filter(ch =>
     selectedDiscoveryChannels.value.includes(ch.physical_channel)
@@ -341,20 +536,39 @@ function addSelectedChannels() {
     return
   }
 
-  // Send to backend to add channels
-  channels.forEach(ch => {
-    mqtt.updateChannelConfig(ch.physical_channel, {
-      name: ch.physical_channel,
-      type: ch.measurement_type,
-      description: ch.suggested_name,
+  // Send to backend with smart configuration
+  channels.forEach((ch, index) => {
+    const channelType = ch.measurement_type || ch.channel_type || 'voltage'
+    const smartName = generateSmartChannelName(ch.physical_channel, channelType, index)
+    const limits = getDefaultLimits(channelType)
+    const group = getDefaultGroupName(channelType, ch.module_name)
+    const units = getDefaultUnit(channelType as ChannelType)
+
+    mqtt.updateChannelConfig(smartName, {
+      name: smartName,  // TAG is the only identifier
+      physical_channel: ch.physical_channel,
+      channel_type: channelType,
+      // display_name removed - use name (TAG) everywhere
+      description: `${ch.module_name} - ${ch.physical_channel}`,
       module: ch.module_name,
+      group: group,
+      units: units,
+      low_limit: limits.low,
+      high_limit: limits.high,
+      low_warning: limits.lowWarn,
+      high_warning: limits.highWarn,
+      log: true,
+      log_interval_ms: 1000,
       enabled: true
     })
+
+    channelEnabled.value[smartName] = true
   })
 
-  showFeedback('success', `Adding ${channels.length} channel(s)...`)
+  showFeedback('success', `Added ${channels.length} channel(s) with smart defaults`)
   selectedDiscoveryChannels.value = []
   showDiscoveryPanel.value = false
+  markDirty()
 }
 
 function toggleDiscoveryChannel(physicalChannel: string) {
@@ -374,21 +588,51 @@ function deselectAllDiscoveryChannels() {
   selectedDiscoveryChannels.value = []
 }
 
-// Channel type tabs
+// Quick populate ALL discovered channels with smart defaults (one-click setup)
+function quickPopulateAllChannels() {
+  if (discoveryChannels.value.length === 0) {
+    showFeedback('error', 'No channels to add')
+    return
+  }
+
+  // Select all and add them
+  selectAllDiscoveryChannels()
+  addSelectedChannels()
+}
+
+// Apply configuration changes and reinitialize DAQ tasks (without starting acquisition)
+function applyConfigChanges() {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+
+  // First save current config
+  saveToFile()
+
+  // Then request backend to reinitialize tasks with new config
+  mqtt.sendCommand('config/apply', {
+    restart_acquisition: false  // Just prep, don't start
+  })
+
+  showFeedback('info', 'Applying configuration changes...')
+}
+
+// Channel type tabs - each type needs unique columns, so keep them separate
+// Using shorter labels to reduce horizontal space
 const channelTypeTabs = [
-  { id: 'all', label: 'ALL CHANNELS', icon: '⊞' },
-  { id: 'current', label: 'CURRENT INPUT', icon: '〰' },
-  { id: 'voltage', label: 'VOLTAGE INPUT', icon: '⚡' },
-  { id: 'current_output', label: 'CURRENT OUTPUT', icon: '〰' },
-  { id: 'voltage_output', label: 'VOLTAGE OUTPUT', icon: '↗' },
-  { id: 'digital_input', label: 'DIGITAL INPUT', icon: '▢' },
-  { id: 'digital_output', label: 'DIGITAL OUTPUT', icon: '▣' },
-  { id: 'counter', label: 'COUNTER', icon: '#' },
-  { id: 'thermocouple', label: 'THERMOCOUPLE', icon: '🌡' },
+  { id: 'all', label: 'ALL', icon: '⊞' },
+  { id: 'thermocouple', label: 'TC', icon: '🌡' },
   { id: 'rtd', label: 'RTD', icon: '🌡' },
-  { id: 'strain', label: 'STRAIN/BRIDGE', icon: '⚖' },
-  { id: 'iepe', label: 'IEPE/ACCEL', icon: '〰' },
-  { id: 'resistance', label: 'RESISTANCE', icon: 'Ω' },
+  { id: 'voltage', label: 'V-IN', icon: '⚡' },
+  { id: 'current', label: 'mA-IN', icon: '〰' },
+  { id: 'voltage_output', label: 'V-OUT', icon: '↗' },
+  { id: 'current_output', label: 'mA-OUT', icon: '↗' },
+  { id: 'digital_input', label: 'DI', icon: '▢' },
+  { id: 'digital_output', label: 'DO', icon: '▣' },
+  { id: 'counter', label: 'CTR', icon: '#' },
+  { id: 'strain', label: 'STR', icon: '⚖' },
+  { id: 'iepe', label: 'IEPE', icon: '〰' },
   { id: 'modbus', label: 'MODBUS', icon: '🔌' },
 ]
 
@@ -403,21 +647,22 @@ const filteredChannels = computed(() => {
 
   // Filter by type
   if (activeTypeTab.value !== 'all') {
-    // Handle virtual output types (voltage_output and current_output filter analog_output)
-    if (activeTypeTab.value === 'voltage_output') {
+    if (activeTypeTab.value === 'modbus') {
+      // Modbus tab shows both modbus_register and modbus_coil types
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
+      )
+    } else if (activeTypeTab.value === 'voltage_output') {
+      // V-OUT: analog_output channels with voltage range
       channels = channels.filter(([_, ch]) =>
         ch.channel_type === 'analog_output' &&
         (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA'))
       )
     } else if (activeTypeTab.value === 'current_output') {
+      // mA-OUT: analog_output channels with current range
       channels = channels.filter(([_, ch]) =>
         ch.channel_type === 'analog_output' &&
         ch.ao_range?.includes('mA')
-      )
-    } else if (activeTypeTab.value === 'modbus') {
-      // Modbus tab shows both modbus_register and modbus_coil types
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
       )
     } else {
       channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
@@ -429,8 +674,7 @@ const filteredChannels = computed(() => {
     const query = searchQuery.value.toLowerCase()
     channels = channels.filter(([name, ch]) =>
       name.toLowerCase().includes(query) ||
-      ch.display_name?.toLowerCase().includes(query) ||
-      ch.description?.toLowerCase().includes(query)
+      ch.description?.toLowerCase().includes(query)  // Search name + description only
     )
   }
 
@@ -479,13 +723,174 @@ function getScaledValue(channelName: string): string {
   return `${value.value.toFixed(2)} ${config?.unit || ''}`
 }
 
-// Get alarm status
+// Get raw min value from channel config (for scaling display)
+function getRawMin(channelName: string): string {
+  const config = store.channels[channelName]
+  if (!config) return '--'
+
+  // For 4-20mA, raw min is always 4
+  if (config.four_twenty_scaling) return '4 mA'
+
+  // For map scaling, use pre_scaled_min
+  if (config.scale_type === 'map' && config.pre_scaled_min !== undefined) {
+    return `${config.pre_scaled_min}`
+  }
+
+  // For voltage/current, use the range
+  if (config.channel_type === 'voltage') {
+    const range = config.voltage_range || '±10V'
+    if (range.includes('±')) return `-${range.replace('±', '').replace('V', '')} V`
+    return '0 V'
+  }
+  if (config.channel_type === 'current') {
+    return config.four_twenty_scaling ? '4 mA' : '0 mA'
+  }
+
+  return config.pre_scaled_min?.toString() || '0'
+}
+
+// Get raw max value from channel config
+function getRawMax(channelName: string): string {
+  const config = store.channels[channelName]
+  if (!config) return '--'
+
+  // For 4-20mA, raw max is always 20
+  if (config.four_twenty_scaling) return '20 mA'
+
+  // For map scaling, use pre_scaled_max
+  if (config.scale_type === 'map' && config.pre_scaled_max !== undefined) {
+    return `${config.pre_scaled_max}`
+  }
+
+  // For voltage, use the range
+  if (config.channel_type === 'voltage') {
+    const range = config.voltage_range || '±10V'
+    return range.replace('±', '').replace('V', '') + ' V'
+  }
+  if (config.channel_type === 'current') {
+    return '20 mA'
+  }
+
+  return config.pre_scaled_max?.toString() || '10'
+}
+
+// Get scaled min value from channel config (engineering units)
+function getScaledMin(channelName: string): string {
+  const config = store.channels[channelName]
+  if (!config) return '--'
+
+  // For 4-20mA scaling
+  if (config.four_twenty_scaling && config.eng_units_min !== undefined) {
+    return `${config.eng_units_min}`
+  }
+
+  // For map scaling
+  if (config.scale_type === 'map' && config.scaled_min !== undefined) {
+    return `${config.scaled_min}`
+  }
+
+  // For linear scaling (y = mx + b), scaled_min = m * raw_min + b
+  if (config.scale_type === 'linear' && config.scale_slope !== undefined) {
+    const rawMin = parseFloat(getRawMin(channelName)) || 0
+    return `${(rawMin * config.scale_slope + (config.scale_offset || 0)).toFixed(2)}`
+  }
+
+  return config.scaled_min?.toString() || config.eng_units_min?.toString() || '0'
+}
+
+// Get scaled max value from channel config (engineering units)
+function getScaledMax(channelName: string): string {
+  const config = store.channels[channelName]
+  if (!config) return '--'
+
+  // For 4-20mA scaling
+  if (config.four_twenty_scaling && config.eng_units_max !== undefined) {
+    return `${config.eng_units_max}`
+  }
+
+  // For map scaling
+  if (config.scale_type === 'map' && config.scaled_max !== undefined) {
+    return `${config.scaled_max}`
+  }
+
+  // For linear scaling (y = mx + b), scaled_max = m * raw_max + b
+  if (config.scale_type === 'linear' && config.scale_slope !== undefined) {
+    const rawMax = parseFloat(getRawMax(channelName)) || 10
+    return `${(rawMax * config.scale_slope + (config.scale_offset || 0)).toFixed(2)}`
+  }
+
+  return config.scaled_max?.toString() || config.eng_units_max?.toString() || '100'
+}
+
+// Get alarm status (respects ISA-18.2 alarm_enabled flag)
 function getAlarmStatus(channelName: string): 'normal' | 'warning' | 'alarm' {
+  if (!showLimitColors.value) return 'normal'  // Limit colors disabled globally
+
+  // Check if this channel has alarms enabled (ISA-18.2)
+  const config = store.channels[channelName]
+  if (config) {
+    // If alarm_enabled is explicitly false, don't show alarm colors
+    if (config.alarm_enabled === false) return 'normal'
+  }
+
   const value = store.values[channelName]
   if (!value) return 'normal'
   if (value.alarm) return 'alarm'
   if (value.warning) return 'warning'
   return 'normal'
+}
+
+// Get alarm button class for the ALARM column
+function getAlarmButtonClass(channelName: string, config: ChannelConfig): string {
+  const classes = []
+
+  if (config.alarm_enabled) {
+    classes.push('enabled')
+    // Show current alarm state
+    const status = getAlarmStatus(channelName)
+    if (status === 'alarm') classes.push('active-alarm')
+    else if (status === 'warning') classes.push('active-warning')
+  } else {
+    classes.push('disabled')
+  }
+
+  return classes.join(' ')
+}
+
+// Get tooltip for alarm button
+function getAlarmTooltip(channelName: string, config: ChannelConfig): string {
+  if (!config.alarm_enabled) {
+    return 'Click to configure alarms (currently disabled)'
+  }
+
+  const limits = []
+  if (config.hihi_limit !== undefined) limits.push(`HiHi: ${config.hihi_limit}`)
+  if (config.hi_limit !== undefined) limits.push(`Hi: ${config.hi_limit}`)
+  if (config.lo_limit !== undefined) limits.push(`Lo: ${config.lo_limit}`)
+  if (config.lolo_limit !== undefined) limits.push(`LoLo: ${config.lolo_limit}`)
+
+  if (limits.length > 0) {
+    return `Alarm enabled: ${limits.join(', ')}`
+  }
+  return 'Alarm enabled (no limits set)'
+}
+
+// Open channel config and scroll to alarm section
+function openAlarmConfig(channelName: string) {
+  openChannelConfig(channelName)
+  // Scroll to alarm section after panel opens
+  setTimeout(() => {
+    const alarmSection = document.querySelector('.config-section h4')
+    if (alarmSection) {
+      // Find the "Alarm Configuration" heading
+      const sections = document.querySelectorAll('.config-section h4')
+      sections.forEach(section => {
+        if (section.textContent === 'Alarm Configuration') {
+          section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+      })
+    }
+  }, 100)
 }
 
 // Format channel type for display
@@ -619,6 +1024,16 @@ function openChannelConfig(channelName: string) {
   moduleConfig.safety_action = config.safety_action || ''
   moduleConfig.safety_interlock = config.safety_interlock || ''
 
+  // ISA-18.2 Alarm Configuration
+  moduleConfig.alarm_enabled = config.alarm_enabled ?? false
+  moduleConfig.hi_limit = config.hi_limit ?? config.high_limit  // Support legacy field name
+  moduleConfig.lo_limit = config.lo_limit ?? config.low_limit   // Support legacy field name
+  moduleConfig.hihi_limit = config.hihi_limit
+  moduleConfig.lolo_limit = config.lolo_limit
+  moduleConfig.alarm_priority = config.alarm_priority ?? 'medium'
+  moduleConfig.alarm_deadband = config.alarm_deadband ?? 1.0
+  moduleConfig.alarm_delay_sec = config.alarm_delay_sec ?? 0
+
   editingConfig.value = {
     name: channelName,
     newName: channelName,
@@ -649,10 +1064,6 @@ function saveChannelConfig() {
     // General settings
     description: editingConfig.value.config.description,
     units: mc.scaled_units || editingConfig.value.config.unit,
-    low_limit: editingConfig.value.config.low_limit,
-    high_limit: editingConfig.value.config.high_limit,
-    low_warning: editingConfig.value.config.low_warning,
-    high_warning: editingConfig.value.config.high_warning,
 
     // Logging settings
     log: mc.log,
@@ -661,6 +1072,16 @@ function saveChannelConfig() {
     // Safety settings
     safety_action: mc.safety_action || null,
     safety_interlock: mc.safety_interlock || null,
+
+    // ISA-18.2 Alarm Configuration
+    alarm_enabled: mc.alarm_enabled ?? false,
+    hi_limit: mc.hi_limit,
+    lo_limit: mc.lo_limit,
+    hihi_limit: mc.hihi_limit,
+    lolo_limit: mc.lolo_limit,
+    alarm_priority: mc.alarm_priority ?? 'medium',
+    alarm_deadband: mc.alarm_deadband ?? 1.0,
+    alarm_delay_sec: mc.alarm_delay_sec ?? 0,
   }
 
   // Add thermocouple-specific settings
@@ -885,17 +1306,16 @@ function reloadConfig() {
   }, 1500)
 }
 
-// Open Save As dialog
-function openSaveAsDialog() {
-  if (!mqtt.connected.value) {
-    showFeedback('error', 'Not connected to MQTT broker')
-    return
-  }
-  // Pre-fill with current name (without .ini extension for editing)
-  const baseName = currentConfigName.value.replace('.ini', '')
-  saveAsFilename.value = baseName
-  showSaveAsDialog.value = true
-}
+// Open Save As dialog - commented out, button removed from UI
+// function openSaveAsDialog() {
+//   if (!mqtt.connected.value) {
+//     showFeedback('error', 'Not connected to MQTT broker')
+//     return
+//   }
+//   const baseName = currentConfigName.value.replace('.ini', '')
+//   saveAsFilename.value = baseName
+//   showSaveAsDialog.value = true
+// }
 
 // Save with new filename
 function saveAsFile() {
@@ -988,22 +1408,20 @@ const tableColumns = computed(() => {
     case 'voltage':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'terminal', label: 'TERM', width: '70px' },
-        { key: 'scale', label: 'SCALE', width: '70px' },
-        { key: 'raw_value', label: 'RAW (V)', width: '80px' },
-        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'raw_min', label: 'RAW MIN', width: '70px' },
+        { key: 'raw_max', label: 'RAW MAX', width: '70px' },
+        { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
+        { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'current':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'terminal', label: 'TERM', width: '70px' },
-        { key: 'scale', label: 'SCALE', width: '70px' },
-        { key: 'raw_value', label: 'RAW (mA)', width: '80px' },
-        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'raw_min', label: 'RAW MIN', width: '70px' },
+        { key: 'raw_max', label: 'RAW MAX', width: '70px' },
+        { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
+        { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
@@ -1051,30 +1469,31 @@ const tableColumns = computed(() => {
     case 'voltage_output':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'scale', label: 'SCALE', width: '70px' },
-        { key: 'raw_value', label: 'RAW (V)', width: '80px' },
-        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'raw_min', label: 'RAW MIN', width: '70px' },
+        { key: 'raw_max', label: 'RAW MAX', width: '70px' },
+        { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
+        { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'current_output':
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'scale', label: 'SCALE', width: '70px' },
-        { key: 'raw_value', label: 'RAW (mA)', width: '80px' },
-        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'raw_min', label: 'RAW MIN', width: '70px' },
+        { key: 'raw_max', label: 'RAW MAX', width: '70px' },
+        { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
+        { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'analog_output':
+      // Fallback for generic analog output (shouldn't be used with new tabs)
       return [
         ...baseColumns,
-        { key: 'range', label: 'RANGE', width: '70px' },
-        { key: 'scale', label: 'SCALE', width: '70px' },
-        { key: 'raw_value', label: 'RAW', width: '80px' },
-        { key: 'scaled_value', label: 'SCALED', width: '80px' },
+        { key: 'raw_min', label: 'RAW MIN', width: '70px' },
+        { key: 'raw_max', label: 'RAW MAX', width: '70px' },
+        { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
+        { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
@@ -1150,6 +1569,12 @@ watch(() => Object.keys(store.channels), () => {
           </svg>
           Settings
         </button>
+        <button class="action-btn safety-btn" @click="openSafetyActionsModal">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          Safety Actions
+        </button>
         <button
           class="action-btn edit-btn"
           :class="{ active: editMode }"
@@ -1162,6 +1587,19 @@ watch(() => Object.keys(store.channels), () => {
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
           {{ editMode ? 'EDITING' : 'EDIT' }}
+        </button>
+        <button
+          class="action-btn limit-colors-btn"
+          :class="{ active: showLimitColors }"
+          @click="showLimitColors = !showLimitColors"
+          title="Toggle alarm/warning colors based on channel limits"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 8v4"/>
+            <path d="M12 16h.01"/>
+          </svg>
+          {{ showLimitColors ? 'Limits ON' : 'Limits OFF' }}
         </button>
         <button class="action-btn load-btn" @click="openLoadDialog">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1189,31 +1627,32 @@ watch(() => Object.keys(store.channels), () => {
           Save
           <span v-if="configDirty" class="dirty-indicator">*</span>
         </button>
-        <button class="action-btn" @click="openSaveAsDialog">
+        <button
+          class="action-btn apply-btn"
+          @click="applyConfigChanges"
+          :disabled="!mqtt.connected.value"
+          title="Save and reinitialize hardware tasks (does not start acquisition)"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-            <polyline points="17 21 17 13 7 13 7 21"/>
-            <line x1="12" y1="11" x2="12" y2="17"/>
-            <line x1="9" y1="14" x2="15" y2="14"/>
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
           </svg>
-          Save As
+          Apply
         </button>
         <div class="toolbar-divider"></div>
-        <button class="action-btn export-btn" @click="exportProject" :disabled="isExporting">
+        <button class="action-btn icon-btn export-btn" @click="exportProject" :disabled="isExporting" title="Export Project">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
-          {{ isExporting ? 'Exporting...' : 'Export Project' }}
         </button>
-        <button class="action-btn import-btn" @click="triggerImport">
+        <button class="action-btn icon-btn import-btn" @click="triggerImport" title="Import Project">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          Import Project
         </button>
         <input
           ref="importFileInput"
@@ -1227,9 +1666,27 @@ watch(() => Object.keys(store.channels), () => {
         <div class="channel-count">
           {{ filteredChannels.length }} channels
         </div>
+        <div v-if="store.status?.simulation_mode" class="sim-mode-indicator" title="Running in simulation mode - no real hardware">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+          SIM MODE
+        </div>
         <div class="connection-status" :class="{ connected: mqtt.connected.value }">
           {{ mqtt.connected.value ? 'MQTT Connected' : 'MQTT Disconnected' }}
         </div>
+        <button class="theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -1260,6 +1717,7 @@ watch(() => Object.keys(store.channels), () => {
               >
                 {{ col.label }}
               </th>
+              <th class="col-alarm">ALARM</th>
               <th class="col-actions">CONFIG</th>
             </tr>
           </thead>
@@ -1283,17 +1741,9 @@ watch(() => Object.keys(store.channels), () => {
                   {{ formatChannelType(config.channel_type) }}
                 </span>
               </td>
-              <!-- TAG - short name like TC101 -->
-              <td class="col-tag editable-cell" @click.stop>
-                <input
-                  type="text"
-                  :value="config.display_name || ''"
-                  @blur="updateChannelField(name, 'display_name', ($event.target as HTMLInputElement).value)"
-                  @keyup.enter="($event.target as HTMLInputElement).blur()"
-                  class="inline-input"
-                  :placeholder="name"
-                  :disabled="!canEdit"
-                />
+              <!-- TAG - channel identifier (read-only) -->
+              <td class="col-tag">
+                <span class="tag-display">{{ name }}</span>
               </td>
               <!-- CHANNEL - cDAQ physical location -->
               <td class="col-channel editable-cell" @click.stop>
@@ -1389,39 +1839,40 @@ watch(() => Object.keys(store.channels), () => {
               </template>
               <template v-else-if="activeTypeTab === 'voltage'">
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.voltage_range ? `${config.voltage_range}V` : '10V'"
-                    @change="updateChannelField(name, 'voltage_range', parseFloat(($event.target as HTMLSelectElement).value))"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_min ?? (config.voltage_range ? -Math.abs(config.voltage_range) : -10)"
+                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option v-for="r in VOLTAGE_RANGES" :key="r.value" :value="r.value">{{ r.label }}</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.terminal_config || 'differential'"
-                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_max ?? (config.voltage_range ?? 10)"
+                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.scale_type || 'none'"
-                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
+                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="none">None</option>
-                    <option value="linear">Linear</option>
-                    <option value="map">Map</option>
-                  </select>
+                  />
                 </td>
-                <td class="col-value raw">
-                  {{ getRawValue(name) }}
-                </td>
-                <td class="col-value scaled">
-                  {{ getScaledValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
+                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
@@ -1439,40 +1890,40 @@ watch(() => Object.keys(store.channels), () => {
               </template>
               <template v-else-if="activeTypeTab === 'current'">
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.current_range_ma ? `${config.current_range_ma}mA` : '20mA'"
-                    @change="updateChannelField(name, 'current_range_ma', parseFloat(($event.target as HTMLSelectElement).value))"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0)"
+                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option v-for="r in CURRENT_RANGES" :key="r.value" :value="r.value">{{ r.label }}</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.terminal_config || 'differential'"
-                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_max ?? 20"
+                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.scale_type || 'none'"
-                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
+                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="none">None</option>
-                    <option value="linear">Linear</option>
-                    <option value="map">Map</option>
-                    <option value="four_twenty">4-20mA</option>
-                  </select>
+                  />
                 </td>
-                <td class="col-value raw">
-                  {{ getRawValue(name) }}
-                </td>
-                <td class="col-value scaled">
-                  {{ getScaledValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
+                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
@@ -1655,32 +2106,40 @@ watch(() => Object.keys(store.channels), () => {
               </template>
               <template v-else-if="activeTypeTab === 'voltage_output'">
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.ao_range || '10V'"
-                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_min ?? 0"
+                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="5V">0-5V</option>
-                    <option value="10V">0-10V</option>
-                    <option value="pm10V">±10V</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.scale_type || 'none'"
-                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_max ?? 10"
+                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="none">None</option>
-                    <option value="linear">Linear</option>
-                    <option value="map">Map</option>
-                  </select>
+                  />
                 </td>
-                <td class="col-value raw">
-                  {{ getRawValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
+                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
-                <td class="col-value scaled">
-                  {{ getScaledValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
+                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
@@ -1698,32 +2157,40 @@ watch(() => Object.keys(store.channels), () => {
               </template>
               <template v-else-if="activeTypeTab === 'current_output'">
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.ao_range || '20mA'"
-                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_min ?? (config.ao_range === '4-20mA' ? 4 : 0)"
+                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="20mA">0-20mA</option>
-                    <option value="4-20mA">4-20mA</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.scale_type || 'none'"
-                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_max ?? 20"
+                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="none">None</option>
-                    <option value="linear">Linear</option>
-                    <option value="map">Map</option>
-                    <option value="four_twenty">4-20mA</option>
-                  </select>
+                  />
                 </td>
-                <td class="col-value raw">
-                  {{ getRawValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
+                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
-                <td class="col-value scaled">
-                  {{ getScaledValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
+                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
@@ -1740,36 +2207,42 @@ watch(() => Object.keys(store.channels), () => {
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'analog_output'">
+                <!-- Fallback for generic analog output -->
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.ao_range || '10V'"
-                    @change="updateChannelField(name, 'ao_range', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_min ?? 0"
+                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="5V">0-5V</option>
-                    <option value="10V">0-10V</option>
-                    <option value="pm10V">±10V</option>
-                    <option value="20mA">0-20mA</option>
-                    <option value="4-20mA">4-20mA</option>
-                  </select>
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.scale_type || 'none'"
-                    @change="updateChannelField(name, 'scale_type', ($event.target as HTMLSelectElement).value)"
+                  <input
+                    type="text"
+                    :value="config.pre_scaled_max ?? 10"
+                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
                     :disabled="!canEdit"
-                  >
-                    <option value="none">None</option>
-                    <option value="linear">Linear</option>
-                    <option value="map">Map</option>
-                    <option value="four_twenty">4-20mA</option>
-                  </select>
+                  />
                 </td>
-                <td class="col-value raw">
-                  {{ getRawValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
+                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
-                <td class="col-value scaled">
-                  {{ getScaledValue(name) }}
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
+                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    class="inline-input narrow"
+                    :disabled="!canEdit"
+                  />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
@@ -1832,6 +2305,23 @@ watch(() => Object.keys(store.channels), () => {
                 </button>
               </td>
 
+              <!-- ALARM column - shows alarm status and quick access -->
+              <td class="col-alarm" @click.stop>
+                <button
+                  class="alarm-btn"
+                  :class="getAlarmButtonClass(name, config)"
+                  @click="openAlarmConfig(name)"
+                  :title="getAlarmTooltip(name, config)"
+                >
+                  <!-- Bell icon -->
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                  </svg>
+                  <span v-if="config.alarm_enabled" class="alarm-indicator"></span>
+                </button>
+              </td>
+
               <td class="col-actions">
                 <button class="config-btn" @click.stop="openChannelConfig(name)" title="Configure">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1848,7 +2338,7 @@ watch(() => Object.keys(store.channels), () => {
               </td>
             </tr>
             <tr v-if="filteredChannels.length === 0" class="empty-row">
-              <td :colspan="tableColumns.length + 1">
+              <td :colspan="tableColumns.length + 2">
                 <div class="empty-state">
                   <p v-if="searchQuery">No channels matching "{{ searchQuery }}"</p>
                   <p v-else>No channels configured</p>
@@ -1857,7 +2347,7 @@ watch(() => Object.keys(store.channels), () => {
             </tr>
             <!-- Add Channel Row -->
             <tr class="add-channel-row" @click="openAddChannelModal">
-              <td :colspan="tableColumns.length + 1">
+              <td :colspan="tableColumns.length + 2">
                 <div class="add-channel-cell">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -1874,7 +2364,7 @@ watch(() => Object.keys(store.channels), () => {
       <div class="config-panel" :class="{ visible: showConfigPanel }">
         <template v-if="editingConfig">
           <div class="panel-header">
-            <h3>{{ editingConfig.config.display_name || editingConfig.name }}</h3>
+            <h3>{{ editingConfig.name }}</h3>
             <button class="close-btn" @click="closeConfigPanel">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -1900,10 +2390,7 @@ watch(() => Object.keys(store.channels), () => {
                 />
                 <span class="form-hint">NI-DAQmx hardware address</span>
               </div>
-              <div class="form-row">
-                <label>Display Label</label>
-                <input type="text" v-model="editingConfig.config.display_name" />
-              </div>
+              <!-- display_name removed - TAG is the only identifier -->
               <div class="form-row-group">
                 <div class="form-row half">
                   <label>Units</label>
@@ -1975,18 +2462,143 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </div>
 
-            <!-- Safety Settings -->
+            <!-- ISA-18.2 Alarm Configuration -->
             <div class="config-section">
-              <h4>Safety Settings</h4>
-              <div class="form-row">
-                <label>Safety Action</label>
-                <input
-                  type="text"
-                  v-model="editingConfig.moduleConfig.safety_action"
-                  placeholder="e.g., emergency_shutdown"
-                />
-                <span class="form-hint">Action to trigger when limits exceeded</span>
+              <h4>Alarm Configuration</h4>
+              <div class="form-row checkbox-row">
+                <label>
+                  <input type="checkbox" v-model="editingConfig.moduleConfig.alarm_enabled" />
+                  Enable Alarm Checking
+                </label>
               </div>
+
+              <template v-if="editingConfig.moduleConfig.alarm_enabled">
+                <!-- Alarm Setpoints -->
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>HiHi Limit</label>
+                    <input
+                      type="number"
+                      v-model.number="editingConfig.moduleConfig.hihi_limit"
+                      step="any"
+                      placeholder="Critical high"
+                    />
+                  </div>
+                  <div class="form-row half">
+                    <label>LoLo Limit</label>
+                    <input
+                      type="number"
+                      v-model.number="editingConfig.moduleConfig.lolo_limit"
+                      step="any"
+                      placeholder="Critical low"
+                    />
+                  </div>
+                </div>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Hi Limit</label>
+                    <input
+                      type="number"
+                      v-model.number="editingConfig.moduleConfig.hi_limit"
+                      step="any"
+                      placeholder="Warning high"
+                    />
+                  </div>
+                  <div class="form-row half">
+                    <label>Lo Limit</label>
+                    <input
+                      type="number"
+                      v-model.number="editingConfig.moduleConfig.lo_limit"
+                      step="any"
+                      placeholder="Warning low"
+                    />
+                  </div>
+                </div>
+                <span class="form-hint alarm-hint">HiHi/LoLo = Critical (red), Hi/Lo = Warning (yellow)</span>
+
+                <!-- Alarm Options -->
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Priority</label>
+                    <select v-model="editingConfig.moduleConfig.alarm_priority">
+                      <option value="diagnostic">Diagnostic</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+                  <div class="form-row half">
+                    <label>Deadband</label>
+                    <input
+                      type="number"
+                      v-model.number="editingConfig.moduleConfig.alarm_deadband"
+                      step="0.1"
+                      min="0"
+                      placeholder="1.0"
+                    />
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <label>On-Delay (sec)</label>
+                  <input
+                    type="number"
+                    v-model.number="editingConfig.moduleConfig.alarm_delay_sec"
+                    step="0.1"
+                    min="0"
+                    placeholder="0"
+                  />
+                  <span class="form-hint">Delay before alarm triggers (prevents nuisance alarms)</span>
+                </div>
+
+                <!-- Safety System Integration (ISA-18.2) -->
+                <div class="form-row">
+                  <label>Safety Action</label>
+                  <select v-model="editingConfig.moduleConfig.safety_action">
+                    <option value="">None (visual-only alarm)</option>
+                    <option
+                      v-for="(action, actionId) in safety.safetyActions.value"
+                      :key="actionId"
+                      :value="actionId"
+                    >
+                      {{ action.name }} ({{ action.type }})
+                    </option>
+                  </select>
+                  <span class="form-hint">Automatically execute when alarm triggers</span>
+                </div>
+
+                <!-- Digital Input Alarm Configuration -->
+                <template v-if="editingConfig.config.channel_type === 'digital_input'">
+                  <div class="form-row-group">
+                    <div class="form-row half">
+                      <label>Expected State</label>
+                      <select v-model="editingConfig.moduleConfig.di_alarm_expected_state">
+                        <option :value="true">HIGH (1) - Alarm on LOW</option>
+                        <option :value="false">LOW (0) - Alarm on HIGH</option>
+                      </select>
+                    </div>
+                    <div class="form-row half">
+                      <label>DI Alarm Debounce (ms)</label>
+                      <input
+                        type="number"
+                        v-model.number="editingConfig.moduleConfig.di_alarm_debounce_ms"
+                        step="10"
+                        min="0"
+                        placeholder="100"
+                      />
+                    </div>
+                  </div>
+                  <div class="form-row checkbox-row">
+                    <label>
+                      <input type="checkbox" v-model="editingConfig.moduleConfig.di_alarm_invert" />
+                      Invert DI for Alarm (NC sensor)
+                    </label>
+                    <span class="form-hint">Check for NC sensors where signal LOW = normal state</span>
+                  </div>
+                </template>
+              </template>
+
               <div class="form-row">
                 <label>Safety Interlock</label>
                 <input
@@ -2640,9 +3252,23 @@ watch(() => Object.keys(store.channels), () => {
                 </div>
               </div>
 
+              <!-- Quick Populate Banner -->
+              <div class="quick-populate-banner">
+                <div class="banner-text">
+                  <strong>Quick Setup:</strong> Add all channels with smart names and defaults
+                </div>
+                <button class="btn btn-success" @click="quickPopulateAllChannels">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                  Populate All ({{ discoveryChannels.length }})
+                </button>
+              </div>
+
               <div class="discovery-list">
                 <div
-                  v-for="channel in discoveryChannels"
+                  v-for="(channel, idx) in discoveryChannels"
                   :key="channel.physical_channel"
                   class="discovery-item"
                   :class="{ selected: selectedDiscoveryChannels.includes(channel.physical_channel) }"
@@ -2657,10 +3283,11 @@ watch(() => Object.keys(store.channels), () => {
                   <div class="channel-info">
                     <div class="channel-physical">{{ channel.physical_channel }}</div>
                     <div class="channel-details">
-                      <span class="type-badge" :class="channel.measurement_type">
-                        {{ channel.measurement_type }}
+                      <span class="type-badge" :class="channel.measurement_type || channel.channel_type">
+                        {{ channel.measurement_type || channel.channel_type }}
                       </span>
                       <span class="module-name">{{ channel.module_name }}</span>
+                      <span class="smart-name-preview">→ {{ generateSmartChannelName(channel.physical_channel, channel.measurement_type || channel.channel_type || 'voltage', idx) }}</span>
                     </div>
                   </div>
                 </div>
@@ -2807,14 +3434,7 @@ watch(() => Object.keys(store.channels), () => {
               <span class="form-hint">NI-DAQmx hardware address</span>
             </div>
 
-            <div class="form-row">
-              <label>Display Label</label>
-              <input
-                type="text"
-                v-model="newChannelForm.display_name"
-                placeholder="e.g., Zone 1 Temperature"
-              />
-            </div>
+            <!-- display_name removed - TAG is the only identifier -->
 
             <div class="form-row-group">
               <div class="form-row half">
@@ -2963,6 +3583,163 @@ watch(() => Object.keys(store.channels), () => {
             <button class="btn btn-primary" @click="saveAsFile" :disabled="!saveAsFilename.trim()">
               Save
             </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Safety Actions Modal -->
+    <Transition name="modal">
+      <div v-if="showSafetyActionsModal" class="discovery-overlay" @click.self="showSafetyActionsModal = false">
+        <div class="safety-actions-dialog">
+          <div class="discovery-header">
+            <h3>Safety Actions (ISA-18.2)</h3>
+            <button class="close-btn" @click="showSafetyActionsModal = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="safety-actions-content">
+            <!-- Auto-Execute Toggle -->
+            <div class="safety-auto-execute">
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="safety.autoExecuteSafetyActions.value"
+                  @change="safety.setAutoExecuteSafetyActions(($event.target as HTMLInputElement).checked)"
+                />
+                Auto-execute safety actions on alarm trigger
+              </label>
+              <span class="form-hint">When disabled, alarms will display but won't trigger automatic responses</span>
+            </div>
+
+            <!-- Actions List -->
+            <div class="safety-actions-list" v-if="!editingSafetyAction">
+              <div class="safety-actions-header">
+                <h4>Configured Actions</h4>
+                <button class="btn btn-primary btn-sm" @click="startNewSafetyAction">
+                  + Add Action
+                </button>
+              </div>
+
+              <div v-if="Object.keys(safety.safetyActions.value).length === 0" class="empty-state">
+                No safety actions configured. Add one to link alarms to automatic responses.
+              </div>
+
+              <div v-else class="actions-table">
+                <div
+                  v-for="(action, actionId) in safety.safetyActions.value"
+                  :key="actionId"
+                  class="action-row"
+                  :class="{ disabled: !action.enabled }"
+                >
+                  <div class="action-info">
+                    <span class="action-name">{{ action.name }}</span>
+                    <span class="action-type">{{ action.type }}</span>
+                    <span v-if="action.description" class="action-desc">{{ action.description }}</span>
+                  </div>
+                  <div class="action-controls">
+                    <button class="btn btn-icon" @click="editSafetyAction(actionId as string)" title="Edit">
+                      ✏️
+                    </button>
+                    <button class="btn btn-icon btn-danger" @click="deleteSafetyAction(actionId as string)" title="Delete">
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Edit/Add Form -->
+            <div class="safety-action-form" v-if="editingSafetyAction">
+              <h4>{{ isNewSafetyAction ? 'New Safety Action' : 'Edit Safety Action' }}</h4>
+
+              <div class="form-row">
+                <label>Name</label>
+                <input type="text" v-model="editingSafetyAction.name" placeholder="e.g., Emergency Shutdown" />
+              </div>
+
+              <div class="form-row">
+                <label>Description</label>
+                <input type="text" v-model="editingSafetyAction.description" placeholder="Optional description" />
+              </div>
+
+              <div class="form-row">
+                <label>Action Type</label>
+                <select v-model="editingSafetyAction.type">
+                  <option value="trip_system">Trip System (all outputs to safe state)</option>
+                  <option value="stop_session">Stop Test Session</option>
+                  <option value="stop_recording">Stop Recording</option>
+                  <option value="set_output_safe">Set Specific Outputs to Safe State</option>
+                  <option value="run_sequence">Run Safety Sequence</option>
+                  <option value="custom">Custom MQTT Action</option>
+                </select>
+              </div>
+
+              <!-- Conditional fields based on type -->
+              <template v-if="editingSafetyAction.type === 'set_output_safe'">
+                <div class="form-row">
+                  <label>Output Channels</label>
+                  <div class="checkbox-list">
+                    <label v-for="ch in outputChannels" :key="ch.name" class="checkbox-item">
+                      <input
+                        type="checkbox"
+                        :value="ch.name"
+                        v-model="editingSafetyAction.outputChannels"
+                      />
+                      {{ ch.displayName }} ({{ ch.type }})
+                    </label>
+                  </div>
+                </div>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Digital Safe Value</label>
+                    <select v-model.number="editingSafetyAction.safeValue">
+                      <option :value="0">OFF (0)</option>
+                      <option :value="1">ON (1)</option>
+                    </select>
+                  </div>
+                  <div class="form-row half">
+                    <label>Analog Safe Value</label>
+                    <input type="number" v-model.number="editingSafetyAction.analogSafeValue" step="0.1" />
+                  </div>
+                </div>
+              </template>
+
+              <template v-if="editingSafetyAction.type === 'run_sequence'">
+                <div class="form-row">
+                  <label>Sequence ID</label>
+                  <input type="text" v-model="editingSafetyAction.sequenceId" placeholder="sequence_id" />
+                </div>
+              </template>
+
+              <template v-if="editingSafetyAction.type === 'custom'">
+                <div class="form-row">
+                  <label>MQTT Topic</label>
+                  <input type="text" v-model="editingSafetyAction.mqttTopic" placeholder="nisystem/custom/action" />
+                </div>
+                <div class="form-row">
+                  <label>MQTT Payload (JSON)</label>
+                  <textarea v-model="editingSafetyAction.mqttPayload" placeholder="{}" rows="3"></textarea>
+                </div>
+              </template>
+
+              <div class="form-row checkbox-row">
+                <label>
+                  <input type="checkbox" v-model="editingSafetyAction.enabled" />
+                  Enabled
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn btn-secondary" @click="cancelEditSafetyAction">Cancel</button>
+                <button class="btn btn-primary" @click="saveSafetyAction">
+                  {{ isNewSafetyAction ? 'Create' : 'Save' }}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3311,6 +4088,11 @@ watch(() => Object.keys(store.channels), () => {
   font-size: 0.75rem;
   padding: 2px 4px;
   width: 100%;
+}
+
+.inline-input.narrow {
+  width: 60px;
+  text-align: right;
 }
 
 .inline-input:hover:not(:disabled) {
@@ -3667,7 +4449,8 @@ input[type="checkbox"] {
 .left-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .right-info {
@@ -3679,16 +4462,25 @@ input[type="checkbox"] {
 .action-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 5px;
+  padding: 5px 10px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 4px;
   color: #888;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.action-btn.icon-btn {
+  padding: 5px 8px;
+}
+
+.action-btn svg {
+  flex-shrink: 0;
 }
 
 .action-btn:hover:not(:disabled) {
@@ -3717,6 +4509,21 @@ input[type="checkbox"] {
   color: #60a5fa;
 }
 
+.limit-colors-btn {
+  border-color: #6b7280;
+}
+
+.limit-colors-btn.active {
+  background: #f59e0b;
+  color: #000;
+  border-color: #f59e0b;
+}
+
+.limit-colors-btn:hover:not(.active) {
+  border-color: #9ca3af;
+  color: #9ca3af;
+}
+
 .scan-btn:hover:not(:disabled) {
   border-color: #22c55e;
   color: #22c55e;
@@ -3738,6 +4545,54 @@ input[type="checkbox"] {
 .connection-status.connected {
   background: #14532d;
   color: #22c55e;
+}
+
+.sim-mode-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: #78350f;
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sim-mode-indicator svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.theme-toggle {
+  background: transparent;
+  border: 1px solid #3a3a5a;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.theme-toggle:hover {
+  border-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: #a0a0c0;
+  transition: fill 0.2s;
+}
+
+.theme-toggle:hover svg {
+  fill: #60a5fa;
 }
 
 /* Spinner */
@@ -3863,6 +4718,64 @@ input[type="checkbox"] {
 
 .btn-link:hover {
   text-decoration: underline;
+}
+
+/* Quick Populate Banner */
+.quick-populate-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%);
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.quick-populate-banner .banner-text {
+  color: #e0e0e0;
+  font-size: 0.85rem;
+}
+
+.quick-populate-banner .banner-text strong {
+  color: #60a5fa;
+}
+
+.btn-success {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #10b981;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-success:hover {
+  background: #059669;
+}
+
+.smart-name-preview {
+  color: #10b981;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  margin-left: 8px;
+}
+
+/* Apply Button */
+.action-btn.apply-btn {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.action-btn.apply-btn:hover:not(:disabled) {
+  background: #059669;
+  border-color: #059669;
 }
 
 .discovery-list {
@@ -4078,6 +4991,99 @@ input[type="checkbox"] {
   color: #fca5a5;
 }
 
+/* Alarm column styling */
+.col-alarm {
+  text-align: center;
+  width: 50px;
+  min-width: 50px;
+}
+
+.channel-table th.col-alarm {
+  background: #0f0f1a;
+}
+
+.alarm-btn {
+  position: relative;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #555;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.alarm-btn:hover {
+  background: #1a1a2e;
+  color: #888;
+}
+
+/* Alarm disabled state */
+.alarm-btn.disabled {
+  color: #444;
+}
+
+.alarm-btn.disabled:hover {
+  border-color: #666;
+  color: #888;
+}
+
+/* Alarm enabled state - green glow */
+.alarm-btn.enabled {
+  color: #22c55e;
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.alarm-btn.enabled:hover {
+  background: rgba(22, 163, 74, 0.2);
+}
+
+/* Active warning - yellow */
+.alarm-btn.active-warning {
+  color: #eab308;
+  border-color: #ca8a04;
+  background: rgba(234, 179, 8, 0.15);
+  animation: pulse-warning 1.5s infinite;
+}
+
+/* Active alarm - red */
+.alarm-btn.active-alarm {
+  color: #ef4444;
+  border-color: #dc2626;
+  background: rgba(239, 68, 68, 0.15);
+  animation: pulse-alarm 1s infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes pulse-alarm {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
+  50% { opacity: 0.8; box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); }
+}
+
+/* Small dot indicator for enabled alarms */
+.alarm-indicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  background: #22c55e;
+  border-radius: 50%;
+}
+
+.alarm-btn.active-warning .alarm-indicator {
+  background: #eab308;
+}
+
+.alarm-btn.active-alarm .alarm-indicator {
+  background: #ef4444;
+}
+
 /* Reset counter button */
 .col-reset {
   text-align: center;
@@ -4145,6 +5151,15 @@ input[type="checkbox"] {
   margin-top: 4px;
 }
 
+.form-hint.alarm-hint {
+  text-align: center;
+  margin: 8px 0 12px 0;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  color: #888;
+}
+
 /* Settings Dialog */
 .settings-dialog {
   width: 450px;
@@ -4210,6 +5225,188 @@ input[type="checkbox"] {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Safety Actions Dialog */
+.safety-actions-dialog {
+  width: 550px;
+  max-height: 85vh;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.safety-actions-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.safety-auto-execute {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.safety-auto-execute label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.safety-actions-list {
+  margin-top: 16px;
+}
+
+.safety-actions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.safety-actions-header h4 {
+  margin: 0;
+  color: #60a5fa;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+
+.actions-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+.action-row.disabled {
+  opacity: 0.5;
+}
+
+.action-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-name {
+  color: #fff;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.action-type {
+  color: #60a5fa;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.action-desc {
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.action-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  border: 1px solid #2a2a4a;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon:hover {
+  background: #2a2a4a;
+}
+
+.btn-icon.btn-danger:hover {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.safety-action-form {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 16px;
+}
+
+.safety-action-form h4 {
+  margin: 0 0 16px;
+  color: #60a5fa;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #0f0f1a;
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ccc;
+  font-size: 0.85rem;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.empty-state {
+  color: #888;
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 24px;
+  background: #1a1a2e;
+  border-radius: 4px;
+}
+
+.safety-btn {
+  background: #14532d !important;
+  border-color: #22c55e !important;
+}
+
+.safety-btn:hover {
+  background: #166534 !important;
 }
 
 /* Color Picker */

@@ -70,6 +70,12 @@ const reportTemplates = ref<ReportTemplate[]>([])
 const scheduledReports = ref<ScheduledReport[]>([])
 const watchdogs = ref<Watchdog[]>([])
 
+// Watchdog state tracking
+const watchdogChannelTimestamps = ref<Record<string, number>>({})  // Last update timestamp per channel
+const watchdogPreviousValues = ref<Record<string, number>>({})     // Previous value per channel for stuck detection
+const watchdogValueChangeTimestamps = ref<Record<string, number>>({})  // When value last changed (for stuck)
+const watchdogRateHistory = ref<Record<string, { value: number; timestamp: number }[]>>({})  // For rate calculation
+
 // Notifications queue for UI
 const notifications = ref<Array<{
   id: string
@@ -195,6 +201,7 @@ export function useScripts() {
     loadTriggers()
     loadFunctionBlocks()
     loadDrawPatterns()
+    loadWatchdogs()
   }
 
   function loadCalculatedParams() {
@@ -3158,6 +3165,247 @@ export function useScripts() {
   }
 
   // ========================================================================
+  // WATCHDOGS
+  // ========================================================================
+
+  function loadWatchdogs() {
+    try {
+      const stored = localStorage.getItem('dcflux-watchdogs')
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        watchdogs.value = parsed.map((wd: Watchdog) => ({
+          ...wd,
+          isTriggered: wd.isTriggered || false,
+          triggeredChannels: wd.triggeredChannels || []
+        }))
+      }
+    } catch (e) {
+      console.error('Failed to load watchdogs:', e)
+    }
+  }
+
+  function saveWatchdogs() {
+    try {
+      localStorage.setItem('dcflux-watchdogs', JSON.stringify(watchdogs.value))
+    } catch (e) {
+      console.error('Failed to save watchdogs:', e)
+    }
+  }
+
+  function evaluateWatchdogs() {
+    const now = Date.now()
+
+    // Update channel timestamps from current values
+    Object.entries(store.values).forEach(([channelName, data]) => {
+      if (data && typeof data.value === 'number') {
+        const prevValue = watchdogPreviousValues.value[channelName]
+
+        // Update timestamp
+        watchdogChannelTimestamps.value[channelName] = data.timestamp || now
+
+        // Track value changes for stuck detection
+        if (prevValue === undefined || Math.abs(data.value - prevValue) > 0.0001) {
+          watchdogValueChangeTimestamps.value[channelName] = now
+        }
+        watchdogPreviousValues.value[channelName] = data.value
+
+        // Update rate history (keep last 60 seconds of data)
+        if (!watchdogRateHistory.value[channelName]) {
+          watchdogRateHistory.value[channelName] = []
+        }
+        watchdogRateHistory.value[channelName].push({ value: data.value, timestamp: now })
+        // Trim to last 60 seconds
+        const cutoff = now - 60000
+        watchdogRateHistory.value[channelName] = watchdogRateHistory.value[channelName].filter(
+          entry => entry.timestamp > cutoff
+        )
+      }
+    })
+
+    // Evaluate each watchdog
+    watchdogs.value.forEach(wd => {
+      if (!wd.enabled) return
+      if (wd.channels.length === 0) return
+
+      // Check cooldown
+      if (wd.lastTriggered && now - wd.lastTriggered < wd.cooldownMs) {
+        return
+      }
+
+      const triggeredChannels: string[] = []
+      let conditionMet = false
+
+      // Check each monitored channel
+      for (const channelName of wd.channels) {
+        const channelData = store.values[channelName]
+        if (!channelData) continue
+
+        const isTriggered = evaluateWatchdogCondition(wd.condition, channelName, channelData.value, now)
+        if (isTriggered) {
+          conditionMet = true
+          triggeredChannels.push(channelName)
+        }
+      }
+
+      // Handle state transitions
+      if (conditionMet && !wd.isTriggered) {
+        // Trigger the watchdog
+        wd.isTriggered = true
+        wd.triggeredAt = now
+        wd.triggeredChannels = triggeredChannels
+        wd.lastTriggered = now
+        saveWatchdogs()
+
+        // Execute trigger actions
+        executeWatchdogActions(wd, triggeredChannels)
+
+      } else if (!conditionMet && wd.isTriggered && wd.autoRecover) {
+        // Auto-recover
+        wd.isTriggered = false
+        wd.triggeredAt = undefined
+        wd.triggeredChannels = []
+        saveWatchdogs()
+
+        // Execute recovery actions
+        if (wd.recoveryActions && wd.recoveryActions.length > 0) {
+          executeWatchdogRecoveryActions(wd)
+        } else {
+          addNotification('success', 'Watchdog Recovered', `"${wd.name}" condition cleared`)
+        }
+      }
+    })
+  }
+
+  function evaluateWatchdogCondition(
+    condition: Watchdog['condition'],
+    channelName: string,
+    value: number,
+    now: number
+  ): boolean {
+    switch (condition.type) {
+      case 'stale_data': {
+        const lastUpdate = watchdogChannelTimestamps.value[channelName]
+        if (!lastUpdate) return false
+        const maxStaleMs = condition.maxStaleMs || 5000
+        return (now - lastUpdate) > maxStaleMs
+      }
+
+      case 'out_of_range': {
+        const minValue = condition.minValue
+        const maxValue = condition.maxValue
+        if (minValue !== undefined && value < minValue) return true
+        if (maxValue !== undefined && value > maxValue) return true
+        return false
+      }
+
+      case 'rate_exceeded': {
+        const maxRate = condition.maxRatePerMin
+        if (maxRate === undefined) return false
+
+        const history = watchdogRateHistory.value[channelName]
+        if (!history || history.length < 2) return false
+
+        // Calculate rate over last 10 seconds
+        const recentEntries = history.filter(e => e.timestamp > now - 10000)
+        if (recentEntries.length < 2) return false
+
+        const first = recentEntries[0]
+        const last = recentEntries[recentEntries.length - 1]
+        if (!first || !last) return false
+
+        const deltaValue = Math.abs(last.value - first.value)
+        const deltaTimeMin = (last.timestamp - first.timestamp) / 60000
+
+        if (deltaTimeMin <= 0) return false
+        const ratePerMin = deltaValue / deltaTimeMin
+
+        return ratePerMin > maxRate
+      }
+
+      case 'stuck_value': {
+        const stuckDurationMs = condition.stuckDurationMs || 60000
+        const lastChange = watchdogValueChangeTimestamps.value[channelName]
+        if (!lastChange) return false
+        return (now - lastChange) > stuckDurationMs
+      }
+
+      default:
+        return false
+    }
+  }
+
+  function executeWatchdogActions(wd: Watchdog, triggeredChannels: string[]) {
+    const message = `Watchdog "${wd.name}" triggered on: ${triggeredChannels.join(', ')}`
+
+    wd.actions.forEach(action => {
+      switch (action.type) {
+        case 'notification':
+          addNotification('warning', 'Watchdog Alert', action.message || message)
+          break
+
+        case 'alarm':
+          addNotification(
+            action.alarmSeverity === 'critical' ? 'error' :
+            action.alarmSeverity === 'warning' ? 'warning' : 'info',
+            'Watchdog Alarm',
+            action.message || message
+          )
+          break
+
+        case 'setOutput':
+          if (action.channel && mqttSetOutput) {
+            mqttSetOutput(action.channel, action.value ?? 0)
+          }
+          break
+
+        case 'stopSequence':
+          if (runningSequenceId.value) {
+            abortSequence(runningSequenceId.value)
+          }
+          break
+
+        case 'stopRecording':
+          if (mqttStopRecording) {
+            mqttStopRecording()
+          }
+          break
+
+        case 'runSequence':
+          if (action.sequenceId) {
+            startSequence(action.sequenceId)
+          }
+          break
+      }
+    })
+  }
+
+  function executeWatchdogRecoveryActions(wd: Watchdog) {
+    addNotification('success', 'Watchdog Recovered', `"${wd.name}" condition cleared`)
+
+    if (wd.recoveryActions) {
+      wd.recoveryActions.forEach(action => {
+        switch (action.type) {
+          case 'notification':
+            addNotification('success', 'Watchdog Recovery', action.message || `${wd.name} recovered`)
+            break
+
+          case 'setOutput':
+            if (action.channel && mqttSetOutput) {
+              mqttSetOutput(action.channel, action.value ?? 0)
+            }
+            break
+
+          case 'runSequence':
+            if (action.sequenceId) {
+              startSequence(action.sequenceId)
+            }
+            break
+        }
+      })
+    }
+  }
+
+  // ========================================================================
   // EVALUATION LOOP
   // ========================================================================
 
@@ -3180,6 +3428,7 @@ export function useScripts() {
         evaluateAlarms()
         evaluateTriggers()
         evaluateSchedules()
+        evaluateWatchdogs()  // Monitor channels for stale data, out of range, etc.
 
         // Send script values to recording (if recording)
         if (store.status?.recording) {
@@ -3529,6 +3778,7 @@ export function useScripts() {
 
     // Watchdogs
     watchdogs,
+    saveWatchdogs,
 
     // Evaluation
     startEvaluation,

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { SCADA_SYMBOLS, SYMBOL_PORTS, type ScadaSymbolType, type SymbolPort } from '../assets/symbols'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   channel?: string
   label?: string
   symbol?: ScadaSymbolType
@@ -15,7 +15,11 @@ const props = defineProps<{
   size?: 'small' | 'medium' | 'large'
   rotation?: 0 | 90 | 180 | 270
   widgetId?: string
-}>()
+}>(), {
+  showLabel: true,
+  showValue: true,
+  valuePosition: 'bottom'
+})
 
 const store = useDashboardStore()
 
@@ -56,7 +60,7 @@ const displayValue = computed(() => {
 const unit = computed(() => channelConfig.value?.unit || '')
 
 const displayLabel = computed(() =>
-  props.label || channelConfig.value?.display_name || props.channel || ''
+  props.label || props.channel || ''
 )
 
 const symbolSvg = computed(() => {
@@ -146,14 +150,14 @@ function getRotatedDirection(dir: 'left' | 'right' | 'top' | 'bottom'): 'left' |
     class="svg-symbol-widget"
     :class="[statusClass, size || 'medium', `value-${valuePosition || 'bottom'}`]"
   >
-    <!-- Label (if top) -->
-    <div v-if="showLabel !== false && (valuePosition === 'bottom' || valuePosition === 'inside')" class="symbol-label top">
+    <!-- Label above symbol (default position) -->
+    <div v-if="showLabel && valuePosition !== 'top'" class="symbol-label top">
       {{ displayLabel }}
     </div>
 
     <div class="symbol-container">
       <!-- Value on left -->
-      <div v-if="showValue !== false && valuePosition === 'left'" class="value-display side">
+      <div v-if="showValue && valuePosition === 'left'" class="value-display side">
         <span class="value">{{ displayValue }}</span>
         <span v-if="unit" class="unit">{{ unit }}</span>
       </div>
@@ -181,32 +185,32 @@ function getRotatedDirection(dir: 'left' | 'right' | 'top' | 'bottom'): 'left' |
       </template>
 
       <!-- Value inside symbol (overlay) -->
-      <div v-if="showValue !== false && valuePosition === 'inside'" class="value-display inside">
+      <div v-if="showValue && valuePosition === 'inside'" class="value-display inside">
         <span class="value">{{ displayValue }}</span>
         <span v-if="unit" class="unit">{{ unit }}</span>
       </div>
 
       <!-- Value on right -->
-      <div v-if="showValue !== false && valuePosition === 'right'" class="value-display side">
+      <div v-if="showValue && valuePosition === 'right'" class="value-display side">
         <span class="value">{{ displayValue }}</span>
         <span v-if="unit" class="unit">{{ unit }}</span>
       </div>
     </div>
 
     <!-- Value below (default) -->
-    <div v-if="showValue !== false && (!valuePosition || valuePosition === 'bottom')" class="value-display bottom">
+    <div v-if="showValue && valuePosition === 'bottom'" class="value-display bottom">
       <span class="value">{{ displayValue }}</span>
       <span v-if="unit" class="unit">{{ unit }}</span>
     </div>
 
     <!-- Value above -->
-    <div v-if="showValue !== false && valuePosition === 'top'" class="value-display top">
+    <div v-if="showValue && valuePosition === 'top'" class="value-display top">
       <span class="value">{{ displayValue }}</span>
       <span v-if="unit" class="unit">{{ unit }}</span>
     </div>
 
-    <!-- Label (if bottom) -->
-    <div v-if="showLabel !== false && valuePosition === 'top'" class="symbol-label bottom">
+    <!-- Label below (when value is on top) -->
+    <div v-if="showLabel && valuePosition === 'top'" class="symbol-label bottom">
       {{ displayLabel }}
     </div>
   </div>

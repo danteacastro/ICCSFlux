@@ -34,7 +34,7 @@ const rows = computed(() => {
 
     return {
       name: channelName,
-      label: config?.display_name || channelName,
+      label: channelName,  // TAG is the only identifier
       value: formattedValue,
       unit: config?.unit || '',
       isStale,

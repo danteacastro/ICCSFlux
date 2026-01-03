@@ -284,10 +284,86 @@ class ServiceManager:
             self._mqtt_client.loop_stop()
             self._mqtt_client.disconnect()
 
+    def _cleanup_zombie_processes(self):
+        """Kill any stale NISystem-related processes before starting new ones.
+
+        Similar to how InfluxDB/Grafana clean up on startup, this ensures
+        no orphaned processes from previous runs (e.g., CMD window closed).
+        """
+        try:
+            import psutil
+            current_pid = os.getpid()
+            killed_count = 0
+            project_root_str = str(self.project_root).lower()
+
+            # Patterns to match NISystem-related processes
+            daq_patterns = ['daq_service.py', 'daq_service']
+            node_patterns = ['vite', 'npm', 'node_modules']
+
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'cwd', 'exe']):
+                try:
+                    if proc.pid == current_pid:
+                        continue
+
+                    name = (proc.info.get('name') or '').lower()
+                    cmdline = proc.info.get('cmdline') or []
+                    cmdline_str = ' '.join(str(c) for c in cmdline).lower()
+                    cwd = (proc.info.get('cwd') or '').lower()
+                    exe = (proc.info.get('exe') or '').lower()
+
+                    should_kill = False
+                    reason = ""
+
+                    # Check for DAQ service processes
+                    if any(p in cmdline_str for p in daq_patterns):
+                        should_kill = True
+                        reason = "DAQ service"
+
+                    # Check for node processes in our project directory
+                    elif name == 'node.exe' or name == 'node':
+                        # Only kill node processes related to our project
+                        if project_root_str in cmdline_str or project_root_str in cwd:
+                            should_kill = True
+                            reason = "Node (NISystem)"
+                        elif any(p in cmdline_str for p in node_patterns) and 'nisystem' in cmdline_str.lower():
+                            should_kill = True
+                            reason = "Node (Vite/npm)"
+
+                    if should_kill:
+                        print(f"Found orphaned {reason} process (PID: {proc.pid})")
+                        if cmdline:
+                            # Truncate long command lines
+                            cmd_display = cmdline_str[:100] + '...' if len(cmdline_str) > 100 else cmdline_str
+                            print(f"  Command: {cmd_display}")
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=5)
+                            print(f"  [OK] Killed PID {proc.pid}")
+                            killed_count += 1
+                        except psutil.TimeoutExpired:
+                            print(f"  [FAIL] Timeout killing PID {proc.pid}")
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+
+            if killed_count > 0:
+                print(f"\nCleaned up {killed_count} orphaned process(es)")
+                time.sleep(1)  # Wait for cleanup
+            else:
+                print("No orphaned processes found")
+
+        except ImportError:
+            print("WARNING: psutil not installed - cannot cleanup zombie processes")
+            print("         Install with: pip install psutil")
+
     def start_all(self) -> bool:
-        """Start all services"""
+        """Start all services with automatic cleanup of zombies"""
         self._set_status("starting")
         self._shutdown_requested.clear()
+
+        # Clean up any zombie processes first
+        print("\nChecking for zombie processes...")
+        self._cleanup_zombie_processes()
 
         # Start Mosquitto first
         if not self.start_mosquitto():
@@ -370,12 +446,25 @@ class ServiceManager:
         }
 
 
+def cleanup_orphaned_processes():
+    """Standalone function to clean up orphaned NISystem processes.
+
+    Can be called from batch scripts before starting services:
+        python -c "from launcher.service_manager import cleanup_orphaned_processes; cleanup_orphaned_processes()"
+    """
+    manager = ServiceManager()
+    print("=" * 50)
+    print("Cleaning up orphaned NISystem processes...")
+    print("=" * 50)
+    manager._cleanup_zombie_processes()
+
+
 def main():
     """CLI entry point"""
     import argparse
 
     parser = argparse.ArgumentParser(description='NISystem Service Manager')
-    parser.add_argument('command', choices=['start', 'stop', 'status', 'restart'],
+    parser.add_argument('command', choices=['start', 'stop', 'status', 'restart', 'cleanup'],
                         help='Command to execute')
     parser.add_argument('--no-mqtt', action='store_true',
                         help='Don\'t start/stop Mosquitto (assume external broker)')
@@ -438,6 +527,13 @@ def main():
         else:
             print("Failed to restart services!")
             sys.exit(1)
+
+    elif args.command == 'cleanup':
+        print("=" * 50)
+        print("Cleaning up orphaned NISystem processes...")
+        print("=" * 50)
+        manager._cleanup_zombie_processes()
+        print("\nCleanup complete.")
 
 
 if __name__ == "__main__":

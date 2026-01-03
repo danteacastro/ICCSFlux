@@ -120,6 +120,7 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.channels) props.channels = widget.channels
   if (widget.label) props.label = widget.label
   if (widget.decimals !== undefined) props.decimals = widget.decimals
+  if (widget.showLabel !== undefined) props.showLabel = widget.showLabel
   if (widget.showUnit !== undefined) props.showUnit = widget.showUnit
   if (widget.showAlarmStatus !== undefined) props.showAlarmStatus = widget.showAlarmStatus
   if (widget.timeRange !== undefined) props.timeRange = widget.timeRange
@@ -147,7 +148,6 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.symbol !== undefined) props.symbol = widget.symbol
   if (widget.symbolSize !== undefined) props.size = widget.symbolSize
   if (widget.valuePosition !== undefined) props.valuePosition = widget.valuePosition
-  if (widget.showLabel !== undefined) props.showLabel = widget.showLabel
   if (widget.showValue !== undefined) props.showValue = widget.showValue
   if (widget.accentColor !== undefined) props.accentColor = widget.accentColor
   if (widget.rotation !== undefined) props.rotation = widget.rotation
@@ -395,7 +395,7 @@ onUnmounted(() => {
                 :checked="getWidget(selectedChart!)?.channels?.includes(name as string)"
                 @change="toggleChartChannel(selectedChart!, name as string, ($event.target as HTMLInputElement).checked)"
               />
-              <span>{{ config.display_name || name }}</span>
+              <span>{{ name }}</span>
               <span class="unit">{{ config.unit }}</span>
             </label>
           </div>
