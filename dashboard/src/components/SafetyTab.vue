@@ -632,7 +632,7 @@ function getControlDescription(ctrl: InterlockControl): string {
             <path d="M12 2L1 21h22L12 2zm0 3.5l8.5 14.5H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
           </svg>
           <span class="first-out-label">FIRST-OUT:</span>
-          <span class="first-out-name">{{ safety.firstOutAlarm.value?.name || safety.firstOutAlarm.value?.channel }}</span>
+          <span class="first-out-name">{{ safety.firstOutAlarm.value?.channel }}</span>
         </div>
 
         <!-- Alarm summary counts by severity -->
@@ -710,7 +710,10 @@ function getControlDescription(ctrl: InterlockControl): string {
             <div class="alarm-content">
               <div class="alarm-title">
                 <span v-if="alarm.is_first_out" class="first-out-badge">1ST</span>
-                {{ alarm.name || store.channels[alarm.channel]?.display_name || alarm.channel }}
+                <span class="alarm-tag">{{ alarm.channel }}</span>
+                <span v-if="store.channels[alarm.channel]?.display_name && store.channels[alarm.channel]?.display_name !== alarm.channel" class="alarm-label">
+                  {{ store.channels[alarm.channel]?.display_name }}
+                </span>
                 <span class="alarm-badge" :class="getSeverityClass(alarm.severity)">
                   {{ getSeverityLabel(alarm.severity) }}
                 </span>
@@ -794,7 +797,7 @@ function getControlDescription(ctrl: InterlockControl): string {
           <table class="config-table">
             <thead>
               <tr>
-                <th>Channel</th>
+                <th>TAG</th>
                 <th>Enabled</th>
                 <th>Low Alarm</th>
                 <th>Low Warn</th>
@@ -813,7 +816,8 @@ function getControlDescription(ctrl: InterlockControl): string {
                 @click="selectedChannel = ch.name"
               >
                 <td class="channel-name">
-                  <span class="name">{{ ch.displayName }}</span>
+                  <span class="tag">{{ ch.name }}</span>
+                  <span class="label">{{ ch.displayName !== ch.name ? ch.displayName : '' }}</span>
                   <span class="unit">{{ ch.unit }}</span>
                 </td>
                 <td>
@@ -967,7 +971,12 @@ function getControlDescription(ctrl: InterlockControl): string {
               :class="entry.severity"
             >
               <div class="history-time">{{ formatDateTime(entry.triggered_at) }}</div>
-              <div class="history-channel">{{ store.channels[entry.channel]?.display_name || entry.channel }}</div>
+              <div class="history-channel">
+                <span class="history-tag">{{ entry.channel }}</span>
+                <span v-if="store.channels[entry.channel]?.display_name && store.channels[entry.channel]?.display_name !== entry.channel" class="history-label">
+                  {{ store.channels[entry.channel]?.display_name }}
+                </span>
+              </div>
               <div class="history-message">{{ entry.message }}</div>
               <div class="history-duration">{{ formatDuration(entry.duration_seconds) }}</div>
             </div>
@@ -1551,6 +1560,20 @@ function getControlDescription(ctrl: InterlockControl): string {
   font-weight: 600;
   font-size: 0.85rem;
   margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.alarm-tag {
+  font-family: monospace;
+  color: #60a5fa;
+  font-weight: 700;
+}
+
+.alarm-label {
+  font-size: 0.75rem;
+  color: #888;
+  font-style: italic;
+  font-weight: 400;
 }
 
 .alarm-badge {
@@ -1699,8 +1722,16 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex-direction: column;
 }
 
-.channel-name .name {
-  font-weight: 500;
+.channel-name .tag {
+  font-weight: 600;
+  font-family: monospace;
+  color: #60a5fa;
+}
+
+.channel-name .label {
+  font-size: 0.7rem;
+  color: #888;
+  font-style: italic;
 }
 
 .channel-name .unit {
@@ -1952,6 +1983,22 @@ function getControlDescription(ctrl: InterlockControl): string {
 .history-channel {
   font-weight: 600;
   margin: 2px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.history-tag {
+  font-family: monospace;
+  color: #60a5fa;
+}
+
+.history-label {
+  font-size: 0.7rem;
+  color: #888;
+  font-style: italic;
+  font-weight: 400;
 }
 
 .history-message {
