@@ -150,7 +150,7 @@ function processAlarms() {
           threshold_type: check.type,
           triggered_at: nowIso,
           duration_seconds: 0,
-          message: `${channelConfig?.display_name || channel} ${check.direction === 'high' ? 'exceeded' : 'fell below'} ${check.severity} threshold: ${value.toFixed(2)} ${channelConfig?.unit || ''} (limit: ${check.threshold})`
+          message: `${channel} ${check.direction === 'high' ? 'exceeded' : 'fell below'} ${check.severity} threshold: ${value.toFixed(2)} ${channelConfig?.unit || ''} (limit: ${check.threshold})`
         }
 
         safety.triggerAlarm(alarm)
@@ -279,7 +279,7 @@ function openShelveModal(alarm: { id: string; channel: string; name?: string }) 
   shelveTarget.value = {
     id: alarm.id,
     channel: alarm.channel,
-    name: alarm.name || store.channels[alarm.channel]?.display_name || alarm.channel
+    name: alarm.name || alarm.channel
   }
   shelveReason.value = ''
   shelveDuration.value = 3600
@@ -348,8 +348,7 @@ const channelList = computed(() => {
   return Object.entries(store.channels)
     .filter(([name]) => alarmConfigs.value[name] !== undefined)
     .map(([name, config]) => ({
-      name,
-      displayName: config.display_name || name,
+      name,  // TAG is the only identifier
       unit: config.unit,
       type: config.channel_type,
       group: config.group,
@@ -435,21 +434,21 @@ const operators: { value: InterlockOperator; label: string }[] = [
 const digitalOutputChannels = computed(() => {
   return Object.entries(store.channels)
     .filter(([_, cfg]) => cfg.channel_type === 'digital_output')
-    .map(([name, cfg]) => ({ name, displayName: cfg.display_name || name }))
+    .map(([name]) => ({ name }))  // TAG only
 })
 
 // Get all numeric channels for value conditions
 const numericChannels = computed(() => {
   return Object.entries(store.channels)
     .filter(([_, cfg]) => !['digital_input', 'digital_output'].includes(cfg.channel_type))
-    .map(([name, cfg]) => ({ name, displayName: cfg.display_name || name, unit: cfg.unit }))
+    .map(([name, cfg]) => ({ name, unit: cfg.unit }))  // TAG + unit only
 })
 
 // Get digital input channels
 const digitalInputChannels = computed(() => {
   return Object.entries(store.channels)
     .filter(([_, cfg]) => cfg.channel_type === 'digital_input')
-    .map(([name, cfg]) => ({ name, displayName: cfg.display_name || name }))
+    .map(([name]) => ({ name }))  // TAG only
 })
 
 function openNewInterlockModal() {
@@ -557,15 +556,11 @@ function getConditionDescription(cond: InterlockCondition): string {
   if (!typeInfo) return 'Unknown condition'
 
   if (cond.type === 'channel_value' && cond.channel) {
-    const ch = store.channels[cond.channel]
-    const name = ch?.display_name || cond.channel
-    return `${name} ${cond.operator} ${cond.value}`
+    return `${cond.channel} ${cond.operator} ${cond.value}`
   }
 
   if (cond.type === 'digital_input' && cond.channel) {
-    const ch = store.channels[cond.channel]
-    const name = ch?.display_name || cond.channel
-    return `${name} = ${cond.value ? 'ON' : 'OFF'}`
+    return `${cond.channel} = ${cond.value ? 'ON' : 'OFF'}`
   }
 
   return typeInfo.label
@@ -577,9 +572,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   if (!typeInfo) return 'Unknown control'
 
   if (ctrl.type === 'digital_output' && ctrl.channel) {
-    const ch = store.channels[ctrl.channel]
-    const name = ch?.display_name || ctrl.channel
-    return `Block ${name}`
+    return `Block ${ctrl.channel}`
   }
 
   return typeInfo.label
@@ -711,9 +704,6 @@ function getControlDescription(ctrl: InterlockControl): string {
               <div class="alarm-title">
                 <span v-if="alarm.is_first_out" class="first-out-badge">1ST</span>
                 <span class="alarm-tag">{{ alarm.channel }}</span>
-                <span v-if="store.channels[alarm.channel]?.display_name && store.channels[alarm.channel]?.display_name !== alarm.channel" class="alarm-label">
-                  {{ store.channels[alarm.channel]?.display_name }}
-                </span>
                 <span class="alarm-badge" :class="getSeverityClass(alarm.severity)">
                   {{ getSeverityLabel(alarm.severity) }}
                 </span>
@@ -817,7 +807,6 @@ function getControlDescription(ctrl: InterlockControl): string {
               >
                 <td class="channel-name">
                   <span class="tag">{{ ch.name }}</span>
-                  <span class="label">{{ ch.displayName !== ch.name ? ch.displayName : '' }}</span>
                   <span class="unit">{{ ch.unit }}</span>
                 </td>
                 <td>
@@ -906,7 +895,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
         <!-- Selected channel actions -->
         <div v-if="selectedChannel && selectedAlarmConfig" class="channel-actions">
-          <h4>{{ store.channels[selectedChannel]?.display_name || selectedChannel }} - Actions</h4>
+          <h4>{{ selectedChannel }} - Actions</h4>
           <div class="action-options">
             <label class="checkbox-label">
               <input type="checkbox" v-model="selectedAlarmConfig.log_to_file" />
@@ -973,9 +962,6 @@ function getControlDescription(ctrl: InterlockControl): string {
               <div class="history-time">{{ formatDateTime(entry.triggered_at) }}</div>
               <div class="history-channel">
                 <span class="history-tag">{{ entry.channel }}</span>
-                <span v-if="store.channels[entry.channel]?.display_name && store.channels[entry.channel]?.display_name !== entry.channel" class="history-label">
-                  {{ store.channels[entry.channel]?.display_name }}
-                </span>
               </div>
               <div class="history-message">{{ entry.message }}</div>
               <div class="history-duration">{{ formatDuration(entry.duration_seconds) }}</div>
@@ -1212,7 +1198,7 @@ function getControlDescription(ctrl: InterlockControl): string {
               >
                 <option value="">Select channel...</option>
                 <option v-for="ch in numericChannels" :key="ch.name" :value="ch.name">
-                  {{ ch.displayName }} ({{ ch.unit }})
+                  {{ ch.name }} ({{ ch.unit }})
                 </option>
               </select>
 
@@ -1224,7 +1210,7 @@ function getControlDescription(ctrl: InterlockControl): string {
               >
                 <option value="">Select input...</option>
                 <option v-for="ch in digitalInputChannels" :key="ch.name" :value="ch.name">
-                  {{ ch.displayName }}
+                  {{ ch.name }}
                 </option>
               </select>
 
@@ -1288,7 +1274,7 @@ function getControlDescription(ctrl: InterlockControl): string {
               >
                 <option value="">Select output...</option>
                 <option v-for="ch in digitalOutputChannels" :key="ch.name" :value="ch.name">
-                  {{ ch.displayName }}
+                  {{ ch.name }}
                 </option>
               </select>
 
@@ -1569,13 +1555,6 @@ function getControlDescription(ctrl: InterlockControl): string {
   font-weight: 700;
 }
 
-.alarm-label {
-  font-size: 0.75rem;
-  color: #888;
-  font-style: italic;
-  font-weight: 400;
-}
-
 .alarm-badge {
   font-size: 0.6rem;
   padding: 2px 6px;
@@ -1726,12 +1705,6 @@ function getControlDescription(ctrl: InterlockControl): string {
   font-weight: 600;
   font-family: monospace;
   color: #60a5fa;
-}
-
-.channel-name .label {
-  font-size: 0.7rem;
-  color: #888;
-  font-style: italic;
 }
 
 .channel-name .unit {
@@ -1992,13 +1965,6 @@ function getControlDescription(ctrl: InterlockControl): string {
 .history-tag {
   font-family: monospace;
   color: #60a5fa;
-}
-
-.history-label {
-  font-size: 0.7rem;
-  color: #888;
-  font-style: italic;
-  font-weight: 400;
 }
 
 .history-message {
