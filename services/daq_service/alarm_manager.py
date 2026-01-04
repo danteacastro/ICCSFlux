@@ -1597,3 +1597,66 @@ class AlarmManager:
         with self.lock:
             self.soe_buffer.clear()
         logger.info("SOE buffer cleared")
+
+    def clear_all(self, clear_configs: bool = False):
+        """
+        Clear all alarm state to start fresh.
+
+        Called when:
+        - No project is loaded (startup with empty state)
+        - Project is closed
+        - User explicitly requests reset
+
+        Args:
+            clear_configs: If True, also clear alarm configurations.
+                          If False (default), only clear runtime state.
+        """
+        with self.lock:
+            # Clear active alarms
+            self.active_alarms.clear()
+
+            # Clear history
+            self.history.clear()
+
+            # Clear SOE buffer
+            self.soe_buffer.clear()
+
+            # Clear timers
+            self.on_delay_timers.clear()
+            self.off_delay_timers.clear()
+            self.timed_latch_timers.clear()
+
+            # Clear rate history
+            self.value_history.clear()
+
+            # Clear digital debounce state
+            self.digital_debounce_timers.clear()
+            self.digital_last_states.clear()
+
+            # Reset first-out tracking
+            self.alarm_sequence = 0
+            self.first_out_alarm_id = None
+            self.cascade_start_time = None
+
+            # Clear correlations
+            self.active_correlations.clear()
+            self.recent_alarms.clear()
+
+            # Reset stats
+            self.stats = {
+                'total_alarms': 0,
+                'total_acknowledged': 0,
+                'total_cleared': 0,
+                'total_shelved': 0
+            }
+
+            # Optionally clear configs
+            if clear_configs:
+                self.alarm_configs.clear()
+                self._save_configs()
+
+            # Save empty state to disk
+            self._save_active_alarms()
+            self._save_history()
+
+            logger.info(f"Alarm manager cleared (configs={'cleared' if clear_configs else 'preserved'})")

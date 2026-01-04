@@ -461,6 +461,12 @@ class DAQService:
                 else:
                     self.channel_values[name] = 0.0
 
+            # Reinitialize alarm manager with new channel configs
+            # This clears old alarms and creates new alarm configs from the new channels
+            if self.alarm_manager:
+                self.alarm_manager.clear_all(clear_configs=True)
+            self._init_alarm_manager()
+
             logger.info(f"Applied project config: {len(channels)} channels")
             return True
 
@@ -2260,6 +2266,11 @@ class DAQService:
             else:
                 logger.warning(f"Default project not found: {default_path}")
 
+        # No project to load - clear alarm state to start fresh
+        # Alarms are per-project, so with no project there should be no alarms
+        if self.alarm_manager:
+            self.alarm_manager.clear_all(clear_configs=True)
+
         logger.info("No project configured - starting with empty state")
 
     def _handle_project_list(self):
@@ -2475,6 +2486,10 @@ class DAQService:
         self.current_project_path = None
         self.current_project_data = {}
         self._save_last_project_path(None)  # Clear persisted path
+
+        # Clear alarm state - alarms are per-project, not global
+        if self.alarm_manager:
+            self.alarm_manager.clear_all(clear_configs=True)
 
         logger.info("Project closed - now in empty state")
 
