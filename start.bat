@@ -56,7 +56,7 @@ echo.
 REM ============================================================================
 REM Step 2: Start DAQ Service (Backend)
 REM ============================================================================
-echo [2/4] Starting DAQ Service (Backend)...
+echo [2/5] Starting DAQ Service (Backend)...
 echo.
 
 REM Start DAQ service with --force to kill any existing instance and ensure clean start
@@ -68,9 +68,27 @@ echo   - Check logs\daq_service.log for status
 echo.
 
 REM ============================================================================
-REM Step 3: Start Frontend Dashboard (Dev Server)
+REM Step 3: Start Watchdog (Safety Monitor)
 REM ============================================================================
-echo [3/4] Starting Frontend Dashboard (Vite Dev Server)...
+echo [3/5] Starting Watchdog (Safety Monitor)...
+echo.
+
+REM Check if watchdog already running
+venv\Scripts\python.exe -c "import psutil; exit(0 if any('watchdog.py' in ' '.join(p.cmdline()).lower() for p in psutil.process_iter(['cmdline']) if p.cmdline()) else 1)" 2>nul
+if "%ERRORLEVEL%"=="0" (
+    echo   - Watchdog already running
+) else (
+    echo   - Starting Watchdog (monitors DAQ health, triggers failsafe on hang)
+    start "NISystem Watchdog" /MIN venv\Scripts\python.exe services\daq_service\watchdog.py -c config\system.ini
+    timeout /t 1 /nobreak >nul
+    echo   - Watchdog started
+)
+echo.
+
+REM ============================================================================
+REM Step 4: Start Frontend Dashboard (Dev Server)
+REM ============================================================================
+echo [4/5] Starting Frontend Dashboard (Vite Dev Server)...
 echo.
 
 REM Check if frontend dev server is already running
@@ -87,13 +105,25 @@ if "%ERRORLEVEL%"=="0" (
 echo.
 
 REM ============================================================================
-REM Step 4: Wait for Services to Initialize
+REM Step 5: Wait for Services to Initialize + Setup Scheduled Restart
 REM ============================================================================
-echo [4/4] Waiting for services to initialize...
+echo [5/5] Waiting for services to initialize...
 echo.
 
 echo   - Waiting 8 seconds for all services to start...
 timeout /t 8 /nobreak >nul
+
+REM Setup weekly restart scheduled task (if not exists)
+schtasks /query /tn "NISystem Weekly Restart" >nul 2>&1
+if "%ERRORLEVEL%"=="1" (
+    echo   - Setting up weekly restart task (Sunday 3 AM)...
+    schtasks /create /tn "NISystem Weekly Restart" /tr "powershell.exe -ExecutionPolicy Bypass -File \"%CD%\restart_daq.ps1\"" /sc weekly /d SUN /st 03:00 /ru "%USERNAME%" /f >nul 2>&1
+    if "%ERRORLEVEL%"=="0" (
+        echo   - Weekly restart scheduled
+    ) else (
+        echo   - Note: Could not create scheduled task (run as admin to enable)
+    )
+)
 
 REM ============================================================================
 REM Service Status Check
