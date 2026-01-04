@@ -1536,6 +1536,13 @@ class DAQService:
         self.mqtt_client.on_message = self._on_mqtt_message
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
+        # MQTT Authentication (if configured)
+        mqtt_user = os.environ.get('MQTT_USERNAME', getattr(self.config.system, 'mqtt_username', None))
+        mqtt_pass = os.environ.get('MQTT_PASSWORD', getattr(self.config.system, 'mqtt_password', None))
+        if mqtt_user and mqtt_pass:
+            self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
+            logger.info(f"MQTT authentication enabled for user: {mqtt_user}")
+
         try:
             self.mqtt_client.connect(
                 self.config.system.mqtt_broker,

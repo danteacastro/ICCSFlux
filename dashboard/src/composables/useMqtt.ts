@@ -119,12 +119,15 @@ export function useMqtt(prefix: string = 'nisystem') {
     return delay
   }
 
-  function connect(brokerUrl: string = 'ws://localhost:9001') {
+  function connect(brokerUrl: string = 'ws://localhost:9001', username?: string, password?: string) {
     const options: IClientOptions = {
       clientId: `nisystem-dashboard-${Math.random().toString(16).slice(2, 8)}`,
       clean: false, // Changed to false to allow message queuing
       reconnectPeriod: getReconnectDelay(),
       connectTimeout: 30000,
+      // MQTT Authentication (optional - for secured brokers)
+      username: username || import.meta.env.VITE_MQTT_USERNAME,
+      password: password || import.meta.env.VITE_MQTT_PASSWORD,
     }
 
     client.value = mqtt.connect(brokerUrl, options)
