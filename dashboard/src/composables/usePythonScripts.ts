@@ -374,9 +374,10 @@ export function usePythonScripts() {
       // Dynamic import of xlsx (SheetJS) - may not be installed
       let XLSX: any
       try {
-        // @ts-ignore - xlsx is an optional dependency
-        // @vite-ignore tells Vite not to analyze this dynamic import
-        XLSX = await import(/* @vite-ignore */ 'xlsx')
+        // Use variable indirection to prevent Vite from statically analyzing this import
+        // xlsx is an optional dependency - if not installed, we catch and show helpful message
+        const xlsxModuleName = 'xlsx'
+        XLSX = await import(/* @vite-ignore */ xlsxModuleName)
       } catch (e) {
         // xlsx not installed - provide helpful message
         addScriptOutput(scriptId, 'error',
