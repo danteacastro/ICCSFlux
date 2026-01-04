@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
+import { useAuth } from '../composables/useAuth'
 
 const safety = useSafety()
+const auth = useAuth()
 
 defineProps<{
   showEditControls?: boolean
@@ -20,6 +22,11 @@ const emit = defineEmits<{
 }>()
 
 const store = useDashboardStore()
+
+// Permission checks for control actions
+const canStartAcquisition = computed(() => auth.hasPermission('acquisition.start') || auth.isOperator.value)
+const canStartRecording = computed(() => auth.hasPermission('recording.start') || auth.isOperator.value)
+const canControlSession = computed(() => auth.hasPermission('acquisition.start') || auth.isOperator.value)
 
 // Recording timer display
 const recordingTime = computed(() => {
@@ -46,13 +53,16 @@ const recordingTime = computed(() => {
       <button
         v-if="!store.isAcquiring"
         class="btn btn-start"
-        @click="emit('start')"
-        :disabled="!store.isConnected"
+        :class="{ locked: !canStartAcquisition }"
+        @click="canStartAcquisition && emit('start')"
+        :disabled="!store.isConnected || !canStartAcquisition"
+        :title="canStartAcquisition ? 'Start Acquisition' : 'Requires Operator or higher'"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <polygon points="5,3 19,12 5,21"/>
         </svg>
         START
+        <span v-if="!canStartAcquisition" class="lock-icon">🔒</span>
       </button>
       <button
         v-else
@@ -69,14 +79,16 @@ const recordingTime = computed(() => {
       <button
         v-if="!store.isRecording"
         class="btn btn-record"
-        @click="emit('record-start')"
-        :disabled="!store.isAcquiring"
-        :class="{ disabled: !store.isAcquiring }"
+        :class="{ disabled: !store.isAcquiring, locked: !canStartRecording }"
+        @click="canStartRecording && store.isAcquiring && emit('record-start')"
+        :disabled="!store.isAcquiring || !canStartRecording"
+        :title="canStartRecording ? 'Start Recording' : 'Requires Operator or higher'"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <circle cx="12" cy="12" r="8"/>
         </svg>
         RECORD
+        <span v-if="!canStartRecording" class="lock-icon">🔒</span>
       </button>
       <button
         v-else
@@ -93,15 +105,18 @@ const recordingTime = computed(() => {
 
     <!-- Session toggle - controls automation engine (scheduler, sequences, patterns) -->
     <div class="control-group">
-      <div class="session-toggle">
+      <div class="session-toggle" :class="{ locked: !canControlSession }">
         <span class="label">SESSION</span>
         <button
           class="toggle-btn"
-          :class="{ on: store.isSchedulerEnabled }"
-          @click="store.isSchedulerEnabled ? emit('schedule-disable') : emit('schedule-enable')"
+          :class="{ on: store.isSchedulerEnabled, locked: !canControlSession }"
+          @click="canControlSession && (store.isSchedulerEnabled ? emit('schedule-disable') : emit('schedule-enable'))"
+          :disabled="!canControlSession"
+          :title="canControlSession ? 'Toggle Session' : 'Requires Operator or higher'"
         >
           <span class="slider"></span>
         </button>
+        <span v-if="!canControlSession" class="lock-icon">🔒</span>
       </div>
     </div>
 
@@ -368,6 +383,34 @@ const recordingTime = computed(() => {
 
 .toggle-btn.on .slider {
   transform: translateX(20px);
+}
+
+/* Locked/Permission Denied Styles */
+.btn.locked {
+  opacity: 0.4;
+  cursor: not-allowed;
+  position: relative;
+}
+
+.btn.locked:hover {
+  background: rgba(127, 29, 29, 0.4);
+}
+
+.lock-icon {
+  font-size: 0.65rem;
+  margin-left: 3px;
+}
+
+.session-toggle.locked {
+  opacity: 0.4;
+}
+
+.toggle-btn.locked {
+  cursor: not-allowed;
+}
+
+.toggle-btn.locked:hover {
+  opacity: 0.7;
 }
 
 .status-group {

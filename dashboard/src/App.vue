@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch, provide } from 'vue'
 import { useDashboardStore } from './stores/dashboard'
 import { useMqtt } from './composables/useMqtt'
 import { useScripts } from './composables/useScripts'
 import { useProjectFiles } from './composables/useProjectFiles'
+import { useAuth } from './composables/useAuth'
 import DashboardGrid from './components/DashboardGrid.vue'
 import ControlBar from './components/ControlBar.vue'
 import ConfigurationTab from './components/ConfigurationTab.vue'
@@ -11,19 +12,41 @@ import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
 import SafetyTab from './components/SafetyTab.vue'
 import NotebookTab from './components/NotebookTab.vue'
+import AdminTab from './components/AdminTab.vue'
 import PageSelector from './components/PageSelector.vue'
 import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
+import LoginDialog from './components/LoginDialog.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig } from './types'
 
 const store = useDashboardStore()
 const scripts = useScripts()
 const projectFiles = useProjectFiles()
+const auth = useAuth()
+
+// Login dialog state
+const showLoginDialog = ref(false)
 
 // Tabs
 const activeTab = ref('overview')
+
+// Permission-based EDIT control (viewing is allowed for everyone)
+// These are provided to child components via provide/inject
+const canEditConfig = computed(() => auth.hasPermission('config.channels.modify') || auth.isOperator.value)
+const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isSupervisor.value)
+const canEditData = computed(() => auth.hasPermission('recording.start') || auth.isOperator.value)
+const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isSupervisor.value)
+const canEditAdmin = computed(() => auth.isAdmin.value)
+
+// Provide edit permissions to child components
+provide('canEditConfig', canEditConfig)
+provide('canEditScripts', canEditScripts)
+provide('canEditData', canEditData)
+provide('canEditSafety', canEditSafety)
+provide('canEditAdmin', canEditAdmin)
+provide('showLoginDialog', () => { showLoginDialog.value = true })
 
 // URL-based page selection (for multi-window support)
 function getPageFromUrl(): string | null {
@@ -301,17 +324,19 @@ function handleRetryConnection() {
             class="tab-btn"
             :class="{ active: activeTab === 'configuration' }"
             @click="activeTab = 'configuration'"
+            title="Configuration"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/>
               <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
             </svg>
-            Configuration
+            Config
           </button>
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'scripts' }"
             @click="activeTab = 'scripts'"
+            title="Scripts"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
@@ -324,6 +349,7 @@ function handleRetryConnection() {
             class="tab-btn"
             :class="{ active: activeTab === 'data' }"
             @click="activeTab = 'data'"
+            title="Data Recording"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
@@ -335,6 +361,7 @@ function handleRetryConnection() {
             class="tab-btn"
             :class="{ active: activeTab === 'safety' }"
             @click="activeTab = 'safety'"
+            title="Safety System"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -353,7 +380,20 @@ function handleRetryConnection() {
               <line x1="8" y1="7" x2="16" y2="7"/>
               <line x1="8" y1="11" x2="14" y2="11"/>
             </svg>
-            Notebook
+            Notes
+          </button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'admin' }"
+            @click="activeTab = 'admin'"
+            title="Admin Panel"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
+            Admin
           </button>
         </nav>
       </div>
@@ -370,6 +410,34 @@ function handleRetryConnection() {
           @schedule-disable="handleScheduleDisable"
           @add-widget="openAddPanel"
         />
+
+        <!-- User Auth Section -->
+        <div class="user-section">
+          <template v-if="auth.authenticated.value && auth.currentUser.value">
+            <span class="user-info">
+              <span class="user-avatar">{{ auth.currentUser.value.username.charAt(0).toUpperCase() }}</span>
+              <span class="user-name">{{ auth.currentUser.value.displayName || auth.currentUser.value.username }}</span>
+              <span class="user-role">{{ auth.currentUser.value.role }}</span>
+            </span>
+            <button class="btn-logout" @click="auth.logout()" title="Logout">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+                <polyline points="16,17 21,12 16,7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </button>
+          </template>
+          <template v-else>
+            <button class="btn-login" @click="showLoginDialog = true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/>
+                <polyline points="10,17 15,12 10,7"/>
+                <line x1="15" y1="12" x2="3" y2="12"/>
+              </svg>
+              Login
+            </button>
+          </template>
+        </div>
       </div>
     </header>
 
@@ -381,6 +449,7 @@ function handleRetryConnection() {
       <DataTab v-else-if="activeTab === 'data'" />
       <SafetyTab v-else-if="activeTab === 'safety'" />
       <NotebookTab v-else-if="activeTab === 'notebook'" />
+      <AdminTab v-else-if="activeTab === 'admin'" />
     </main>
 
     <!-- Notifications Toast -->
@@ -439,6 +508,14 @@ function handleRetryConnection() {
         </div>
       </div>
     </Teleport>
+
+    <!-- Login Dialog -->
+    <LoginDialog
+      :is-open="showLoginDialog"
+      :allow-cancel="true"
+      @close="showLoginDialog = false"
+      @success="showLoginDialog = false"
+    />
   </div>
 </template>
 
@@ -704,5 +781,81 @@ function handleRetryConnection() {
 
 .btn-primary:hover:not(:disabled) {
   background: #2563eb;
+}
+
+/* User Auth Section */
+.user-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 16px;
+  border-left: 1px solid #2a2a4a;
+  margin-left: 8px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.user-name {
+  font-size: 0.85rem;
+  color: #fff;
+  font-weight: 500;
+}
+
+.user-role {
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: capitalize;
+  background: #1a1a2e;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.btn-login,
+.btn-logout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  color: #60a5fa;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-login:hover,
+.btn-logout:hover {
+  background: #1e3a5f;
+}
+
+.btn-logout {
+  padding: 6px;
+  border-color: #4b5563;
+  color: #888;
+}
+
+.btn-logout:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
 }
 </style>

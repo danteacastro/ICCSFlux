@@ -7,6 +7,8 @@ Handles data recording with configurable options, triggered recording, and scrip
 import csv
 import json
 import os
+import stat
+import hashlib
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, time as dt_time
@@ -61,6 +63,11 @@ class RecordingConfig:
     write_mode: str = "buffered"  # 'immediate', 'buffered'
     buffer_size: int = 100  # samples to buffer before flush
     flush_interval_s: float = 5.0  # Max time before flush (seconds)
+
+    # ALCOA+ Data Integrity Settings
+    append_only: bool = False  # If True, files become read-only once recording stops
+    verify_on_close: bool = True  # Compute and store checksum when file closes
+    include_audit_metadata: bool = True  # Include operator, timestamps, session info
 
     # What to do when limit reached (for rotation modes)
     on_limit_reached: str = "new_file"  # 'new_file', 'stop', 'circular'
@@ -691,7 +698,7 @@ class RecordingManager:
                 logger.warning(f"Failed to delete circular file {oldest}: {e}")
 
     def _close_current_file(self):
-        """Close the current file handle"""
+        """Close the current file handle with optional integrity verification"""
         if self.current_file_handle:
             # Flush any remaining buffer
             if self.write_buffer:
@@ -707,6 +714,95 @@ class RecordingManager:
             self.current_file_handle.close()
             self.current_file_handle = None
             self.csv_writer = None
+
+            # ALCOA+ Data Integrity: Compute and store checksum
+            if self.config.verify_on_close and self.current_file:
+                self._create_integrity_file(self.current_file)
+
+            # ALCOA+ Data Integrity: Make file read-only if append_only is enabled
+            if self.config.append_only and self.current_file:
+                self._make_file_readonly(self.current_file)
+
+    def _create_integrity_file(self, data_file: Path):
+        """Create a companion integrity file with SHA-256 checksum (ALCOA+ compliance)"""
+        try:
+            sha256 = hashlib.sha256()
+            with open(data_file, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    sha256.update(chunk)
+
+            file_hash = sha256.hexdigest()
+            integrity_file = data_file.with_suffix(data_file.suffix + '.sha256')
+
+            with open(integrity_file, 'w') as f:
+                f.write(f"# NISystem Recording Integrity Verification\n")
+                f.write(f"# ALCOA+ Compliance: Original, Accurate, Enduring\n")
+                f.write(f"# Generated: {datetime.now().isoformat()}\n")
+                f.write(f"file: {data_file.name}\n")
+                f.write(f"sha256: {file_hash}\n")
+                f.write(f"size_bytes: {data_file.stat().st_size}\n")
+                f.write(f"samples: {self.current_file_samples}\n")
+
+            logger.info(f"Created integrity file: {integrity_file}")
+
+        except Exception as e:
+            logger.error(f"Failed to create integrity file: {e}")
+
+    def _make_file_readonly(self, file_path: Path):
+        """Make file read-only to enforce append-only mode (ALCOA+ compliance)"""
+        try:
+            # Remove write permissions
+            current_mode = file_path.stat().st_mode
+            readonly_mode = current_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH
+            file_path.chmod(readonly_mode)
+            logger.info(f"File set to read-only (append-only mode): {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to set file read-only: {e}")
+
+    def verify_file_integrity(self, data_file: Path) -> tuple:
+        """Verify a recording file against its integrity file
+
+        Returns:
+            (valid, message) tuple
+        """
+        integrity_file = data_file.with_suffix(data_file.suffix + '.sha256')
+
+        if not integrity_file.exists():
+            return False, "Integrity file not found"
+
+        try:
+            # Read expected hash
+            expected_hash = None
+            expected_size = None
+            with open(integrity_file, 'r') as f:
+                for line in f:
+                    if line.startswith('sha256:'):
+                        expected_hash = line.split(':')[1].strip()
+                    elif line.startswith('size_bytes:'):
+                        expected_size = int(line.split(':')[1].strip())
+
+            if not expected_hash:
+                return False, "Invalid integrity file format"
+
+            # Compute actual hash
+            sha256 = hashlib.sha256()
+            with open(data_file, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    sha256.update(chunk)
+
+            actual_hash = sha256.hexdigest()
+            actual_size = data_file.stat().st_size
+
+            if actual_hash != expected_hash:
+                return False, f"Hash mismatch: expected {expected_hash[:16]}..., got {actual_hash[:16]}..."
+
+            if expected_size and actual_size != expected_size:
+                return False, f"Size mismatch: expected {expected_size}, got {actual_size}"
+
+            return True, "Integrity verified"
+
+        except Exception as e:
+            return False, f"Verification error: {e}"
 
     def get_status(self) -> dict:
         """Get current recording status"""

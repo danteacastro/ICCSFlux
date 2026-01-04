@@ -49,6 +49,11 @@ export interface RecordingConfig {
   scheduleStart: string
   scheduleEnd: string
   scheduleDays: string[]
+
+  // ALCOA+ Data Integrity Settings
+  appendOnly: boolean           // Make files read-only after recording stops
+  verifyOnClose: boolean        // Create SHA-256 integrity files
+  includeAuditMetadata: boolean // Include operator, timestamps, session info
 }
 
 const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
@@ -85,7 +90,12 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   scheduleEnabled: false,
   scheduleStart: '08:00',
   scheduleEnd: '17:00',
-  scheduleDays: ['mon', 'tue', 'wed', 'thu', 'fri']
+  scheduleDays: ['mon', 'tue', 'wed', 'thu', 'fri'],
+
+  // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11 compliance)
+  appendOnly: false,           // Off by default for development flexibility
+  verifyOnClose: true,         // On by default - creates integrity checksums
+  includeAuditMetadata: true   // On by default - includes operator attribution
 }
 
 export const useDashboardStore = defineStore('dashboard', () => {

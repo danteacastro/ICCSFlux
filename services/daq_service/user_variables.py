@@ -1260,6 +1260,92 @@ class UserVariableManager:
         with self.lock:
             return {b.id: b.to_dict() for b in self.formula_blocks.values()}
 
+    def load_formulas_from_project(self, project_data: Dict[str, Any], channel_names: List[str] = None) -> int:
+        """
+        Load formulas/calculated params from project data.
+
+        Handles two formats:
+        1. scripts.calculatedParams - Simple single-formula params from frontend
+        2. scripts.formulaBlocks - Multi-line formula blocks (if present)
+
+        Args:
+            project_data: Project JSON dict
+            channel_names: List of available channel names for validation
+
+        Returns:
+            Number of formulas loaded
+        """
+        with self.lock:
+            # Clear existing formula blocks
+            self.formula_blocks.clear()
+            self._formula_values.clear()
+
+            scripts_data = project_data.get('scripts', {})
+            loaded_count = 0
+
+            # Load calculatedParams (simple formulas)
+            calc_params = scripts_data.get('calculatedParams', [])
+            for param in calc_params:
+                try:
+                    # Convert CalculatedParam format to FormulaBlock
+                    # CalculatedParam: id, name, displayName, formula, unit, enabled
+                    param_id = param.get('id', f'cp-{loaded_count}')
+                    name = param.get('name', param.get('displayName', f'Formula {loaded_count}'))
+                    formula = param.get('formula', '')
+                    unit = param.get('unit', '')
+                    enabled = param.get('enabled', True)
+
+                    if not formula:
+                        continue
+
+                    # Create a formula block with single output
+                    # Convert simple formula to assignment: OUTPUT_NAME = formula
+                    output_name = name.upper().replace(' ', '_').replace('-', '_')
+                    code = f"{output_name} = {formula}"
+
+                    block = FormulaBlock(
+                        id=param_id,
+                        name=name,
+                        description=param.get('description', f'Calculated parameter: {name}'),
+                        code=code,
+                        enabled=enabled,
+                        outputs={output_name: {'units': unit, 'description': ''}},
+                        last_error=None,
+                        last_validated=None
+                    )
+                    self.formula_blocks[block.id] = block
+                    loaded_count += 1
+                    logger.debug(f"Loaded calculated param as formula block: {name}")
+
+                except Exception as e:
+                    logger.error(f"Failed to load calculated param: {e}")
+
+            # Also load explicit formulaBlocks if present (multi-line code blocks)
+            formula_blocks = scripts_data.get('formulaBlocks', [])
+            for block_data in formula_blocks:
+                try:
+                    block = FormulaBlock.from_dict(block_data)
+                    self.formula_blocks[block.id] = block
+                    loaded_count += 1
+                    logger.debug(f"Loaded formula block: {block.name}")
+                except Exception as e:
+                    logger.error(f"Failed to load formula block: {e}")
+
+            if loaded_count > 0:
+                logger.info(f"Loaded {loaded_count} formulas from project")
+                # Don't save to disk - project is the source of truth
+            else:
+                logger.debug("No formulas found in project")
+
+            return loaded_count
+
+    def clear_formulas(self):
+        """Clear all formula blocks (used when loading new project)"""
+        with self.lock:
+            self.formula_blocks.clear()
+            self._formula_values.clear()
+            logger.info("Cleared all formula blocks")
+
     def get_formula_values_dict(self) -> Dict[str, Dict[str, Any]]:
         """Get all formula block output values for MQTT publishing"""
         with self.lock:

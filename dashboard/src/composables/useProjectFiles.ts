@@ -17,6 +17,7 @@
 import { ref, computed } from 'vue'
 import { useMqtt } from './useMqtt'
 import { useDashboardStore } from '../stores/dashboard'
+import { usePythonScripts } from './usePythonScripts'
 import type { ChannelConfig, ChannelType } from '../types'
 
 // Channel config as stored in the project JSON file
@@ -349,7 +350,9 @@ export function useProjectFiles() {
     const triggers = JSON.parse(localStorage.getItem('nisystem-triggers') || '[]')
 
     // Extended script types (v2.1+)
-    const pythonScripts = JSON.parse(localStorage.getItem('nisystem-python-scripts') || '[]')
+    // Get Python scripts directly from composable (source of truth) instead of localStorage
+    const pythonScriptsComposable = usePythonScripts()
+    const pythonScripts = pythonScriptsComposable.exportScripts()
     const functionBlocks = JSON.parse(localStorage.getItem('dcflux-function-blocks') || '[]')
     const drawPatterns = JSON.parse(localStorage.getItem('dcflux-draw-patterns') || '{"patterns":[],"history":[]}')
     const watchdogs = JSON.parse(localStorage.getItem('dcflux-watchdogs') || '[]')
@@ -542,6 +545,9 @@ export function useProjectFiles() {
       // Extended script types (v2.1+)
       if (data.scripts.pythonScripts) {
         localStorage.setItem('nisystem-python-scripts', JSON.stringify(data.scripts.pythonScripts))
+        // Notify usePythonScripts composable to reload scripts
+        const pythonScripts = usePythonScripts()
+        pythonScripts.importScripts(data.scripts.pythonScripts)
       }
       if (data.scripts.functionBlocks) {
         localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks))

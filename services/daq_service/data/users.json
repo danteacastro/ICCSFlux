@@ -1,0 +1,28 @@
+{
+  "admin": {
+    "username": "admin",
+    "password_hash": "$2b$12$9pH5jLw7.ck6tumVm04FiOr3HIfk1grYZd9acowF8WketDapBk3VO",
+    "role": "admin",
+    "display_name": "Administrator",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-04T15:30:15.643371",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  },
+  "operator": {
+    "username": "operator",
+    "password_hash": "$2b$12$GMaPUkBMT6evqCAWsl2Dxeyq9aZYubu0Im74NbZ679Yv9L4zO1S9G",
+    "role": "operator",
+    "display_name": "Default Operator",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-04T15:30:15.881311",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  }
+}

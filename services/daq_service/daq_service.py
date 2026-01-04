@@ -5,11 +5,13 @@ Main service that reads/writes NI hardware (or simulation) and publishes to MQTT
 """
 
 import json
+import os
 import time
 import signal
 import sys
 import logging
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -46,12 +48,19 @@ except ImportError as e:
 
 from scheduler import SimpleScheduler
 from sequence_manager import SequenceManager, Sequence, SequenceStep
+from script_manager import ScriptManager, Script, ScriptRunMode, ScriptState
+from trigger_engine import TriggerEngine
+from watchdog_engine import WatchdogEngine
 from device_discovery import DeviceDiscovery
 from recording_manager import RecordingManager, RecordingConfig
 from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config
 from user_variables import UserVariableManager
 from alarm_manager import AlarmManager, AlarmConfig, AlarmSeverity, LatchBehavior
+from audit_trail import AuditTrail, AuditEventType
+from user_session import UserSessionManager, UserRole, Permission
+from project_manager import ProjectManager, ProjectStatus
+from archive_manager import ArchiveManager
 
 # Try to import nidaqmx - if not available, we'll use simulation only
 try:
@@ -106,11 +115,9 @@ class DAQService:
         self.recording_start_time: Optional[datetime] = None
         self.recording_filename: Optional[str] = None
 
-        # Authentication state
-        self.authenticated = False
-        self.auth_username: Optional[str] = None
-        self.AUTH_USERNAME = "admin"
-        self.AUTH_PASSWORD = "gtiadmin"
+        # Authentication state (session-based via UserSessionManager)
+        self.current_session_id: Optional[str] = None
+        self.current_user_role: Optional[str] = None
 
         # Channel values cache
         self.channel_values: Dict[str, Any] = {}      # Scaled engineering values
@@ -163,11 +170,32 @@ class DAQService:
         # Sequence manager
         self.sequence_manager: Optional[SequenceManager] = None
 
+        # Script manager (Python script execution)
+        self.script_manager: Optional[ScriptManager] = None
+
+        # Trigger engine (automation triggers)
+        self.trigger_engine: Optional[TriggerEngine] = None
+
+        # Watchdog engine (channel monitoring)
+        self.watchdog_engine: Optional[WatchdogEngine] = None
+
         # User variable manager
         self.user_variables: Optional[UserVariableManager] = None
 
         # Enhanced alarm manager
         self.alarm_manager: Optional[AlarmManager] = None
+
+        # Audit trail (21 CFR Part 11 / ALCOA+ compliance)
+        self.audit_trail: Optional[AuditTrail] = None
+
+        # User session manager (role-based access control)
+        self.user_session_manager: Optional[UserSessionManager] = None
+
+        # Project manager (backup, validation, safety locking)
+        self.project_manager: Optional[ProjectManager] = None
+
+        # Archive manager (long-term data retention)
+        self.archive_manager: Optional[ArchiveManager] = None
 
         # Resource monitoring
         self._cpu_percent = 0.0
@@ -186,8 +214,15 @@ class DAQService:
         self._init_recording_manager()
         self._init_dependency_tracker()
         self._init_sequence_manager()
+        self._init_script_manager()
+        self._init_trigger_engine()
+        self._init_watchdog_engine()
         self._init_user_variables()
         self._init_alarm_manager()
+        self._init_audit_trail()
+        self._init_user_session_manager()
+        self._init_project_manager()
+        self._init_archive_manager()
 
     # =========================================================================
     # THREAD-SAFE PROPERTY ACCESSORS
@@ -467,6 +502,33 @@ class DAQService:
                 self.alarm_manager.clear_all(clear_configs=True)
             self._init_alarm_manager()
 
+            # Load scripts from project
+            # Scripts with run_mode=acquisition or session will auto-start when triggered
+            if self.script_manager:
+                self.script_manager.load_scripts_from_project(project_data)
+                script_count = len(self.script_manager.scripts)
+                if script_count > 0:
+                    logger.info(f"Loaded {script_count} scripts from project")
+
+            # Load formulas from project (calculatedParams -> formula blocks)
+            if self.user_variables:
+                channel_names = list(channels.keys())
+                formula_count = self.user_variables.load_formulas_from_project(project_data, channel_names)
+                if formula_count > 0:
+                    logger.info(f"Loaded {formula_count} formulas from project")
+
+            # Load triggers from project
+            if self.trigger_engine:
+                trigger_count = self.trigger_engine.load_from_project(project_data)
+                if trigger_count > 0:
+                    logger.info(f"Loaded {trigger_count} triggers from project")
+
+            # Load watchdogs from project
+            if self.watchdog_engine:
+                watchdog_count = self.watchdog_engine.load_from_project(project_data)
+                if watchdog_count > 0:
+                    logger.info(f"Loaded {watchdog_count} watchdogs from project")
+
             logger.info(f"Applied project config: {len(channels)} channels")
             return True
 
@@ -628,6 +690,452 @@ class DAQService:
 
         logger.info("Sequence manager initialized")
 
+    def _init_script_manager(self):
+        """Initialize the script manager for Python script execution"""
+        self.script_manager = ScriptManager()
+
+        # Wire up callbacks
+        self.script_manager.on_get_channel_value = self._script_get_channel_value
+        self.script_manager.on_get_channel_timestamp = self._script_get_channel_timestamp
+        self.script_manager.on_get_channel_names = self._script_get_channel_names
+        self.script_manager.on_has_channel = self._script_has_channel
+        self.script_manager.on_set_output = self._script_set_output
+        self.script_manager.on_start_acquisition = self._script_start_acquisition
+        self.script_manager.on_stop_acquisition = self._script_stop_acquisition
+        self.script_manager.on_start_recording = self._script_start_recording
+        self.script_manager.on_stop_recording = self._script_stop_recording
+        self.script_manager.on_is_session_active = self._script_is_session_active
+        self.script_manager.on_get_session_elapsed = self._script_get_session_elapsed
+        self.script_manager.on_is_recording = self._script_is_recording
+        self.script_manager.on_get_scan_rate = self._script_get_scan_rate
+        self.script_manager.on_publish_value = self._script_publish_value
+        self.script_manager.on_script_event = self._script_event_handler
+        self.script_manager.on_script_output = self._script_output_handler
+
+        logger.info("Script manager initialized")
+
+    def _init_trigger_engine(self):
+        """Initialize the trigger engine for automation triggers"""
+        self.trigger_engine = TriggerEngine()
+
+        # Wire up callbacks
+        self.trigger_engine.set_output = self._set_output_value
+        self.trigger_engine.start_recording = lambda: self.recording_manager.start_recording() if self.recording_manager else None
+        self.trigger_engine.stop_recording = lambda: self.recording_manager.stop_recording() if self.recording_manager else None
+        self.trigger_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id) if self.sequence_manager else None
+        self.trigger_engine.stop_sequence = lambda seq_id: self.sequence_manager.stop_sequence(seq_id) if self.sequence_manager else None
+        self.trigger_engine.publish_notification = self._publish_trigger_notification
+
+        logger.info("Trigger engine initialized")
+
+    def _init_watchdog_engine(self):
+        """Initialize the watchdog engine for channel monitoring"""
+        self.watchdog_engine = WatchdogEngine()
+
+        # Wire up callbacks
+        self.watchdog_engine.set_output = self._set_output_value
+        self.watchdog_engine.start_recording = lambda: self.recording_manager.start_recording() if self.recording_manager else None
+        self.watchdog_engine.stop_recording = lambda: self.recording_manager.stop_recording() if self.recording_manager else None
+        self.watchdog_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id) if self.sequence_manager else None
+        self.watchdog_engine.stop_sequence = lambda seq_id: self.sequence_manager.stop_sequence(seq_id) if self.sequence_manager else None
+        self.watchdog_engine.publish_notification = self._publish_watchdog_notification
+        self.watchdog_engine.raise_alarm = self._raise_watchdog_alarm
+
+        logger.info("Watchdog engine initialized")
+
+    def _publish_trigger_notification(self, event_type: str, trigger_name: str, message: str):
+        """Publish trigger notification to MQTT"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/trigger/notification",
+            json.dumps({
+                "type": event_type,
+                "trigger": trigger_name,
+                "message": message,
+                "timestamp": time.time()
+            })
+        )
+
+    def _publish_watchdog_notification(self, event_type: str, watchdog_name: str, message: str):
+        """Publish watchdog notification to MQTT"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/watchdog/notification",
+            json.dumps({
+                "type": event_type,
+                "watchdog": watchdog_name,
+                "message": message,
+                "timestamp": time.time()
+            })
+        )
+
+    def _raise_watchdog_alarm(self, watchdog_id: str, severity: str, message: str):
+        """Raise an alarm from a watchdog"""
+        if self.alarm_manager:
+            # For now, just log it - could integrate with alarm_manager
+            logger.warning(f"Watchdog alarm [{severity}]: {message}")
+        # Also publish to MQTT
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/watchdog/alarm",
+            json.dumps({
+                "watchdog_id": watchdog_id,
+                "severity": severity,
+                "message": message,
+                "timestamp": time.time()
+            })
+        )
+
+    # =========================================================================
+    # SCRIPT MANAGER CALLBACKS
+    # =========================================================================
+
+    def _script_get_channel_value(self, channel: str) -> float:
+        """Get channel value for script"""
+        return self.channel_values.get(channel, 0.0)
+
+    def _script_get_channel_timestamp(self, channel: str) -> float:
+        """Get channel timestamp for script"""
+        return self.channel_timestamps.get(channel, 0.0)
+
+    def _script_get_channel_names(self) -> list:
+        """Get all channel names for script"""
+        return list(self.channel_values.keys())
+
+    def _script_has_channel(self, channel: str) -> bool:
+        """Check if channel exists"""
+        return channel in self.channel_values
+
+    def _script_set_output(self, channel: str, value) -> None:
+        """Set output from script"""
+        if channel in self.config.channels:
+            self._set_output_value(channel, value)
+
+    def _script_start_acquisition(self) -> None:
+        """Start acquisition from script"""
+        if not self.acquiring:
+            self.acquiring = True
+            self._publish_system_status()
+            if self.script_manager:
+                self.script_manager.on_acquisition_start()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_start()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_start()
+
+    def _script_stop_acquisition(self) -> None:
+        """Stop acquisition from script"""
+        if self.acquiring:
+            self.acquiring = False
+            self._publish_system_status()
+            if self.script_manager:
+                self.script_manager.on_acquisition_stop()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_stop()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_stop()
+
+    def _script_start_recording(self, filename: str = None) -> None:
+        """Start recording from script"""
+        if self.recording_manager and not self.recording_manager.is_recording:
+            self.recording_manager.start_recording(filename)
+
+    def _script_stop_recording(self) -> None:
+        """Stop recording from script"""
+        if self.recording_manager and self.recording_manager.is_recording:
+            self.recording_manager.stop_recording()
+
+    def _script_is_session_active(self) -> bool:
+        """Check if session is active for script"""
+        if self.user_variables:
+            return self.user_variables.test_session_active
+        return self.acquiring
+
+    def _script_get_session_elapsed(self) -> float:
+        """Get session elapsed time for script"""
+        if self.user_variables and self.user_variables.test_session_active:
+            return self.user_variables.get_elapsed_time()
+        return 0.0
+
+    def _script_is_recording(self) -> bool:
+        """Check if recording is active"""
+        if self.recording_manager:
+            return self.recording_manager.is_recording
+        return False
+
+    def _script_get_scan_rate(self) -> float:
+        """Get current scan rate"""
+        return getattr(self.config.system, 'scan_rate', 10.0)
+
+    def _script_publish_value(self, script_id: str, name: str, value: float, units: str = '') -> None:
+        """Publish computed value from script"""
+        # Store in script-published values (py.{name} prefix)
+        full_name = f"py.{name}"
+        self.channel_values[full_name] = value
+        self.channel_timestamps[full_name] = time.time()
+
+        # Also record in CSV if recording
+        if self.recording_manager and self.recording_manager.is_recording:
+            self.recording_manager.update_script_values({name: value})
+
+        # Publish via MQTT
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/values",
+            json.dumps({name: value, "_timestamp": time.time()})
+        )
+
+    def _script_event_handler(self, event_type: str, script) -> None:
+        """Handle script events"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/event",
+            json.dumps({
+                "event": event_type,
+                "script_id": script.id,
+                "script_name": script.name,
+                "state": script.state.value if hasattr(script.state, 'value') else str(script.state),
+                "timestamp": time.time()
+            })
+        )
+        self._publish_script_status()
+
+    def _script_output_handler(self, script_id: str, output_type: str, message: str) -> None:
+        """Handle script output (print statements, logs)"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/output",
+            json.dumps({
+                "script_id": script_id,
+                "type": output_type,
+                "message": message,
+                "timestamp": time.time()
+            })
+        )
+
+    # =========================================================================
+    # SCRIPT MQTT HANDLERS
+    # =========================================================================
+
+    def _handle_script_add(self, payload) -> None:
+        """Add a new backend script"""
+        if not self.script_manager:
+            return
+
+        if not isinstance(payload, dict):
+            logger.error(f"Invalid payload for script/add: {type(payload)} - {payload}")
+            return
+
+        script_id = payload.get('id', str(uuid.uuid4()))
+        name = payload.get('name', 'Untitled Script')
+        code = payload.get('code', '')
+        run_mode = payload.get('run_mode', 'manual')
+        enabled = payload.get('enabled', True)
+
+        # Convert run_mode string to enum
+        mode_map = {
+            'manual': ScriptRunMode.MANUAL,
+            'acquisition': ScriptRunMode.ACQUISITION,
+            'session': ScriptRunMode.SESSION
+        }
+        run_mode_enum = mode_map.get(run_mode, ScriptRunMode.MANUAL)
+
+        script = Script(
+            id=script_id,
+            name=name,
+            code=code,
+            run_mode=run_mode_enum,
+            enabled=enabled
+        )
+
+        self.script_manager.add_script(script)
+        logger.info(f"Script added: {name} ({script_id})")
+        self._publish_script_status()
+
+        # Send response
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "add",
+                "success": True,
+                "script_id": script_id
+            })
+        )
+
+    def _handle_script_update(self, payload: dict) -> None:
+        """Update an existing backend script"""
+        if not self.script_manager:
+            return
+
+        script_id = payload.get('id')
+        if not script_id:
+            return
+
+        script = self.script_manager.get_script(script_id)
+        if not script:
+            logger.warning(f"Script not found for update: {script_id}")
+            return
+
+        # Update fields if provided
+        if 'name' in payload:
+            script.name = payload['name']
+        if 'code' in payload:
+            script.code = payload['code']
+        if 'run_mode' in payload:
+            mode_map = {
+                'manual': ScriptRunMode.MANUAL,
+                'acquisition': ScriptRunMode.ACQUISITION,
+                'session': ScriptRunMode.SESSION
+            }
+            script.run_mode = mode_map.get(payload['run_mode'], script.run_mode)
+        if 'enabled' in payload:
+            script.enabled = payload['enabled']
+
+        logger.info(f"Script updated: {script.name} ({script_id})")
+        self._publish_script_status()
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "update",
+                "success": True,
+                "script_id": script_id
+            })
+        )
+
+    def _handle_script_remove(self, payload: dict) -> None:
+        """Remove a backend script"""
+        if not self.script_manager:
+            return
+
+        script_id = payload.get('id')
+        if not script_id:
+            return
+
+        success = self.script_manager.remove_script(script_id)
+        logger.info(f"Script removed: {script_id}, success={success}")
+        self._publish_script_status()
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "remove",
+                "success": success,
+                "script_id": script_id
+            })
+        )
+
+    def _handle_script_start(self, payload: dict) -> None:
+        """Start a backend script"""
+        if not self.script_manager:
+            return
+
+        script_id = payload.get('id')
+        if not script_id:
+            return
+
+        success = self.script_manager.start_script(script_id)
+        logger.info(f"Script start requested: {script_id}, success={success}")
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "start",
+                "success": success,
+                "script_id": script_id
+            })
+        )
+
+    def _handle_script_stop(self, payload: dict) -> None:
+        """Stop a running backend script"""
+        if not self.script_manager:
+            return
+
+        script_id = payload.get('id')
+        if not script_id:
+            return
+
+        success = self.script_manager.stop_script(script_id)
+        logger.info(f"Script stop requested: {script_id}, success={success}")
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "stop",
+                "success": success,
+                "script_id": script_id
+            })
+        )
+
+    def _handle_script_list(self) -> None:
+        """List all backend scripts"""
+        self._publish_script_status()
+
+    def _handle_script_get(self, payload: dict) -> None:
+        """Get a specific script's details"""
+        if not self.script_manager:
+            return
+
+        script_id = payload.get('id')
+        if not script_id:
+            return
+
+        script = self.script_manager.get_script(script_id)
+
+        base = self.get_topic_base()
+        if script:
+            self.mqtt_client.publish(
+                f"{base}/script/details",
+                json.dumps({
+                    "id": script.id,
+                    "name": script.name,
+                    "code": script.code,
+                    "run_mode": script.run_mode.value,
+                    "enabled": script.enabled,
+                    "state": script.state.value,
+                    "error": script.error_message,
+                    "started_at": script.started_at,
+                    "iterations": script.iterations
+                })
+            )
+        else:
+            self.mqtt_client.publish(
+                f"{base}/script/details",
+                json.dumps({"error": f"Script not found: {script_id}"})
+            )
+
+    def _publish_script_status(self) -> None:
+        """Publish status of all backend scripts"""
+        if not self.script_manager:
+            return
+
+        scripts = []
+        for script_id, script in self.script_manager.scripts.items():
+            scripts.append({
+                "id": script.id,
+                "name": script.name,
+                "run_mode": script.run_mode.value,
+                "enabled": script.enabled,
+                "state": script.state.value,
+                "error": script.error_message,
+                "started_at": script.started_at,
+                "iterations": script.iterations
+            })
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/status",
+            json.dumps({
+                "scripts": scripts,
+                "timestamp": time.time()
+            })
+        )
+
     def _init_user_variables(self):
         """Initialize the user variable manager with callbacks"""
         # Get data directory from config or use default
@@ -719,6 +1227,77 @@ class DAQService:
 
         logger.info(f"Alarm manager initialized with {len(self.alarm_manager.alarm_configs)} alarm configs")
 
+    def _init_audit_trail(self):
+        """Initialize the audit trail for 21 CFR Part 11 / ALCOA+ compliance"""
+        try:
+            data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+            audit_dir = data_dir / "audit"
+            self.audit_trail = AuditTrail(
+                log_dir=audit_dir,
+                max_file_size_mb=50,
+                max_files=100,
+                compress_old=True
+            )
+            logger.info(f"Audit trail initialized at {audit_dir}")
+        except Exception as e:
+            logger.error(f"Failed to initialize audit trail: {e}")
+            self.audit_trail = None
+
+    def _init_user_session_manager(self):
+        """Initialize the user session manager for role-based access control"""
+        try:
+            data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+            self.user_session_manager = UserSessionManager(
+                data_dir=data_dir,
+                session_timeout_minutes=30,
+                max_failed_attempts=5,
+                lockout_duration_minutes=15
+            )
+            logger.info("User session manager initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize user session manager: {e}")
+            self.user_session_manager = None
+
+    def _init_project_manager(self):
+        """Initialize the project manager with backup/validation capabilities"""
+        try:
+            projects_dir = self._get_projects_dir()
+            self.project_manager = ProjectManager(
+                projects_dir=projects_dir,
+                max_backups=10,
+                backup_on_save=True,
+                validate_on_load=True
+            )
+            # Link audit trail
+            if self.audit_trail:
+                self.project_manager.audit_trail = self.audit_trail
+            logger.info(f"Project manager initialized at {projects_dir}")
+        except Exception as e:
+            logger.error(f"Failed to initialize project manager: {e}")
+            self.project_manager = None
+
+    def _init_archive_manager(self):
+        """Initialize archive manager for long-term data retention"""
+        try:
+            # Use data directory for archives
+            data_dir = Path(self.config_path).parent / 'data'
+            archive_dir = data_dir / 'archives'
+
+            self.archive_manager = ArchiveManager(
+                archive_dir=archive_dir,
+                retention_years=10,  # FDA requirement
+                compress=True
+            )
+
+            # Link audit trail if available
+            if self.audit_trail:
+                self.archive_manager.audit_trail = self.audit_trail
+
+            logger.info(f"Archive manager initialized at {archive_dir}")
+        except Exception as e:
+            logger.error(f"Failed to initialize archive manager: {e}")
+            self.archive_manager = None
+
     def _alarm_manager_publish(self, event_type: str, data: dict):
         """Callback from alarm manager to publish events"""
         if not self.mqtt_client:
@@ -767,11 +1346,25 @@ class DAQService:
         """Custom callback when test session starts"""
         logger.info("Test session started - custom callback")
         self._publish_test_session_status()
+        # Notify automation engines
+        if self.script_manager:
+            self.script_manager.on_session_start()
+        if self.trigger_engine:
+            self.trigger_engine.on_session_start()
+        if self.watchdog_engine:
+            self.watchdog_engine.on_session_start()
 
     def _on_test_session_stop(self):
         """Custom callback when test session stops"""
         logger.info("Test session stopped - custom callback")
         self._publish_test_session_status()
+        # Notify automation engines
+        if self.script_manager:
+            self.script_manager.on_session_stop()
+        if self.trigger_engine:
+            self.trigger_engine.on_session_stop()
+        if self.watchdog_engine:
+            self.watchdog_engine.on_session_stop()
 
     def _user_var_scheduler_enable(self, enable: bool):
         """Callback for user variable manager to enable/disable scheduler"""
@@ -829,12 +1422,24 @@ class DAQService:
         if not self.acquiring:
             self.acquiring = True
             logger.info("Sequence started acquisition")
+            if self.script_manager:
+                self.script_manager.on_acquisition_start()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_start()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_start()
 
     def _sequence_stop_acquisition(self):
         """Callback for sequence to stop acquisition"""
         if self.acquiring:
             self.acquiring = False
             logger.info("Sequence stopped acquisition")
+            if self.script_manager:
+                self.script_manager.on_acquisition_stop()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_stop()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_stop()
 
     def _sequence_get_channel_value(self, channel: str) -> Any:
         """Callback for sequence to get channel value"""
@@ -883,12 +1488,24 @@ class DAQService:
         if not self.acquiring:
             self.acquiring = True
             logger.info("Scheduler started acquisition")
+            if self.script_manager:
+                self.script_manager.on_acquisition_start()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_start()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_start()
 
     def _scheduled_stop_acquire(self):
         """Callback for scheduler to stop acquisition"""
         if self.acquiring:
             self.acquiring = False
             logger.info("Scheduler stopped acquisition")
+            if self.script_manager:
+                self.script_manager.on_acquisition_stop()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_stop()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_stop()
 
     def _scheduled_start_record(self):
         """Callback for scheduler to start recording"""
@@ -1035,6 +1652,16 @@ class DAQService:
             client.subscribe(f"{base}/test-session/config")
             client.subscribe(f"{base}/test-session/status")
 
+            # Subscribe to backend script execution topics
+            client.subscribe(f"{base}/script/start")
+            client.subscribe(f"{base}/script/stop")
+            client.subscribe(f"{base}/script/add")
+            client.subscribe(f"{base}/script/update")
+            client.subscribe(f"{base}/script/remove")
+            client.subscribe(f"{base}/script/list")
+            client.subscribe(f"{base}/script/get")
+            client.subscribe(f"{base}/script/status")
+
             # Subscribe to notebook topics
             client.subscribe(f"{base}/notebook/save")
             client.subscribe(f"{base}/notebook/load")
@@ -1051,6 +1678,22 @@ class DAQService:
             client.subscribe(f"{base}/datasource/delete")
             client.subscribe(f"{base}/datasource/test")
             client.subscribe(f"{base}/datasource/list")
+
+            # Subscribe to user management topics (admin only)
+            client.subscribe(f"{base}/users/list")
+            client.subscribe(f"{base}/users/create")
+            client.subscribe(f"{base}/users/update")
+            client.subscribe(f"{base}/users/delete")
+            client.subscribe(f"{base}/users/sessions")
+
+            # Subscribe to audit trail topics
+            client.subscribe(f"{base}/audit/query")
+            client.subscribe(f"{base}/audit/export")
+
+            # Subscribe to archive management topics
+            client.subscribe(f"{base}/archive/list")
+            client.subscribe(f"{base}/archive/retrieve")
+            client.subscribe(f"{base}/archive/verify")
 
             # Publish connection status
             self._publish_system_status()
@@ -1078,7 +1721,8 @@ class DAQService:
 
         try:
             payload = json.loads(msg.payload.decode())
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON decode failed for {topic}: {e}")
             payload = msg.payload.decode()
 
         logger.debug(f"Received message on {topic}: {payload}")
@@ -1104,9 +1748,35 @@ class DAQService:
         elif topic == f"{base}/auth/login":
             self._handle_auth_login(payload)
         elif topic == f"{base}/auth/logout":
-            self._handle_auth_logout()
+            self._handle_auth_logout(payload)
         elif topic == f"{base}/auth/status/request":
             self._publish_auth_status()
+
+        # === USER MANAGEMENT (Admin only) ===
+        elif topic == f"{base}/users/list":
+            self._handle_users_list(payload)
+        elif topic == f"{base}/users/create":
+            self._handle_users_create(payload)
+        elif topic == f"{base}/users/update":
+            self._handle_users_update(payload)
+        elif topic == f"{base}/users/delete":
+            self._handle_users_delete(payload)
+        elif topic == f"{base}/users/sessions":
+            self._handle_users_sessions(payload)
+
+        # === AUDIT TRAIL ===
+        elif topic == f"{base}/audit/query":
+            self._handle_audit_query(payload)
+        elif topic == f"{base}/audit/export":
+            self._handle_audit_export(payload)
+
+        # === ARCHIVE MANAGEMENT ===
+        elif topic == f"{base}/archive/list":
+            self._handle_archive_list(payload)
+        elif topic == f"{base}/archive/retrieve":
+            self._handle_archive_retrieve(payload)
+        elif topic == f"{base}/archive/verify":
+            self._handle_archive_verify(payload)
 
         # === CONFIG MANAGEMENT ===
         elif topic == f"{base}/config/get":
@@ -1253,6 +1923,24 @@ class DAQService:
             self._handle_test_session_config(payload)
         elif topic == f"{base}/test-session/status":
             self._publish_test_session_status()
+
+        # === BACKEND SCRIPT EXECUTION ===
+        elif topic == f"{base}/script/start":
+            self._handle_script_start(payload)
+        elif topic == f"{base}/script/stop":
+            self._handle_script_stop(payload)
+        elif topic == f"{base}/script/add":
+            self._handle_script_add(payload)
+        elif topic == f"{base}/script/update":
+            self._handle_script_update(payload)
+        elif topic == f"{base}/script/remove":
+            self._handle_script_remove(payload)
+        elif topic == f"{base}/script/list":
+            self._handle_script_list()
+        elif topic == f"{base}/script/get":
+            self._handle_script_get(payload)
+        elif topic == f"{base}/script/status":
+            self._publish_script_status()
 
         # === NOTEBOOK ===
         elif topic == f"{base}/notebook/save":
@@ -1616,6 +2304,27 @@ class DAQService:
             self.acquiring = True
             logger.info(f"[STATE MACHINE] Acquisition started successfully (acquiring={self.acquiring})")
 
+            # Notify automation engines
+            if self.script_manager:
+                self.script_manager.on_acquisition_start()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_start()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_start()
+
+            # IEC 61511: Lock safety configuration during acquisition
+            if self.project_manager:
+                self.project_manager.lock_safety_config("Acquisition running")
+
+            # Audit trail: Log acquisition start
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.SESSION_START,
+                    user=self.auth_username or "system",
+                    description="Data acquisition started",
+                    details={"channels": len(self.config.channels) if self.config else 0}
+                )
+
             self._publish_system_status()
             self._publish_command_ack("acquire/start", request_id, True)
 
@@ -1623,6 +2332,9 @@ class DAQService:
             logger.error(f"[STATE MACHINE] Error starting acquisition: {e}", exc_info=True)
             # STATE ROLLBACK: Ensure we're in stopped state on error
             self.acquiring = False
+            # Unlock safety config on failure
+            if self.project_manager:
+                self.project_manager.unlock_safety_config()
             logger.error(f"[STATE MACHINE] Rolled back to stopped state (acquiring={self.acquiring})")
             self._publish_command_ack("acquire/start", request_id, False, str(e))
 
@@ -1649,6 +2361,26 @@ class DAQService:
             logger.info("[STATE MACHINE] Transitioning: stopping → stopped")
             self.acquiring = False
             logger.info(f"[STATE MACHINE] Acquisition stopped successfully (acquiring={self.acquiring})")
+
+            # Notify automation engines
+            if self.script_manager:
+                self.script_manager.on_acquisition_stop()
+            if self.trigger_engine:
+                self.trigger_engine.on_acquisition_stop()
+            if self.watchdog_engine:
+                self.watchdog_engine.on_acquisition_stop()
+
+            # IEC 61511: Unlock safety configuration after acquisition stops
+            if self.project_manager:
+                self.project_manager.unlock_safety_config()
+
+            # Audit trail: Log acquisition stop
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.SESSION_END,
+                    user=self.auth_username or "system",
+                    description="Data acquisition stopped"
+                )
 
             self._publish_system_status()
             self._publish_command_ack("acquire/stop", request_id, True)
@@ -1957,45 +2689,125 @@ class DAQService:
         )
 
     # =========================================================================
-    # AUTHENTICATION HANDLERS
+    # AUTHENTICATION HANDLERS (Session-based with UserSessionManager)
     # =========================================================================
 
+    @property
+    def authenticated(self) -> bool:
+        """Check if current session is valid"""
+        if not self.current_session_id or not self.user_session_manager:
+            return False
+        session = self.user_session_manager.validate_session(self.current_session_id)
+        return session is not None
+
+    @property
+    def auth_username(self) -> Optional[str]:
+        """Get current authenticated username"""
+        if not self.current_session_id or not self.user_session_manager:
+            return None
+        session = self.user_session_manager.validate_session(self.current_session_id)
+        return session.username if session else None
+
+    def _has_permission(self, permission: Permission) -> bool:
+        """Check if current session has a specific permission"""
+        if not self.current_session_id or not self.user_session_manager:
+            return False
+        return self.user_session_manager.has_permission(self.current_session_id, permission)
+
     def _handle_auth_login(self, payload: Any):
-        """Handle login request"""
+        """Handle login request using UserSessionManager"""
         if not isinstance(payload, dict):
             self._publish_auth_status(error="Invalid login payload")
             return
 
+        if not self.user_session_manager:
+            self._publish_auth_status(error="User session manager not initialized")
+            return
+
         username = payload.get('username', '')
         password = payload.get('password', '')
+        source_ip = payload.get('source_ip', 'dashboard')
 
-        if username == self.AUTH_USERNAME and password == self.AUTH_PASSWORD:
-            logger.info(f"User '{username}' authenticated successfully")
-            self.authenticated = True
-            self.auth_username = username
+        # Use UserSessionManager for proper authentication
+        session = self.user_session_manager.authenticate(
+            username=username,
+            password=password,
+            source_ip=source_ip,
+            user_agent="NISystem Dashboard"
+        )
+
+        if session:
+            logger.info(f"User '{username}' authenticated (role: {session.role.value})")
+            self.current_session_id = session.session_id
+            self.current_user_role = session.role.value
+
+            # Log to audit trail
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    AuditEventType.USER_LOGIN,
+                    username=username,
+                    details={"role": session.role.value, "source_ip": source_ip}
+                )
+
             self._publish_auth_status()
             self._publish_system_status()
         else:
             logger.warning(f"Failed login attempt for user '{username}'")
-            self.authenticated = False
-            self.auth_username = None
+            self.current_session_id = None
+            self.current_user_role = None
+
+            # Log failed attempt to audit trail
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    AuditEventType.USER_LOGIN_FAILED,
+                    username=username,
+                    details={"source_ip": source_ip}
+                )
+
             self._publish_auth_status(error="Invalid credentials")
 
-    def _handle_auth_logout(self):
+    def _handle_auth_logout(self, payload: Any = None):
         """Handle logout request"""
-        logger.info(f"User '{self.auth_username}' logged out")
-        self.authenticated = False
-        self.auth_username = None
+        username = self.auth_username
+        if self.current_session_id and self.user_session_manager:
+            self.user_session_manager.logout(self.current_session_id)
+
+            # Log to audit trail
+            if self.audit_trail and username:
+                self.audit_trail.log_event(
+                    AuditEventType.USER_LOGOUT,
+                    username=username
+                )
+
+        logger.info(f"User '{username}' logged out")
+        self.current_session_id = None
+        self.current_user_role = None
         self._publish_auth_status()
         self._publish_system_status()
 
     def _publish_auth_status(self, error: Optional[str] = None):
-        """Publish authentication status"""
+        """Publish authentication status with role information"""
         base = self.get_topic_base()
+
+        # Get user info if authenticated
+        user_info = None
+        permissions = []
+        if self.current_session_id and self.user_session_manager:
+            session = self.user_session_manager.validate_session(self.current_session_id)
+            if session:
+                user_info = self.user_session_manager.get_user_info(session.username)
+                # Get permissions for this role
+                from user_session import ROLE_PERMISSIONS, UserRole
+                role = UserRole(session.role.value) if isinstance(session.role, UserRole) else session.role
+                role_perms = ROLE_PERMISSIONS.get(role, set())
+                permissions = [p.value for p in role_perms]
 
         status = {
             "authenticated": self.authenticated,
             "username": self.auth_username,
+            "role": self.current_user_role,
+            "permissions": permissions,
+            "display_name": user_info.get('display_name') if user_info else None,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -2007,6 +2819,493 @@ class DAQService:
             json.dumps(status),
             retain=True
         )
+
+    # =========================================================================
+    # USER MANAGEMENT HANDLERS (Admin only)
+    # =========================================================================
+
+    def _handle_users_list(self, payload: Any = None):
+        """List all users (admin only)"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.MANAGE_USERS):
+            self.mqtt_client.publish(
+                f"{base}/users/list/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if self.user_session_manager:
+            users = self.user_session_manager.list_users()
+            self.mqtt_client.publish(
+                f"{base}/users/list/response",
+                json.dumps({"success": True, "users": users})
+            )
+        else:
+            self.mqtt_client.publish(
+                f"{base}/users/list/response",
+                json.dumps({"success": False, "error": "User manager not available"})
+            )
+
+    def _handle_users_create(self, payload: Any):
+        """Create a new user (admin only)"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.MANAGE_USERS):
+            self.mqtt_client.publish(
+                f"{base}/users/create/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(
+                f"{base}/users/create/response",
+                json.dumps({"success": False, "error": "Invalid payload"})
+            )
+            return
+
+        username = payload.get('username')
+        password = payload.get('password')
+        role = payload.get('role', 'operator')
+        display_name = payload.get('display_name', '')
+        email = payload.get('email', '')
+
+        if not username or not password:
+            self.mqtt_client.publish(
+                f"{base}/users/create/response",
+                json.dumps({"success": False, "error": "Username and password required"})
+            )
+            return
+
+        if self.user_session_manager:
+            from user_session import UserRole
+            try:
+                user_role = UserRole(role)
+            except ValueError:
+                user_role = UserRole.OPERATOR
+
+            user = self.user_session_manager.create_user(
+                username=username,
+                password=password,
+                role=user_role,
+                display_name=display_name,
+                email=email
+            )
+
+            if user:
+                # Log to audit trail
+                if self.audit_trail:
+                    self.audit_trail.log_event(
+                        AuditEventType.CONFIG_CHANGE,
+                        username=self.auth_username,
+                        details={"action": "user_created", "new_user": username, "role": role}
+                    )
+
+                self.mqtt_client.publish(
+                    f"{base}/users/create/response",
+                    json.dumps({"success": True, "message": f"User '{username}' created"})
+                )
+            else:
+                self.mqtt_client.publish(
+                    f"{base}/users/create/response",
+                    json.dumps({"success": False, "error": f"User '{username}' already exists"})
+                )
+
+    def _handle_users_update(self, payload: Any):
+        """Update a user (admin only)"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.MANAGE_USERS):
+            self.mqtt_client.publish(
+                f"{base}/users/update/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(
+                f"{base}/users/update/response",
+                json.dumps({"success": False, "error": "Invalid payload"})
+            )
+            return
+
+        username = payload.get('username')
+        if not username:
+            self.mqtt_client.publish(
+                f"{base}/users/update/response",
+                json.dumps({"success": False, "error": "Username required"})
+            )
+            return
+
+        # Build update kwargs
+        update_fields = {}
+        if 'password' in payload:
+            update_fields['password'] = payload['password']
+        if 'role' in payload:
+            update_fields['role'] = payload['role']
+        if 'display_name' in payload:
+            update_fields['display_name'] = payload['display_name']
+        if 'email' in payload:
+            update_fields['email'] = payload['email']
+        if 'enabled' in payload:
+            update_fields['enabled'] = payload['enabled']
+
+        if self.user_session_manager and update_fields:
+            success = self.user_session_manager.update_user(username, **update_fields)
+
+            if success:
+                # Log to audit trail
+                if self.audit_trail:
+                    self.audit_trail.log_event(
+                        AuditEventType.CONFIG_CHANGE,
+                        username=self.auth_username,
+                        details={"action": "user_updated", "target_user": username, "fields": list(update_fields.keys())}
+                    )
+
+                self.mqtt_client.publish(
+                    f"{base}/users/update/response",
+                    json.dumps({"success": True, "message": f"User '{username}' updated"})
+                )
+            else:
+                self.mqtt_client.publish(
+                    f"{base}/users/update/response",
+                    json.dumps({"success": False, "error": f"User '{username}' not found"})
+                )
+
+    def _handle_users_delete(self, payload: Any):
+        """Delete a user (admin only)"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.MANAGE_USERS):
+            self.mqtt_client.publish(
+                f"{base}/users/delete/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(
+                f"{base}/users/delete/response",
+                json.dumps({"success": False, "error": "Invalid payload"})
+            )
+            return
+
+        username = payload.get('username')
+        if not username:
+            self.mqtt_client.publish(
+                f"{base}/users/delete/response",
+                json.dumps({"success": False, "error": "Username required"})
+            )
+            return
+
+        # Prevent self-deletion
+        if username == self.auth_username:
+            self.mqtt_client.publish(
+                f"{base}/users/delete/response",
+                json.dumps({"success": False, "error": "Cannot delete your own account"})
+            )
+            return
+
+        if self.user_session_manager:
+            success = self.user_session_manager.delete_user(username)
+
+            if success:
+                # Log to audit trail
+                if self.audit_trail:
+                    self.audit_trail.log_event(
+                        AuditEventType.CONFIG_CHANGE,
+                        username=self.auth_username,
+                        details={"action": "user_deleted", "deleted_user": username}
+                    )
+
+                self.mqtt_client.publish(
+                    f"{base}/users/delete/response",
+                    json.dumps({"success": True, "message": f"User '{username}' deleted"})
+                )
+            else:
+                self.mqtt_client.publish(
+                    f"{base}/users/delete/response",
+                    json.dumps({"success": False, "error": f"User '{username}' not found"})
+                )
+
+    def _handle_users_sessions(self, payload: Any = None):
+        """Get active sessions (admin only)"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.MANAGE_USERS):
+            self.mqtt_client.publish(
+                f"{base}/users/sessions/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if self.user_session_manager:
+            sessions = self.user_session_manager.get_active_sessions()
+            self.mqtt_client.publish(
+                f"{base}/users/sessions/response",
+                json.dumps({"success": True, "sessions": sessions})
+            )
+
+    # =========================================================================
+    # AUDIT TRAIL HANDLERS
+    # =========================================================================
+
+    def _handle_audit_query(self, payload: Any):
+        """Query audit trail events"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.VIEW_AUDIT):
+            self.mqtt_client.publish(
+                f"{base}/audit/query/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not self.audit_trail:
+            self.mqtt_client.publish(
+                f"{base}/audit/query/response",
+                json.dumps({"success": False, "error": "Audit trail not available"})
+            )
+            return
+
+        # Parse query parameters
+        if not isinstance(payload, dict):
+            payload = {}
+
+        start_time = payload.get('start_time')
+        end_time = payload.get('end_time')
+        event_types = payload.get('event_types')
+        username = payload.get('username')
+        limit = payload.get('limit', 100)
+
+        # Convert event types to enum if provided
+        event_type_enums = None
+        if event_types:
+            event_type_enums = []
+            for et in event_types:
+                try:
+                    event_type_enums.append(AuditEventType(et))
+                except ValueError:
+                    pass
+
+        events = self.audit_trail.query_events(
+            start_time=datetime.fromisoformat(start_time) if start_time else None,
+            end_time=datetime.fromisoformat(end_time) if end_time else None,
+            event_types=event_type_enums,
+            username=username,
+            limit=limit
+        )
+
+        self.mqtt_client.publish(
+            f"{base}/audit/query/response",
+            json.dumps({
+                "success": True,
+                "events": [e.to_dict() for e in events],
+                "count": len(events)
+            })
+        )
+
+    def _handle_audit_export(self, payload: Any):
+        """Export audit trail to file"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.EXPORT_AUDIT):
+            self.mqtt_client.publish(
+                f"{base}/audit/export/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not self.audit_trail:
+            self.mqtt_client.publish(
+                f"{base}/audit/export/response",
+                json.dumps({"success": False, "error": "Audit trail not available"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            payload = {}
+
+        format_type = payload.get('format', 'json')
+        start_time = payload.get('start_time')
+        end_time = payload.get('end_time')
+
+        try:
+            filepath = self.audit_trail.export_events(
+                format=format_type,
+                start_time=datetime.fromisoformat(start_time) if start_time else None,
+                end_time=datetime.fromisoformat(end_time) if end_time else None
+            )
+
+            self.mqtt_client.publish(
+                f"{base}/audit/export/response",
+                json.dumps({"success": True, "filepath": str(filepath)})
+            )
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/audit/export/response",
+                json.dumps({"success": False, "error": str(e)})
+            )
+
+    # =========================================================================
+    # ARCHIVE MANAGEMENT HANDLERS
+    # =========================================================================
+
+    def _handle_archive_list(self, payload: Any):
+        """List archived files"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.VIEW_AUDIT):
+            self.mqtt_client.publish(
+                f"{base}/archive/list/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not self.archive_manager:
+            self.mqtt_client.publish(
+                f"{base}/archive/list/response",
+                json.dumps({"success": False, "error": "Archive manager not available"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            payload = {}
+
+        content_type = payload.get('content_type')
+        start_date = payload.get('start_date')
+        end_date = payload.get('end_date')
+        limit = payload.get('limit', 100)
+
+        try:
+            entries = self.archive_manager.list_archives(
+                content_type=content_type,
+                start_date=datetime.fromisoformat(start_date).date() if start_date else None,
+                end_date=datetime.fromisoformat(end_date).date() if end_date else None,
+                limit=limit
+            )
+
+            self.mqtt_client.publish(
+                f"{base}/archive/list/response",
+                json.dumps({
+                    "success": True,
+                    "archives": [e.to_dict() for e in entries],
+                    "count": len(entries)
+                })
+            )
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/archive/list/response",
+                json.dumps({"success": False, "error": str(e)})
+            )
+
+    def _handle_archive_retrieve(self, payload: Any):
+        """Retrieve an archived file"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.VIEW_AUDIT):
+            self.mqtt_client.publish(
+                f"{base}/archive/retrieve/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not self.archive_manager:
+            self.mqtt_client.publish(
+                f"{base}/archive/retrieve/response",
+                json.dumps({"success": False, "error": "Archive manager not available"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(
+                f"{base}/archive/retrieve/response",
+                json.dumps({"success": False, "error": "Invalid payload"})
+            )
+            return
+
+        archive_id = payload.get('archive_id')
+        if not archive_id:
+            self.mqtt_client.publish(
+                f"{base}/archive/retrieve/response",
+                json.dumps({"success": False, "error": "Archive ID required"})
+            )
+            return
+
+        try:
+            retrieved_path = self.archive_manager.retrieve_archive(archive_id)
+
+            if retrieved_path:
+                self.mqtt_client.publish(
+                    f"{base}/archive/retrieve/response",
+                    json.dumps({
+                        "success": True,
+                        "filepath": str(retrieved_path),
+                        "archive_id": archive_id
+                    })
+                )
+            else:
+                self.mqtt_client.publish(
+                    f"{base}/archive/retrieve/response",
+                    json.dumps({"success": False, "error": "Archive not found"})
+                )
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/archive/retrieve/response",
+                json.dumps({"success": False, "error": str(e)})
+            )
+
+    def _handle_archive_verify(self, payload: Any):
+        """Verify archive integrity"""
+        base = self.get_topic_base()
+
+        if not self._has_permission(Permission.VIEW_AUDIT):
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({"success": False, "error": "Permission denied"})
+            )
+            return
+
+        if not self.archive_manager:
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({"success": False, "error": "Archive manager not available"})
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({"success": False, "error": "Invalid payload"})
+            )
+            return
+
+        archive_id = payload.get('archive_id')
+        if not archive_id:
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({"success": False, "error": "Archive ID required"})
+            )
+            return
+
+        try:
+            is_valid, message = self.archive_manager.verify_archive(archive_id)
+
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({
+                    "success": True,
+                    "archive_id": archive_id,
+                    "is_valid": is_valid,
+                    "message": message
+                })
+            )
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/archive/verify/response",
+                json.dumps({"success": False, "error": str(e)})
+            )
 
     # =========================================================================
     # CONFIG MANAGEMENT HANDLERS
@@ -2330,7 +3629,22 @@ class DAQService:
             with open(project_path, 'r') as f:
                 project_data = json.load(f)
 
-            # Validate project structure
+            # Validate project structure using project manager if available
+            if self.project_manager and self.project_manager.validate_on_load:
+                validation = self.project_manager.validate_project(project_data)
+                if not validation.valid:
+                    error_msg = "; ".join(validation.errors)
+                    logger.warning(f"Project validation failed: {error_msg}")
+                    if publish:
+                        self._publish_project_response(False, f"Validation failed: {error_msg}")
+                    return False
+
+                # Log warnings but continue
+                if validation.warnings:
+                    for warning in validation.warnings:
+                        logger.warning(f"Project load warning: {warning}")
+
+            # Basic type check (fallback if no project manager)
             if project_data.get("type") != "nisystem-project":
                 if publish:
                     self._publish_project_response(False, "Invalid project file format - missing 'type: nisystem-project'")
@@ -2368,6 +3682,11 @@ class DAQService:
             self.current_project_path = project_path
             self.current_project_data = project_data
 
+            # Update project manager state
+            if self.project_manager:
+                self.project_manager.current_path = project_path
+                self.project_manager.current_data = project_data
+
             # Persist the path for next startup
             self._save_last_project_path(project_path)
 
@@ -2375,6 +3694,19 @@ class DAQService:
             self._publish_channel_config()
 
             logger.info(f"Loaded project: {project_path}")
+
+            # Audit trail: Log project load
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.PROJECT_LOAD,
+                    user=self.auth_username or "system",
+                    description=f"Project loaded: {project_path.name}",
+                    details={
+                        "path": str(project_path),
+                        "version": project_data.get("version"),
+                        "channels": len(project_data.get("channels", []))
+                    }
+                )
 
             if publish:
                 self.mqtt_client.publish(
@@ -2509,6 +3841,7 @@ class DAQService:
         project_data = payload.get("data", {})
         save_path = payload.get("path")  # Optional full path
         filename = payload.get("filename")
+        save_reason = payload.get("reason", "")  # Optional reason for audit
 
         # Determine where to save
         if save_path:
@@ -2526,33 +3859,54 @@ class DAQService:
             self._publish_project_response(False, "No save location specified")
             return
 
-        try:
-            # Ensure parent directory exists
-            project_path.parent.mkdir(parents=True, exist_ok=True)
+        # Add metadata
+        project_data["type"] = "nisystem-project"
+        project_data["version"] = "1.0"
+        project_data["config"] = Path(self.config_path).name
 
-            # Add metadata
-            project_data["type"] = "nisystem-project"
-            project_data["version"] = "1.0"
-            project_data["config"] = Path(self.config_path).name
-            project_data["modified"] = datetime.now().isoformat()
+        if not project_data.get("created"):
+            project_data["created"] = datetime.now().isoformat()
 
-            if not project_data.get("created"):
-                project_data["created"] = datetime.now().isoformat()
+        # Use project manager for backup, validation, and save
+        if self.project_manager:
+            status, message = self.project_manager.save_project(
+                project_path=project_path,
+                data=project_data,
+                user=self.auth_username or "system",
+                reason=save_reason
+            )
 
-            # Write to file
-            with open(project_path, 'w') as f:
-                json.dump(project_data, f, indent=2)
+            if status == ProjectStatus.SUCCESS:
+                self.current_project_path = project_path
+                self.current_project_data = project_data
+                self._save_last_project_path(project_path)
+                logger.info(f"Saved project: {project_path}")
+                self._publish_project_response(True, message)
+            elif status == ProjectStatus.VALIDATION_ERROR:
+                logger.warning(f"Project validation failed: {message}")
+                self._publish_project_response(False, f"Validation error: {message}")
+            else:
+                logger.error(f"Error saving project: {message}")
+                self._publish_project_response(False, message)
+        else:
+            # Fallback if project manager not available
+            try:
+                project_path.parent.mkdir(parents=True, exist_ok=True)
+                project_data["modified"] = datetime.now().isoformat()
 
-            self.current_project_path = project_path
-            self.current_project_data = project_data
-            self._save_last_project_path(project_path)
+                with open(project_path, 'w') as f:
+                    json.dump(project_data, f, indent=2)
 
-            logger.info(f"Saved project: {project_path}")
-            self._publish_project_response(True, f"Project saved: {project_path.name}")
+                self.current_project_path = project_path
+                self.current_project_data = project_data
+                self._save_last_project_path(project_path)
 
-        except Exception as e:
-            logger.error(f"Error saving project: {e}")
-            self._publish_project_response(False, str(e))
+                logger.info(f"Saved project: {project_path}")
+                self._publish_project_response(True, f"Project saved: {project_path.name}")
+
+            except Exception as e:
+                logger.error(f"Error saving project: {e}")
+                self._publish_project_response(False, str(e))
 
     def _handle_project_delete(self, payload: Any):
         """Delete a project file"""
@@ -3470,6 +4824,17 @@ class DAQService:
         # Get the config sub-object (for structured payloads from dashboard)
         config_data = payload.get('config', payload)
 
+        # IEC 61511: Check if safety-related fields are being modified during acquisition
+        if self.project_manager:
+            safety_fields = ['safety_action', 'safety_interlock']
+            for field in safety_fields:
+                if field in config_data:
+                    allowed, reason = self.project_manager.check_safety_modification(field)
+                    if not allowed:
+                        logger.warning(f"Safety config modification rejected: {reason}")
+                        self._publish_config_response(False, reason)
+                        return
+
         channel = self.config.channels[channel_name]
 
         # Handle channel rename
@@ -3654,6 +5019,18 @@ class DAQService:
             logger.warning(f"Scaling validation warning for {channel_name}: {error_msg}")
 
         logger.info(f"Updated channel {channel_name} (type: {channel.channel_type.value})")
+
+        # Audit trail: Log channel configuration change
+        if self.audit_trail:
+            self.audit_trail.log_config_change(
+                config_type="channel",
+                config_id=channel_name,
+                user=self.auth_username or "system",
+                previous_value=None,  # Could capture old values if needed
+                new_value=config_data,
+                reason=config_data.get('reason', '')
+            )
+
         self._publish_channel_config()
         self._publish_config_response(True, f"Updated {channel_name}")
 
@@ -5366,6 +6743,14 @@ class DAQService:
                         self.user_variables.process_scan(self.channel_values)
                         # Process formula blocks (must be after process_scan so user vars are updated)
                         self.user_variables.process_formula_blocks(self.channel_values)
+
+                    # Process automation triggers
+                    if self.trigger_engine:
+                        self.trigger_engine.process_scan(self.channel_values)
+
+                    # Process watchdogs (channel health monitoring)
+                    if self.watchdog_engine:
+                        self.watchdog_engine.process_scan(self.channel_values, self.channel_timestamps)
 
                 except Exception as e:
                     logger.error(f"Error in scan loop: {e}")

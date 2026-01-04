@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import type { ChannelType, ChannelConfig } from '../types'
 import {
@@ -43,9 +43,22 @@ const isReloading = ref(false)
 const isSaving = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 
-// Edit mode - only allow editing when explicitly enabled and not acquiring
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditConfig', ref(false))
+const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
+
+// Edit mode - only allow editing when explicitly enabled, has permission, and not acquiring
 const editMode = ref(false)
-const canEdit = computed(() => editMode.value && !store.isAcquiring)
+const canEdit = computed(() => editMode.value && hasEditPermission.value && !store.isAcquiring)
+
+// Toggle edit mode with permission check
+function toggleEditMode() {
+  if (!hasEditPermission.value) {
+    showLoginDialog()
+    return
+  }
+  editMode.value = !editMode.value
+}
 
 // Limit colors toggle - show alarm/warning colors based on channel limits
 const showLimitColors = ref(true)
@@ -1628,16 +1641,17 @@ watch(() => Object.keys(store.channels), () => {
         </button>
         <button
           class="action-btn edit-btn"
-          :class="{ active: editMode }"
-          @click="editMode = !editMode"
+          :class="{ active: editMode, 'no-permission': !hasEditPermission.value }"
+          @click="toggleEditMode"
           :disabled="store.isAcquiring"
-          :title="store.isAcquiring ? 'Stop acquisition to edit' : (editMode ? 'Exit edit mode' : 'Enter edit mode')"
+          :title="!hasEditPermission.value ? 'Login required to edit (Operator+)' : (store.isAcquiring ? 'Stop acquisition to edit' : (editMode ? 'Exit edit mode' : 'Enter edit mode'))"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
           {{ editMode ? 'EDITING' : 'EDIT' }}
+          <span v-if="!hasEditPermission.value" class="lock-badge">🔒</span>
         </button>
         <button
           class="action-btn limit-colors-btn"
@@ -4609,6 +4623,21 @@ input[type="checkbox"] {
 .edit-btn:hover:not(:disabled):not(.active) {
   border-color: #60a5fa;
   color: #60a5fa;
+}
+
+.edit-btn.no-permission {
+  opacity: 0.6;
+  border-color: #6b7280;
+}
+
+.edit-btn.no-permission:hover {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+
+.lock-badge {
+  font-size: 0.7rem;
+  margin-left: 4px;
 }
 
 .limit-colors-btn {

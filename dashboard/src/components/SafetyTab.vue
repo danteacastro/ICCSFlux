@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
@@ -22,6 +22,10 @@ const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
 const safety = useSafety()
 const soe = mqtt.soe  // SOE & Correlation composable
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditSafety', ref(false))
+const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
 
 // ============================================
 // Alarm Configuration State (from composable)
@@ -671,6 +675,13 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 <template>
   <div class="safety-tab">
+    <!-- View-only notice for users without edit permission -->
+    <div v-if="!hasEditPermission.value" class="view-only-notice">
+      <span class="lock-icon">🔒</span>
+      <span>View Only - Supervisor access required to edit safety configuration</span>
+      <button class="login-link" @click="showLoginDialogFn">Login</button>
+    </div>
+
     <!-- Header with section tabs and summary -->
     <div class="safety-header">
       <div class="header-left">
@@ -1702,6 +1713,39 @@ function getControlDescription(ctrl: InterlockControl): string {
   height: 100%;
   background: #0a0a14;
   color: #fff;
+}
+
+/* View-only notice banner */
+.view-only-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
+  color: #fca5a5;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #991b1b;
+}
+
+.view-only-notice .lock-icon {
+  font-size: 0.9rem;
+}
+
+.view-only-notice .login-link {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  color: #f59e0b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-only-notice .login-link:hover {
+  background: #f59e0b;
+  color: #000;
 }
 
 .safety-header {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
@@ -9,6 +9,10 @@ const store = useDashboardStore()
 const mqtt = useMqtt()
 const pythonScripts = usePythonScripts()
 const projectFiles = useProjectFiles()
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(false))
+const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
 
 // Use store's recording config (auto-persisted to localStorage)
 const recordingConfig = computed(() => store.recordingConfig)
@@ -245,7 +249,12 @@ function startRecording() {
     // Scheduled Mode
     schedule_start: cfg.scheduleStart,
     schedule_end: cfg.scheduleEnd,
-    schedule_days: cfg.scheduleDays
+    schedule_days: cfg.scheduleDays,
+
+    // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11)
+    append_only: cfg.appendOnly,
+    verify_on_close: cfg.verifyOnClose,
+    include_audit_metadata: cfg.includeAuditMetadata
   }
 
   // Update config then start recording
@@ -375,6 +384,13 @@ const scheduleDayLabels = [
 
 <template>
   <div class="data-tab">
+    <!-- View-only notice for users without edit permission -->
+    <div v-if="!hasEditPermission.value" class="view-only-notice">
+      <span class="lock-icon">🔒</span>
+      <span>View Only - Operator access required to manage recordings</span>
+      <button class="login-link" @click="showLoginDialogFn">Login</button>
+    </div>
+
     <!-- Recording Status Bar -->
     <div class="status-bar" :class="{ recording: isRecording }">
       <div class="status-left">
@@ -824,6 +840,83 @@ const scheduleDayLabels = [
           </div>
         </div>
 
+        <!-- ALCOA+ Data Integrity Section (FDA 21 CFR Part 11 Compliance) -->
+        <div class="settings-section alcoa-section">
+          <h3>
+            <span>Data Integrity (ALCOA+)</span>
+            <span class="compliance-badge">FDA 21 CFR Part 11</span>
+          </h3>
+          <p class="section-description">
+            Ensures data is Attributable, Legible, Contemporaneous, Original, and Accurate.
+          </p>
+
+          <div class="alcoa-options">
+            <label class="toggle-card" :class="{ active: recordingConfig.appendOnly, disabled: configLocked }">
+              <div class="toggle-header">
+                <input type="checkbox" v-model="recordingConfig.appendOnly" :disabled="configLocked" />
+                <div class="toggle-content">
+                  <strong>Append-Only Mode</strong>
+                  <span>Files become read-only after recording stops</span>
+                </div>
+              </div>
+              <div class="toggle-details" v-if="recordingConfig.appendOnly">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                <span>Data cannot be modified after recording - enforces "Original" requirement</span>
+              </div>
+            </label>
+
+            <label class="toggle-card" :class="{ active: recordingConfig.verifyOnClose, disabled: configLocked }">
+              <div class="toggle-header">
+                <input type="checkbox" v-model="recordingConfig.verifyOnClose" :disabled="configLocked" />
+                <div class="toggle-content">
+                  <strong>Verify on Close</strong>
+                  <span>Create SHA-256 checksum when file closes</span>
+                </div>
+              </div>
+              <div class="toggle-details" v-if="recordingConfig.verifyOnClose">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                <span>Creates companion .sha256 file for data integrity verification</span>
+              </div>
+            </label>
+
+            <label class="toggle-card" :class="{ active: recordingConfig.includeAuditMetadata, disabled: configLocked }">
+              <div class="toggle-header">
+                <input type="checkbox" v-model="recordingConfig.includeAuditMetadata" :disabled="configLocked" />
+                <div class="toggle-content">
+                  <strong>Include Audit Metadata</strong>
+                  <span>Embed operator, timestamps, and session info</span>
+                </div>
+              </div>
+              <div class="toggle-details" v-if="recordingConfig.includeAuditMetadata">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+                <span>Records who started/stopped recording for audit trail</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="alcoa-summary" v-if="recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata">
+            <div class="summary-header">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <span>ALCOA+ Compliance Features Enabled</span>
+            </div>
+            <div class="summary-items">
+              <span v-if="recordingConfig.appendOnly" class="summary-item">Read-only after close</span>
+              <span v-if="recordingConfig.verifyOnClose" class="summary-item">SHA-256 integrity</span>
+              <span v-if="recordingConfig.includeAuditMetadata" class="summary-item">Audit attribution</span>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-section">
           <h3>Recording Mode</h3>
 
@@ -972,6 +1065,26 @@ const scheduleDayLabels = [
         </div>
 
         <div class="info-section">
+          <h3>Data Integrity</h3>
+          <div class="alcoa-status" :class="{ enabled: recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata }">
+            <div class="alcoa-status-header">
+              <span class="alcoa-label">ALCOA+</span>
+              <span class="alcoa-badge" v-if="recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata">
+                Enabled
+              </span>
+              <span class="alcoa-badge off" v-else>
+                Off
+              </span>
+            </div>
+            <div class="alcoa-features" v-if="recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata">
+              <span v-if="recordingConfig.appendOnly" class="feature-dot" title="Append-Only">A</span>
+              <span v-if="recordingConfig.verifyOnClose" class="feature-dot" title="Verify on Close">V</span>
+              <span v-if="recordingConfig.includeAuditMetadata" class="feature-dot" title="Audit Metadata">M</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-section">
           <h3>Connection</h3>
           <div class="connection-status" :class="{ connected: mqtt.connected.value }">
             {{ mqtt.connected.value ? 'MQTT Connected' : 'MQTT Disconnected' }}
@@ -1080,6 +1193,39 @@ const scheduleDayLabels = [
   flex-direction: column;
   height: 100%;
   background: #0a0a14;
+}
+
+/* View-only notice banner */
+.view-only-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
+  color: #fca5a5;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #991b1b;
+}
+
+.view-only-notice .lock-icon {
+  font-size: 0.9rem;
+}
+
+.view-only-notice .login-link {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  color: #f59e0b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-only-notice .login-link:hover {
+  background: #f59e0b;
+  color: #000;
 }
 
 /* Locked State Styles */
@@ -2200,5 +2346,205 @@ const scheduleDayLabels = [
 
 .modal-enter-from, .modal-leave-to {
   opacity: 0;
+}
+
+/* ALCOA+ Data Integrity Section */
+.alcoa-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.compliance-badge {
+  font-size: 0.6rem;
+  font-weight: 500;
+  padding: 3px 8px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.section-description {
+  font-size: 0.75rem;
+  color: #666;
+  margin: 0 0 16px;
+  line-height: 1.4;
+}
+
+.alcoa-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toggle-card {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toggle-card:hover {
+  background: #2a2a4a;
+}
+
+.toggle-card.active {
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.toggle-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.toggle-header input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: #22c55e;
+  width: 16px;
+  height: 16px;
+}
+
+.toggle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-content strong {
+  font-size: 0.85rem;
+  color: #fff;
+}
+
+.toggle-content span {
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.toggle-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a4a;
+  font-size: 0.7rem;
+  color: #22c55e;
+}
+
+.toggle-details svg {
+  stroke: #22c55e;
+  flex-shrink: 0;
+}
+
+.alcoa-summary {
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 6px;
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #22c55e;
+  margin-bottom: 8px;
+}
+
+.summary-header svg {
+  stroke: #22c55e;
+}
+
+.summary-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.summary-item {
+  font-size: 0.7rem;
+  padding: 3px 8px;
+  background: rgba(34, 197, 94, 0.15);
+  border-radius: 3px;
+  color: #86efac;
+}
+
+/* ALCOA Status in Info Panel */
+.alcoa-status {
+  padding: 10px 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.alcoa-status.enabled {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+.alcoa-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.alcoa-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #888;
+}
+
+.alcoa-badge {
+  font-size: 0.6rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #14532d;
+  color: #22c55e;
+}
+
+.alcoa-badge.off {
+  background: #374151;
+  color: #666;
+}
+
+.alcoa-features {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.feature-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
 import PlaygroundTab from './PlaygroundTab.vue'
@@ -28,6 +28,19 @@ import { SCRIPT_TEMPLATES as templates, FUNCTION_BLOCK_TEMPLATES, SEQUENCE_TEMPL
 
 const store = useDashboardStore()
 const scripts = useScripts()
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(false))
+const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
+
+// Check permission before allowing edits
+function requireEditPermission(): boolean {
+  if (!hasEditPermission.value) {
+    showLoginDialog()
+    return false
+  }
+  return true
+}
 
 // =============================================================================
 // SUB-TAB NAVIGATION
@@ -1531,6 +1544,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 <template>
   <div class="scripts-tab">
+    <!-- View-only notice for users without edit permission -->
+    <div v-if="!hasEditPermission.value" class="view-only-notice">
+      <span class="lock-icon">🔒</span>
+      <span>View Only - Supervisor access required to edit</span>
+      <button class="login-link" @click="showLoginDialog">Login</button>
+    </div>
+
     <!-- Sub-tab Navigation -->
     <div class="sub-tabs">
       <button
@@ -3926,6 +3946,39 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   flex-direction: column;
   height: 100%;
   background: #0a0a14;
+}
+
+/* View-only notice banner */
+.view-only-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
+  color: #fca5a5;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #991b1b;
+}
+
+.view-only-notice .lock-icon {
+  font-size: 0.9rem;
+}
+
+.view-only-notice .login-link {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  color: #f59e0b;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-only-notice .login-link:hover {
+  background: #f59e0b;
+  color: #000;
 }
 
 /* Sub-tab Navigation */
