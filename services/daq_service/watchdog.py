@@ -73,16 +73,11 @@ class DAQWatchdog:
         self.failsafe_triggered = False
         self.failsafe_trigger_time: Optional[datetime] = None
 
-        # Default fail-safe outputs (disable all heaters)
+        # Fail-safe outputs should only come from config - no hardcoded defaults
+        # If no failsafe outputs are configured, the watchdog will only log/alarm
+        # but not attempt to set any outputs (since we don't know what outputs exist)
         if not self.config.failsafe_outputs:
-            self.config.failsafe_outputs = {
-                "F1_Heater_Enable": False,
-                "F2_Heater_Enable": False,
-                "F1_Heater_Contactor": False,
-                "F2_Heater_Contactor": False,
-                "Alarm_LED": True,
-                "Alarm_Horn": True,
-            }
+            logger.info("No fail-safe outputs configured - watchdog will only log/alarm on failure")
 
     def start(self):
         """Start the watchdog"""
@@ -150,9 +145,11 @@ class DAQWatchdog:
 
             base = self.config.mqtt_base_topic
 
-            # Subscribe to service status
-            client.subscribe(f"{base}/status/system", qos=1)
-            client.subscribe(f"{base}/status/service", qos=1)
+            # Subscribe to heartbeat topic with wildcard to catch all nodes
+            # DAQ service publishes to: {base}/nodes/{node_id}/heartbeat
+            client.subscribe(f"{base}/nodes/+/heartbeat", qos=1)
+            # Also subscribe to status for offline notifications
+            client.subscribe(f"{base}/nodes/+/status/system", qos=1)
 
             # Publish watchdog online status
             client.publish(
@@ -177,31 +174,40 @@ class DAQWatchdog:
         """Handle incoming MQTT messages"""
         try:
             payload = json.loads(msg.payload.decode())
-            base = self.config.mqtt_base_topic
 
-            if msg.topic in [f"{base}/status/system", f"{base}/status/service"]:
+            # Topics are: {base}/nodes/{node_id}/heartbeat or {base}/nodes/{node_id}/status/system
+            if msg.topic.endswith("/heartbeat"):
+                # Direct heartbeat from DAQ service
                 self._handle_heartbeat(payload)
+            elif msg.topic.endswith("/status/system"):
+                # Status updates (for offline detection)
+                self._handle_status(payload)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
 
     def _handle_heartbeat(self, payload: dict):
         """Handle heartbeat from DAQ service"""
+        # Heartbeat payload contains: sequence, timestamp, acquiring, recording, thread_health, uptime_seconds, etc.
+        # If we receive any heartbeat message, the service is alive
+        sequence = payload.get("sequence", 0)
+
+        self.last_heartbeat = time.time()
+
+        if not self.daq_online:
+            logger.info(f"DAQ service is online (heartbeat seq={sequence})")
+            self.daq_online = True
+
+        # If we previously triggered failsafe and service is back, log it
+        if self.failsafe_triggered:
+            logger.warning("DAQ service recovered after failsafe trigger")
+            self._publish_watchdog_event("daq_recovered", "DAQ service is back online")
+
+    def _handle_status(self, payload: dict):
+        """Handle status updates from DAQ service"""
         status = payload.get("status", "unknown")
 
-        if status == "online":
-            self.last_heartbeat = time.time()
-
-            if not self.daq_online:
-                logger.info("DAQ service is online")
-                self.daq_online = True
-
-            # If we previously triggered failsafe and service is back, log it
-            if self.failsafe_triggered:
-                logger.warning("DAQ service recovered after failsafe trigger")
-                self._publish_watchdog_event("daq_recovered", "DAQ service is back online")
-
-        elif status == "offline":
+        if status == "offline":
             logger.warning("DAQ service reported offline")
             self.daq_online = False
 
@@ -271,6 +277,10 @@ class DAQWatchdog:
 
     def _set_failsafe_outputs(self):
         """Set fail-safe output values"""
+        if not self.config.failsafe_outputs:
+            logger.info("No fail-safe outputs configured - skipping output setting")
+            return
+
         base = self.config.mqtt_base_topic
 
         logger.warning(f"Setting {len(self.config.failsafe_outputs)} fail-safe outputs")

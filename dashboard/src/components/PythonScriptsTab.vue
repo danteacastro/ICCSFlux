@@ -16,8 +16,13 @@ const pythonScripts = usePythonScripts()
 const selectedScriptId = ref<string | null>(null)
 const showNewScriptModal = ref(false)
 const showTemplatesModal = ref(false)
+const showImportDataModal = ref(false)
 const newScriptName = ref('')
 const newScriptDescription = ref('')
+const importVariableName = ref('data')
+
+// File input ref
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 // Editor
 const editorContainer = ref<HTMLDivElement>()
@@ -35,6 +40,8 @@ const validationErrors = ref<Array<{
   type: 'error' | 'warning'
 }>>([])
 const isValidating = ref(false)
+const validationSuccess = ref(false)
+let validationSuccessTimeout: ReturnType<typeof setTimeout> | null = null
 
 // =============================================================================
 // COMPUTED
@@ -50,6 +57,10 @@ const isScriptRunning = computed(() =>
 
 const currentScriptOutputs = computed(() =>
   selectedScriptId.value ? (pythonScripts.scriptOutputs.value[selectedScriptId.value] || []) : []
+)
+
+const currentScriptImportedData = computed(() =>
+  selectedScript.value?.importedData || []
 )
 
 const channelNames = computed(() => Object.keys(store.values || {}))
@@ -338,6 +349,13 @@ async function validateScript() {
 
   isValidating.value = true
   validationErrors.value = []
+  validationSuccess.value = false
+
+  // Clear any pending success timeout
+  if (validationSuccessTimeout) {
+    clearTimeout(validationSuccessTimeout)
+    validationSuccessTimeout = null
+  }
 
   try {
     const code = editor.getValue()
@@ -359,6 +377,15 @@ async function validateScript() {
       }))
       monaco.editor.setModelMarkers(model, 'python-validation', markers)
     }
+
+    // Show success feedback if no errors
+    if (result.valid && result.errors.length === 0) {
+      validationSuccess.value = true
+      // Auto-hide after 3 seconds
+      validationSuccessTimeout = setTimeout(() => {
+        validationSuccess.value = false
+      }, 3000)
+    }
   } finally {
     isValidating.value = false
   }
@@ -374,6 +401,50 @@ function updateRunMode(event: Event) {
 function clearConsole() {
   if (selectedScriptId.value) {
     pythonScripts.clearScriptOutput(selectedScriptId.value)
+  }
+}
+
+// =============================================================================
+// DATA IMPORT
+// =============================================================================
+
+function openImportDataModal() {
+  if (!selectedScriptId.value) return
+  importVariableName.value = 'data'
+  showImportDataModal.value = true
+}
+
+function triggerFileInput() {
+  fileInputRef.value?.click()
+}
+
+async function handleFileSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || !selectedScriptId.value) return
+
+  try {
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
+
+    if (isExcel) {
+      await pythonScripts.importExcelFile(selectedScriptId.value, file, importVariableName.value)
+    } else {
+      await pythonScripts.importCSVFile(selectedScriptId.value, file, importVariableName.value)
+    }
+
+    showImportDataModal.value = false
+  } catch (error: any) {
+    console.error('Failed to import file:', error)
+  } finally {
+    // Reset file input
+    input.value = ''
+  }
+}
+
+function removeImportedData(variableName: string) {
+  if (!selectedScriptId.value) return
+  if (confirm(`Remove imported data "${variableName}"?`)) {
+    pythonScripts.removeImportedData(selectedScriptId.value, variableName)
   }
 }
 
@@ -461,6 +532,28 @@ function getScriptStateClass(id: string): string {
           </div>
         </div>
       </div>
+
+      <!-- Imported Data for Selected Script -->
+      <div class="imported-section" v-if="currentScriptImportedData.length > 0">
+        <h4>Imported Data</h4>
+        <div class="imported-list">
+          <div
+            v-for="data in currentScriptImportedData"
+            :key="data.variableName"
+            class="imported-item"
+          >
+            <div class="imported-info">
+              <span class="imported-name">{{ data.variableName }}</span>
+              <span class="imported-meta">{{ data.data.length }} rows</span>
+            </div>
+            <button
+              class="btn btn-sm btn-ghost btn-danger-text"
+              @click="removeImportedData(data.variableName)"
+              title="Remove"
+            >×</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- MAIN: Editor + Console -->
@@ -482,6 +575,13 @@ function getScriptStateClass(id: string): string {
             <option value="acquisition">Run with Acquisition</option>
             <option value="session">Run with Session</option>
           </select>
+          <button
+            class="btn btn-secondary"
+            @click="openImportDataModal"
+            title="Import CSV/Excel data"
+          >
+            📊 Load Data
+          </button>
           <button
             class="btn btn-secondary"
             @click="validateScript"
@@ -506,8 +606,16 @@ function getScriptStateClass(id: string): string {
         </div>
       </div>
 
+      <!-- Validation Success -->
+      <div v-if="validationSuccess" class="validation-panel validation-success">
+        <div class="validation-header">
+          <span>✓ Script syntax is valid</span>
+          <button class="btn btn-sm btn-ghost" @click="validationSuccess = false">×</button>
+        </div>
+      </div>
+
       <!-- Validation Errors -->
-      <div v-if="validationErrors.length > 0" class="validation-panel">
+      <div v-if="validationErrors.length > 0" class="validation-panel validation-errors-panel">
         <div class="validation-header">
           <span>{{ validationErrors.filter(e => e.type === 'error').length }} error(s), {{ validationErrors.filter(e => e.type === 'warning').length }} warning(s)</span>
           <button class="btn btn-sm btn-ghost" @click="validationErrors = []">×</button>
@@ -622,6 +730,46 @@ function getScriptStateClass(id: string): string {
           </div>
           <div class="modal-actions">
             <button class="btn btn-secondary" @click="showTemplatesModal = false">Close</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Import Data Modal -->
+    <Teleport to="body">
+      <div v-if="showImportDataModal" class="modal-overlay" @click.self="showImportDataModal = false">
+        <div class="modal">
+          <h3>Import Data</h3>
+          <p class="modal-description">
+            Import a CSV or Excel file to use in your script.
+            The data will be available as a list of dictionaries.
+          </p>
+          <div class="form-group">
+            <label>Variable Name</label>
+            <input
+              v-model="importVariableName"
+              type="text"
+              placeholder="data"
+              pattern="[a-zA-Z_][a-zA-Z0-9_]*"
+            />
+            <p class="form-hint">Use this name to access the data in your script (e.g., <code>for row in data:</code>)</p>
+          </div>
+          <div class="import-dropzone" @click="triggerFileInput">
+            <div class="dropzone-content">
+              <span class="dropzone-icon">📁</span>
+              <span class="dropzone-text">Click to select CSV or Excel file</span>
+              <span class="dropzone-hint">.csv, .xlsx, .xls</span>
+            </div>
+          </div>
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            style="display: none"
+            @change="handleFileSelect"
+          />
+          <div class="modal-actions">
+            <button class="btn btn-secondary" @click="showImportDataModal = false">Cancel</button>
           </div>
         </div>
       </div>
@@ -849,9 +997,19 @@ function getScriptStateClass(id: string): string {
   justify-content: space-between;
   align-items: center;
   padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* Error panel header (red) */
+.validation-errors-panel .validation-header {
   background: #7f1d1d;
   color: #fca5a5;
-  font-size: 12px;
+}
+
+/* Success panel header (green) */
+.validation-success .validation-header {
+  background: #14532d;
+  color: #86efac;
 }
 
 .validation-errors {
@@ -1156,6 +1314,107 @@ function getScriptStateClass(id: string): string {
   padding: 2px 8px;
   border-radius: 4px;
   background: var(--bg-tertiary, #0f172a);
+  color: var(--text-tertiary, #6b7280);
+}
+
+/* Imported Data Section */
+.imported-section {
+  border-top: 1px solid var(--border-color, #333);
+  padding: 12px;
+}
+
+.imported-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: var(--text-secondary, #9ca3af);
+  text-transform: uppercase;
+}
+
+.imported-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.imported-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary, #0f172a);
+  border-radius: 4px;
+}
+
+.imported-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.imported-name {
+  color: #3b82f6;
+  font-family: monospace;
+}
+
+.imported-meta {
+  color: var(--text-tertiary, #6b7280);
+  font-size: 11px;
+}
+
+/* Import Modal */
+.modal-description {
+  color: var(--text-secondary, #9ca3af);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--text-tertiary, #6b7280);
+  margin-top: 4px;
+}
+
+.form-hint code {
+  background: var(--bg-tertiary, #0f172a);
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: monospace;
+}
+
+.import-dropzone {
+  border: 2px dashed var(--border-color, #333);
+  border-radius: 8px;
+  padding: 32px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: 16px;
+}
+
+.import-dropzone:hover {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.dropzone-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.dropzone-icon {
+  font-size: 32px;
+}
+
+.dropzone-text {
+  font-size: 14px;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.dropzone-hint {
+  font-size: 12px;
   color: var(--text-tertiary, #6b7280);
 }
 </style>

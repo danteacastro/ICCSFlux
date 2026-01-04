@@ -16,7 +16,8 @@ import type {
   ScriptState,
   PyodideStatus,
   ScriptOutputType,
-  ScriptRunMode
+  ScriptRunMode,
+  ImportedDataFile
 } from '../types/python-scripts'
 import {
   PYTHON_SCRIPTS_STORAGE_KEY,
@@ -59,6 +60,13 @@ let getChannelTimestamps: (() => Record<string, number>) | null = null
 let getChannelUnits: (() => Record<string, string>) | null = null
 let getSessionActive: (() => boolean) | null = null
 let getSessionElapsed: (() => number) | null = null
+let mqttSendScriptValues: ((values: Record<string, number>) => void) | null = null
+// Session/Acquisition control handlers
+let startAcquisitionHandler: (() => void) | null = null
+let stopAcquisitionHandler: (() => void) | null = null
+let startRecordingHandler: ((filename?: string) => void) | null = null
+let stopRecordingHandler: (() => void) | null = null
+let isRecordingHandler: (() => boolean) | null = null
 
 // =============================================================================
 // RESET FUNCTION (for testing)
@@ -100,6 +108,12 @@ export function resetPythonScriptsState(): void {
   getChannelUnits = null
   getSessionActive = null
   getSessionElapsed = null
+  mqttSendScriptValues = null
+  startAcquisitionHandler = null
+  stopAcquisitionHandler = null
+  startRecordingHandler = null
+  stopRecordingHandler = null
+  isRecordingHandler = null
 }
 
 // =============================================================================
@@ -120,6 +134,13 @@ export function usePythonScripts() {
     getChannelUnits: () => Record<string, string>
     getSessionActive: () => boolean
     getSessionElapsed: () => number
+    sendScriptValues: (values: Record<string, number>) => void
+    // Session/Acquisition control
+    startAcquisition: () => void
+    stopAcquisition: () => void
+    startRecording: (filename?: string) => void
+    stopRecording: () => void
+    isRecording: () => boolean
   }) {
     mqttPublish = handlers.publish
     mqttSetOutput = handlers.setOutput
@@ -128,6 +149,12 @@ export function usePythonScripts() {
     getChannelUnits = handlers.getChannelUnits
     getSessionActive = handlers.getSessionActive
     getSessionElapsed = handlers.getSessionElapsed
+    mqttSendScriptValues = handlers.sendScriptValues
+    startAcquisitionHandler = handlers.startAcquisition
+    stopAcquisitionHandler = handlers.stopAcquisition
+    startRecordingHandler = handlers.startRecording
+    stopRecordingHandler = handlers.stopRecording
+    isRecordingHandler = handlers.isRecording
   }
 
   /**
@@ -220,6 +247,238 @@ export function usePythonScripts() {
 
   function getScript(id: string): PythonScript | undefined {
     return scripts.value[id]
+  }
+
+  // ===========================================================================
+  // DATA IMPORT (CSV/Excel)
+  // ===========================================================================
+
+  /**
+   * Parse CSV content into array of row objects
+   */
+  function parseCSV(content: string): { data: Record<string, any>[]; columns: string[] } {
+    const lines = content.trim().split('\n')
+    const headerLine = lines[0]
+    if (!headerLine) return { data: [], columns: [] }
+
+    // Parse header row
+    const columns = parseCSVLine(headerLine)
+
+    // Parse data rows
+    const data: Record<string, any>[] = []
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i]
+      if (!line) continue
+      const values = parseCSVLine(line)
+      if (values.length === 0) continue
+
+      const row: Record<string, any> = {}
+      for (let j = 0; j < columns.length; j++) {
+        const colName = columns[j]
+        if (!colName) continue
+        const value = values[j] ?? ''
+        // Try to convert to number
+        const num = parseFloat(value)
+        row[colName] = isNaN(num) ? value : num
+      }
+      data.push(row)
+    }
+
+    return { data, columns }
+  }
+
+  /**
+   * Parse a single CSV line handling quoted values
+   */
+  function parseCSVLine(line: string): string[] {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"'
+          i++
+        } else {
+          inQuotes = !inQuotes
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+
+    result.push(current.trim())
+    return result
+  }
+
+  /**
+   * Import CSV file for a script
+   */
+  async function importCSVFile(
+    scriptId: string,
+    file: File,
+    variableName: string = 'imported_data'
+  ): Promise<void> {
+    const script = scripts.value[scriptId]
+    if (!script) {
+      throw new Error(`Script not found: ${scriptId}`)
+    }
+
+    const content = await file.text()
+    const { data, columns } = parseCSV(content)
+
+    const importedFile: ImportedDataFile = {
+      filename: file.name,
+      variableName,
+      data,
+      columns,
+      importedAt: new Date().toISOString()
+    }
+
+    // Add to script's imported data
+    const existing = script.importedData || []
+    // Replace if same variable name exists
+    const filtered = existing.filter(f => f.variableName !== variableName)
+
+    scripts.value[scriptId] = {
+      ...script,
+      importedData: [...filtered, importedFile],
+      modifiedAt: new Date().toISOString()
+    }
+
+    saveToLocalStorage()
+    addScriptOutput(scriptId, 'info', `Imported ${data.length} rows from ${file.name} as '${variableName}'`)
+  }
+
+  /**
+   * Import Excel file for a script
+   * Uses SheetJS (xlsx) library if available, otherwise prompts to use CSV
+   */
+  async function importExcelFile(
+    scriptId: string,
+    file: File,
+    variableName: string = 'imported_data'
+  ): Promise<void> {
+    const script = scripts.value[scriptId]
+    if (!script) {
+      throw new Error(`Script not found: ${scriptId}`)
+    }
+
+    try {
+      // Dynamic import of xlsx (SheetJS) - may not be installed
+      let XLSX: any
+      try {
+        // @ts-ignore - xlsx is an optional dependency
+        // @vite-ignore tells Vite not to analyze this dynamic import
+        XLSX = await import(/* @vite-ignore */ 'xlsx')
+      } catch (e) {
+        // xlsx not installed - provide helpful message
+        addScriptOutput(scriptId, 'error',
+          'Excel import requires the xlsx library. Install with: npm install xlsx\n' +
+          'Or export your Excel file as CSV and use the CSV import instead.')
+        throw new Error('xlsx library not installed. Please use CSV format instead.')
+      }
+
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array' })
+
+      // Get first sheet
+      const sheetName = workbook.SheetNames[0]
+      if (!sheetName) {
+        throw new Error('No sheets found in workbook')
+      }
+      const sheet = workbook.Sheets[sheetName]
+
+      // Convert to JSON with header row
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][]
+
+      if (jsonData.length === 0) {
+        throw new Error('Empty spreadsheet')
+      }
+
+      // First row is headers
+      const headerRow = jsonData[0] as any[]
+      if (!headerRow || headerRow.length === 0) {
+        throw new Error('No header row found')
+      }
+      const columns = headerRow.map(h => String(h ?? ''))
+      const data: Record<string, any>[] = []
+
+      for (let i = 1; i < jsonData.length; i++) {
+        const row: Record<string, any> = {}
+        const values = jsonData[i] as any[]
+        if (!values || values.length === 0) continue
+        for (let j = 0; j < columns.length; j++) {
+          const colName = columns[j]
+          if (colName) {
+            row[colName] = values[j] ?? null
+          }
+        }
+        data.push(row)
+      }
+
+      const importedFile: ImportedDataFile = {
+        filename: file.name,
+        variableName,
+        data,
+        columns: columns.filter(c => c), // Remove empty column names
+        importedAt: new Date().toISOString()
+      }
+
+      const existing = script.importedData || []
+      const filtered = existing.filter(f => f.variableName !== variableName)
+
+      scripts.value[scriptId] = {
+        ...script,
+        importedData: [...filtered, importedFile],
+        modifiedAt: new Date().toISOString()
+      }
+
+      saveToLocalStorage()
+      addScriptOutput(scriptId, 'info', `Imported ${data.length} rows from ${file.name} as '${variableName}'`)
+    } catch (error: any) {
+      if (!error.message.includes('xlsx library')) {
+        addScriptOutput(scriptId, 'error', `Failed to import Excel: ${error.message}`)
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Remove imported data from a script
+   */
+  function removeImportedData(scriptId: string, variableName: string): void {
+    const script = scripts.value[scriptId]
+    if (!script || !script.importedData) return
+
+    scripts.value[scriptId] = {
+      ...script,
+      importedData: script.importedData.filter(f => f.variableName !== variableName),
+      modifiedAt: new Date().toISOString()
+    }
+
+    saveToLocalStorage()
+    addScriptOutput(scriptId, 'info', `Removed imported data '${variableName}'`)
+  }
+
+  /**
+   * Get imported data for a script as Python-ready objects
+   */
+  function getImportedDataForScript(scriptId: string): Record<string, any[]> {
+    const script = scripts.value[scriptId]
+    if (!script || !script.importedData) return {}
+
+    const result: Record<string, any[]> = {}
+    for (const file of script.importedData) {
+      result[file.variableName] = file.data
+    }
+    return result
   }
 
   // ===========================================================================
@@ -322,12 +581,18 @@ export function usePythonScripts() {
     const errors: ValidationResult['errors'] = []
 
     try {
+      // Properly escape the code for embedding in Python string
+      // Use base64 encoding to avoid any escaping issues with quotes
+      const encoder = new TextEncoder()
+      const bytes = encoder.encode(code)
+      const encodedCode = btoa(String.fromCharCode(...bytes))
+
       // Use Python's compile() to check syntax without executing
       await pyodide.runPythonAsync(`
 import ast
-import sys
+import base64
 
-_validation_code = '''${code.replace(/'/g, "\\'")}'''
+_validation_code = base64.b64decode('${encodedCode}').decode('utf-8')
 
 try:
     # Parse the code to check for syntax errors
@@ -618,6 +883,40 @@ except Exception as e:
         return getSessionElapsed?.() ?? 0
       },
 
+      // Session/Acquisition control
+      startAcquisition: (): void => {
+        startAcquisitionHandler?.()
+        addScriptOutput(id, 'info', 'Acquisition started from script')
+      },
+
+      stopAcquisition: (): void => {
+        stopAcquisitionHandler?.()
+        addScriptOutput(id, 'info', 'Acquisition stopped from script')
+      },
+
+      startRecording: (filename?: string): void => {
+        startRecordingHandler?.(filename)
+        addScriptOutput(id, 'info', filename ? `Recording started: ${filename}` : 'Recording started')
+      },
+
+      stopRecording: (): void => {
+        stopRecordingHandler?.()
+        addScriptOutput(id, 'info', 'Recording stopped from script')
+      },
+
+      isRecording: (): boolean => {
+        return isRecordingHandler?.() ?? false
+      },
+
+      // Time helpers
+      getCurrentTimestamp: (): number => {
+        return Date.now()
+      },
+
+      getCurrentTimeISO: (): string => {
+        return new Date().toISOString()
+      },
+
       // Set output value
       setOutput: (channel: string, value: number | boolean): void => {
         mqttSetOutput?.(channel, value)
@@ -683,14 +982,10 @@ except Exception as e:
           timestamp: Date.now()
         }
 
-        // Also publish to MQTT for recording
-        mqttPublish?.('nisystem/python/published', {
-          name,
-          value,
-          units,
-          description,
-          scriptId: id
-        })
+        // Send to backend for CSV recording (py.{name} channels)
+        if (typeof value === 'number') {
+          mqttSendScriptValues?.({ [name]: value })
+        }
       },
 
       // Log output
@@ -807,6 +1102,45 @@ class _RealSession:
     @property
     def elapsed(self):
         return _jsbridge.getSessionElapsed()
+    @property
+    def recording(self):
+        """Check if currently recording data"""
+        return _jsbridge.isRecording()
+
+    def start(self):
+        """Start data acquisition"""
+        _jsbridge.startAcquisition()
+
+    def stop(self):
+        """Stop data acquisition"""
+        _jsbridge.stopAcquisition()
+
+    def start_recording(self, filename=None):
+        """Start recording data to file. Optional filename parameter."""
+        if filename:
+            _jsbridge.startRecording(filename)
+        else:
+            _jsbridge.startRecording()
+
+    def stop_recording(self):
+        """Stop recording data"""
+        _jsbridge.stopRecording()
+
+    @staticmethod
+    def now():
+        """Get current timestamp in milliseconds (Unix epoch)"""
+        return _jsbridge.getCurrentTimestamp()
+
+    @staticmethod
+    def now_iso():
+        """Get current time as ISO 8601 string"""
+        return _jsbridge.getCurrentTimeISO()
+
+    @staticmethod
+    def time_of_day():
+        """Get current time of day as HH:MM:SS string"""
+        from datetime import datetime
+        return datetime.now().strftime("%H:%M:%S")
 
 class _RealOutputs:
     def set(self, channel, value):
@@ -846,6 +1180,14 @@ builtins.next_scan = next_scan
 builtins.wait_for = wait_for
 builtins.wait_until = nisystem.wait_until
 
+# Time functions in builtins
+builtins.now = nisystem.now
+builtins.now_ms = nisystem.now_ms
+builtins.now_iso = nisystem.now_iso
+builtins.time_of_day = nisystem.time_of_day
+builtins.format_timestamp = nisystem.format_timestamp
+builtins.elapsed_since = nisystem.elapsed_since
+
 # Conversions
 builtins.F_to_C = nisystem.F_to_C
 builtins.C_to_F = nisystem.C_to_F
@@ -870,6 +1212,17 @@ print("Runtime bridge connected")
 `
 
     await pyodide.runPythonAsync(runtimeCode)
+
+    // Inject imported data into Python namespace
+    const importedData = getImportedDataForScript(id)
+    if (Object.keys(importedData).length > 0) {
+      // Convert imported data to Python objects
+      for (const [varName, data] of Object.entries(importedData)) {
+        // Set the data as a Python variable using Pyodide's globals
+        pyodide.globals.set(varName, pyodide.toPy(data))
+        addScriptOutput(id, 'info', `Loaded ${data.length} rows as '${varName}'`)
+      }
+    }
 
     // Wrap user code in async function
     const wrappedCode = `
@@ -1035,6 +1388,17 @@ asyncio.ensure_future(__user_script__())
   const isPyodideLoading = computed(() => pyodideStatus.value === 'loading')
   const isPyodideError = computed(() => pyodideStatus.value === 'error')
 
+  // Aggregated console output from all scripts (for SessionTab)
+  const consoleOutput = computed(() => {
+    const allOutputs: ScriptOutput[] = []
+    for (const outputs of Object.values(scriptOutputs.value)) {
+      allOutputs.push(...outputs)
+    }
+    // Sort by timestamp, newest last
+    allOutputs.sort((a, b) => a.timestamp - b.timestamp)
+    return allOutputs
+  })
+
   /**
    * Computed: all published channel names for widget dropdowns
    */
@@ -1059,6 +1423,7 @@ asyncio.ensure_future(__user_script__())
     runningScriptsList,
     scriptStatuses,
     scriptOutputs,
+    consoleOutput,
     publishedValues,
     publishedValuesList,
 
@@ -1111,6 +1476,12 @@ asyncio.ensure_future(__user_script__())
     getPublishedValue,
     getPublishedChannelNames,
     publishedChannelNames,
+
+    // Data Import (CSV/Excel)
+    importCSVFile,
+    importExcelFile,
+    removeImportedData,
+    getImportedDataForScript,
 
     // Persistence
     saveToLocalStorage,
