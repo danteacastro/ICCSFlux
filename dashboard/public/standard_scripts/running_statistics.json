@@ -1,0 +1,43 @@
+{
+  "name": "Running Statistics",
+  "description": "Calculates rolling min, max, mean, and standard deviation",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to analyze"
+    },
+    "window_size": {
+      "type": "number",
+      "default": 60,
+      "description": "Number of samples for rolling window"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Min",
+      "unit": "same as input",
+      "description": "Minimum over window"
+    },
+    {
+      "name": "py.${config.input_tag}_Max",
+      "unit": "same as input",
+      "description": "Maximum over window"
+    },
+    {
+      "name": "py.${config.input_tag}_Mean",
+      "unit": "same as input",
+      "description": "Mean over window"
+    },
+    {
+      "name": "py.${config.input_tag}_StdDev",
+      "unit": "same as input",
+      "description": "Standard deviation over window"
+    }
+  ],
+  "code": "# Running Statistics Calculator\n# Calculates rolling statistics over a configurable window\n\nimport math\n\ninput_tag = config.get('input_tag', 'Temperature_1')\nwindow = config.get('window_size', 60)\n\nvalue = tags.get(input_tag, 0)\n\n# Initialize buffer\nif 'buffer' not in state:\n    state['buffer'] = []\n\n# Add value to buffer\nstate['buffer'].append(value)\n\n# Keep only window samples\nif len(state['buffer']) > window:\n    state['buffer'] = state['buffer'][-window:]\n\nbuf = state['buffer']\nn = len(buf)\n\n# Calculate statistics\nmin_val = min(buf)\nmax_val = max(buf)\nmean_val = sum(buf) / n\n\n# Standard deviation\nif n > 1:\n    variance = sum((x - mean_val) ** 2 for x in buf) / (n - 1)\n    std_dev = math.sqrt(variance)\nelse:\n    std_dev = 0\n\npublish(f'py.{input_tag}_Min', min_val)\npublish(f'py.{input_tag}_Max', max_val)\npublish(f'py.{input_tag}_Mean', mean_val)\npublish(f'py.{input_tag}_StdDev', std_dev)"
+}

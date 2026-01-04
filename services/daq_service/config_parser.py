@@ -51,6 +51,11 @@ class SystemConfig:
     simulation_mode: bool = True
     log_directory: str = "./logs"
     config_reload_topic: str = "nisystem/config/reload"
+    # Multi-node support
+    node_id: str = "node-001"      # Unique node identifier
+    node_name: str = "Default Node"  # Human-readable node name
+    # Default project to load on startup
+    default_project: str = ""      # Absolute path to default project JSON
 
 
 @dataclass
@@ -327,6 +332,11 @@ def load_config(config_path: str) -> NISystemConfig:
         system.simulation_mode = parse_bool(sys_section.get('simulation_mode', 'true'))
         system.log_directory = sys_section.get('log_directory', system.log_directory)
         system.config_reload_topic = sys_section.get('config_reload_topic', system.config_reload_topic)
+        # Multi-node support
+        system.node_id = sys_section.get('node_id', system.node_id)
+        system.node_name = sys_section.get('node_name', system.node_name)
+        # Default project
+        system.default_project = sys_section.get('default_project', system.default_project)
 
     # Parse chassis configs
     chassis = {}

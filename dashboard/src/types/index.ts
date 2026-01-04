@@ -29,18 +29,16 @@ export type WidgetType =
   | 'recording_status'
   | 'system_status'
   | 'interlock_status'
-  | 'multi_channel_table'
   | 'action_button'
   | 'clock'
   | 'divider'
   | 'bar_graph'
   | 'scheduler_status'
-  | 'sequence_status'
   | 'svg_symbol'
-  | 'text_label'
   | 'value_table'
   | 'crio_status'
   | 'latch_switch'
+  | 'script_monitor'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -192,6 +190,19 @@ export interface ChannelValue {
   warning?: boolean
   quality?: 'good' | 'bad' | 'alarm' | 'warning'  // Data quality indicator
   disconnected?: boolean  // True when hardware device is not connected
+  // Multi-node support
+  nodeId?: string  // Source node ID (for multi-node deployments)
+  // SOE (Sequence of Events) support - microsecond precision
+  acquisitionTsUs?: number  // Microseconds since epoch (from hardware acquisition time)
+}
+
+// Multi-node support
+export interface NodeInfo {
+  nodeId: string
+  nodeName: string
+  status: 'online' | 'offline' | 'unknown'
+  lastSeen: number  // Unix timestamp ms
+  simulationMode: boolean
 }
 
 export interface SystemStatus {
@@ -216,6 +227,9 @@ export interface SystemStatus {
   dt_publish_ms: number
   channel_count: number
   config_path: string
+  // Multi-node support
+  node_id?: string   // Unique node identifier
+  node_name?: string // Human-readable node name
 }
 
 // Recording configuration matching Python backend
@@ -410,6 +424,23 @@ export interface WidgetConfig {
   showUnits?: boolean       // Show unit column in tables
   showStatus?: boolean      // Show status indicator
   maxRows?: number          // Limit visible rows
+  // Script Monitor-specific
+  items?: Array<{
+    tag: string
+    label?: string
+    unit?: string
+    format?: 'number' | 'integer' | 'percent' | 'status' | 'text'
+    decimals?: number
+    thresholds?: {
+      low?: number
+      high?: number
+      lowColor?: string
+      highColor?: string
+    }
+  }>
+  columns?: 1 | 2 | 3
+  showTimestamp?: boolean
+  refreshRate?: number
   // Styling
   style?: WidgetStyle
 }
@@ -491,16 +522,14 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   recording_status: { w: 2, h: 2, minW: 2, minH: 1 },
   system_status: { w: 2, h: 2, minW: 2, minH: 1 },
   interlock_status: { w: 2, h: 2, minW: 2, minH: 2 },
-  multi_channel_table: { w: 2, h: 3, minW: 2, minH: 2 },
   action_button: { w: 1, h: 1, minW: 1, minH: 1 },
   clock: { w: 2, h: 1, minW: 1, minH: 1 },
   divider: { w: 3, h: 1, minW: 1, minH: 1 },
   bar_graph: { w: 2, h: 1, minW: 1, minH: 1 },
   scheduler_status: { w: 2, h: 2, minW: 2, minH: 2 },
-  sequence_status: { w: 2, h: 2, minW: 2, minH: 2 },
   svg_symbol: { w: 2, h: 2, minW: 1, minH: 1 },
-  text_label: { w: 3, h: 1, minW: 1, minH: 1 },
-  value_table: { w: 3, h: 4, minW: 2, minH: 2 }
+  value_table: { w: 3, h: 4, minW: 2, minH: 2 },
+  script_monitor: { w: 3, h: 4, minW: 2, minH: 2 }
 }
 
 // Preset colors for widgets
@@ -963,4 +992,79 @@ export interface FormulaValidationResult {
   outputs: string[]                         // Variable names that will be created
   error?: string
   errorLine?: number
+}
+
+// ============================================
+// Event Correlation Types
+// ============================================
+
+/**
+ * Defines how alarms should be correlated/grouped.
+ * When trigger_alarm fires, look for related_alarms within time_window_ms.
+ */
+export interface CorrelationRule {
+  id: string
+  name: string
+  triggerAlarm: string           // Primary alarm ID that starts correlation
+  relatedAlarms: string[]        // Alarm IDs to group when triggered together
+  timeWindowMs: number           // Window for grouping (default 1000ms)
+  rootCauseHint?: string         // Which alarm is likely root cause
+  enabled: boolean
+  description?: string
+}
+
+/**
+ * Represents a group of correlated alarms that triggered together.
+ * Used for root cause analysis and reducing alarm flooding.
+ */
+export interface EventCorrelation {
+  correlationId: string
+  triggerAlarmId: string
+  relatedAlarmIds: string[]
+  timestamp: string              // ISO timestamp
+  rootCauseAlarmId: string
+  ruleId: string
+  nodeId?: string
+}
+
+// ============================================
+// SOE (Sequence of Events) Types
+// ============================================
+
+export type SOEEventType =
+  | 'alarm_triggered'
+  | 'alarm_cleared'
+  | 'alarm_acknowledged'
+  | 'state_change'
+  | 'digital_edge'
+  | 'setpoint_change'
+
+/**
+ * Sequence of Events entry with microsecond precision.
+ * Used for forensic analysis of alarm cascades.
+ */
+export interface SOEEvent {
+  eventId: string
+  timestampUs: number            // Microseconds since epoch (for precise ordering)
+  timestampIso: string           // ISO string for display
+  eventType: SOEEventType
+  sourceChannel: string
+  value: number | boolean
+  previousValue?: number | boolean
+  severity?: string
+  message: string
+  nodeId?: string
+  alarmId?: string
+  correlationId?: string         // Link to correlation group
+}
+
+/**
+ * SOE query filters
+ */
+export interface SOEQueryFilters {
+  startTimeUs?: number
+  endTimeUs?: number
+  eventTypes?: SOEEventType[]
+  channels?: string[]
+  limit?: number
 }

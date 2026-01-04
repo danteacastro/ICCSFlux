@@ -1,0 +1,55 @@
+{
+  "name": "Timed Sequence (Draw Schedule)",
+  "description": "Runs a sequence of timed actions - open/close valves, set outputs at specified times",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Control Sequences",
+  "config": {
+    "sequence": {
+      "type": "sequence",
+      "default": [
+        {"time": 0, "action": "Valve_Inlet", "value": true, "description": "Open inlet"},
+        {"time": 5, "action": "Pump_Enable", "value": true, "description": "Start pump"},
+        {"time": 30, "action": "Heater_Enable", "value": true, "description": "Turn on heater"},
+        {"time": 120, "action": "Heater_Enable", "value": false, "description": "Turn off heater"},
+        {"time": 125, "action": "Pump_Enable", "value": false, "description": "Stop pump"},
+        {"time": 130, "action": "Valve_Inlet", "value": false, "description": "Close inlet"}
+      ],
+      "description": "List of timed actions"
+    },
+    "loop": {
+      "type": "boolean",
+      "default": false,
+      "description": "Loop sequence continuously"
+    },
+    "auto_start": {
+      "type": "boolean",
+      "default": false,
+      "description": "Start sequence automatically"
+    }
+  },
+  "subscribed_tags": [],
+  "published_tags": [
+    {
+      "name": "py.Sequence_Running",
+      "unit": "",
+      "description": "1 if sequence is running"
+    },
+    {
+      "name": "py.Sequence_Step",
+      "unit": "",
+      "description": "Current step number"
+    },
+    {
+      "name": "py.Sequence_Elapsed",
+      "unit": "sec",
+      "description": "Elapsed time in sequence"
+    },
+    {
+      "name": "py.Sequence_TimeToNext",
+      "unit": "sec",
+      "description": "Time until next action"
+    }
+  ],
+  "code": "# Timed Sequence / Draw Schedule\n# Executes actions at specified times\n# Control: publish to py.Sequence_Command (start/stop/reset)\n\nimport time\n\nsequence = config.get('sequence', [])\nloop_seq = config.get('loop', False)\nauto_start = config.get('auto_start', False)\n\n# Initialize state\nif 'initialized' not in state:\n    state['initialized'] = True\n    state['running'] = auto_start\n    state['start_time'] = time.time() if auto_start else None\n    state['current_step'] = None\n    state['completed_steps'] = set()\n\n# Check for control commands via tag (optional integration)\ncmd = tags.get('py.Sequence_Command', '')\nif cmd == 'start' and not state['running']:\n    state['running'] = True\n    state['start_time'] = time.time()\n    state['completed_steps'] = set()\n    state['current_step'] = None\nelif cmd == 'stop':\n    state['running'] = False\nelif cmd == 'reset':\n    state['running'] = False\n    state['start_time'] = None\n    state['completed_steps'] = set()\n    state['current_step'] = None\n\nif not state['running'] or not sequence:\n    publish('py.Sequence_Running', 0)\n    publish('py.Sequence_Step', -1)\n    publish('py.Sequence_Elapsed', 0)\n    publish('py.Sequence_TimeToNext', 0)\nelse:\n    elapsed = time.time() - state['start_time']\n    \n    # Find and execute pending actions\n    for i, step in enumerate(sequence):\n        step_time = step.get('time', 0)\n        if elapsed >= step_time and i not in state['completed_steps']:\n            # Execute this action\n            action_tag = step.get('action', '')\n            action_value = step.get('value', False)\n            \n            # Write to output (digital or analog)\n            if action_tag:\n                output(action_tag, action_value)\n            \n            state['completed_steps'].add(i)\n            state['current_step'] = i\n    \n    # Check for sequence completion\n    if len(state['completed_steps']) >= len(sequence):\n        if loop_seq:\n            # Reset for next loop\n            state['start_time'] = time.time()\n            state['completed_steps'] = set()\n            state['current_step'] = None\n        else:\n            state['running'] = False\n    \n    # Calculate time to next action\n    time_to_next = 0\n    for i, step in enumerate(sequence):\n        if i not in state['completed_steps']:\n            time_to_next = max(0, step.get('time', 0) - elapsed)\n            break\n    \n    publish('py.Sequence_Running', 1)\n    publish('py.Sequence_Step', state['current_step'] if state['current_step'] is not None else -1)\n    publish('py.Sequence_Elapsed', elapsed)\n    publish('py.Sequence_TimeToNext', time_to_next)"
+}

@@ -138,6 +138,9 @@ class RecordingManager:
         # Decimation counter
         self.decimation_counter: int = 0
 
+        # Time-based sample interval tracking
+        self.last_sample_time: Optional[datetime] = None
+
         # Trigger state
         self.trigger_armed = False
         self.trigger_fired = False
@@ -219,6 +222,7 @@ class RecordingManager:
                 self.samples_written = 0
                 self.current_file_samples = 0
                 self.decimation_counter = 0
+                self.last_sample_time = None  # Reset for time-based interval
                 self.file_count = 1
 
                 # Reset trigger state
@@ -299,11 +303,27 @@ class RecordingManager:
 
         should_notify = False
         with self.lock:
-            # Apply decimation
+            # Apply decimation (sample count-based)
             self.decimation_counter += 1
             if self.decimation_counter < self.config.decimation:
                 return
             self.decimation_counter = 0
+
+            # Apply time-based sample interval
+            now = datetime.now()
+            if self.last_sample_time is not None:
+                # Calculate sample interval in seconds
+                interval_s = self.config.sample_interval
+                if self.config.sample_interval_unit == "milliseconds":
+                    interval_s = self.config.sample_interval / 1000.0
+
+                # Check if enough time has passed since last sample
+                elapsed = (now - self.last_sample_time).total_seconds()
+                if elapsed < interval_s:
+                    return  # Skip this sample, not enough time has passed
+
+            # Update last sample time
+            self.last_sample_time = now
 
             # Filter channels if selection is specified
             if self.config.selected_channels:

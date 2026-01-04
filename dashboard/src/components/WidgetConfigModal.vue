@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
+import { formatUnit } from '../utils/formatUnit'
 import type { WidgetConfig, WidgetStyle, ButtonAction, ButtonActionType, SystemCommandType, ChartPlotStyle } from '../types'
 import { WIDGET_COLORS } from '../types'
 import { SYMBOL_INFO, type ScadaSymbolType } from '../assets/symbols'
@@ -232,7 +233,7 @@ const selectedChartChannels = computed(() => {
             <select v-model="localWidget.channel">
               <option value="">-- Select Channel --</option>
               <option v-for="[name, config] in availableChannels" :key="name" :value="name">
-                {{ name }} ({{ config.unit || 'no unit' }})
+                {{ name }} ({{ formatUnit(config.unit) || 'no unit' }})
               </option>
             </select>
           </div>
@@ -519,44 +520,6 @@ const selectedChartChannels = computed(() => {
                   </div>
                 </div>
               </div>
-            </div>
-          </template>
-
-          <!-- Multi Channel Table specific -->
-          <template v-if="widgetType === 'multi_channel_table'">
-            <div class="form-group">
-              <label>Channels to Display</label>
-              <div class="channel-checklist">
-                <label v-for="[name, config] in availableChannels" :key="name" class="channel-item">
-                  <input
-                    type="checkbox"
-                    :checked="localWidget.channels?.includes(name as string)"
-                    @change="(e) => {
-                      const checked = (e.target as HTMLInputElement).checked
-                      if (!localWidget.channels) localWidget.channels = []
-                      if (checked && !localWidget.channels.includes(name as string)) {
-                        localWidget.channels.push(name as string)
-                      } else if (!checked) {
-                        localWidget.channels = localWidget.channels.filter(c => c !== name)
-                      }
-                    }"
-                  />
-                  <span>{{ name }} ({{ config.unit || '-' }})</span>
-                </label>
-              </div>
-              <p class="hint">If no channels selected, displays first 10 analog channels</p>
-            </div>
-            <div class="form-group checkbox">
-              <label>
-                <input type="checkbox" v-model="localWidget.showUnit" />
-                Show Units
-              </label>
-            </div>
-            <div class="form-group checkbox">
-              <label>
-                <input type="checkbox" v-model="localWidget.showAlarmStatus" />
-                Show Alarm Status
-              </label>
             </div>
           </template>
 
@@ -970,47 +933,98 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
-          <!-- Text Label specific -->
-          <template v-if="widgetType === 'text_label'">
-            <div class="form-group">
-              <label>Text Content</label>
-              <input
-                type="text"
-                v-model="localWidget.text"
-                placeholder="Enter text..."
-              />
-            </div>
-            <div class="form-row">
-              <div class="form-group half">
-                <label>Font Size</label>
-                <select v-model="localWidget.fontSize">
-                  <option value="small">Small</option>
-                  <option value="medium">Medium</option>
-                  <option value="large">Large</option>
-                  <option value="xlarge">Extra Large</option>
-                </select>
+          <!-- Script Monitor specific -->
+          <template v-if="widgetType === 'script_monitor'">
+            <div class="config-section">
+              <div class="section-header">Display Options</div>
+              <div class="form-row">
+                <div class="form-group half">
+                  <label>Columns</label>
+                  <select v-model.number="localWidget.columns">
+                    <option :value="1">1 Column</option>
+                    <option :value="2">2 Columns</option>
+                    <option :value="3">3 Columns</option>
+                  </select>
+                </div>
+                <div class="form-group half checkbox" style="padding-top: 20px;">
+                  <label>
+                    <input type="checkbox" v-model="localWidget.compact" />
+                    Compact Mode
+                  </label>
+                </div>
               </div>
-              <div class="form-group half">
-                <label>Alignment</label>
-                <select v-model="localWidget.textAlign">
-                  <option value="left">Left</option>
-                  <option value="center">Center</option>
-                  <option value="right">Right</option>
-                </select>
+              <div class="form-group checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showTimestamp" />
+                  Show Timestamp
+                </label>
               </div>
             </div>
-            <div class="form-group">
-              <label>Text Color</label>
-              <div class="color-options">
-                <button
-                  v-for="color in ['#ffffff', '#60a5fa', '#22c55e', '#fbbf24', '#ef4444', '#8b5cf6', '#ec4899', '#888888']"
-                  :key="color"
-                  class="color-btn"
-                  :class="{ selected: localWidget.textColor === color }"
-                  :style="{ backgroundColor: color }"
-                  @click="localWidget.textColor = color"
-                />
+
+            <div class="config-section">
+              <div class="section-header">Monitor Items</div>
+              <p class="hint">Add tags to monitor (e.g., py.Recipe_Step, Temperature_1)</p>
+
+              <div v-if="localWidget.items && localWidget.items.length > 0" class="monitor-items-list">
+                <div
+                  v-for="(item, idx) in localWidget.items"
+                  :key="idx"
+                  class="monitor-item-config"
+                >
+                  <div class="monitor-item-header">
+                    <span class="item-tag">{{ item.tag || 'New Item' }}</span>
+                    <button
+                      type="button"
+                      class="btn-icon btn-danger-text"
+                      @click="localWidget.items?.splice(idx, 1)"
+                      title="Remove"
+                    >×</button>
+                  </div>
+                  <div class="monitor-item-fields">
+                    <div class="form-group">
+                      <label>Tag</label>
+                      <input type="text" v-model="item.tag" placeholder="py.Recipe_Step" />
+                    </div>
+                    <div class="form-row">
+                      <div class="form-group half">
+                        <label>Label</label>
+                        <input type="text" v-model="item.label" placeholder="Display name" />
+                      </div>
+                      <div class="form-group half">
+                        <label>Unit</label>
+                        <input type="text" v-model="item.unit" placeholder="°C, %, etc." />
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <div class="form-group half">
+                        <label>Format</label>
+                        <select v-model="item.format">
+                          <option value="number">Number</option>
+                          <option value="integer">Integer</option>
+                          <option value="percent">Percent</option>
+                          <option value="status">Status (ON/OFF)</option>
+                          <option value="text">Text</option>
+                        </select>
+                      </div>
+                      <div class="form-group half">
+                        <label>Decimals</label>
+                        <input type="number" v-model.number="item.decimals" min="0" max="6" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
+
+              <button
+                type="button"
+                class="btn btn-secondary btn-add-item"
+                @click="() => {
+                  if (!localWidget.items) localWidget.items = []
+                  localWidget.items.push({ tag: '', format: 'number', decimals: 2 })
+                }"
+              >
+                + Add Item
+              </button>
             </div>
           </template>
         </div>
@@ -1384,5 +1398,70 @@ const selectedChartChannels = computed(() => {
 
 .visibility-btn.hidden:hover {
   color: #ef4444;
+}
+
+/* Script Monitor Item Config */
+.monitor-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.monitor-item-config {
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.monitor-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.item-tag {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #4ade80;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+
+.monitor-item-fields {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.monitor-item-fields .form-group {
+  margin-bottom: 0;
+}
+
+.monitor-item-fields .form-row {
+  margin-bottom: 0;
+}
+
+.btn-add-item {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.15s;
+}
+
+.btn-icon:hover {
+  background: rgba(239, 68, 68, 0.2);
 }
 </style>

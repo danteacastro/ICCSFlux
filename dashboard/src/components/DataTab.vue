@@ -1,71 +1,25 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
+import { usePythonScripts } from '../composables/usePythonScripts'
+import { useProjectFiles } from '../composables/useProjectFiles'
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
+const pythonScripts = usePythonScripts()
+const projectFiles = useProjectFiles()
 
-// Recording Configuration
-const recordingConfig = ref({
-  // File Settings - will be populated from backend config
-  basePath: './data',
-  filePrefix: 'recording',
-  fileFormat: 'csv' as 'csv' | 'tdms',
-
-  // Logging Rate (interval-based)
-  sampleInterval: 1,
-  sampleIntervalUnit: 'seconds' as 'seconds' | 'milliseconds',
-  decimation: 1, // Log every Nth sample
-
-  // File Rotation Strategy
-  rotationMode: 'single' as 'single' | 'time' | 'size' | 'samples' | 'session',
-  maxFileSize: 100, // MB
-  maxFileDuration: 3600, // seconds
-  maxFileSamples: 10000,
-
-  // Naming Convention
-  namingPattern: 'timestamp' as 'timestamp' | 'sequential' | 'custom',
-  includeDate: true,
-  includeTime: true,
-  includeChannelsInName: false,
-  sequentialStart: 1,
-  sequentialPadding: 3,
-  customSuffix: '',
-
-  // Directory Organization
-  directoryStructure: 'flat' as 'flat' | 'daily' | 'monthly' | 'experiment',
-  experimentName: '',
-
-  // Buffer/Write Strategy
-  writeMode: 'buffered' as 'immediate' | 'buffered',
-  bufferSize: 100, // samples
-  flushInterval: 5.0, // seconds
-
-  // On Limit Reached
-  onLimitReached: 'new_file' as 'new_file' | 'stop' | 'circular',
-  circularMaxFiles: 10,
-
-  // Recording Mode
-  mode: 'manual' as 'manual' | 'triggered' | 'scheduled',
-
-  // Triggered Mode Settings
-  triggerChannel: '',
-  triggerCondition: 'above' as 'above' | 'below' | 'change',
-  triggerValue: 0,
-  preTriggerSamples: 100,
-  postTriggerSamples: 1000,
-
-  // Scheduled Mode Settings
-  scheduleEnabled: false,
-  scheduleStart: '08:00',
-  scheduleEnd: '17:00',
-  scheduleDays: ['mon', 'tue', 'wed', 'thu', 'fri'] as string[],
+// Use store's recording config (auto-persisted to localStorage)
+const recordingConfig = computed(() => store.recordingConfig)
+const selectedChannels = computed({
+  get: () => store.selectedRecordingChannels,
+  set: (val) => store.setSelectedRecordingChannels(val)
 })
-
-// Channel Selection for Recording
-const selectedChannels = ref<string[]>([])
-const selectAllChannels = ref(true)
+const selectAllChannels = computed({
+  get: () => store.selectAllRecordingChannels,
+  set: (val) => store.setSelectAllRecordingChannels(val)
+})
 
 // Recording State (from backend)
 const isRecording = computed(() => store.status?.recording || false)
@@ -92,15 +46,25 @@ function showFeedback(type: 'success' | 'error' | 'info', text: string, duration
   }, duration)
 }
 
-// Available channels from store
+// Available tags from store (channels + script-published values)
 const availableChannels = computed(() => {
-  return Object.entries(store.channels).map(([name, config]) => ({
-    name,
-    displayName: config.display_name || name,
+  // Hardware channels
+  const hwChannels = Object.entries(store.channels).map(([name, config]) => ({
+    name,  // TAG is the only identifier
     type: config.channel_type,
     unit: config.unit,
     group: config.group || 'Ungrouped'
   }))
+
+  // Script-published values (prefixed with py.)
+  const scriptChannels = pythonScripts.getPublishedChannelNames().map(name => ({
+    name,  // e.g., "py.Efficiency"
+    type: 'computed',
+    unit: pythonScripts.getPublishedUnits()[name] || '',
+    group: 'Python Scripts'
+  }))
+
+  return [...hwChannels, ...scriptChannels]
 })
 
 // Grouped channels for display
@@ -116,34 +80,39 @@ const groupedChannels = computed(() => {
 
 // Toggle channel selection
 function toggleChannel(channelName: string) {
-  const idx = selectedChannels.value.indexOf(channelName)
+  const current = [...store.selectedRecordingChannels]
+  const idx = current.indexOf(channelName)
   if (idx >= 0) {
-    selectedChannels.value.splice(idx, 1)
-    selectAllChannels.value = false
+    current.splice(idx, 1)
+    store.setSelectedRecordingChannels(current)
+    store.setSelectAllRecordingChannels(false)
   } else {
-    selectedChannels.value.push(channelName)
-    if (selectedChannels.value.length === availableChannels.value.length) {
-      selectAllChannels.value = true
+    current.push(channelName)
+    store.setSelectedRecordingChannels(current)
+    if (current.length === availableChannels.value.length) {
+      store.setSelectAllRecordingChannels(true)
     }
   }
 }
 
 function toggleAllChannels() {
   if (selectAllChannels.value) {
-    selectedChannels.value = availableChannels.value.map(ch => ch.name)
+    store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
   } else {
-    selectedChannels.value = []
+    store.setSelectedRecordingChannels([])
   }
 }
 
 // Toggle schedule day
 function toggleScheduleDay(day: string) {
-  const idx = recordingConfig.value.scheduleDays.indexOf(day)
+  const days = [...store.recordingConfig.scheduleDays]
+  const idx = days.indexOf(day)
   if (idx >= 0) {
-    recordingConfig.value.scheduleDays.splice(idx, 1)
+    days.splice(idx, 1)
   } else {
-    recordingConfig.value.scheduleDays.push(day)
+    days.push(day)
   }
+  store.setRecordingConfig({ scheduleDays: days })
 }
 
 // Effective sample rate in Hz
@@ -316,34 +285,12 @@ function downloadFile(filename: string) {
   }
 }
 
-// Save configuration
-function saveConfig() {
-  localStorage.setItem('nisystem-recording-config', JSON.stringify(recordingConfig.value))
-  localStorage.setItem('nisystem-recording-channels', JSON.stringify(selectedChannels.value))
-  showFeedback('success', 'Configuration saved')
-}
+// Cleanup on unmount
+let unsubscribeProjectLoaded: (() => void) | null = null
 
-// Load configuration
-function loadConfig() {
-  const savedConfig = localStorage.getItem('nisystem-recording-config')
-  const savedChannels = localStorage.getItem('nisystem-recording-channels')
-
-  if (savedConfig) {
-    try {
-      Object.assign(recordingConfig.value, JSON.parse(savedConfig))
-    } catch (e) {
-      console.error('Failed to load recording config:', e)
-    }
-  }
-
-  if (savedChannels) {
-    try {
-      selectedChannels.value = JSON.parse(savedChannels)
-    } catch (e) {
-      console.error('Failed to load channel selection:', e)
-    }
-  }
-}
+onUnmounted(() => {
+  if (unsubscribeProjectLoaded) unsubscribeProjectLoaded()
+})
 
 // Format helpers
 function formatFileSize(bytes: number): string {
@@ -365,12 +312,10 @@ function formatDuration(seconds: number): string {
 
 // Initialize
 onMounted(() => {
-  loadConfig()
-
-  // Select all channels by default
-  if (selectedChannels.value.length === 0) {
-    selectAllChannels.value = true
-    selectedChannels.value = availableChannels.value.map(ch => ch.name)
+  // Select all channels by default if none selected
+  if (store.selectedRecordingChannels.length === 0) {
+    store.setSelectAllRecordingChannels(true)
+    store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
   }
 
   // Fetch recording config and file list from backend
@@ -378,6 +323,17 @@ onMounted(() => {
     mqtt.getRecordingConfig()
     mqtt.listRecordedFiles()
   }
+
+  // Subscribe to project loaded events - reload config when a new project is loaded
+  unsubscribeProjectLoaded = projectFiles.onProjectLoaded(() => {
+    console.log('[DataTab] Project loaded, reloading recording config from store...')
+    store.loadRecordingConfigFromStorage()
+    // Re-select all channels if nothing selected
+    if (store.selectedRecordingChannels.length === 0) {
+      store.setSelectAllRecordingChannels(true)
+      store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
+    }
+  })
 
   // Listen for recording responses
   mqtt.onRecordingResponse((response) => {
@@ -477,10 +433,10 @@ const scheduleDayLabels = [
           <span>Locked while recording</span>
         </div>
         <div class="panel-header">
-          <h3>Channels to Record</h3>
+          <h3>Tags to Record</h3>
           <label class="select-all">
             <input type="checkbox" v-model="selectAllChannels" @change="toggleAllChannels" :disabled="configLocked" />
-            <span>All Channels</span>
+            <span>All Tags</span>
           </label>
         </div>
 
@@ -502,20 +458,20 @@ const scheduleDayLabels = [
                 @change="toggleChannel(ch.name)"
               />
               <div class="channel-info">
-                <span class="channel-name">{{ ch.displayName }}</span>
+                <span class="channel-name">{{ ch.name }}</span>
                 <span class="channel-meta">{{ ch.type }} {{ ch.unit ? `(${ch.unit})` : '' }}</span>
               </div>
             </div>
           </div>
 
           <div v-if="availableChannels.length === 0" class="no-channels">
-            <p>No channels configured</p>
-            <p class="hint">Configure channels in the Configuration tab</p>
+            <p>No tags configured</p>
+            <p class="hint">Configure tags in the Configuration tab or add script outputs</p>
           </div>
         </div>
 
         <div class="channel-summary">
-          {{ selectAllChannels ? availableChannels.length : selectedChannels.length }} channels selected
+          {{ selectAllChannels ? availableChannels.length : selectedChannels.length }} tags selected
         </div>
       </div>
 
@@ -734,7 +690,7 @@ const scheduleDayLabels = [
               </label>
               <label class="checkbox-label">
                 <input type="checkbox" v-model="recordingConfig.includeChannelsInName" :disabled="configLocked" />
-                Include Channel Count
+                Include Tag Count
               </label>
             </div>
           </div>
@@ -902,11 +858,11 @@ const scheduleDayLabels = [
           <div v-if="recordingConfig.mode === 'triggered'" class="mode-options">
             <div class="form-row">
               <div class="form-group">
-                <label>Trigger Channel</label>
+                <label>Trigger Tag</label>
                 <select v-model="recordingConfig.triggerChannel" :disabled="configLocked">
-                  <option value="">Select channel...</option>
+                  <option value="">Select tag...</option>
                   <option v-for="ch in availableChannels" :key="ch.name" :value="ch.name">
-                    {{ ch.displayName }}
+                    {{ ch.name }}
                   </option>
                 </select>
               </div>
@@ -972,14 +928,12 @@ const scheduleDayLabels = [
             </svg>
             Browse Files
           </button>
-          <button class="btn btn-primary" @click="saveConfig">
+          <span class="auto-save-indicator">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17 21 17 13 7 13 7 21"/>
-              <polyline points="7 3 7 8 15 8"/>
+              <polyline points="20 6 9 17 4 12"/>
             </svg>
-            Save Config
-          </button>
+            Auto-saved
+          </span>
         </div>
       </div>
 
@@ -988,7 +942,7 @@ const scheduleDayLabels = [
         <div class="info-section">
           <h3>Recording Summary</h3>
           <div class="info-item">
-            <span class="info-label">Channels:</span>
+            <span class="info-label">Tags:</span>
             <span class="info-value">{{ selectAllChannels ? availableChannels.length : selectedChannels.length }}</span>
           </div>
           <div class="info-item">
@@ -1949,6 +1903,22 @@ const scheduleDayLabels = [
   display: flex;
   gap: 12px;
   justify-content: flex-end;
+  align-items: center;
+}
+
+.auto-save-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 4px;
+}
+
+.auto-save-indicator svg {
+  stroke: #22c55e;
 }
 
 .btn {

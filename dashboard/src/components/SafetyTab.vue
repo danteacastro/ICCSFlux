@@ -11,12 +11,17 @@ import type {
   InterlockControl,
   InterlockConditionType,
   InterlockControlType,
-  InterlockOperator
+  InterlockOperator,
+  CorrelationRule,
+  EventCorrelation,
+  SOEEvent,
+  SOEEventType
 } from '../types'
 
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
 const safety = useSafety()
+const soe = mqtt.soe  // SOE & Correlation composable
 
 // ============================================
 // Alarm Configuration State (from composable)
@@ -211,6 +216,10 @@ function clearAlarm(alarmId: string) {
   safety.clearAlarm(alarmId)
 }
 
+function clearAllAlarms() {
+  safety.clearAllAlarms(true)  // Add to history when manually clearing
+}
+
 function resetAlarm(alarmId: string) {
   safety.resetAlarm(alarmId)
 }
@@ -389,7 +398,88 @@ function getCurrentValue(channel: string): string {
 // Interlock UI State
 // ============================================
 
-const activeSection = ref<'alarms' | 'interlocks'>('alarms')
+const activeSection = ref<'alarms' | 'interlocks' | 'correlation' | 'soe'>('alarms')
+
+// ============================================
+// SOE & Correlation UI State
+// ============================================
+
+const soeTypeFilter = ref<SOEEventType | ''>('')
+const showNewRuleModal = ref(false)
+
+// Filtered SOE events based on type filter
+const filteredSoeEvents = computed(() => {
+  if (!soeTypeFilter.value) {
+    return soe.soeEvents.value
+  }
+  return soe.soeEvents.value.filter(e => e.eventType === soeTypeFilter.value)
+})
+
+// Format event type for display
+function formatEventType(type: SOEEventType | string): string {
+  const labels: Record<string, string> = {
+    'alarm_triggered': 'Alarm',
+    'alarm_cleared': 'Cleared',
+    'alarm_acknowledged': 'Ack',
+    'state_change': 'State',
+    'digital_edge': 'Edge',
+    'setpoint_change': 'Setpoint'
+  }
+  return labels[type] || type
+}
+
+// Format timestamp for display
+function formatTimestamp(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString()
+  } catch {
+    return iso
+  }
+}
+
+// Format ISO time for SOE table
+function formatIsoTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3
+    })
+  } catch {
+    return iso
+  }
+}
+
+// Get row class based on event type
+function getEventRowClass(event: SOEEvent): string {
+  switch (event.eventType) {
+    case 'alarm_triggered': return 'row-alarm'
+    case 'alarm_cleared': return 'row-cleared'
+    case 'alarm_acknowledged': return 'row-ack'
+    default: return ''
+  }
+}
+
+// Navigate to correlation tab and highlight
+function goToCorrelation(correlationId: string) {
+  activeSection.value = 'correlation'
+  // Could add highlighting logic here
+}
+
+// Export SOE to CSV file
+function exportSoe() {
+  const csv = soe.exportSoeToCsv()
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `soe_export_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 const showInterlockModal = ref(false)
 const editingInterlock = ref<Interlock | null>(null)
 
@@ -600,6 +690,26 @@ function getControlDescription(ctrl: InterlockControl): string {
           >
             Interlocks
           </button>
+          <button
+            class="section-tab"
+            :class="{ active: activeSection === 'correlation' }"
+            @click="activeSection = 'correlation'"
+          >
+            Correlation
+            <span v-if="soe.activeCorrelationCount.value > 0" class="tab-badge">
+              {{ soe.activeCorrelationCount.value }}
+            </span>
+          </button>
+          <button
+            class="section-tab"
+            :class="{ active: activeSection === 'soe' }"
+            @click="activeSection = 'soe'"
+          >
+            SOE
+            <span v-if="soe.soeEventCount.value > 0" class="tab-badge">
+              {{ soe.soeEventCount.value }}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -660,13 +770,23 @@ function getControlDescription(ctrl: InterlockControl): string {
       <div class="active-alarms-panel">
         <div class="panel-header">
           <h3>Active Alarms</h3>
-          <button
-            v-if="activeAlarms.length > 0"
-            class="btn btn-sm btn-secondary"
-            @click="acknowledgeAll"
-          >
-            Acknowledge All
-          </button>
+          <div class="panel-header-actions">
+            <button
+              v-if="activeAlarms.length > 0"
+              class="btn btn-sm btn-secondary"
+              @click="acknowledgeAll"
+            >
+              Acknowledge All
+            </button>
+            <button
+              v-if="activeAlarms.length > 0"
+              class="btn btn-sm btn-danger"
+              @click="clearAllAlarms"
+              title="Clear all alarms (use when project changes or to reset alarm state)"
+            >
+              Clear All
+            </button>
+          </div>
         </div>
 
         <div v-if="activeAlarms.length === 0" class="no-alarms">
@@ -1153,6 +1273,229 @@ function getControlDescription(ctrl: InterlockControl): string {
       </div>
     </div>
 
+    <!-- CORRELATION SECTION -->
+    <div v-if="activeSection === 'correlation'" class="safety-content correlation-section">
+      <!-- Left: Active Correlations -->
+      <div class="correlation-panel">
+        <div class="panel-header">
+          <h3>Active Correlations</h3>
+          <span class="count-badge">{{ soe.activeCorrelationCount.value }}</span>
+        </div>
+
+        <div v-if="soe.activeCorrelations.value.length === 0" class="no-correlations">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+          </svg>
+          <p>No active correlations</p>
+          <p class="subtitle">Correlations are detected when related alarms trigger together</p>
+        </div>
+
+        <div v-else class="correlation-list">
+          <div
+            v-for="corr in soe.activeCorrelations.value"
+            :key="corr.correlationId"
+            class="correlation-card"
+          >
+            <div class="correlation-header">
+              <span class="correlation-id">{{ corr.correlationId.slice(0, 8) }}</span>
+              <span class="correlation-time">{{ formatTimestamp(corr.timestamp) }}</span>
+            </div>
+            <div class="correlation-body">
+              <div class="root-cause">
+                <span class="label">Root Cause:</span>
+                <span class="alarm-tag">{{ corr.rootCauseAlarmId }}</span>
+              </div>
+              <div class="related-alarms">
+                <span class="label">Related ({{ corr.relatedAlarmIds.length }}):</span>
+                <div class="alarm-tags">
+                  <span v-for="alarmId in corr.relatedAlarmIds" :key="alarmId" class="alarm-tag secondary">
+                    {{ alarmId }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="correlation-footer">
+              <span class="rule-id">Rule: {{ corr.ruleId }}</span>
+              <button class="btn-icon" @click="soe.clearCorrelation(corr.correlationId)" title="Dismiss">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Correlation Rules -->
+      <div class="rules-panel">
+        <div class="panel-header">
+          <h3>Correlation Rules</h3>
+          <button class="btn btn-sm btn-primary" @click="showNewRuleModal = true">
+            + Add Rule
+          </button>
+        </div>
+
+        <div v-if="soe.correlationRules.value.length === 0" class="no-rules">
+          <p>No correlation rules defined</p>
+          <p class="subtitle">Rules define how alarms should be grouped for root cause analysis</p>
+        </div>
+
+        <div v-else class="rules-list">
+          <div
+            v-for="rule in soe.correlationRules.value"
+            :key="rule.id"
+            class="rule-card"
+            :class="{ disabled: !rule.enabled }"
+          >
+            <div class="rule-header">
+              <span class="rule-name">{{ rule.name }}</span>
+              <div class="rule-actions">
+                <button
+                  class="btn-icon"
+                  :class="{ active: rule.enabled }"
+                  @click="soe.toggleCorrelationRule(rule.id)"
+                  :title="rule.enabled ? 'Disable' : 'Enable'"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <path v-if="rule.enabled" d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zm0-2a8 8 0 100-16 8 8 0 000 16z"/>
+                    <circle v-else cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+                  </svg>
+                </button>
+                <button class="btn-icon danger" @click="soe.removeCorrelationRule(rule.id)" title="Delete">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="rule-body">
+              <div class="rule-trigger">
+                <span class="label">Trigger:</span>
+                <span class="alarm-tag">{{ rule.triggerAlarm }}</span>
+              </div>
+              <div class="rule-related">
+                <span class="label">Related:</span>
+                <span v-for="alarm in rule.relatedAlarms" :key="alarm" class="alarm-tag secondary">
+                  {{ alarm }}
+                </span>
+              </div>
+              <div class="rule-meta">
+                <span>Window: {{ rule.timeWindowMs }}ms</span>
+                <span v-if="rule.rootCauseHint">Root cause hint: {{ rule.rootCauseHint }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOE SECTION -->
+    <div v-if="activeSection === 'soe'" class="safety-content soe-section">
+      <!-- SOE Header with filters and actions -->
+      <div class="soe-header">
+        <div class="soe-stats">
+          <div class="stat-item">
+            <span class="stat-value">{{ soe.soeEventCount.value }}</span>
+            <span class="stat-label">Total Events</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value">{{ soe.recentEvents.value.length }}</span>
+            <span class="stat-label">Last 5 min</span>
+          </div>
+          <div class="stat-item" v-for="(count, type) in soe.soeEventCounts.value" :key="type" v-show="count > 0">
+            <span class="stat-value">{{ count }}</span>
+            <span class="stat-label">{{ formatEventType(type) }}</span>
+          </div>
+        </div>
+        <div class="soe-actions">
+          <button class="btn btn-sm btn-secondary" @click="exportSoe">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            Export CSV
+          </button>
+          <button class="btn btn-sm btn-danger" @click="soe.clearSoeBuffer()">
+            Clear Buffer
+          </button>
+        </div>
+      </div>
+
+      <!-- SOE Event List -->
+      <div class="soe-events-panel">
+        <div class="panel-header">
+          <h3>Sequence of Events</h3>
+          <div class="soe-filters">
+            <select v-model="soeTypeFilter" class="filter-select">
+              <option value="">All Types</option>
+              <option value="alarm_triggered">Alarm Triggered</option>
+              <option value="alarm_cleared">Alarm Cleared</option>
+              <option value="alarm_acknowledged">Acknowledged</option>
+              <option value="state_change">State Change</option>
+              <option value="digital_edge">Digital Edge</option>
+              <option value="setpoint_change">Setpoint Change</option>
+            </select>
+          </div>
+        </div>
+
+        <div v-if="filteredSoeEvents.length === 0" class="no-events">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <p>No events recorded</p>
+          <p class="subtitle">Events will appear here as they occur</p>
+        </div>
+
+        <div v-else class="soe-table-wrapper">
+          <table class="soe-table">
+            <thead>
+              <tr>
+                <th>Timestamp (μs)</th>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Channel</th>
+                <th>Value</th>
+                <th>Message</th>
+                <th>Correlation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="event in filteredSoeEvents.slice(0, 100)"
+                :key="event.eventId"
+                :class="getEventRowClass(event)"
+              >
+                <td class="timestamp-us">{{ event.timestampUs }}</td>
+                <td class="timestamp-iso">{{ formatIsoTime(event.timestampIso) }}</td>
+                <td class="event-type">
+                  <span :class="'type-badge ' + event.eventType">
+                    {{ formatEventType(event.eventType) }}
+                  </span>
+                </td>
+                <td class="channel">{{ event.sourceChannel }}</td>
+                <td class="value">
+                  {{ event.value }}
+                  <span v-if="event.previousValue !== undefined" class="prev-value">
+                    (was {{ event.previousValue }})
+                  </span>
+                </td>
+                <td class="message">{{ event.message }}</td>
+                <td class="correlation">
+                  <span v-if="event.correlationId" class="correlation-link" @click="goToCorrelation(event.correlationId)">
+                    {{ event.correlationId.slice(0, 8) }}
+                  </span>
+                  <span v-else class="no-correlation">-</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="filteredSoeEvents.length > 100" class="soe-footer">
+          Showing 100 of {{ filteredSoeEvents.length }} events. Export to CSV for full data.
+        </div>
+      </div>
+    </div>
+
     <!-- Interlock Edit/Create Modal -->
     <Teleport to="body">
       <div v-if="showInterlockModal" class="modal-overlay" @click.self="showInterlockModal = false">
@@ -1470,6 +1813,12 @@ function getControlDescription(ctrl: InterlockControl): string {
   margin: 0;
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+.panel-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .no-alarms {
@@ -2703,5 +3052,458 @@ function getControlDescription(ctrl: InterlockControl): string {
   border-radius: 4px;
   font-size: 0.8rem;
   color: #fcd34d;
+}
+
+/* ============================================
+   Tab Badge
+   ============================================ */
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  background: #3b82f6;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* ============================================
+   Correlation Section
+   ============================================ */
+
+.correlation-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.correlation-panel,
+.rules-panel {
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.correlation-panel .panel-header,
+.rules-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #374151;
+}
+
+.count-badge {
+  background: #4b5563;
+  color: #e5e7eb;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+}
+
+.no-correlations,
+.no-rules {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.no-correlations svg,
+.no-rules svg {
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.subtitle {
+  font-size: 0.8rem;
+  margin-top: 4px;
+  color: #4b5563;
+}
+
+.correlation-list,
+.rules-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.correlation-card,
+.rule-card {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  padding: 12px;
+}
+
+.correlation-card:hover,
+.rule-card:hover {
+  border-color: #4b5563;
+}
+
+.rule-card.disabled {
+  opacity: 0.5;
+}
+
+.correlation-header,
+.rule-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.correlation-id,
+.rule-name {
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.correlation-time {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.rule-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.correlation-body,
+.rule-body {
+  font-size: 0.85rem;
+}
+
+.root-cause,
+.rule-trigger,
+.related-alarms,
+.rule-related {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.root-cause .label,
+.rule-trigger .label,
+.related-alarms .label,
+.rule-related .label {
+  color: #6b7280;
+  min-width: 70px;
+}
+
+.alarm-tag {
+  display: inline-block;
+  background: #dc2626;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+.alarm-tag.secondary {
+  background: #4b5563;
+  margin-right: 4px;
+  margin-bottom: 4px;
+}
+
+.alarm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rule-meta {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.correlation-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #374151;
+}
+
+.rule-id {
+  font-size: 0.7rem;
+  color: #4b5563;
+  font-family: monospace;
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.btn-icon:hover {
+  background: #374151;
+  color: #e5e7eb;
+}
+
+.btn-icon.active {
+  color: #22c55e;
+}
+
+.btn-icon.danger:hover {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+/* ============================================
+   SOE Section
+   ============================================ */
+
+.soe-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.soe-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.soe-stats {
+  display: flex;
+  gap: 24px;
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.stat-label {
+  font-size: 0.7rem;
+  color: #6b7280;
+  text-transform: uppercase;
+}
+
+.soe-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.soe-events-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.soe-events-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #374151;
+}
+
+.soe-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.filter-select {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 6px 10px;
+  color: #e5e7eb;
+  font-size: 0.85rem;
+}
+
+.no-events {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.no-events svg {
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.soe-table-wrapper {
+  flex: 1;
+  overflow: auto;
+}
+
+.soe-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.soe-table th {
+  position: sticky;
+  top: 0;
+  background: #1f2937;
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 500;
+  color: #9ca3af;
+  border-bottom: 1px solid #374151;
+}
+
+.soe-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #1f2937;
+  color: #e5e7eb;
+}
+
+.soe-table tr:hover {
+  background: #1f2937;
+}
+
+.soe-table tr.row-alarm {
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.soe-table tr.row-cleared {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.soe-table tr.row-ack {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.timestamp-us {
+  font-family: monospace;
+  font-size: 0.7rem;
+  color: #6b7280;
+}
+
+.timestamp-iso {
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.type-badge.alarm_triggered {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.type-badge.alarm_cleared {
+  background: #14532d;
+  color: #86efac;
+}
+
+.type-badge.alarm_acknowledged {
+  background: #1e3a8a;
+  color: #93c5fd;
+}
+
+.type-badge.state_change {
+  background: #4c1d95;
+  color: #c4b5fd;
+}
+
+.type-badge.digital_edge {
+  background: #164e63;
+  color: #67e8f9;
+}
+
+.type-badge.setpoint_change {
+  background: #713f12;
+  color: #fde68a;
+}
+
+.channel {
+  font-family: monospace;
+  color: #60a5fa;
+}
+
+.prev-value {
+  font-size: 0.7rem;
+  color: #6b7280;
+}
+
+.correlation-link {
+  font-family: monospace;
+  color: #3b82f6;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.correlation-link:hover {
+  color: #60a5fa;
+}
+
+.no-correlation {
+  color: #4b5563;
+}
+
+.soe-footer {
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 0.8rem;
+  color: #6b7280;
+  border-top: 1px solid #374151;
+  background: #1f2937;
+}
+
+.btn-danger {
+  background: #7f1d1d;
+  color: #fca5a5;
+  border: none;
+}
+
+.btn-danger:hover {
+  background: #991b1b;
 }
 </style>

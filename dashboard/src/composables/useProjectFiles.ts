@@ -24,7 +24,8 @@ export interface ProjectChannelConfig {
   physical_channel: string
   channel_type: string  // 'rtd', 'thermocouple', 'voltage', 'digital_output', etc.
   // display_name removed - use name (TAG) everywhere
-  unit?: string
+  unit?: string         // Preferred field name
+  units?: string        // Legacy field name (backward compatibility)
   group?: string
   description?: string  // For tooltips/documentation only
 
@@ -116,14 +117,31 @@ export interface ProjectData {
     alarms: any[]
     transformations: any[]
     triggers: any[]
+    // Extended script types (v2.1+)
+    pythonScripts?: any[]          // Pyodide-based Python scripts
+    functionBlocks?: any[]         // Function block diagrams
+    drawPatterns?: any             // Draw patterns { patterns: [], history: [] }
+    watchdogs?: any[]              // Watchdog timers
+    stateMachines?: any[]          // State machine definitions
+    reportTemplates?: any[]        // Report templates
+    scheduledReports?: any[]       // Scheduled report configurations
   }
   recording: {
     config: any
     selectedChannels: string[]
   }
   safety: {
-    alarmConfigs: any[]
+    alarmConfigs: any              // Can be array or Record<string, AlarmConfig>
     interlocks: any[]
+    // Extended safety settings (v2.1+)
+    safetyActions?: any            // ISA-18.2 safety actions
+    safeStateConfig?: any          // Safe state configuration for trips
+    autoExecuteSafetyActions?: boolean
+  }
+  // Notebook data (v2.1+)
+  notebook?: {
+    entries?: any[]
+    experiments?: any[]
   }
 }
 
@@ -330,13 +348,35 @@ export function useProjectFiles() {
     const transformations = JSON.parse(localStorage.getItem('nisystem-transformations') || '[]')
     const triggers = JSON.parse(localStorage.getItem('nisystem-triggers') || '[]')
 
+    // Extended script types (v2.1+)
+    const pythonScripts = JSON.parse(localStorage.getItem('nisystem-python-scripts') || '[]')
+    const functionBlocks = JSON.parse(localStorage.getItem('dcflux-function-blocks') || '[]')
+    const drawPatterns = JSON.parse(localStorage.getItem('dcflux-draw-patterns') || '{"patterns":[],"history":[]}')
+    const watchdogs = JSON.parse(localStorage.getItem('dcflux-watchdogs') || '[]')
+    const stateMachines = JSON.parse(localStorage.getItem('dcflux-state-machines') || '[]')
+    const reportTemplates = JSON.parse(localStorage.getItem('dcflux-report-templates') || '[]')
+    const scheduledReports = JSON.parse(localStorage.getItem('dcflux-scheduled-reports') || '[]')
+
     // Get recording settings
     const recordingConfig = JSON.parse(localStorage.getItem('nisystem-recording-config') || '{}')
     const selectedChannels = JSON.parse(localStorage.getItem('nisystem-recording-channels') || '[]')
 
-    // Get safety settings
-    const alarmConfigs = JSON.parse(localStorage.getItem('nisystem-alarm-configs') || '[]')
+    // Get safety settings - try v2 first, then fall back to v1
+    let alarmConfigs = localStorage.getItem('nisystem-alarm-configs-v2')
+    if (!alarmConfigs) {
+      alarmConfigs = localStorage.getItem('nisystem-alarm-configs')
+    }
+    alarmConfigs = JSON.parse(alarmConfigs || '{}')
     const interlocks = JSON.parse(localStorage.getItem('nisystem-interlocks') || '[]')
+
+    // Extended safety settings (v2.1+)
+    const safetyActions = JSON.parse(localStorage.getItem('nisystem-safety-actions') || '{}')
+    const safeStateConfig = JSON.parse(localStorage.getItem('nisystem-safe-state-config') || '{}')
+    const autoExecuteSafetyActions = localStorage.getItem('nisystem-auto-execute-safety-actions') === 'true'
+
+    // Get notebook data (v2.1+)
+    const notebookEntries = JSON.parse(localStorage.getItem('nisystem_notebook') || '[]')
+    const experiments = JSON.parse(localStorage.getItem('nisystem_experiments') || '[]')
 
     return {
       layout: {
@@ -352,7 +392,15 @@ export function useProjectFiles() {
         schedules,
         alarms,
         transformations,
-        triggers
+        triggers,
+        // Extended script types
+        pythonScripts,
+        functionBlocks,
+        drawPatterns,
+        watchdogs,
+        stateMachines,
+        reportTemplates,
+        scheduledReports
       },
       recording: {
         config: recordingConfig,
@@ -360,7 +408,15 @@ export function useProjectFiles() {
       },
       safety: {
         alarmConfigs,
-        interlocks
+        interlocks,
+        // Extended safety settings
+        safetyActions,
+        safeStateConfig,
+        autoExecuteSafetyActions
+      },
+      notebook: {
+        entries: notebookEntries,
+        experiments
       }
     }
   }
@@ -372,7 +428,7 @@ export function useProjectFiles() {
       // display_name removed - use name (TAG) everywhere
       channel_type: pch.channel_type as ChannelType,
       physical_channel: pch.physical_channel,
-      unit: pch.unit || '',
+      unit: pch.unit || pch.units || '',  // Support both 'unit' and 'units' (legacy)
       group: pch.group || 'Ungrouped',
       description: pch.description,  // For tooltips/documentation only
 
@@ -483,6 +539,28 @@ export function useProjectFiles() {
       if (data.scripts.triggers) {
         localStorage.setItem('nisystem-triggers', JSON.stringify(data.scripts.triggers))
       }
+      // Extended script types (v2.1+)
+      if (data.scripts.pythonScripts) {
+        localStorage.setItem('nisystem-python-scripts', JSON.stringify(data.scripts.pythonScripts))
+      }
+      if (data.scripts.functionBlocks) {
+        localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks))
+      }
+      if (data.scripts.drawPatterns) {
+        localStorage.setItem('dcflux-draw-patterns', JSON.stringify(data.scripts.drawPatterns))
+      }
+      if (data.scripts.watchdogs) {
+        localStorage.setItem('dcflux-watchdogs', JSON.stringify(data.scripts.watchdogs))
+      }
+      if (data.scripts.stateMachines) {
+        localStorage.setItem('dcflux-state-machines', JSON.stringify(data.scripts.stateMachines))
+      }
+      if (data.scripts.reportTemplates) {
+        localStorage.setItem('dcflux-report-templates', JSON.stringify(data.scripts.reportTemplates))
+      }
+      if (data.scripts.scheduledReports) {
+        localStorage.setItem('dcflux-scheduled-reports', JSON.stringify(data.scripts.scheduledReports))
+      }
     }
 
     // Apply recording settings
@@ -498,10 +576,32 @@ export function useProjectFiles() {
     // Apply safety settings
     if (data.safety) {
       if (data.safety.alarmConfigs) {
+        // Save to both v1 and v2 keys for compatibility
         localStorage.setItem('nisystem-alarm-configs', JSON.stringify(data.safety.alarmConfigs))
+        localStorage.setItem('nisystem-alarm-configs-v2', JSON.stringify(data.safety.alarmConfigs))
       }
       if (data.safety.interlocks) {
         localStorage.setItem('nisystem-interlocks', JSON.stringify(data.safety.interlocks))
+      }
+      // Extended safety settings (v2.1+)
+      if (data.safety.safetyActions) {
+        localStorage.setItem('nisystem-safety-actions', JSON.stringify(data.safety.safetyActions))
+      }
+      if (data.safety.safeStateConfig) {
+        localStorage.setItem('nisystem-safe-state-config', JSON.stringify(data.safety.safeStateConfig))
+      }
+      if (data.safety.autoExecuteSafetyActions !== undefined) {
+        localStorage.setItem('nisystem-auto-execute-safety-actions', String(data.safety.autoExecuteSafetyActions))
+      }
+    }
+
+    // Apply notebook data (v2.1+)
+    if (data.notebook) {
+      if (data.notebook.entries) {
+        localStorage.setItem('nisystem_notebook', JSON.stringify(data.notebook.entries))
+      }
+      if (data.notebook.experiments) {
+        localStorage.setItem('nisystem_experiments', JSON.stringify(data.notebook.experiments))
       }
     }
 
@@ -524,9 +624,12 @@ export function useProjectFiles() {
     const current = collectCurrentState()
     const saved = currentProjectData.value
 
-    // Simple comparison - could be made more sophisticated
+    // Compare all sections that could have changes
     return JSON.stringify(current.layout) !== JSON.stringify(saved.layout) ||
-           JSON.stringify(current.scripts) !== JSON.stringify(saved.scripts)
+           JSON.stringify(current.scripts) !== JSON.stringify(saved.scripts) ||
+           JSON.stringify(current.recording) !== JSON.stringify(saved.recording) ||
+           JSON.stringify(current.safety) !== JSON.stringify(saved.safety) ||
+           JSON.stringify(current.notebook) !== JSON.stringify(saved.notebook)
   }
 
   // Create new project (clear current state)
@@ -537,17 +640,41 @@ export function useProjectFiles() {
     // Clear layout
     store.widgets.splice(0)
 
-    // Clear localStorage items
+    // Clear channels (this triggers alarm clearing via useSafety watcher)
+    store.setChannels({})
+
+    // Clear localStorage items - core scripts
     localStorage.removeItem('nisystem-scripts')
     localStorage.removeItem('nisystem-sequences')
     localStorage.removeItem('nisystem-schedules')
     localStorage.removeItem('nisystem-alarms')
     localStorage.removeItem('nisystem-transformations')
     localStorage.removeItem('nisystem-triggers')
+
+    // Clear extended script types (v2.1+)
+    localStorage.removeItem('nisystem-python-scripts')
+    localStorage.removeItem('dcflux-function-blocks')
+    localStorage.removeItem('dcflux-draw-patterns')
+    localStorage.removeItem('dcflux-watchdogs')
+    localStorage.removeItem('dcflux-state-machines')
+    localStorage.removeItem('dcflux-report-templates')
+    localStorage.removeItem('dcflux-scheduled-reports')
+
+    // Clear recording settings
     localStorage.removeItem('nisystem-recording-config')
     localStorage.removeItem('nisystem-recording-channels')
+
+    // Clear safety settings
     localStorage.removeItem('nisystem-alarm-configs')
+    localStorage.removeItem('nisystem-alarm-configs-v2')
     localStorage.removeItem('nisystem-interlocks')
+    localStorage.removeItem('nisystem-safety-actions')
+    localStorage.removeItem('nisystem-safe-state-config')
+    localStorage.removeItem('nisystem-auto-execute-safety-actions')
+
+    // Clear notebook data
+    localStorage.removeItem('nisystem_notebook')
+    localStorage.removeItem('nisystem_experiments')
   }
 
   // Initialize on first use

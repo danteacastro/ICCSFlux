@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatUnit } from '../utils/formatUnit'
 
 const props = defineProps<{
   channel: string
@@ -41,7 +42,7 @@ const displayLabel = computed(() =>
   props.label || props.channel
 )
 
-const unit = computed(() => channelConfig.value?.unit || '')
+const unit = computed(() => formatUnit(channelConfig.value?.unit))
 
 const currentValue = computed(() => {
   if (!channelValue.value || isStale.value) return '--'

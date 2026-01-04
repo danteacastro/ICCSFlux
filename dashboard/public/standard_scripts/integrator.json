@@ -1,0 +1,39 @@
+{
+  "name": "Integrator / Totalizer",
+  "description": "Accumulates values over time (energy consumption, total flow, etc.)",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Calculations",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Power",
+      "description": "Rate value to integrate (e.g., kW, L/min)"
+    },
+    "reset_on_start": {
+      "type": "boolean",
+      "default": true,
+      "description": "Reset total when script starts"
+    },
+    "time_units": {
+      "type": "select",
+      "options": ["seconds", "minutes", "hours"],
+      "default": "hours",
+      "description": "Time unit for integration"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Total",
+      "unit": "integrated units",
+      "description": "Running total (e.g., kWh from kW)"
+    },
+    {
+      "name": "py.${config.input_tag}_RunTime",
+      "unit": "seconds",
+      "description": "Total run time"
+    }
+  ],
+  "code": "# Integrator / Totalizer\n# Integrates rate values over time using trapezoidal rule\n# Example: kW -> kWh, L/min -> L total\n\nimport time\n\ninput_tag = config.get('input_tag', 'Power')\ntime_units = config.get('time_units', 'hours')\n\n# Time divisor based on units\ntime_divisors = {'seconds': 1, 'minutes': 60, 'hours': 3600}\ndivisor = time_divisors.get(time_units, 3600)\n\nvalue = tags.get(input_tag, 0)\nnow = time.time()\n\n# Initialize state\nif 'total' not in state or config.get('reset_on_start', True) and 'initialized' not in state:\n    state['total'] = 0.0\n    state['last_value'] = value\n    state['last_time'] = now\n    state['start_time'] = now\n    state['initialized'] = True\nelse:\n    # Trapezoidal integration\n    dt = now - state['last_time']  # seconds\n    avg_value = (value + state['last_value']) / 2\n    \n    # Add to total (convert to desired time units)\n    state['total'] += avg_value * (dt / divisor)\n    \n    state['last_value'] = value\n    state['last_time'] = now\n\nrun_time = now - state.get('start_time', now)\n\npublish(f'py.{input_tag}_Total', state['total'])\npublish(f'py.{input_tag}_RunTime', run_time)"
+}

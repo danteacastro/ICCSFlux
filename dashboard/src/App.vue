@@ -231,20 +231,24 @@ onMounted(() => {
 
 // Control handlers
 function handleStart() {
+  console.log('[APP] handleStart called, isAcquiring:', store.isAcquiring)
   mqtt.startAcquisition()
 }
 
 function handleStop() {
+  console.log('[APP] handleStop called, isAcquiring:', store.isAcquiring)
   mqtt.stopAcquisition()
   // Clear all values to reset widgets to boot state (showing "--")
   store.clearValues()
 }
 
 function handleRecordStart() {
+  console.log('[APP] handleRecordStart called, isAcquiring:', store.isAcquiring, 'isRecording:', store.isRecording)
   mqtt.startRecording()
 }
 
 function handleRecordStop() {
+  console.log('[APP] handleRecordStop called, isRecording:', store.isRecording)
   mqtt.stopRecording()
 }
 

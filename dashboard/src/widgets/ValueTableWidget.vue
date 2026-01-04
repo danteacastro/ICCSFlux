@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatUnit } from '../utils/formatUnit'
 
 const props = defineProps<{
   channels?: string[]      // List of channels to display
@@ -36,7 +37,7 @@ const rows = computed(() => {
       name: channelName,
       label: channelName,  // TAG is the only identifier
       value: formattedValue,
-      unit: config?.unit || '',
+      unit: formatUnit(config?.unit),
       isStale,
       isAlarm: value?.alarm || false,
       isWarning: value?.warning || false

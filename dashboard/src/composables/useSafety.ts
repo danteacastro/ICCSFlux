@@ -281,6 +281,79 @@ export function useSafety() {
     }
   }
 
+  /**
+   * Clear ALL active alarms - used when project is unloaded or channels change significantly
+   * @param addToHistory If true, add "cleared" entries to history for each alarm
+   */
+  function clearAllAlarms(addToHistory: boolean = false) {
+    console.log(`[SAFETY] Clearing all ${activeAlarms.value.length} active alarms`)
+
+    if (addToHistory) {
+      // Log each alarm being cleared
+      activeAlarms.value.forEach(alarm => {
+        addHistoryEntry({
+          id: `${alarm.id}-cleared-${Date.now()}`,
+          alarm_id: alarm.alarm_id || alarm.id,
+          channel: alarm.channel,
+          event_type: 'cleared',
+          severity: alarm.severity,
+          value: alarm.current_value || alarm.value,
+          triggered_at: alarm.triggered_at,
+          cleared_at: new Date().toISOString(),
+          message: 'Cleared due to project/channel change'
+        })
+      })
+    }
+
+    // Clear all active alarms
+    activeAlarms.value = []
+
+    // Reset first-out tracking
+    firstOutAlarmId.value = null
+    cascadeStartTime.value = null
+    alarmSequence.value = 0
+  }
+
+  /**
+   * Clear alarms for channels that no longer exist in the project
+   */
+  function clearOrphanedAlarms() {
+    const validChannels = new Set(Object.keys(store.channels))
+    const orphanedAlarms = activeAlarms.value.filter(a => !validChannels.has(a.channel))
+
+    if (orphanedAlarms.length > 0) {
+      console.log(`[SAFETY] Clearing ${orphanedAlarms.length} orphaned alarms for removed channels`)
+
+      orphanedAlarms.forEach(alarm => {
+        addHistoryEntry({
+          id: `${alarm.id}-cleared-${Date.now()}`,
+          alarm_id: alarm.alarm_id || alarm.id,
+          channel: alarm.channel,
+          event_type: 'cleared',
+          severity: alarm.severity,
+          value: alarm.current_value || alarm.value,
+          triggered_at: alarm.triggered_at,
+          cleared_at: new Date().toISOString(),
+          message: 'Channel removed from project'
+        })
+      })
+
+      // Remove orphaned alarms
+      activeAlarms.value = activeAlarms.value.filter(a => validChannels.has(a.channel))
+
+      // Clear first-out if it was orphaned
+      if (firstOutAlarmId.value) {
+        const firstOutExists = activeAlarms.value.some(
+          a => a.id === firstOutAlarmId.value || a.alarm_id === firstOutAlarmId.value
+        )
+        if (!firstOutExists) {
+          firstOutAlarmId.value = null
+          cascadeStartTime.value = null
+        }
+      }
+    }
+  }
+
   function resetAlarm(alarmId: string, user: string = 'User') {
     const alarm = activeAlarms.value.find(a => a.id === alarmId)
     if (!alarm) return
@@ -1042,9 +1115,21 @@ export function useSafety() {
     loadSafetyActions()
     loadAutoExecuteSetting()
 
-    // Watch for channel changes to add new configs
-    watch(() => store.channels, () => {
+    // Watch for channel changes to add new configs and clear orphaned alarms
+    watch(() => store.channels, (newChannels, oldChannels) => {
       initializeAlarmConfigs()
+
+      // If channels were removed (or all channels cleared), clean up orphaned alarms
+      if (oldChannels && Object.keys(oldChannels).length > 0) {
+        if (Object.keys(newChannels).length === 0) {
+          // All channels removed - clear all alarms
+          console.log('[SAFETY] All channels removed, clearing all alarms')
+          clearAllAlarms(true)
+        } else {
+          // Some channels may have been removed
+          clearOrphanedAlarms()
+        }
+      }
     }, { immediate: true, deep: true })
 
     // Auto-save alarm configs on change
@@ -1242,6 +1327,8 @@ export function useSafety() {
     acknowledgeAlarm,
     acknowledgeAll,
     clearAlarm,
+    clearAllAlarms,
+    clearOrphanedAlarms,
     resetAlarm,
     resetAllLatched,
     shelveAlarm,

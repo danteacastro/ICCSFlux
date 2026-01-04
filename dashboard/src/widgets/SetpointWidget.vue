@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
+import { formatUnit } from '../utils/formatUnit'
 
 const props = defineProps<{
   widgetId: string
@@ -36,7 +37,7 @@ const displayLabel = computed(() =>
 
 const unit = computed(() => {
   if (props.showUnit === false) return ''
-  return channelConfig.value?.unit || ''
+  return formatUnit(channelConfig.value?.unit)
 })
 
 // Get min/max from props or channel config

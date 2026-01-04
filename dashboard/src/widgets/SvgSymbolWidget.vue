@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatUnit } from '../utils/formatUnit'
 import { SCADA_SYMBOLS, SYMBOL_PORTS, type ScadaSymbolType, type SymbolPort } from '../assets/symbols'
 
 const props = withDefaults(defineProps<{
@@ -57,7 +58,7 @@ const displayValue = computed(() => {
   return val.toFixed(dec)
 })
 
-const unit = computed(() => channelConfig.value?.unit || '')
+const unit = computed(() => formatUnit(channelConfig.value?.unit))
 
 const displayLabel = computed(() =>
   props.label || props.channel || ''

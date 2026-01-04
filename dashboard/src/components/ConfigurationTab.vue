@@ -18,9 +18,11 @@ import {
 } from '../types/modules'
 import { useMqtt } from '../composables/useMqtt'
 import { useProjectManager } from '../composables/useProjectManager'
+import { useProjectFiles } from '../composables/useProjectFiles'
 import { useTheme } from '../composables/useTheme'
 import { useSafety } from '../composables/useSafety'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
+import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
 
 const store = useDashboardStore()
 
@@ -35,8 +37,10 @@ const safety = useSafety()
 
 // Project manager for export/import
 const projectManager = useProjectManager()
+const projectFiles = useProjectFiles()
 const isExporting = ref(false)
 const isReloading = ref(false)
+const isSaving = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 
 // Edit mode - only allow editing when explicitly enabled and not acquiring
@@ -634,6 +638,7 @@ const channelTypeTabs = [
   { id: 'strain', label: 'STR', icon: '⚖' },
   { id: 'iepe', label: 'IEPE', icon: '〰' },
   { id: 'modbus', label: 'MODBUS', icon: '🔌' },
+  { id: 'rest_api', label: 'REST', icon: '🌐' },
 ]
 
 const activeTypeTab = ref('all')
@@ -1274,18 +1279,64 @@ function updateStorageArrayReferences(key: string, oldName: string, newName: str
   }
 }
 
-// Save all config to INI file
-function saveToFile(filename?: string) {
+// Save configuration - to project if one is loaded, otherwise prompt to create one
+async function saveToFile() {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
-  const targetFile = filename || currentConfigName.value
-  mqtt.saveSystemConfig(targetFile)
-  showFeedback('info', `Saving configuration to ${targetFile}...`)
-  configDirty.value = false
-  if (filename) {
-    currentConfigName.value = filename
+
+  // If a project is loaded, save to the project
+  const currentProject = projectFiles.currentProject.value
+  if (currentProject) {
+    isSaving.value = true
+    try {
+      const success = await projectFiles.saveProject(currentProject)
+      if (success) {
+        showFeedback('success', `Saved to project: ${currentProject}`)
+        configDirty.value = false
+      } else {
+        showFeedback('error', 'Failed to save project')
+      }
+    } catch (e: any) {
+      showFeedback('error', `Save failed: ${e.message || 'Unknown error'}`)
+    } finally {
+      isSaving.value = false
+    }
+    return
+  }
+
+  // No project loaded - prompt user to create one
+  showCreateProjectDialog.value = true
+}
+
+// Create Project Dialog state
+const showCreateProjectDialog = ref(false)
+const newProjectName = ref('')
+
+async function createAndSaveProject() {
+  if (!newProjectName.value.trim()) {
+    showFeedback('error', 'Please enter a project name')
+    return
+  }
+
+  const filename = newProjectName.value.trim().replace(/\s+/g, '_') + '.json'
+  isSaving.value = true
+
+  try {
+    const success = await projectFiles.saveProject(filename, newProjectName.value.trim())
+    if (success) {
+      showFeedback('success', `Created and saved project: ${filename}`)
+      configDirty.value = false
+      showCreateProjectDialog.value = false
+      newProjectName.value = ''
+    } else {
+      showFeedback('error', 'Failed to create project')
+    }
+  } catch (e: any) {
+    showFeedback('error', `Create project failed: ${e.message || 'Unknown error'}`)
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -1601,31 +1652,23 @@ watch(() => Object.keys(store.channels), () => {
           </svg>
           {{ showLimitColors ? 'Limits ON' : 'Limits OFF' }}
         </button>
-        <button class="action-btn load-btn" @click="openLoadDialog">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-          Load
-        </button>
-        <button class="action-btn reload-btn" @click="reloadConfig" :disabled="isReloading" title="Reload configuration from disk">
-          <svg v-if="!isReloading" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M23 4v6h-6"/>
-            <path d="M1 20v-6h6"/>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-          </svg>
-          <span v-else class="spinner"></span>
-          {{ isReloading ? 'Reloading...' : 'Reload' }}
-        </button>
-        <button class="action-btn save-btn" :class="{ dirty: configDirty }" @click="saveToFile()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button
+          class="action-btn save-btn"
+          :class="{ dirty: configDirty, 'project-save': projectFiles.currentProject.value }"
+          @click="saveToFile()"
+          :disabled="isSaving"
+          :title="projectFiles.currentProject.value
+            ? `Save to project: ${projectFiles.currentProject.value}`
+            : 'Create new project and save'"
+        >
+          <svg v-if="!isSaving" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
             <polyline points="17 21 17 13 7 13 7 21"/>
             <polyline points="7 3 7 8 15 8"/>
           </svg>
-          Save
-          <span v-if="configDirty" class="dirty-indicator">*</span>
+          <span v-else class="spinner"></span>
+          {{ isSaving ? 'Saving...' : 'Save' }}
+          <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
         <button
           class="action-btn apply-btn"
@@ -1640,19 +1683,21 @@ watch(() => Object.keys(store.channels), () => {
           Apply
         </button>
         <div class="toolbar-divider"></div>
-        <button class="action-btn icon-btn export-btn" @click="exportProject" :disabled="isExporting" title="Export Project">
+        <button class="action-btn export-btn" @click="exportProject" :disabled="isExporting" title="Download project as .json file to your computer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
+          Download
         </button>
-        <button class="action-btn icon-btn import-btn" @click="triggerImport" title="Import Project">
+        <button class="action-btn import-btn" @click="triggerImport" title="Load project from a .json file on your computer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
+          Upload
         </button>
         <input
           ref="importFileInput"
@@ -1663,6 +1708,12 @@ watch(() => Object.keys(store.channels), () => {
         />
       </div>
       <div class="right-info">
+        <div v-if="projectFiles.currentProject.value" class="project-indicator" :title="`Project: ${projectFiles.currentProject.value}`">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          {{ projectFiles.currentProject.value.replace('.json', '') }}
+        </div>
         <div class="channel-count">
           {{ filteredChannels.length }} channels
         </div>
@@ -1701,6 +1752,13 @@ watch(() => Object.keys(store.channels), () => {
       <!-- Modbus Device Configuration (shown when MODBUS tab is active) -->
       <ModbusDeviceConfig
         v-if="activeTypeTab === 'modbus'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
+      <!-- REST API Device Configuration (shown when REST tab is active) -->
+      <RestApiDeviceConfig
+        v-if="activeTypeTab === 'rest_api'"
         :edit-mode="editMode"
         @dirty="markDirty"
       />
@@ -3588,6 +3646,50 @@ watch(() => Object.keys(store.channels), () => {
       </div>
     </Transition>
 
+    <!-- Create Project Dialog -->
+    <Transition name="modal">
+      <div v-if="showCreateProjectDialog" class="discovery-overlay" @click.self="showCreateProjectDialog = false">
+        <div class="save-as-dialog">
+          <div class="discovery-header">
+            <h3>Create New Project</h3>
+            <button class="close-btn" @click="showCreateProjectDialog = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="save-as-content">
+            <p class="dialog-message">No project is currently loaded. Create a new project to save your configuration.</p>
+            <div class="form-row">
+              <label>Project Name</label>
+              <div class="filename-input">
+                <input
+                  type="text"
+                  v-model="newProjectName"
+                  placeholder="My Project"
+                  @keyup.enter="createAndSaveProject"
+                />
+                <span class="extension">.json</span>
+              </div>
+              <span class="form-hint">Enter a name for your project</span>
+            </div>
+          </div>
+
+          <div class="discovery-footer">
+            <button class="btn btn-secondary" @click="showCreateProjectDialog = false">Cancel</button>
+            <button
+              class="btn btn-primary"
+              @click="createAndSaveProject"
+              :disabled="!newProjectName.trim() || isSaving"
+            >
+              {{ isSaving ? 'Creating...' : 'Create & Save' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Safety Actions Modal -->
     <Transition name="modal">
       <div v-if="showSafetyActionsModal" class="discovery-overlay" @click.self="showSafetyActionsModal = false">
@@ -4547,6 +4649,41 @@ input[type="checkbox"] {
   color: #22c55e;
 }
 
+.project-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: #1e3a5f;
+  color: #60a5fa;
+  text-transform: none;
+  letter-spacing: 0.3px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-indicator svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* Save button when saving to project (blue accent) */
+.save-btn.project-save {
+  border-color: #3b82f6;
+  color: #60a5fa;
+}
+
+.save-btn.project-save:hover {
+  background: #1e3a8a;
+  border-color: #60a5fa;
+}
+
 .sim-mode-indicator {
   display: flex;
   align-items: center;
@@ -5487,6 +5624,13 @@ input[type="checkbox"] {
 
 .save-as-content {
   padding: 16px;
+}
+
+.dialog-message {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 .filename-input {

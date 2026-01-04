@@ -3,6 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
 import PlaygroundTab from './PlaygroundTab.vue'
+import SessionTab from './SessionTab.vue'
+import VariablesTab from './VariablesTab.vue'
+import PythonScriptsTab from './PythonScriptsTab.vue'
 import type {
   CalculatedParam,
   Sequence,
@@ -31,7 +34,9 @@ const scripts = useScripts()
 // =============================================================================
 
 const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
-  { id: 'session', label: 'Session', icon: 'var' },
+  { id: 'session', label: 'Session', icon: 'clock' },
+  { id: 'variables', label: 'Variables', icon: 'var' },
+  { id: 'python', label: 'Python', icon: 'python' },
   { id: 'formulas', label: 'Formulas', icon: 'fx' },
   { id: 'functionBlocks', label: 'Blocks', icon: 'blocks' },
   { id: 'sequences', label: 'Sequences', icon: 'list' },
@@ -58,7 +63,8 @@ function getTabIcon(icon: string): string {
     'zap': '⚡',
     'eye': '👁️',
     'file': '📄',
-    'book': '📖'
+    'book': '📖',
+    'python': '🐍'
   }
   return icons[icon] || '•'
 }
@@ -1546,10 +1552,24 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
     </div>
 
     <!-- ===================================================================== -->
-    <!-- SESSION TAB (Playground) -->
+    <!-- SESSION TAB -->
     <!-- ===================================================================== -->
     <div v-if="scripts.activeSubTab.value === 'session'" class="tab-content session-tab">
-      <PlaygroundTab />
+      <SessionTab />
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- VARIABLES TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'variables'" class="tab-content variables-tab">
+      <VariablesTab />
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PYTHON TAB -->
+    <!-- ===================================================================== -->
+    <div v-if="scripts.activeSubTab.value === 'python'" class="tab-content python-tab">
+      <PythonScriptsTab />
     </div>
 
     <!-- ===================================================================== -->

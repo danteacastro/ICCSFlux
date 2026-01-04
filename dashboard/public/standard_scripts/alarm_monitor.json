@@ -1,0 +1,53 @@
+{
+  "name": "Alarm Monitor",
+  "description": "Monitors a tag against high/low limits and generates alarm status",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Safety & Monitoring",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to monitor"
+    },
+    "high_high_limit": {
+      "type": "number",
+      "default": 100,
+      "description": "Critical high limit"
+    },
+    "high_limit": {
+      "type": "number",
+      "default": 80,
+      "description": "Warning high limit"
+    },
+    "low_limit": {
+      "type": "number",
+      "default": 20,
+      "description": "Warning low limit"
+    },
+    "low_low_limit": {
+      "type": "number",
+      "default": 10,
+      "description": "Critical low limit"
+    },
+    "deadband": {
+      "type": "number",
+      "default": 1.0,
+      "description": "Hysteresis to prevent alarm chatter"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_AlarmState",
+      "unit": "",
+      "description": "0=OK, 1=Low, 2=LowLow, 3=High, 4=HighHigh"
+    },
+    {
+      "name": "py.${config.input_tag}_InAlarm",
+      "unit": "",
+      "description": "1 if any alarm active, 0 if OK"
+    }
+  ],
+  "code": "# Alarm Monitor with Hysteresis\n# Alarm States: 0=OK, 1=Low, 2=LowLow, 3=High, 4=HighHigh\n\ninput_tag = config.get('input_tag', 'Temperature_1')\nhh = config.get('high_high_limit', 100)\nh = config.get('high_limit', 80)\nl = config.get('low_limit', 20)\nll = config.get('low_low_limit', 10)\ndb = config.get('deadband', 1.0)\n\nvalue = tags.get(input_tag, 0)\n\n# Get previous state for hysteresis\nprev_state = state.get('alarm_state', 0)\n\n# Determine new alarm state with deadband\nif value >= hh:\n    alarm_state = 4  # HighHigh\nelif value >= h and (prev_state >= 3 or value >= h + db):\n    alarm_state = 3  # High\nelif value <= ll:\n    alarm_state = 2  # LowLow\nelif value <= l and (prev_state in [1, 2] or value <= l - db):\n    alarm_state = 1  # Low\nelse:\n    # Apply deadband for return to normal\n    if prev_state == 3 and value > h - db:\n        alarm_state = 3\n    elif prev_state == 1 and value < l + db:\n        alarm_state = 1\n    else:\n        alarm_state = 0  # OK\n\nstate['alarm_state'] = alarm_state\n\npublish(f'py.{input_tag}_AlarmState', alarm_state)\npublish(f'py.{input_tag}_InAlarm', 1 if alarm_state > 0 else 0)"
+}

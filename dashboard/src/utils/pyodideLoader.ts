@@ -150,6 +150,43 @@ class _Session:
     @property
     def elapsed(self):
         return 0.0
+    @property
+    def recording(self):
+        return False
+
+    def start(self):
+        """Start data acquisition"""
+        pass
+
+    def stop(self):
+        """Stop data acquisition"""
+        pass
+
+    def start_recording(self, filename=None):
+        """Start recording data to file"""
+        pass
+
+    def stop_recording(self):
+        """Stop recording data"""
+        pass
+
+    @staticmethod
+    def now():
+        """Get current timestamp in milliseconds"""
+        import time
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def now_iso():
+        """Get current time as ISO 8601 string"""
+        from datetime import datetime
+        return datetime.now().isoformat()
+
+    @staticmethod
+    def time_of_day():
+        """Get current time of day as HH:MM:SS"""
+        from datetime import datetime
+        return datetime.now().strftime("%H:%M:%S")
 
 class _Outputs:
     """Placeholder for output control - replaced at runtime"""
@@ -469,6 +506,37 @@ class Scheduler:
         for name in jobs_to_remove:
             del self._jobs[name]
 
+# Time helper functions (module-level convenience)
+def now():
+    """Get current Unix timestamp in seconds (float)"""
+    import time
+    return time.time()
+
+def now_ms():
+    """Get current Unix timestamp in milliseconds (int)"""
+    import time
+    return int(time.time() * 1000)
+
+def now_iso():
+    """Get current time as ISO 8601 string"""
+    from datetime import datetime
+    return datetime.now().isoformat()
+
+def time_of_day():
+    """Get current time of day as HH:MM:SS string"""
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M:%S")
+
+def format_timestamp(ts_ms, fmt="%Y-%m-%d %H:%M:%S"):
+    """Format a millisecond timestamp to a string"""
+    from datetime import datetime
+    return datetime.fromtimestamp(ts_ms / 1000).strftime(fmt)
+
+def elapsed_since(start_ts):
+    """Get elapsed time in seconds since start_ts (in seconds)"""
+    import time
+    return time.time() - start_ts
+
 # Expose in nisystem module
 nisystem.tags = tags
 nisystem.session = session
@@ -477,6 +545,14 @@ nisystem.publish = publish
 nisystem.next_scan = next_scan
 nisystem.wait_for = wait_for
 nisystem.wait_until = wait_until
+
+# Time functions
+nisystem.now = now
+nisystem.now_ms = now_ms
+nisystem.now_iso = now_iso
+nisystem.time_of_day = time_of_day
+nisystem.format_timestamp = format_timestamp
+nisystem.elapsed_since = elapsed_since
 
 # Conversions
 nisystem.F_to_C = F_to_C

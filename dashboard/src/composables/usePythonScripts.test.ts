@@ -247,7 +247,8 @@ describe('usePythonScripts', () => {
         getChannelTimestamps: vi.fn().mockReturnValue({}),
         getChannelUnits: vi.fn().mockReturnValue({}),
         getSessionActive: vi.fn().mockReturnValue(false),
-        getSessionElapsed: vi.fn().mockReturnValue(0)
+        getSessionElapsed: vi.fn().mockReturnValue(0),
+        sendScriptValues: vi.fn()
       }
 
       expect(() => pythonScripts.setMqttHandlers(handlers)).not.toThrow()

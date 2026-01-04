@@ -1,0 +1,28 @@
+{
+  "name": "Rate of Change",
+  "description": "Calculates the derivative (rate of change) of a tag per second",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to calculate rate for"
+    },
+    "units_per_second": {
+      "type": "boolean",
+      "default": true,
+      "description": "Express rate per second (vs per sample)"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Rate",
+      "unit": "units/sec",
+      "description": "Rate of change"
+    }
+  ],
+  "code": "# Rate of Change Calculator\n# Useful for: heating/cooling rates, pressure rise rates, flow acceleration\n\nimport time\n\ninput_tag = config.get('input_tag', 'Temperature_1')\nper_second = config.get('units_per_second', True)\n\ncurrent = tags.get(input_tag, 0)\nnow = time.time()\n\n# Initialize state\nif 'last_value' not in state:\n    state['last_value'] = current\n    state['last_time'] = now\n    rate = 0.0\nelse:\n    delta_value = current - state['last_value']\n    delta_time = now - state['last_time']\n    \n    if delta_time > 0 and per_second:\n        rate = delta_value / delta_time\n    else:\n        rate = delta_value\n    \n    state['last_value'] = current\n    state['last_time'] = now\n\npublish(f'py.{input_tag}_Rate', rate)"
+}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatUnit } from '../utils/formatUnit'
 
 const props = withDefaults(defineProps<{
   channel: string
@@ -54,7 +55,7 @@ const displayValue = computed(() => {
 })
 
 const unit = computed(() => {
-  return channelConfig.value?.unit || ''
+  return formatUnit(channelConfig.value?.unit)
 })
 
 // Label: use explicit label prop, or fall back to channel name (TAG)

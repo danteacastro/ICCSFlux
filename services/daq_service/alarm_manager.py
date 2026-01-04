@@ -261,6 +261,115 @@ class AlarmHistoryEntry:
         }
 
 
+# ============================================================================
+# Event Correlation Types (for SOE and multi-alarm analysis)
+# ============================================================================
+
+@dataclass
+class CorrelationRule:
+    """
+    Defines how alarms should be correlated/grouped.
+
+    When trigger_alarm fires, look for related_alarms within time_window_ms.
+    If found, group them together with root_cause_hint indicating likely root cause.
+    """
+    id: str
+    name: str
+    trigger_alarm: str           # Primary alarm ID that starts correlation
+    related_alarms: List[str]    # Alarm IDs to group when triggered together
+    time_window_ms: int = 1000   # Window for grouping (default 1s)
+    root_cause_hint: str = ""    # Which alarm is likely root cause (alarm ID or empty)
+    enabled: bool = True
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'name': self.name,
+            'trigger_alarm': self.trigger_alarm,
+            'related_alarms': self.related_alarms,
+            'time_window_ms': self.time_window_ms,
+            'root_cause_hint': self.root_cause_hint,
+            'enabled': self.enabled,
+            'description': self.description
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'CorrelationRule':
+        return CorrelationRule(
+            id=d.get('id', ''),
+            name=d.get('name', ''),
+            trigger_alarm=d.get('trigger_alarm', ''),
+            related_alarms=d.get('related_alarms', []),
+            time_window_ms=d.get('time_window_ms', 1000),
+            root_cause_hint=d.get('root_cause_hint', ''),
+            enabled=d.get('enabled', True),
+            description=d.get('description', '')
+        )
+
+
+@dataclass
+class EventCorrelation:
+    """
+    Represents a group of correlated alarms that triggered together.
+    Used for root cause analysis and reducing alarm flooding.
+    """
+    correlation_id: str          # UUID for this correlation group
+    trigger_alarm_id: str        # The alarm that triggered the correlation
+    related_alarm_ids: List[str] # Other alarms in this correlation
+    timestamp: datetime          # When correlation was detected
+    root_cause_alarm_id: str     # Which alarm is identified as root cause
+    correlation_rule_id: str     # Which rule detected this correlation
+    node_id: str = ""            # Source node (for multi-node systems)
+
+    def to_dict(self) -> dict:
+        return {
+            'correlation_id': self.correlation_id,
+            'trigger_alarm_id': self.trigger_alarm_id,
+            'related_alarm_ids': self.related_alarm_ids,
+            'timestamp': self.timestamp.isoformat(),
+            'root_cause_alarm_id': self.root_cause_alarm_id,
+            'correlation_rule_id': self.correlation_rule_id,
+            'node_id': self.node_id
+        }
+
+
+@dataclass
+class SOEEvent:
+    """
+    Sequence of Events entry with microsecond precision.
+    Used for forensic analysis of alarm cascades.
+    """
+    event_id: str                # UUID
+    timestamp_us: int            # Microseconds since epoch (for ordering)
+    timestamp_iso: str           # ISO string for display
+    event_type: str              # 'alarm_triggered', 'alarm_cleared', 'state_change', 'digital_edge'
+    source_channel: str
+    value: Any                   # Current value
+    previous_value: Any          # Previous value (for edges/changes)
+    severity: Optional[str] = None
+    message: str = ""
+    node_id: str = ""
+    alarm_id: Optional[str] = None
+    correlation_id: Optional[str] = None  # Link to correlation group
+
+    def to_dict(self) -> dict:
+        return {
+            'event_id': self.event_id,
+            'timestamp_us': self.timestamp_us,
+            'timestamp_iso': self.timestamp_iso,
+            'event_type': self.event_type,
+            'source_channel': self.source_channel,
+            'value': self.value,
+            'previous_value': self.previous_value,
+            'severity': self.severity,
+            'message': self.message,
+            'node_id': self.node_id,
+            'alarm_id': self.alarm_id,
+            'correlation_id': self.correlation_id
+        }
+
+
 class AlarmManager:
     """
     Central alarm management engine
@@ -320,10 +429,22 @@ class AlarmManager:
             'total_shelved': 0
         }
 
+        # Event Correlation
+        self.correlation_rules: Dict[str, CorrelationRule] = {}
+        self.active_correlations: Dict[str, EventCorrelation] = {}
+        self.recent_alarms: List[tuple] = []  # [(timestamp_us, alarm_id), ...] for correlation window
+        self.max_recent_alarms = 100
+
+        # SOE (Sequence of Events) buffer
+        self.soe_buffer: List[SOEEvent] = []
+        self.max_soe_events = 10000
+        self.node_id = ""  # Set by DAQ service
+
         # Load saved state
         self._load_configs()
         self._load_active_alarms()
         self._load_history()
+        self._load_correlation_rules()
 
     def add_alarm_config(self, config: AlarmConfig):
         """Add or update an alarm configuration"""
@@ -1183,3 +1304,296 @@ class AlarmManager:
             self._save_configs()
             self._save_active_alarms()
             self._save_history()
+            self._save_correlation_rules()
+
+    # ========================================================================
+    # Correlation Rule Management
+    # ========================================================================
+
+    def add_correlation_rule(self, rule: CorrelationRule):
+        """Add or update a correlation rule"""
+        with self.lock:
+            self.correlation_rules[rule.id] = rule
+            self._save_correlation_rules()
+            logger.info(f"Added/updated correlation rule: {rule.id}")
+
+    def remove_correlation_rule(self, rule_id: str):
+        """Remove a correlation rule"""
+        with self.lock:
+            if rule_id in self.correlation_rules:
+                del self.correlation_rules[rule_id]
+                self._save_correlation_rules()
+                logger.info(f"Removed correlation rule: {rule_id}")
+
+    def get_correlation_rules(self) -> List[CorrelationRule]:
+        """Get all correlation rules"""
+        return list(self.correlation_rules.values())
+
+    def _save_correlation_rules(self):
+        """Save correlation rules to disk"""
+        try:
+            path = self.data_dir / 'correlation_rules.json'
+            data = [r.to_dict() for r in self.correlation_rules.values()]
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving correlation rules: {e}")
+
+    def _load_correlation_rules(self):
+        """Load correlation rules from disk"""
+        try:
+            path = self.data_dir / 'correlation_rules.json'
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+
+                for rule_data in data:
+                    try:
+                        rule = CorrelationRule.from_dict(rule_data)
+                        self.correlation_rules[rule.id] = rule
+                    except Exception as e:
+                        logger.error(f"Error loading correlation rule: {e}")
+
+                logger.info(f"Loaded {len(self.correlation_rules)} correlation rules")
+        except Exception as e:
+            logger.error(f"Error loading correlation rules: {e}")
+
+    # ========================================================================
+    # Event Correlation Engine
+    # ========================================================================
+
+    def _check_correlation(self, alarm_id: str, timestamp_us: int) -> Optional[EventCorrelation]:
+        """
+        Check if this alarm should be correlated with other recent alarms.
+        Called when an alarm is triggered.
+        Returns EventCorrelation if correlation detected, None otherwise.
+        """
+        import uuid
+
+        # Add to recent alarms list
+        self.recent_alarms.append((timestamp_us, alarm_id))
+
+        # Trim to max size
+        if len(self.recent_alarms) > self.max_recent_alarms:
+            self.recent_alarms = self.recent_alarms[-self.max_recent_alarms:]
+
+        # Check all enabled correlation rules
+        for rule in self.correlation_rules.values():
+            if not rule.enabled:
+                continue
+
+            # Is this alarm the trigger for this rule?
+            if alarm_id == rule.trigger_alarm:
+                # Look for related alarms in the time window
+                time_window_us = rule.time_window_ms * 1000
+                window_start = timestamp_us - time_window_us
+
+                related_found = []
+                for ts, aid in self.recent_alarms:
+                    if ts >= window_start and aid in rule.related_alarms:
+                        related_found.append(aid)
+
+                if related_found:
+                    # Correlation detected!
+                    root_cause = rule.root_cause_hint if rule.root_cause_hint else alarm_id
+                    correlation = EventCorrelation(
+                        correlation_id=str(uuid.uuid4()),
+                        trigger_alarm_id=alarm_id,
+                        related_alarm_ids=related_found,
+                        timestamp=datetime.now(),
+                        root_cause_alarm_id=root_cause,
+                        correlation_rule_id=rule.id,
+                        node_id=self.node_id
+                    )
+
+                    # Store active correlation
+                    self.active_correlations[correlation.correlation_id] = correlation
+
+                    logger.info(f"Correlation detected: {correlation.correlation_id} "
+                               f"(trigger={alarm_id}, related={related_found})")
+
+                    # Publish correlation event
+                    if self.publish_callback:
+                        self.publish_callback('correlations/detected', correlation.to_dict())
+
+                    return correlation
+
+            # Check if any related alarm matches this alarm (reverse lookup)
+            if alarm_id in rule.related_alarms:
+                # Look for trigger alarm in window
+                time_window_us = rule.time_window_ms * 1000
+                window_start = timestamp_us - time_window_us
+
+                for ts, aid in self.recent_alarms:
+                    if ts >= window_start and aid == rule.trigger_alarm:
+                        # Found the trigger - check if correlation already exists
+                        existing = False
+                        for corr in self.active_correlations.values():
+                            if corr.trigger_alarm_id == aid and alarm_id in corr.related_alarm_ids:
+                                existing = True
+                                break
+
+                        if not existing:
+                            # Create new correlation
+                            root_cause = rule.root_cause_hint if rule.root_cause_hint else rule.trigger_alarm
+                            correlation = EventCorrelation(
+                                correlation_id=str(uuid.uuid4()),
+                                trigger_alarm_id=aid,
+                                related_alarm_ids=[alarm_id],
+                                timestamp=datetime.now(),
+                                root_cause_alarm_id=root_cause,
+                                correlation_rule_id=rule.id,
+                                node_id=self.node_id
+                            )
+
+                            self.active_correlations[correlation.correlation_id] = correlation
+
+                            logger.info(f"Correlation detected (reverse): {correlation.correlation_id}")
+
+                            if self.publish_callback:
+                                self.publish_callback('correlations/detected', correlation.to_dict())
+
+                            return correlation
+
+        return None
+
+    def get_correlations_for_alarm(self, alarm_id: str) -> List[EventCorrelation]:
+        """Get all correlations involving this alarm"""
+        correlations = []
+        for corr in self.active_correlations.values():
+            if corr.trigger_alarm_id == alarm_id or alarm_id in corr.related_alarm_ids:
+                correlations.append(corr)
+        return correlations
+
+    def clear_correlation(self, correlation_id: str):
+        """Clear a correlation when all related alarms are cleared"""
+        if correlation_id in self.active_correlations:
+            del self.active_correlations[correlation_id]
+            logger.info(f"Cleared correlation: {correlation_id}")
+
+    # ========================================================================
+    # SOE (Sequence of Events) Buffer
+    # ========================================================================
+
+    def add_soe_event(
+        self,
+        event_type: str,
+        source_channel: str,
+        value: Any,
+        previous_value: Any = None,
+        severity: Optional[str] = None,
+        message: str = "",
+        alarm_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        timestamp_us: Optional[int] = None
+    ) -> SOEEvent:
+        """
+        Add an event to the SOE buffer.
+        Called when significant events occur (alarms, state changes, digital edges).
+        """
+        import uuid
+
+        if timestamp_us is None:
+            timestamp_us = time.time_ns() // 1000
+
+        event = SOEEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp_us=timestamp_us,
+            timestamp_iso=datetime.now().isoformat(),
+            event_type=event_type,
+            source_channel=source_channel,
+            value=value,
+            previous_value=previous_value,
+            severity=severity,
+            message=message,
+            node_id=self.node_id,
+            alarm_id=alarm_id,
+            correlation_id=correlation_id
+        )
+
+        with self.lock:
+            self.soe_buffer.append(event)
+
+            # Trim buffer if needed
+            if len(self.soe_buffer) > self.max_soe_events:
+                self.soe_buffer = self.soe_buffer[-self.max_soe_events:]
+
+        # Publish SOE event
+        if self.publish_callback:
+            self.publish_callback('soe/event', event.to_dict())
+
+        return event
+
+    def get_soe_events(
+        self,
+        start_time_us: Optional[int] = None,
+        end_time_us: Optional[int] = None,
+        event_types: Optional[List[str]] = None,
+        channels: Optional[List[str]] = None,
+        limit: int = 1000
+    ) -> List[SOEEvent]:
+        """
+        Query SOE events with optional filters.
+        Returns events ordered by timestamp (newest first).
+        """
+        events = self.soe_buffer.copy()
+
+        # Apply filters
+        if start_time_us is not None:
+            events = [e for e in events if e.timestamp_us >= start_time_us]
+
+        if end_time_us is not None:
+            events = [e for e in events if e.timestamp_us <= end_time_us]
+
+        if event_types:
+            events = [e for e in events if e.event_type in event_types]
+
+        if channels:
+            events = [e for e in events if e.source_channel in channels]
+
+        # Sort by timestamp descending (newest first)
+        events.sort(key=lambda e: e.timestamp_us, reverse=True)
+
+        # Apply limit
+        return events[:limit]
+
+    def export_soe_csv(self, filepath: str, **filters) -> int:
+        """
+        Export SOE events to CSV file with full timestamp precision.
+        Returns number of events exported.
+        """
+        import csv
+
+        events = self.get_soe_events(**filters)
+
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp_us', 'timestamp_iso', 'event_type', 'channel',
+                'value', 'previous_value', 'severity', 'message',
+                'alarm_id', 'correlation_id', 'node_id'
+            ])
+
+            for event in events:
+                writer.writerow([
+                    event.timestamp_us,
+                    event.timestamp_iso,
+                    event.event_type,
+                    event.source_channel,
+                    event.value,
+                    event.previous_value,
+                    event.severity or '',
+                    event.message,
+                    event.alarm_id or '',
+                    event.correlation_id or '',
+                    event.node_id
+                ])
+
+        logger.info(f"Exported {len(events)} SOE events to {filepath}")
+        return len(events)
+
+    def clear_soe_buffer(self):
+        """Clear all SOE events from buffer"""
+        with self.lock:
+            self.soe_buffer.clear()
+        logger.info("SOE buffer cleared")

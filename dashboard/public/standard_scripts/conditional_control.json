@@ -1,0 +1,58 @@
+{
+  "name": "Conditional Control (While Loop)",
+  "description": "Executes actions while conditions are true - like a while loop with sensor conditions",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Control Sequences",
+  "config": {
+    "condition_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to check condition against"
+    },
+    "condition_operator": {
+      "type": "select",
+      "options": ["<", "<=", ">", ">=", "==", "!="],
+      "default": "<",
+      "description": "Comparison operator"
+    },
+    "condition_value": {
+      "type": "number",
+      "default": 60,
+      "description": "Value to compare against"
+    },
+    "while_true_actions": {
+      "type": "array",
+      "default": [
+        {"output": "Heater_Enable", "value": true}
+      ],
+      "description": "Actions to execute while condition is TRUE"
+    },
+    "while_false_actions": {
+      "type": "array",
+      "default": [
+        {"output": "Heater_Enable", "value": false}
+      ],
+      "description": "Actions to execute while condition is FALSE"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable/disable this control"
+    }
+  },
+  "subscribed_tags": ["${config.condition_tag}"],
+  "published_tags": [
+    {
+      "name": "py.Condition_Met",
+      "unit": "",
+      "description": "1 if condition is currently true"
+    },
+    {
+      "name": "py.Condition_Duration",
+      "unit": "sec",
+      "description": "How long current state has been held"
+    }
+  ],
+  "code": "# Conditional Control (While Loop)\n# Executes different actions based on whether condition is true/false\n# Example: While Temperature < 60, keep Heater ON\n\nimport time\n\ncond_tag = config.get('condition_tag', 'Temperature_1')\noperator = config.get('condition_operator', '<')\ncond_value = config.get('condition_value', 60)\ntrue_actions = config.get('while_true_actions', [])\nfalse_actions = config.get('while_false_actions', [])\nenabled = config.get('enabled', True)\n\n# Initialize state\nif 'last_condition' not in state:\n    state['last_condition'] = None\n    state['state_start_time'] = time.time()\n\nif not enabled:\n    publish('py.Condition_Met', 0)\n    publish('py.Condition_Duration', 0)\nelse:\n    # Get current value\n    current_value = tags.get(cond_tag, 0)\n    \n    # Evaluate condition\n    operators = {\n        '<': lambda a, b: a < b,\n        '<=': lambda a, b: a <= b,\n        '>': lambda a, b: a > b,\n        '>=': lambda a, b: a >= b,\n        '==': lambda a, b: a == b,\n        '!=': lambda a, b: a != b\n    }\n    \n    op_func = operators.get(operator, operators['<'])\n    condition_met = op_func(current_value, cond_value)\n    \n    # Track state changes\n    if condition_met != state['last_condition']:\n        state['last_condition'] = condition_met\n        state['state_start_time'] = time.time()\n    \n    duration = time.time() - state['state_start_time']\n    \n    # Execute appropriate actions\n    if condition_met:\n        for action in true_actions:\n            output_tag = action.get('output', '')\n            output_value = action.get('value', False)\n            if output_tag:\n                output(output_tag, output_value)\n    else:\n        for action in false_actions:\n            output_tag = action.get('output', '')\n            output_value = action.get('value', False)\n            if output_tag:\n                output(output_tag, output_value)\n    \n    publish('py.Condition_Met', 1 if condition_met else 0)\n    publish('py.Condition_Duration', duration)"
+}

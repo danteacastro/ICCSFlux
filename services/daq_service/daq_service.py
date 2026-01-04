@@ -31,6 +31,19 @@ try:
 except ImportError:
     PYMODBUS_AVAILABLE = False
     ModbusReader = None
+
+# Try to import DataSourceManager (for REST API, OPC-UA, etc.)
+try:
+    from data_source_manager import (
+        DataSourceManager, DataSourceConfig, DataSourceType,
+        ChannelMapping, get_data_source_manager
+    )
+    from rest_reader import RestDataSource, RestSourceConfig, AuthType
+    DATA_SOURCE_MANAGER_AVAILABLE = True
+except ImportError as e:
+    DATA_SOURCE_MANAGER_AVAILABLE = False
+    logger.warning(f"DataSourceManager not available: {e}")
+
 from scheduler import SimpleScheduler
 from sequence_manager import SequenceManager, Sequence, SequenceStep
 from device_discovery import DeviceDiscovery
@@ -68,6 +81,7 @@ class DAQService:
         self.simulator: Optional[HardwareSimulator] = None
         self.hardware_reader: Optional[HardwareReader] = None
         self.modbus_reader: Optional['ModbusReader'] = None
+        self.data_source_manager: Optional['DataSourceManager'] = None
 
         # Thread-safe control flags using Events
         self._running = threading.Event()
@@ -102,6 +116,8 @@ class DAQService:
         self.channel_values: Dict[str, Any] = {}      # Scaled engineering values
         self.channel_raw_values: Dict[str, Any] = {}  # Raw values before scaling
         self.channel_timestamps: Dict[str, float] = {}
+        # SOE (Sequence of Events) support - microsecond precision acquisition timestamps
+        self.channel_acquisition_ts_us: Dict[str, int] = {}  # Microseconds since epoch
 
         # Threads
         self.scan_thread: Optional[threading.Thread] = None
@@ -204,6 +220,44 @@ class DAQService:
             self._acquiring.clear()
 
     # =========================================================================
+    # MULTI-NODE TOPIC HELPERS
+    # =========================================================================
+
+    def get_topic_base(self) -> str:
+        """Get the node-prefixed MQTT topic base.
+
+        Returns topic in format: {mqtt_base_topic}/nodes/{node_id}
+        Example: nisystem/nodes/node-001
+
+        This enables multi-node support where multiple DAQ services can
+        publish to the same broker with unique topic namespaces.
+        """
+        if not self.config:
+            return "nisystem/nodes/node-001"  # Fallback
+        base = self.config.system.mqtt_base_topic
+        node_id = self.config.system.node_id
+        return f"{base}/nodes/{node_id}"
+
+    def get_topic(self, category: str, entity: str = "") -> str:
+        """Build a full MQTT topic with node prefix.
+
+        Args:
+            category: Topic category (e.g., 'channels', 'status', 'alarms')
+            entity: Optional entity name (e.g., channel name, alarm id)
+
+        Returns:
+            Full topic path: {base}/nodes/{node_id}/{category}[/{entity}]
+
+        Example:
+            get_topic('channels', 'TC001') -> 'nisystem/nodes/node-001/channels/TC001'
+            get_topic('status', 'system') -> 'nisystem/nodes/node-001/status/system'
+        """
+        base = self.get_topic_base()
+        if entity:
+            return f"{base}/{category}/{entity}"
+        return f"{base}/{category}"
+
+    # =========================================================================
     # CONFIGURATION
     # =========================================================================
 
@@ -250,6 +304,9 @@ class DAQService:
 
             # Initialize Modbus reader if we have Modbus devices configured
             self._init_modbus_reader()
+
+            # Initialize external data sources (REST API, OPC-UA, etc.)
+            self._init_data_sources()
 
             # Initialize channel values
             for name, channel in self.config.channels.items():
@@ -451,6 +508,81 @@ class DAQService:
             logger.error(f"Failed to initialize Modbus reader: {e}")
             self.modbus_reader = None
 
+    def _init_data_sources(self):
+        """Initialize DataSourceManager for REST API and other external data sources"""
+        if not DATA_SOURCE_MANAGER_AVAILABLE:
+            logger.debug("DataSourceManager not available - external data sources disabled")
+            return
+
+        try:
+            self.data_source_manager = get_data_source_manager()
+
+            # Load data sources from project config if available
+            if self.current_project_data and 'data_sources' in self.current_project_data:
+                for source_config in self.current_project_data['data_sources']:
+                    self._add_data_source_from_config(source_config)
+
+            # Start all data sources
+            if self.data_source_manager.sources:
+                self.data_source_manager.start_all()
+                logger.info(f"DataSourceManager initialized with {len(self.data_source_manager.sources)} sources")
+            else:
+                logger.debug("No external data sources configured")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize DataSourceManager: {e}")
+            self.data_source_manager = None
+
+    def _add_data_source_from_config(self, source_config: Dict[str, Any]):
+        """Add a data source from project config"""
+        if not self.data_source_manager:
+            return
+
+        source_type_str = source_config.get('type', '')
+        name = source_config.get('name', '')
+
+        try:
+            if source_type_str == 'rest_api':
+                # Create REST API data source
+                connection = source_config.get('connection', {})
+                config = RestSourceConfig(
+                    name=name,
+                    source_type=DataSourceType.REST_API,
+                    enabled=source_config.get('enabled', True),
+                    poll_rate_ms=source_config.get('poll_rate_ms', 100),
+                    timeout_s=source_config.get('timeout_s', 5.0),
+                    retries=source_config.get('retries', 3),
+                    base_url=connection.get('base_url', ''),
+                    auth_type=AuthType(connection.get('auth_type', 'none')),
+                    username=connection.get('username', ''),
+                    password=connection.get('password', ''),
+                    api_key=connection.get('api_key', ''),
+                    api_key_header=connection.get('api_key_header', 'X-API-Key'),
+                    bearer_token=connection.get('bearer_token', ''),
+                    verify_ssl=connection.get('verify_ssl', True),
+                )
+
+                # Create channel mappings
+                channels = []
+                for ch_config in source_config.get('channels', []):
+                    channels.append(ChannelMapping(
+                        channel_name=ch_config.get('name', ''),
+                        source_address=ch_config.get('address', ''),
+                        data_type=ch_config.get('data_type', 'float32'),
+                        scale=ch_config.get('scale', 1.0),
+                        offset=ch_config.get('offset', 0.0),
+                        unit=ch_config.get('unit', ''),
+                        is_output=ch_config.get('is_output', False),
+                    ))
+
+                self.data_source_manager.add_source(config, channels)
+                logger.info(f"Added REST API data source: {name}")
+
+            # Add other source types here (OPC-UA, EtherNet/IP, etc.)
+
+        except Exception as e:
+            logger.error(f"Failed to add data source '{name}': {e}")
+
     def _init_scheduler(self):
         """Initialize the scheduler with callbacks"""
         self.scheduler = SimpleScheduler(
@@ -586,7 +718,7 @@ class DAQService:
         if not self.mqtt_client:
             return
 
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if event_type == 'alarm':
             # Publish alarm state
@@ -705,7 +837,7 @@ class DAQService:
 
     def _sequence_event_handler(self, event_type: str, sequence):
         """Handle sequence events and publish status"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         # Publish sequence status
         payload = {
@@ -732,7 +864,7 @@ class DAQService:
 
     def _sequence_log_message(self, message: str):
         """Callback for sequence log messages"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         payload = {
             "type": "sequence_log",
             "message": message,
@@ -798,7 +930,7 @@ class DAQService:
             logger.info("Connected to MQTT broker")
 
             # Subscribe to command topics
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             client.subscribe(f"{base}/commands/#")
             client.subscribe(f"{base}/config/reload")
             client.subscribe(f"{base}/simulation/event")
@@ -873,6 +1005,7 @@ class DAQService:
             client.subscribe(f"{base}/project/list")
             client.subscribe(f"{base}/project/load")
             client.subscribe(f"{base}/project/import")  # Import from any path
+            client.subscribe(f"{base}/project/import/json")  # Import JSON directly
             client.subscribe(f"{base}/project/close")   # Close to empty state
             client.subscribe(f"{base}/project/save")
             client.subscribe(f"{base}/project/delete")
@@ -906,6 +1039,13 @@ class DAQService:
             client.subscribe(f"{base}/chassis/delete")
             client.subscribe(f"{base}/chassis/test")
 
+            # Subscribe to data source management topics (REST API, OPC-UA, etc.)
+            client.subscribe(f"{base}/datasource/add")
+            client.subscribe(f"{base}/datasource/update")
+            client.subscribe(f"{base}/datasource/delete")
+            client.subscribe(f"{base}/datasource/test")
+            client.subscribe(f"{base}/datasource/list")
+
             # Publish connection status
             self._publish_system_status()
 
@@ -928,7 +1068,7 @@ class DAQService:
     def _on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
         topic = msg.topic
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         try:
             payload = json.loads(msg.payload.decode())
@@ -1073,6 +1213,8 @@ class DAQService:
             self._handle_project_get_current()
         elif topic == f"{base}/project/import":
             self._handle_project_import(payload)
+        elif topic == f"{base}/project/import/json":
+            self._handle_project_import_json(payload)
         elif topic == f"{base}/project/close":
             self._handle_project_close(payload)
 
@@ -1131,6 +1273,18 @@ class DAQService:
             self._handle_chassis_delete(payload)
         elif topic == f"{base}/chassis/test":
             self._handle_chassis_test(payload)
+
+        # === DATA SOURCE MANAGEMENT (REST API, OPC-UA, etc.) ===
+        elif topic == f"{base}/datasource/add":
+            self._handle_datasource_add(payload)
+        elif topic == f"{base}/datasource/update":
+            self._handle_datasource_update(payload)
+        elif topic == f"{base}/datasource/delete":
+            self._handle_datasource_delete(payload)
+        elif topic == f"{base}/datasource/test":
+            self._handle_datasource_test(payload)
+        elif topic == f"{base}/datasource/list":
+            self._handle_datasource_list()
 
         # === CHANNEL COMMANDS ===
         elif topic.startswith(f"{base}/commands/"):
@@ -1582,7 +1736,7 @@ class DAQService:
 
     def _handle_recording_list(self):
         """List recorded files"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         files = self.recording_manager.list_files()
 
@@ -1625,7 +1779,7 @@ class DAQService:
 
     def _publish_recording_response(self, success: bool, message: str):
         """Publish recording operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.mqtt_client.publish(
             f"{base}/recording/response",
@@ -1638,7 +1792,7 @@ class DAQService:
 
     def _publish_recording_config(self):
         """Publish current recording configuration"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         config = self.recording_manager.get_config()
         status = self.recording_manager.get_status()
@@ -1671,7 +1825,7 @@ class DAQService:
                 if self._start_time:
                     uptime = (datetime.now() - self._start_time).total_seconds()
 
-                base = self.config.system.mqtt_base_topic
+                base = self.get_topic_base()
                 payload = {
                     "sequence": self._heartbeat_sequence,
                     "timestamp": datetime.now().isoformat(),
@@ -1704,7 +1858,7 @@ class DAQService:
         if not self.mqtt_client:
             return
 
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         payload = {
             "command": command,
             "request_id": request_id,
@@ -1722,7 +1876,7 @@ class DAQService:
 
     def _publish_system_status(self):
         """Publish comprehensive system status with resource monitoring"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         # Update resource monitoring
         if self._resource_monitor_enabled and self._process:
@@ -1746,6 +1900,9 @@ class DAQService:
         status = {
             "status": "online",
             "timestamp": datetime.now().isoformat(),
+            # Multi-node identification
+            "node_id": self.config.system.node_id,
+            "node_name": self.config.system.node_name,
             "simulation_mode": self.config.system.simulation_mode or not NIDAQMX_AVAILABLE,
             "acquiring": self.acquiring,
             "recording": rec_status.get('recording', self.recording),
@@ -1828,7 +1985,7 @@ class DAQService:
 
     def _publish_auth_status(self, error: Optional[str] = None):
         """Publish authentication status"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         status = {
             "authenticated": self.authenticated,
@@ -1851,7 +2008,7 @@ class DAQService:
 
     def _handle_config_get(self):
         """Return current configuration as JSON"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         config_data = self._config_to_dict()
 
@@ -1955,7 +2112,7 @@ class DAQService:
 
     def _handle_config_list(self):
         """List available configuration files"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         config_dir = Path(self.config_path).parent
 
         configs = []
@@ -1984,7 +2141,7 @@ class DAQService:
         Payload options:
             restart_acquisition: bool (default False) - if True, restart acquisition after apply
         """
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         try:
             logger.info("Applying configuration changes...")
@@ -2052,7 +2209,8 @@ class DAQService:
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)
 
-            settings["last_project_path"] = str(project_path) if project_path else None
+            # Always store absolute path to avoid working directory issues
+            settings["last_project_path"] = str(project_path.resolve()) if project_path else None
 
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -2075,20 +2233,38 @@ class DAQService:
         return None
 
     def _try_load_last_project(self):
-        """Try to load the last project on startup, fail gracefully to empty state"""
+        """Try to load the last project on startup, fail gracefully to empty state
+
+        Priority:
+        1. Last used project (from settings file)
+        2. Default project (from system.ini default_project setting)
+        3. Empty state
+        """
+        # First try the last used project
         last_path = self._load_last_project_path()
         if last_path and last_path.exists():
             logger.info(f"Auto-loading last project: {last_path}")
             self._load_project_from_path(last_path, publish=False)
+            return
         elif last_path:
-            logger.warning(f"Last project not found: {last_path} - starting with empty state")
+            logger.warning(f"Last project not found: {last_path}")
             self._save_last_project_path(None)  # Clear invalid path
-        else:
-            logger.info("No last project configured - starting with empty state")
+
+        # Fallback to default_project from system.ini
+        if self.config and self.config.system.default_project:
+            default_path = Path(self.config.system.default_project)
+            if default_path.exists():
+                logger.info(f"Loading default project from system.ini: {default_path}")
+                self._load_project_from_path(default_path, publish=False)
+                return
+            else:
+                logger.warning(f"Default project not found: {default_path}")
+
+        logger.info("No project configured - starting with empty state")
 
     def _handle_project_list(self):
         """List available project files from default projects directory"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         projects_dir = self._get_projects_dir()
 
         projects = []
@@ -2132,7 +2308,7 @@ class DAQService:
         1. New format: Project JSON contains embedded 'channels' and 'system' sections
         2. Legacy format: Project JSON contains 'config' field pointing to separate .ini file
         """
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if not project_path.exists():
             if publish:
@@ -2256,9 +2432,45 @@ class DAQService:
         project_path = Path(full_path)
         self._load_project_from_path(project_path)
 
+    def _handle_project_import_json(self, payload: Any):
+        """Import a project directly from JSON object (no file path needed)
+
+        Used when frontend loads a project file and sends the parsed JSON.
+        """
+        if not isinstance(payload, dict):
+            self._publish_project_response(False, "Invalid payload - expected JSON object")
+            return
+
+        # Validate project structure
+        if payload.get("type") != "nisystem-project":
+            self._publish_project_response(False, "Invalid project - missing 'type: nisystem-project'")
+            return
+
+        # Check if acquisition is running
+        if self._acquiring.is_set():
+            self._publish_project_response(False, "Cannot import project while acquisition is running")
+            return
+
+        try:
+            # Apply the project configuration
+            if self._apply_project_config(payload):
+                self.current_project_data = payload
+                self.current_project_path = None  # No file path - imported directly
+
+                self._publish_channel_config()
+
+                project_name = payload.get("name", "Imported Project")
+                logger.info(f"Imported project from JSON: {project_name}")
+                self._publish_project_response(True, f"Project '{project_name}' imported successfully")
+            else:
+                self._publish_project_response(False, "Failed to apply project configuration")
+        except Exception as e:
+            logger.error(f"Error importing project JSON: {e}")
+            self._publish_project_response(False, str(e))
+
     def _handle_project_close(self, payload: Any):
         """Close current project and clear to empty state"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.current_project_path = None
         self.current_project_data = {}
@@ -2273,7 +2485,7 @@ class DAQService:
 
     def _handle_project_save(self, payload: Any):
         """Save project to file - saves to current path or specified path"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if not isinstance(payload, dict):
             self._publish_project_response(False, "Invalid payload")
@@ -2368,7 +2580,7 @@ class DAQService:
 
     def _handle_project_get(self):
         """Get the current project data"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.mqtt_client.publish(
             f"{base}/project/current",
@@ -2395,7 +2607,7 @@ class DAQService:
 
     def _handle_notebook_save(self, payload: Any):
         """Save notebook data to file"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if not isinstance(payload, dict):
             logger.warning("Invalid notebook save payload")
@@ -2423,7 +2635,7 @@ class DAQService:
 
     def _handle_notebook_load(self, payload: Any):
         """Load notebook data from file"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         notebook_path = self._get_notebook_path()
 
         try:
@@ -2456,7 +2668,7 @@ class DAQService:
 
     def _publish_chassis_response(self, success: bool, message: str):
         """Publish response to chassis management commands"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         self.mqtt_client.publish(f"{base}/chassis/response", json.dumps({
             "success": success,
             "message": message
@@ -2662,13 +2874,188 @@ class DAQService:
 
     def _publish_modbus_status(self):
         """Publish Modbus connection status"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         status = {}
 
         if self.modbus_reader:
             status = self.modbus_reader.get_connection_status()
 
         self.mqtt_client.publish(f"{base}/modbus/status", json.dumps(status))
+
+    # =========================================================================
+    # DATA SOURCE MANAGEMENT (REST API, OPC-UA, etc.)
+    # =========================================================================
+
+    def _handle_datasource_add(self, payload: Any):
+        """Add a new data source (REST API, OPC-UA, etc.)"""
+        if not DATA_SOURCE_MANAGER_AVAILABLE:
+            self._publish_datasource_response(False, "DataSourceManager not available")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_datasource_response(False, "Invalid payload")
+            return
+
+        try:
+            source_config = {
+                'name': payload.get('name'),
+                'type': payload.get('type', 'rest_api'),
+                'enabled': payload.get('enabled', True),
+                'poll_rate_ms': payload.get('poll_rate_ms', 100),
+                'timeout_s': payload.get('timeout_s', 5.0),
+                'retries': payload.get('retries', 3),
+                'connection': payload.get('connection', {}),
+                'channels': payload.get('channels', []),
+            }
+
+            self._add_data_source_from_config(source_config)
+
+            # Start the new source
+            if self.data_source_manager:
+                source = self.data_source_manager.get_source(source_config['name'])
+                if source and source.config.enabled:
+                    if source.connect():
+                        from data_source_manager import ConnectionState
+                        source.status.state = ConnectionState.CONNECTED
+                    source.start_polling()
+
+            self._publish_datasource_response(True, f"Data source '{source_config['name']}' added")
+            self._publish_datasource_status()
+
+        except Exception as e:
+            logger.error(f"Failed to add data source: {e}")
+            self._publish_datasource_response(False, str(e))
+
+    def _handle_datasource_update(self, payload: Any):
+        """Update an existing data source"""
+        if not DATA_SOURCE_MANAGER_AVAILABLE or not self.data_source_manager:
+            self._publish_datasource_response(False, "DataSourceManager not available")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_datasource_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_datasource_response(False, "Missing source name")
+            return
+
+        try:
+            # Remove old source and re-add with new config
+            self.data_source_manager.remove_source(name)
+
+            source_config = {
+                'name': name,
+                'type': payload.get('type', 'rest_api'),
+                'enabled': payload.get('enabled', True),
+                'poll_rate_ms': payload.get('poll_rate_ms', 100),
+                'timeout_s': payload.get('timeout_s', 5.0),
+                'retries': payload.get('retries', 3),
+                'connection': payload.get('connection', {}),
+                'channels': payload.get('channels', []),
+            }
+
+            self._add_data_source_from_config(source_config)
+
+            # Start the updated source
+            source = self.data_source_manager.get_source(name)
+            if source and source.config.enabled:
+                if source.connect():
+                    from data_source_manager import ConnectionState
+                    source.status.state = ConnectionState.CONNECTED
+                source.start_polling()
+
+            self._publish_datasource_response(True, f"Data source '{name}' updated")
+            self._publish_datasource_status()
+
+        except Exception as e:
+            logger.error(f"Failed to update data source: {e}")
+            self._publish_datasource_response(False, str(e))
+
+    def _handle_datasource_delete(self, payload: Any):
+        """Delete a data source"""
+        if not DATA_SOURCE_MANAGER_AVAILABLE or not self.data_source_manager:
+            self._publish_datasource_response(False, "DataSourceManager not available")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_datasource_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_datasource_response(False, "Missing source name")
+            return
+
+        try:
+            self.data_source_manager.remove_source(name)
+            self._publish_datasource_response(True, f"Data source '{name}' deleted")
+            self._publish_datasource_status()
+
+        except Exception as e:
+            logger.error(f"Failed to delete data source: {e}")
+            self._publish_datasource_response(False, str(e))
+
+    def _handle_datasource_test(self, payload: Any):
+        """Test connection to a data source"""
+        if not DATA_SOURCE_MANAGER_AVAILABLE or not self.data_source_manager:
+            self._publish_datasource_response(False, "DataSourceManager not available")
+            return
+
+        if not isinstance(payload, dict):
+            self._publish_datasource_response(False, "Invalid payload")
+            return
+
+        name = payload.get('name')
+        if not name:
+            self._publish_datasource_response(False, "Missing source name")
+            return
+
+        source = self.data_source_manager.get_source(name)
+        if not source:
+            self._publish_datasource_response(False, f"Data source '{name}' not found")
+            return
+
+        try:
+            if source.connect():
+                self._publish_datasource_response(True, f"Connection to '{name}' successful")
+            else:
+                self._publish_datasource_response(False,
+                    f"Connection to '{name}' failed: {source.status.last_error or 'Unknown error'}")
+
+        except Exception as e:
+            logger.error(f"Failed to test data source: {e}")
+            self._publish_datasource_response(False, str(e))
+
+    def _handle_datasource_list(self):
+        """List all data sources and their status"""
+        self._publish_datasource_status()
+
+    def _publish_datasource_response(self, success: bool, message: str):
+        """Publish response to data source operations"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(f"{base}/datasource/response", json.dumps({
+            'success': success,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        }))
+
+    def _publish_datasource_status(self):
+        """Publish data source status and channel info"""
+        base = self.get_topic_base()
+        status = {}
+        channels = {}
+
+        if self.data_source_manager:
+            status = self.data_source_manager.get_all_status()
+            channels = self.data_source_manager.get_all_channels()
+
+        self.mqtt_client.publish(f"{base}/datasource/status", json.dumps({
+            'sources': status,
+            'channels': channels,
+            'available_types': DataSourceManager.get_available_types() if DATA_SOURCE_MANAGER_AVAILABLE else []
+        }))
 
     # =========================================================================
     # USER VARIABLES / PLAYGROUND HANDLERS
@@ -2782,7 +3169,7 @@ class DAQService:
 
         var = self.user_variables.get_variable(var_id)
         if var:
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             self.mqtt_client.publish(
                 f"{base}/variables/get/response",
                 json.dumps(var.to_dict())
@@ -2822,7 +3209,7 @@ class DAQService:
 
     def _publish_variable_response(self, success: bool, message: str):
         """Publish variable operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         self.mqtt_client.publish(
             f"{base}/variables/response",
             json.dumps({
@@ -2836,7 +3223,7 @@ class DAQService:
         """Publish user variable configurations"""
         if not self.user_variables:
             return
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         config = self.user_variables.get_config_dict()
         self.mqtt_client.publish(
             f"{base}/variables/config",
@@ -2848,7 +3235,7 @@ class DAQService:
         """Publish current user variable values"""
         if not self.user_variables:
             return
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         values = self.user_variables.get_values_dict()
         self.mqtt_client.publish(
             f"{base}/variables/values",
@@ -2928,7 +3315,7 @@ class DAQService:
         """Publish test session status"""
         if not self.user_variables:
             return
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         status = self.user_variables.get_session_status()
         self.mqtt_client.publish(
             f"{base}/test-session/status",
@@ -3000,7 +3387,7 @@ class DAQService:
         """Publish formula blocks configuration"""
         if not self.user_variables:
             return
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         blocks = self.user_variables.get_formula_blocks_dict()
         self.mqtt_client.publish(
             f"{base}/formulas/config",
@@ -3012,7 +3399,7 @@ class DAQService:
         """Publish formula blocks computed values"""
         if not self.user_variables:
             return
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         values = self.user_variables.get_formula_values_dict()
         self.mqtt_client.publish(
             f"{base}/formulas/values",
@@ -3022,7 +3409,7 @@ class DAQService:
 
     def _publish_formula_response(self, success: bool, message: str):
         """Publish formula block operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         self.mqtt_client.publish(
             f"{base}/formulas/response",
             json.dumps({
@@ -3034,7 +3421,7 @@ class DAQService:
 
     def _publish_project_response(self, success: bool, message: str):
         """Publish project operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         self.mqtt_client.publish(
             f"{base}/project/response",
             json.dumps({
@@ -3393,7 +3780,7 @@ class DAQService:
             if deps.dependents and not payload.get('force', False):
                 # Return dependency info so frontend can show confirmation
                 self.mqtt_client.publish(
-                    f"{self.config.system.mqtt_base_topic}/config/channel/delete/confirm",
+                    f"{self.get_topic_base()}/config/channel/delete/confirm",
                     json.dumps({
                         "channel": channel_name,
                         "dependencies": deps.to_dict(),
@@ -3424,7 +3811,7 @@ class DAQService:
 
         # Notify about deleted channel so frontend can clean up widgets
         self.mqtt_client.publish(
-            f"{self.config.system.mqtt_base_topic}/config/channel/deleted",
+            f"{self.get_topic_base()}/config/channel/deleted",
             json.dumps({
                 "channel": channel_name,
                 "timestamp": datetime.now().isoformat()
@@ -3519,7 +3906,7 @@ class DAQService:
         self._publish_channel_config()
 
         self.mqtt_client.publish(
-            f"{self.config.system.mqtt_base_topic}/config/channel/bulk-create/response",
+            f"{self.get_topic_base()}/config/channel/bulk-create/response",
             json.dumps({
                 "success": len(failed) == 0,
                 "created": created,
@@ -3536,7 +3923,7 @@ class DAQService:
     def _handle_discovery_scan(self):
         """Handle device discovery scan request"""
         logger.info("Starting device discovery scan...")
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         try:
             result = self.device_discovery.scan()
@@ -3581,7 +3968,7 @@ class DAQService:
         Payload: { "type": "channel|module|chassis|safety_action", "id": "entity_name" }
         Response: DependencyInfo with cascade_deletes and dependents
         """
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if not isinstance(payload, dict):
             self._publish_dependency_response(False, "Invalid payload", None)
@@ -3631,7 +4018,7 @@ class DAQService:
             "strategy": "delete_only" | "delete_and_cleanup"
         }
         """
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if not self.authenticated:
             self._publish_dependency_response(False, "Not authenticated", None)
@@ -3702,7 +4089,7 @@ class DAQService:
 
     def _handle_dependency_validate(self):
         """Validate config and return orphans/warnings"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         validation = self.dependency_tracker.validate_config()
 
@@ -3718,7 +4105,7 @@ class DAQService:
 
     def _handle_dependency_orphans(self):
         """Get list of orphaned references in config"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         orphans = self.dependency_tracker.find_orphaned_references()
 
@@ -3744,7 +4131,7 @@ class DAQService:
 
     def _publish_dependency_response(self, success: bool, message: str, data: Any):
         """Publish dependency operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         response = {
             "success": success,
@@ -3791,7 +4178,7 @@ class DAQService:
 
     def _publish_schedule_status(self):
         """Publish current schedule status"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         status = self.scheduler.get_status()
 
@@ -3803,7 +4190,7 @@ class DAQService:
 
     def _publish_schedule_response(self, success: bool, message: str):
         """Publish schedule operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.mqtt_client.publish(
             f"{base}/schedule/response",
@@ -4005,7 +4392,7 @@ class DAQService:
 
         sequence = self.sequence_manager.get_sequence(sequence_id)
         if sequence:
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             self.mqtt_client.publish(
                 f"{base}/sequence/details",
                 json.dumps({
@@ -4020,7 +4407,7 @@ class DAQService:
 
     def _publish_sequence_response(self, success: bool, message: str):
         """Publish sequence operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.mqtt_client.publish(
             f"{base}/sequence/response",
@@ -4037,7 +4424,7 @@ class DAQService:
         if not self.sequence_manager:
             return
 
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         # Get status of all sequences
         sequences_status = {}
@@ -4063,7 +4450,7 @@ class DAQService:
         if not self.sequence_manager:
             return
 
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         sequences = []
         for seq_id, sequence in self.sequence_manager.sequences.items():
@@ -4104,7 +4491,7 @@ class DAQService:
 
     def _publish_config_response(self, success: bool, message: str):
         """Publish config operation response"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         self.mqtt_client.publish(
             f"{base}/config/response",
@@ -4385,7 +4772,7 @@ class DAQService:
 
     def _publish_channel_config(self):
         """Publish channel configuration for Node-RED to discover"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         config_data = {
             "channels": {},
@@ -4473,7 +4860,7 @@ class DAQService:
         """Publish a single channel value with scaling info for validation"""
         import math
         try:
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             channel = self.config.channels[channel_name]
 
             # Check for NaN values (indicates hardware not connected or read failure)
@@ -4490,12 +4877,16 @@ class DAQService:
             # Get raw value if available
             raw_value = self.channel_raw_values.get(channel_name)
 
+            # Get SOE acquisition timestamp (microseconds since epoch)
+            acquisition_ts_us = self.channel_acquisition_ts_us.get(channel_name, 0)
+
             # Handle NaN - JSON doesn't support NaN, so use null and set quality to "bad"
             if is_nan:
                 payload = {
                     "value": None,  # JSON null
                     "value_string": "NaN",  # Human readable
                     "timestamp": datetime.now().isoformat(),
+                    "acquisition_ts_us": acquisition_ts_us,  # SOE: microsecond precision
                     "units": channel.units,
                     "quality": "bad",
                     "status": "disconnected"
@@ -4504,6 +4895,7 @@ class DAQService:
                 payload = {
                     "value": value,
                     "timestamp": datetime.now().isoformat(),
+                    "acquisition_ts_us": acquisition_ts_us,  # SOE: microsecond precision
                     "units": channel.units,
                     "quality": "good",
                     "status": "normal"
@@ -4542,7 +4934,7 @@ class DAQService:
 
     def _publish_alarm(self, source: str, message: str):
         """Publish an alarm with QoS 1 for reliable delivery"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         payload = {
             "source": source,
@@ -4566,7 +4958,7 @@ class DAQService:
 
     def _clear_alarm(self, source: str):
         """Clear an alarm"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
 
         if source in self.alarms_active:
             del self.alarms_active[source]
@@ -4660,7 +5052,7 @@ class DAQService:
     def _publish_output_response(self, success: bool, channel: str = None,
                                    value: Any = None, error: str = None):
         """Publish response to output/set command"""
-        base = self.config.system.mqtt_base_topic
+        base = self.get_topic_base()
         response = {"success": success}
         if channel is not None:
             response["channel"] = channel
@@ -4897,6 +5289,8 @@ class DAQService:
 
         while self.running:
             start_time = time.time()
+            # SOE: Capture high-precision acquisition timestamp (microseconds since epoch)
+            acquisition_ts_us = time.time_ns() // 1000
 
             # Only acquire data if acquiring flag is set
             if self.acquiring:
@@ -4915,6 +5309,11 @@ class DAQService:
                         modbus_values = self.modbus_reader.read_all()
                         raw_values.update(modbus_values)
 
+                    # Read from external data sources (REST API, OPC-UA, etc.)
+                    if self.data_source_manager:
+                        data_source_values = self.data_source_manager.get_all_values()
+                        raw_values.update(data_source_values)
+
                     # Apply scaling and update values under lock
                     with self.values_lock:
                         for name, raw_value in raw_values.items():
@@ -4932,6 +5331,8 @@ class DAQService:
                             else:
                                 self.channel_values[name] = raw_value
                             self.channel_timestamps[name] = start_time
+                            # SOE: Store high-precision acquisition timestamp
+                            self.channel_acquisition_ts_us[name] = acquisition_ts_us
 
                     # Check safety OUTSIDE the lock (using scaled values)
                     for name in raw_values:
@@ -5091,10 +5492,12 @@ class DAQService:
 
         # Publish shutting_down status
         if self.mqtt_client:
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             self.mqtt_client.publish(f"{base}/status/system", json.dumps({
                 "status": "shutting_down",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "node_id": self.config.system.node_id if self.config else "node-001",
+                "node_name": self.config.system.node_name if self.config else "Default Node"
             }), retain=True, qos=1)
 
         # Stop scheduler
@@ -5146,9 +5549,18 @@ class DAQService:
             except Exception as e:
                 logger.warning(f"Error closing Modbus reader: {e}")
 
+        # Close external data sources
+        if self.data_source_manager:
+            try:
+                logger.info("Closing data source manager...")
+                self.data_source_manager.stop_all()
+                self.data_source_manager = None
+            except Exception as e:
+                logger.warning(f"Error closing data source manager: {e}")
+
         # Final status and disconnect MQTT
         if self.mqtt_client:
-            base = self.config.system.mqtt_base_topic
+            base = self.get_topic_base()
             self.mqtt_client.publish(f"{base}/status/service", json.dumps({
                 "status": "offline",
                 "timestamp": datetime.now().isoformat()

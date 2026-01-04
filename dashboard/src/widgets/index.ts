@@ -13,7 +13,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   recording_status: defineAsyncComponent(() => import('./RecordingStatusWidget.vue')),
   system_status: defineAsyncComponent(() => import('./SystemStatusWidget.vue')),
   interlock_status: defineAsyncComponent(() => import('./InterlockStatusWidget.vue')),
-  multi_channel_table: defineAsyncComponent(() => import('./MultiChannelTableWidget.vue')),
+  // multi_channel_table removed - use value_table instead
   action_button: defineAsyncComponent(() => import('./ActionButtonWidget.vue')),
   clock: defineAsyncComponent(() => import('./ClockWidget.vue')),
   gauge: defineAsyncComponent(() => import('./GaugeWidget.vue')),
@@ -21,12 +21,13 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   setpoint: defineAsyncComponent(() => import('./SetpointWidget.vue')),
   bar_graph: defineAsyncComponent(() => import('./BarGraphWidget.vue')),
   scheduler_status: defineAsyncComponent(() => import('./SchedulerStatusWidget.vue')),
-  sequence_status: defineAsyncComponent(() => import('./SequenceStatusWidget.vue')),
+  // sequence_status removed - use script_monitor with py.SM_* tags
   svg_symbol: defineAsyncComponent(() => import('./SvgSymbolWidget.vue')),
-  text_label: defineAsyncComponent(() => import('./TextLabelWidget.vue')),
+  // text_label removed - use title instead
   value_table: defineAsyncComponent(() => import('./ValueTableWidget.vue')),
   crio_status: defineAsyncComponent(() => import('./CrioStatusWidget.vue')),
   latch_switch: defineAsyncComponent(() => import('./LatchSwitchWidget.vue')),
+  script_monitor: defineAsyncComponent(() => import('./ScriptMonitorWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -135,14 +136,6 @@ export const availableWidgets: WidgetTypeInfo[] = [
     defaultSize: { w: 2, h: 2 }
   },
   {
-    type: 'multi_channel_table',
-    name: 'Channel Table',
-    icon: '▤',
-    description: 'Compact multi-channel display',
-    needsChannel: false,
-    defaultSize: { w: 2, h: 3 }
-  },
-  {
     type: 'action_button',
     name: 'Action Button',
     icon: '▶',
@@ -191,28 +184,12 @@ export const availableWidgets: WidgetTypeInfo[] = [
     defaultSize: { w: 2, h: 2 }
   },
   {
-    type: 'sequence_status',
-    name: 'Sequence Status',
-    icon: '⚙',
-    description: 'Running sequence progress',
-    needsChannel: false,
-    defaultSize: { w: 2, h: 2 }
-  },
-  {
     type: 'svg_symbol',
     name: 'P&ID Symbol',
     icon: '⚙',
     description: 'SCADA equipment symbol (valve, pump, sensor)',
     needsChannel: false,  // Channel is optional - pick symbol first
     defaultSize: { w: 2, h: 2 }
-  },
-  {
-    type: 'text_label',
-    name: 'Text Label',
-    icon: 'A',
-    description: 'Static text annotation for P&ID labeling',
-    needsChannel: false,
-    defaultSize: { w: 3, h: 1 }
   },
   {
     type: 'value_table',
@@ -237,5 +214,13 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Safety latch that must be armed before outputs/session',
     needsChannel: false,
     defaultSize: { w: 2, h: 2 }
+  },
+  {
+    type: 'script_monitor',
+    name: 'Script Monitor',
+    icon: '📊',
+    description: 'Monitor multiple py.* script values and tags in real-time',
+    needsChannel: false,
+    defaultSize: { w: 3, h: 4 }
   }
 ]

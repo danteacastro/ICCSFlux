@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type {
   ChannelConfig,
   ChannelValue,
@@ -12,6 +12,81 @@ import type {
   PipeConnection,
   PipePoint
 } from '../types'
+
+// Recording configuration interface
+export interface RecordingConfig {
+  basePath: string
+  filePrefix: string
+  fileFormat: 'csv' | 'tdms'
+  sampleInterval: number
+  sampleIntervalUnit: 'seconds' | 'milliseconds'
+  decimation: number
+  rotationMode: 'single' | 'time' | 'size' | 'samples' | 'session'
+  maxFileSize: number
+  maxFileDuration: number
+  maxFileSamples: number
+  namingPattern: 'timestamp' | 'sequential' | 'custom'
+  includeDate: boolean
+  includeTime: boolean
+  includeChannelsInName: boolean
+  sequentialStart: number
+  sequentialPadding: number
+  customSuffix: string
+  directoryStructure: 'flat' | 'daily' | 'monthly' | 'experiment'
+  experimentName: string
+  writeMode: 'immediate' | 'buffered'
+  bufferSize: number
+  flushInterval: number
+  onLimitReached: 'new_file' | 'stop' | 'circular'
+  circularMaxFiles: number
+  mode: 'manual' | 'triggered' | 'scheduled'
+  triggerChannel: string
+  triggerCondition: 'above' | 'below' | 'change'
+  triggerValue: number
+  preTriggerSamples: number
+  postTriggerSamples: number
+  scheduleEnabled: boolean
+  scheduleStart: string
+  scheduleEnd: string
+  scheduleDays: string[]
+}
+
+const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
+  basePath: './data',
+  filePrefix: 'recording',
+  fileFormat: 'csv',
+  sampleInterval: 1,
+  sampleIntervalUnit: 'seconds',
+  decimation: 1,
+  rotationMode: 'single',
+  maxFileSize: 100,
+  maxFileDuration: 3600,
+  maxFileSamples: 10000,
+  namingPattern: 'timestamp',
+  includeDate: true,
+  includeTime: true,
+  includeChannelsInName: false,
+  sequentialStart: 1,
+  sequentialPadding: 3,
+  customSuffix: '',
+  directoryStructure: 'flat',
+  experimentName: '',
+  writeMode: 'buffered',
+  bufferSize: 100,
+  flushInterval: 5.0,
+  onLimitReached: 'new_file',
+  circularMaxFiles: 10,
+  mode: 'manual',
+  triggerChannel: '',
+  triggerCondition: 'above',
+  triggerValue: 0,
+  preTriggerSamples: 100,
+  postTriggerSamples: 1000,
+  scheduleEnabled: false,
+  scheduleStart: '08:00',
+  scheduleEnd: '17:00',
+  scheduleDays: ['mon', 'tue', 'wed', 'thu', 'fri']
+}
 
 export const useDashboardStore = defineStore('dashboard', () => {
   // System state
@@ -73,6 +148,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
   const rowHeight = ref(30)    // Smaller row height to match (was 60)
   const editMode = ref(false)
+
+  // ========================================================================
+  // RECORDING CONFIGURATION (Data tab)
+  // ========================================================================
+  const recordingConfig = ref<RecordingConfig>({ ...DEFAULT_RECORDING_CONFIG })
+  const selectedRecordingChannels = ref<string[]>([])
+  const selectAllRecordingChannels = ref(true)
 
   // Chart state (max 2 charts per page)
   const maxCharts = 2
@@ -683,16 +765,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
       recording_status: { w: 4, h: 4 },
       system_status: { w: 4, h: 4 },
       interlock_status: { w: 4, h: 4 },
-      multi_channel_table: { w: 4, h: 6 },
       action_button: { w: 2, h: 2 },
       clock: { w: 4, h: 2 },
       divider: { w: 6, h: 2 },
       bar_graph: { w: 4, h: 2 },
       scheduler_status: { w: 4, h: 4 },
-      sequence_status: { w: 4, h: 4 },
       svg_symbol: { w: 2, h: 2 },
-      text_label: { w: 6, h: 2 },
-      value_table: { w: 6, h: 8 }
+      value_table: { w: 6, h: 8 },
+      script_monitor: { w: 6, h: 8 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }
@@ -846,6 +926,69 @@ export const useDashboardStore = defineStore('dashboard', () => {
     values.value = {}
   }
 
+  // ========================================================================
+  // RECORDING CONFIGURATION ACTIONS (Data tab)
+  // ========================================================================
+
+  const RECORDING_CONFIG_KEY = 'nisystem-recording-config'
+  const RECORDING_CHANNELS_KEY = 'nisystem-recording-channels'
+
+  function setRecordingConfig(config: Partial<RecordingConfig>) {
+    Object.assign(recordingConfig.value, config)
+  }
+
+  function setSelectedRecordingChannels(channelNames: string[]) {
+    selectedRecordingChannels.value = channelNames
+  }
+
+  function setSelectAllRecordingChannels(selectAll: boolean) {
+    selectAllRecordingChannels.value = selectAll
+  }
+
+  function loadRecordingConfigFromStorage() {
+    try {
+      const savedConfig = localStorage.getItem(RECORDING_CONFIG_KEY)
+      if (savedConfig) {
+        const parsed = JSON.parse(savedConfig)
+        Object.assign(recordingConfig.value, parsed)
+      }
+
+      const savedChannels = localStorage.getItem(RECORDING_CHANNELS_KEY)
+      if (savedChannels) {
+        selectedRecordingChannels.value = JSON.parse(savedChannels)
+      }
+    } catch (e) {
+      console.error('[STORE] Failed to load recording config from localStorage:', e)
+    }
+  }
+
+  function saveRecordingConfigToStorage() {
+    try {
+      localStorage.setItem(RECORDING_CONFIG_KEY, JSON.stringify(recordingConfig.value))
+      localStorage.setItem(RECORDING_CHANNELS_KEY, JSON.stringify(selectedRecordingChannels.value))
+    } catch (e) {
+      console.error('[STORE] Failed to save recording config to localStorage:', e)
+    }
+  }
+
+  // Auto-persist recording config changes (debounced)
+  let recordingConfigPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+  function persistRecordingConfigDebounced() {
+    if (recordingConfigPersistTimer) clearTimeout(recordingConfigPersistTimer)
+    recordingConfigPersistTimer = setTimeout(() => {
+      saveRecordingConfigToStorage()
+    }, 500)
+  }
+
+  // Watch for changes and auto-persist
+  watch(recordingConfig, persistRecordingConfigDebounced, { deep: true })
+  watch(selectedRecordingChannels, persistRecordingConfigDebounced, { deep: true })
+  watch(selectAllRecordingChannels, persistRecordingConfigDebounced)
+
+  // Load on store creation
+  loadRecordingConfigFromStorage()
+
   return {
     // State
     systemId,
@@ -931,6 +1074,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
     setPipeDrawingMode,
     startPipeDrawing,
     finishPipeDrawing,
-    cancelPipeDrawing
+    cancelPipeDrawing,
+
+    // Recording configuration (Data tab)
+    recordingConfig,
+    selectedRecordingChannels,
+    selectAllRecordingChannels,
+    setRecordingConfig,
+    setSelectedRecordingChannels,
+    setSelectAllRecordingChannels,
+    loadRecordingConfigFromStorage,
+    saveRecordingConfigToStorage
   }
 })

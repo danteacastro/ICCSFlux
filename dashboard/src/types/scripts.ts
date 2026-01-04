@@ -2011,6 +2011,8 @@ export interface ScriptsStateExtended extends ScriptsState {
 export type ScriptsSubTabExtended =
   | ScriptsSubTab
   | 'session'
+  | 'variables'
+  | 'python'
   | 'stateMachines'
   | 'reports'
   | 'watchdogs'

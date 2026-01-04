@@ -350,10 +350,11 @@ export function useProjectManager() {
   // ============================================================================
 
   function isProjectFileV2(data: any): data is ProjectFile {
+    // V2 projects either have configFile (legacy) or embedded channels (new format)
     return data &&
            data.type === 'nisystem-project' &&
            data.version?.startsWith('2') &&
-           data.configFile !== undefined
+           (data.configFile !== undefined || data.channels !== undefined)
   }
 
   function isLegacyBundle(data: any): data is ProjectBundle {
@@ -424,6 +425,12 @@ export function useProjectManager() {
 
       if (isProjectFileV2(data)) {
         project = data
+
+        // For V2 projects with embedded channels, send to backend
+        if (mqtt.connected.value && data.channels) {
+          // Send the full project for backend to apply channels/system config
+          mqtt.sendCommand('project/import/json', data)
+        }
       } else if (isLegacyBundle(data)) {
         project = migrateLegacyBundle(data)
 

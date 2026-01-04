@@ -1,8 +1,9 @@
 import { ref, computed, watch } from 'vue'
 import mqtt, { type MqttClient, type IClientOptions } from 'mqtt'
-import type { ChannelValue, SystemStatus, ChannelConfig, RecordingConfig, RecordedFile } from '../types'
+import type { ChannelValue, SystemStatus, ChannelConfig, RecordingConfig, RecordedFile, NodeInfo } from '../types'
 import { usePlayground } from './usePlayground'
 import { usePythonScripts } from './usePythonScripts'
+import { useSOE } from './useSOE'
 
 // Stale data threshold in milliseconds
 const STALE_DATA_THRESHOLD_MS = 10000 // 10 seconds
@@ -88,6 +89,10 @@ const watchdogStatus = ref<{
   timestamp: null
 })
 
+// Multi-node support (shared)
+const knownNodes = ref<Map<string, NodeInfo>>(new Map())
+const activeNodeId = ref<string | null>(null)  // Currently focused node (null = all nodes)
+
 // Callbacks (shared)
 const dataCallbacks: ((data: Record<string, number>) => void)[] = []
 const statusCallbacks: ((status: SystemStatus) => void)[] = []
@@ -130,23 +135,25 @@ export function useMqtt(prefix: string = 'nisystem') {
       reconnectAttempts.value = 0 // Reset on successful connect
       console.log('MQTT connected')
 
-      // Subscribe to topics with QoS 1 for reliable delivery
+      // Subscribe to node-prefixed topics with QoS 1 for reliable delivery
+      // Uses '+' wildcard to receive from all nodes: nisystem/nodes/+/channels/#
+      const nodePrefix = `${systemPrefix}/nodes/+`
       const topics = [
-        `${systemPrefix}/channels/#`,
-        `${systemPrefix}/status/#`,
-        `${systemPrefix}/config/#`,
-        `${systemPrefix}/alarms/#`,
-        `${systemPrefix}/discovery/#`,
-        `${systemPrefix}/recording/#`,
-        `${systemPrefix}/watchdog/#`,
-        `${systemPrefix}/project/#`,  // Project management topics
-        `${systemPrefix}/variables/#`,  // User variables / Playground
-        `${systemPrefix}/test-session/#`,  // Test session management
-        `${systemPrefix}/formulas/#`,  // Formula blocks
-        `${systemPrefix}/heartbeat`,  // Service heartbeat
-        `${systemPrefix}/command/ack`,  // Command acknowledgments
-        `${systemPrefix}/config/channel/deleted`,
-        `${systemPrefix}/config/channel/bulk-create/response`
+        `${nodePrefix}/channels/#`,
+        `${nodePrefix}/status/#`,
+        `${nodePrefix}/config/#`,
+        `${nodePrefix}/alarms/#`,
+        `${nodePrefix}/discovery/#`,
+        `${nodePrefix}/recording/#`,
+        `${nodePrefix}/watchdog/#`,
+        `${nodePrefix}/project/#`,  // Project management topics
+        `${nodePrefix}/variables/#`,  // User variables / Playground
+        `${nodePrefix}/test-session/#`,  // Test session management
+        `${nodePrefix}/formulas/#`,  // Formula blocks
+        `${nodePrefix}/heartbeat`,  // Service heartbeat
+        `${nodePrefix}/command/ack`,  // Command acknowledgments
+        `${nodePrefix}/config/channel/deleted`,
+        `${nodePrefix}/config/channel/bulk-create/response`
       ]
 
       topics.forEach(topic => {
@@ -169,50 +176,80 @@ export function useMqtt(prefix: string = 'nisystem') {
 
         const payload = JSON.parse(message.toString())
 
-        if (topic.startsWith(`${systemPrefix}/channels/`)) {
-          // Individual channel value: nisystem/channels/<channel_name>
-          const channelName = topic.split('/').pop() || ''
-          handleChannelValue(channelName, payload)
-        } else if (topic === `${systemPrefix}/status/system`) {
-          handleStatus(payload)
-        } else if (topic === `${systemPrefix}/config/channels`) {
-          handleChannelConfig(payload)
-        } else if (topic === `${systemPrefix}/config/response`) {
-          handleConfigResponse(payload)
-        } else if (topic === `${systemPrefix}/discovery/result`) {
-          handleDiscoveryResult(payload)
-        } else if (topic === `${systemPrefix}/discovery/channels`) {
-          handleDiscoveryChannels(payload)
-        } else if (topic.startsWith(`${systemPrefix}/alarms/`)) {
-          handleAlarm(topic, payload)
-        } else if (topic === `${systemPrefix}/config/current`) {
-          handleFullConfig(payload)
-        } else if (topic === `${systemPrefix}/recording/config/current`) {
-          handleRecordingConfig(payload)
-        } else if (topic === `${systemPrefix}/recording/list/response`) {
-          handleRecordingList(payload)
-        } else if (topic === `${systemPrefix}/recording/response`) {
-          handleRecordingResponse(payload)
-        } else if (topic === `${systemPrefix}/config/channel/deleted`) {
-          handleChannelDeleted(payload)
-        } else if (topic === `${systemPrefix}/config/channel/bulk-create/response`) {
-          handleBulkCreateResponse(payload)
-        } else if (topic.startsWith(`${systemPrefix}/watchdog/`)) {
-          handleWatchdogMessage(topic, payload)
-        } else if (topic === `${systemPrefix}/variables/config`) {
-          handleVariablesConfig(payload)
-        } else if (topic === `${systemPrefix}/variables/values`) {
-          handleVariablesValues(payload)
-        } else if (topic === `${systemPrefix}/test-session/status`) {
-          handleTestSessionStatus(payload)
-        } else if (topic === `${systemPrefix}/formulas/config`) {
-          handleFormulaBlocksConfig(payload)
-        } else if (topic === `${systemPrefix}/formulas/values`) {
-          handleFormulaBlocksValues(payload)
-        } else if (topic === `${systemPrefix}/heartbeat`) {
-          handleHeartbeat(payload)
-        } else if (topic === `${systemPrefix}/command/ack`) {
-          handleCommandAck(payload)
+        // Parse node-prefixed topics: nisystem/nodes/{node_id}/{category}/...
+        // Example: nisystem/nodes/node-001/channels/TC001
+        const nodeMatch = topic.match(new RegExp(`^${systemPrefix}/nodes/([^/]+)/(.+)$`))
+        if (nodeMatch) {
+          const [, nodeId, restOfTopic] = nodeMatch
+          const category = restOfTopic.split('/')[0]
+
+          // Update node registry when we receive any message from a node
+          if (payload.node_id || nodeId) {
+            const existingNode = knownNodes.value.get(nodeId)
+            knownNodes.value.set(nodeId, {
+              nodeId,
+              nodeName: payload.node_name || existingNode?.nodeName || nodeId,
+              status: 'online',
+              lastSeen: Date.now(),
+              simulationMode: payload.simulation_mode ?? existingNode?.simulationMode ?? false
+            })
+          }
+
+          // Route messages based on category
+          if (restOfTopic.startsWith('channels/')) {
+            // Individual channel value: nisystem/nodes/{node}/channels/{channel_name}
+            const channelName = restOfTopic.split('/').pop() || ''
+            handleChannelValue(channelName, payload, nodeId)
+          } else if (restOfTopic === 'status/system') {
+            handleStatus(payload, nodeId)
+          } else if (restOfTopic === 'config/channels') {
+            handleChannelConfig(payload)
+          } else if (restOfTopic === 'config/response') {
+            handleConfigResponse(payload)
+          } else if (restOfTopic === 'discovery/result') {
+            handleDiscoveryResult(payload)
+          } else if (restOfTopic === 'discovery/channels') {
+            handleDiscoveryChannels(payload)
+          } else if (restOfTopic.startsWith('alarms/')) {
+            handleAlarm(topic, payload)
+          } else if (restOfTopic === 'config/current') {
+            handleFullConfig(payload)
+          } else if (restOfTopic === 'recording/config/current') {
+            handleRecordingConfig(payload)
+          } else if (restOfTopic === 'recording/list/response') {
+            handleRecordingList(payload)
+          } else if (restOfTopic === 'recording/response') {
+            handleRecordingResponse(payload)
+          } else if (restOfTopic === 'config/channel/deleted') {
+            handleChannelDeleted(payload)
+          } else if (restOfTopic === 'config/channel/bulk-create/response') {
+            handleBulkCreateResponse(payload)
+          } else if (restOfTopic.startsWith('watchdog/')) {
+            handleWatchdogMessage(topic, payload)
+          } else if (restOfTopic === 'variables/config') {
+            handleVariablesConfig(payload)
+          } else if (restOfTopic === 'variables/values') {
+            handleVariablesValues(payload)
+          } else if (restOfTopic === 'test-session/status') {
+            handleTestSessionStatus(payload)
+          } else if (restOfTopic === 'formulas/config') {
+            handleFormulaBlocksConfig(payload)
+          } else if (restOfTopic === 'formulas/values') {
+            handleFormulaBlocksValues(payload)
+          } else if (restOfTopic === 'heartbeat') {
+            handleHeartbeat(payload)
+          } else if (restOfTopic === 'command/ack') {
+            handleCommandAck(payload)
+          } else if (restOfTopic === 'soe/event') {
+            // SOE event from backend
+            soeComposable.handleSoeEvent(payload)
+          } else if (restOfTopic === 'correlations/detected') {
+            // Correlation detected by backend
+            soeComposable.handleCorrelationDetected(payload)
+          } else if (restOfTopic === 'correlation/rules/list/response') {
+            // Correlation rules sync from backend
+            soeComposable.handleCorrelationRulesSync(payload)
+          }
         }
 
         // Handle generic topic subscriptions
@@ -235,7 +272,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     })
   }
 
-  function handleChannelValue(channelName: string, payload: any) {
+  function handleChannelValue(channelName: string, payload: any, nodeId?: string) {
     const config = channelConfigs.value[channelName]
     const timestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now()
 
@@ -253,7 +290,11 @@ export function useMqtt(prefix: string = 'nisystem') {
       warning: payload.quality === 'warning' || (config && !isNaN ? isWarning(value, config) : false),
       // Additional quality indicators
       quality: payload.quality || 'good',
-      disconnected: isDisconnected
+      disconnected: isDisconnected,
+      // Multi-node: store source node ID
+      nodeId: nodeId || payload.node_id,
+      // SOE: Store high-precision acquisition timestamp (microseconds since epoch)
+      acquisitionTsUs: payload.acquisition_ts_us
     }
 
     // Call data callbacks with aggregated format for compatibility
@@ -266,7 +307,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     pythonScripts.onScanData()
   }
 
-  function handleStatus(status: SystemStatus) {
+  function handleStatus(status: SystemStatus, nodeId?: string) {
+    console.log('[MQTT] Received status update:', { nodeId, acquiring: status.acquiring, recording: status.recording })
+    // Add node info to status
+    if (nodeId || status.node_id) {
+      status.node_id = nodeId || status.node_id
+    }
     systemStatus.value = status
     statusCallbacks.forEach(cb => cb(status))
   }
@@ -540,8 +586,52 @@ export function useMqtt(prefix: string = 'nisystem') {
     getSessionElapsed: () => {
       // Return elapsed time if available from system status
       return systemStatus.value?.elapsed ?? 0
+    },
+    sendScriptValues: (values: Record<string, number>) => {
+      sendScriptValues(values)
+    },
+    // Session/Acquisition control - allow Python scripts to control DAQ
+    startAcquisition: () => {
+      console.log('[Python Script] Starting acquisition')
+      startAcquisition()
+    },
+    stopAcquisition: () => {
+      console.log('[Python Script] Stopping acquisition')
+      stopAcquisition()
+    },
+    startRecording: (filename?: string) => {
+      console.log('[Python Script] Starting recording', filename ? `(${filename})` : '')
+      startRecording(filename)
+    },
+    stopRecording: () => {
+      console.log('[Python Script] Stopping recording')
+      stopRecording()
+    },
+    isRecording: () => {
+      return systemStatus.value?.recording ?? false
     }
   })
+
+  // ========================================================================
+  // SOE & Event Correlation Integration
+  // ========================================================================
+
+  // Get SOE composable instance (singleton)
+  const soeComposable = useSOE()
+
+  // Wire up SOE MQTT publish handler
+  soeComposable.setMqttPublish((topic: string, payload: any) => {
+    if (client.value && connected.value) {
+      // Use active node or first known node or default
+      const nodeId = activeNodeId.value || knownNodes.value.keys().next().value || 'node-001'
+      client.value.publish(`${systemPrefix}/nodes/${nodeId}/${topic}`, JSON.stringify(payload))
+    } else {
+      console.warn('MQTT not connected, cannot publish:', topic)
+    }
+  })
+
+  // Initialize SOE (requests rules from backend)
+  soeComposable.initialize()
 
   // ========================================================================
   // Python Script Lifecycle - Watch for state changes
@@ -567,6 +657,24 @@ export function useMqtt(prefix: string = 'nisystem') {
       if (!isAcquiring && wasAcquiring) {
         console.log('[Python Scripts] Acquisition stopped - triggering onAcquisitionStop')
         pythonScripts.onAcquisitionStop()
+      }
+    }
+  )
+
+  // Watch for test session state changes to trigger Python scripts
+  watch(
+    () => playground.testSession.value.active,
+    (isActive, wasActive) => {
+      // Session started
+      if (isActive && !wasActive) {
+        console.log('[Python Scripts] Test session started - triggering onSessionStart')
+        pythonScripts.onSessionStart()
+      }
+
+      // Session stopped
+      if (!isActive && wasActive) {
+        console.log('[Python Scripts] Test session ended - triggering onSessionEnd')
+        pythonScripts.onSessionEnd()
       }
     }
   )
@@ -715,13 +823,14 @@ export function useMqtt(prefix: string = 'nisystem') {
   // Commands - using backend's topic structure
   function sendSystemCommand(command: string, payload?: any) {
     if (!client.value || !connected.value) {
-      console.error('MQTT not connected')
+      console.error('[MQTT] sendSystemCommand: not connected, command:', command)
       return
     }
 
     const topic = `${systemPrefix}/system/${command}`
     const message = payload !== undefined ? JSON.stringify(payload) : '{}'
 
+    console.log('[MQTT] Publishing to topic:', topic, 'message:', message)
     client.value.publish(topic, message)
   }
 
@@ -763,18 +872,22 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function startAcquisition() {
+    console.log('[MQTT] startAcquisition called, connected:', connected.value)
     sendSystemCommand('acquire/start')
   }
 
   function stopAcquisition() {
+    console.log('[MQTT] stopAcquisition called, connected:', connected.value)
     sendSystemCommand('acquire/stop')
   }
 
   function startRecording(filename?: string) {
+    console.log('[MQTT] startRecording called, connected:', connected.value)
     sendSystemCommand('recording/start', filename ? { filename } : undefined)
   }
 
   function stopRecording() {
+    console.log('[MQTT] stopRecording called, connected:', connected.value)
     sendSystemCommand('recording/stop')
   }
 
@@ -1096,6 +1209,17 @@ export function useMqtt(prefix: string = 'nisystem') {
 
     // Command acknowledgment
     sendCommandWithAck,
-    sendSystemCommandWithAck
+    sendSystemCommandWithAck,
+
+    // Multi-node support
+    knownNodes,
+    activeNodeId,
+    setActiveNode: (nodeId: string | null) => {
+      activeNodeId.value = nodeId
+    },
+    getNodeList: () => Array.from(knownNodes.value.values()),
+
+    // SOE & Event Correlation
+    soe: soeComposable
   }
 }

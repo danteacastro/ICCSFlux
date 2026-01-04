@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { formatUnit } from '../utils/formatUnit'
 
 const props = defineProps<{
   channel: string
@@ -29,7 +30,7 @@ const displayLabel = computed(() =>
 
 const unit = computed(() => {
   if (props.showUnit === false) return ''
-  return channelConfig.value?.unit || ''
+  return formatUnit(channelConfig.value?.unit)
 })
 
 // Get min/max from props or channel config
