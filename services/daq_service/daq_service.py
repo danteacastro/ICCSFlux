@@ -2765,7 +2765,8 @@ class DAQService:
             if self.audit_trail:
                 self.audit_trail.log_event(
                     AuditEventType.USER_LOGIN,
-                    username=username,
+                    user=username,
+                    description=f"User '{username}' logged in",
                     details={"role": session.role.value, "source_ip": source_ip}
                 )
 
@@ -2780,7 +2781,8 @@ class DAQService:
             if self.audit_trail:
                 self.audit_trail.log_event(
                     AuditEventType.USER_LOGIN_FAILED,
-                    username=username,
+                    user=username,
+                    description=f"Failed login attempt for '{username}'",
                     details={"source_ip": source_ip}
                 )
 
@@ -2796,7 +2798,8 @@ class DAQService:
             if self.audit_trail and username:
                 self.audit_trail.log_event(
                     AuditEventType.USER_LOGOUT,
-                    username=username
+                    user=username,
+                    description=f"User '{username}' logged out"
                 )
 
         logger.info(f"User '{username}' logged out")
