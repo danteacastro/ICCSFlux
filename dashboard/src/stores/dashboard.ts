@@ -10,7 +10,11 @@ import type {
   WidgetStyle,
   DashboardPage,
   PipeConnection,
-  PipePoint
+  PipePoint,
+  PidLayerData,
+  PidSymbol,
+  PidPipe,
+  PidPoint
 } from '../types'
 
 // Recording configuration interface
@@ -150,9 +154,28 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   })
 
-  // Pipe drawing mode state
+  // Pipe drawing mode state (legacy grid-based)
   const pipeDrawingMode = ref(false)
   const pipeDrawingStart = ref<{ widgetId?: string; port?: string; point?: PipePoint } | null>(null)
+
+  // P&ID Canvas Layer (free-form, pixel-based)
+  const pidEditMode = ref(false)  // Separate edit mode for P&ID layer
+  const pidDrawingMode = ref(false)  // Free-form pipe drawing mode
+
+  // P&ID layer for current page
+  const pidLayer = computed({
+    get: (): PidLayerData => {
+      const page = pages.value.find(p => p.id === currentPageId.value)
+      return page?.pidLayer || { symbols: [], pipes: [], visible: true, opacity: 1 }
+    },
+    set: (newLayer: PidLayerData) => {
+      const page = pages.value.find(p => p.id === currentPageId.value)
+      if (page) {
+        page.pidLayer = newLayer
+        saveLayoutToStorage()
+      }
+    }
+  })
 
   // Grid settings
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
@@ -563,6 +586,85 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   function cancelPipeDrawing() {
     pipeDrawingStart.value = null
+  }
+
+  // ========================================================================
+  // P&ID CANVAS LAYER (Free-Form, Pixel-Based)
+  // ========================================================================
+
+  function setPidEditMode(enabled: boolean) {
+    pidEditMode.value = enabled
+    if (!enabled) {
+      pidDrawingMode.value = false
+    }
+  }
+
+  function setPidDrawingMode(enabled: boolean) {
+    pidDrawingMode.value = enabled
+  }
+
+  function addPidSymbol(symbol: Omit<PidSymbol, 'id'>): string {
+    const id = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const newSymbol: PidSymbol = { ...symbol, id }
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: [...pidLayer.value.symbols, newSymbol]
+    }
+
+    return id
+  }
+
+  function updatePidSymbol(id: string, updates: Partial<PidSymbol>) {
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s =>
+        s.id === id ? { ...s, ...updates } : s
+      )
+    }
+  }
+
+  function removePidSymbol(id: string) {
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.filter(s => s.id !== id)
+    }
+  }
+
+  function addPidPipe(pipe: Omit<PidPipe, 'id'>): string {
+    const id = `pid-pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const newPipe: PidPipe = { ...pipe, id }
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: [...pidLayer.value.pipes, newPipe]
+    }
+
+    return id
+  }
+
+  function updatePidPipe(id: string, updates: Partial<PidPipe>) {
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p =>
+        p.id === id ? { ...p, ...updates } : p
+      )
+    }
+  }
+
+  function removePidPipe(id: string) {
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.filter(p => p.id !== id)
+    }
+  }
+
+  function updatePidLayer(layer: PidLayerData) {
+    pidLayer.value = layer
+  }
+
+  function clearPidLayer() {
+    pidLayer.value = { symbols: [], pipes: [], visible: true, opacity: 1 }
   }
 
   // ========================================================================
@@ -1074,7 +1176,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     handleChannelDeleted,
     cleanupOrphanedWidgets,
 
-    // Pipes (P&ID connections)
+    // Pipes (Legacy grid-based P&ID connections)
     pipes,
     pipeDrawingMode,
     pipeDrawingStart,
@@ -1085,6 +1187,21 @@ export const useDashboardStore = defineStore('dashboard', () => {
     startPipeDrawing,
     finishPipeDrawing,
     cancelPipeDrawing,
+
+    // P&ID Canvas Layer (Free-form, pixel-based)
+    pidLayer,
+    pidEditMode,
+    pidDrawingMode,
+    setPidEditMode,
+    setPidDrawingMode,
+    addPidSymbol,
+    updatePidSymbol,
+    removePidSymbol,
+    addPidPipe,
+    updatePidPipe,
+    removePidPipe,
+    updatePidLayer,
+    clearPidLayer,
 
     // Recording configuration (Data tab)
     recordingConfig,

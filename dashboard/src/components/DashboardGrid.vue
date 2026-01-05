@@ -6,7 +6,8 @@ import { useMqtt } from '../composables/useMqtt'
 import { getWidgetComponent } from '../widgets'
 import WidgetConfigModal from './WidgetConfigModal.vue'
 import PipeOverlay from './PipeOverlay.vue'
-import type { WidgetConfig, PipeConnection } from '../types'
+import PidCanvas from './PidCanvas.vue'
+import type { WidgetConfig, PipeConnection, PidLayerData } from '../types'
 import { SYMBOL_PORTS, type ScadaSymbolType } from '../assets/symbols'
 
 const store = useDashboardStore()
@@ -293,6 +294,24 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('symbol-port-click', handleSymbolPortClick as EventListener)
 })
+
+// ========================================================================
+// P&ID CANVAS LAYER (Free-Form)
+// ========================================================================
+
+function handlePidLayerUpdate(layer: PidLayerData) {
+  store.updatePidLayer(layer)
+}
+
+function handlePidSymbolSelect(id: string | null) {
+  // Could be used for property editing
+  console.log('[PID] Symbol selected:', id)
+}
+
+function handlePidPipeSelect(id: string | null) {
+  // Could be used for property editing
+  console.log('[PID] Pipe selected:', id)
+}
 </script>
 
 <template>
@@ -304,7 +323,7 @@ onUnmounted(() => {
     }"
     @click="handleGridClick"
   >
-    <!-- Pipe overlay (renders behind widgets) -->
+    <!-- Legacy Pipe overlay (grid-based, renders behind widgets) -->
     <PipeOverlay
       :pipes="store.pipes"
       :grid-columns="store.gridColumns"
@@ -314,6 +333,17 @@ onUnmounted(() => {
       @update:pipe="handlePipeUpdate"
       @delete:pipe="handlePipeDelete"
       @select:pipe="handlePipeSelect"
+    />
+
+    <!-- P&ID Canvas Layer (free-form, pixel-based) -->
+    <PidCanvas
+      v-if="store.pidLayer.visible !== false"
+      :pid-layer="store.pidLayer"
+      :edit-mode="store.pidEditMode"
+      :pipe-drawing-mode="store.pidDrawingMode"
+      @update:pid-layer="handlePidLayerUpdate"
+      @select:symbol="handlePidSymbolSelect"
+      @select:pipe="handlePidPipeSelect"
     />
 
     <GridLayout

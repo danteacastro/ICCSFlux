@@ -470,13 +470,77 @@ export interface PipeConnection {
   label?: string      // Optional pipe label (e.g., "Steam", "H2")
 }
 
+// ============================================================================
+// P&ID Canvas Layer Types (Free-Form, Pixel-Based)
+// ============================================================================
+
+// Free-form point in pixel coordinates (not grid)
+export interface PidPoint {
+  x: number  // Pixel x coordinate
+  y: number  // Pixel y coordinate
+}
+
+// Free-form P&ID symbol (valve, pump, tank, etc.)
+export interface PidSymbol {
+  id: string
+  type: string  // Symbol type from SCADA_SYMBOLS (e.g., 'solenoidValve', 'pump')
+  // Position in pixels (free-form, not grid-locked)
+  x: number
+  y: number
+  // Size in pixels (true resizing)
+  width: number
+  height: number
+  // Rotation in degrees (any angle, not just 0/90/180/270)
+  rotation?: number
+  // Optional channel binding for live data
+  channel?: string
+  // Styling
+  label?: string
+  color?: string
+  showValue?: boolean
+  decimals?: number
+  // Z-index for layering
+  zIndex?: number
+}
+
+// Free-form pipe (bezier/polyline, not orthogonal-only)
+export interface PidPipe {
+  id: string
+  // Path points in pixels (click anywhere to add points)
+  points: PidPoint[]
+  // Path type
+  pathType: 'polyline' | 'bezier' | 'orthogonal'
+  // Styling
+  color?: string
+  strokeWidth?: number
+  dashed?: boolean
+  animated?: boolean
+  label?: string
+  // Arrow markers
+  startArrow?: boolean
+  endArrow?: boolean
+  // Z-index for layering
+  zIndex?: number
+}
+
+// P&ID layer data for a page
+export interface PidLayerData {
+  symbols: PidSymbol[]
+  pipes: PidPipe[]
+  // Layer visibility toggle
+  visible?: boolean
+  // Layer opacity (for showing behind grid widgets)
+  opacity?: number
+}
+
 // Dashboard Page - each page has its own widget layout
 export interface DashboardPage {
   id: string
   name: string
   widgets: WidgetConfig[]
-  pipes?: PipeConnection[]  // P&ID pipe connections
-  order: number           // Sort order
+  pipes?: PipeConnection[]  // Legacy: grid-locked pipe connections
+  pidLayer?: PidLayerData   // New: free-form P&ID layer
+  order: number             // Sort order
   createdAt?: string
 }
 

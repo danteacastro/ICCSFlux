@@ -159,6 +159,22 @@ const recordingTime = computed(() => {
         </svg>
         {{ store.editMode ? 'DONE' : 'EDIT' }}
       </button>
+
+      <!-- P&ID Edit Mode toggle -->
+      <button
+        class="btn btn-pid"
+        :class="{ active: store.pidEditMode }"
+        @click="store.setPidEditMode(!store.pidEditMode)"
+        title="P&ID Drawing Mode - Free-form symbols and pipes"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="5" cy="12" r="3"/>
+          <circle cx="19" cy="12" r="3"/>
+          <line x1="8" y1="12" x2="16" y2="12"/>
+          <path d="M12 8v8"/>
+        </svg>
+        {{ store.pidEditMode ? 'EXIT P&ID' : 'P&ID' }}
+      </button>
     </div>
 
     <!-- Safety Status Indicators -->
@@ -306,6 +322,19 @@ const recordingTime = computed(() => {
 }
 .btn-edit.active {
   background: #1e40af;
+  color: #fff;
+}
+
+.btn-pid {
+  background: #1a1a2e;
+  color: #22c55e;
+  border: 1px solid #22c55e;
+}
+.btn-pid:hover {
+  background: #14532d;
+}
+.btn-pid.active {
+  background: #15803d;
   color: #fff;
 }
 

@@ -7,6 +7,7 @@ import { useProjectFiles } from './composables/useProjectFiles'
 import { useAuth } from './composables/useAuth'
 import DashboardGrid from './components/DashboardGrid.vue'
 import ControlBar from './components/ControlBar.vue'
+import PidToolbar from './components/PidToolbar.vue'
 import ConfigurationTab from './components/ConfigurationTab.vue'
 import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
@@ -35,9 +36,9 @@ const activeTab = ref('overview')
 // Permission-based EDIT control (viewing is allowed for everyone)
 // These are provided to child components via provide/inject
 const canEditConfig = computed(() => auth.hasPermission('config.channels.modify') || auth.isOperator.value)
-const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isSupervisor.value)
+const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isEngineer.value)
 const canEditData = computed(() => auth.hasPermission('recording.start') || auth.isOperator.value)
-const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isSupervisor.value)
+const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isEngineer.value)
 const canEditAdmin = computed(() => auth.isAdmin.value)
 
 // Provide edit permissions to child components
@@ -443,6 +444,8 @@ function handleRetryConnection() {
 
     <!-- Main content -->
     <main class="app-main">
+      <!-- P&ID Toolbar (shown when in P&ID edit mode on overview) -->
+      <PidToolbar v-if="activeTab === 'overview' && store.pidEditMode" />
       <DashboardGrid v-if="activeTab === 'overview'" />
       <ConfigurationTab v-else-if="activeTab === 'configuration'" />
       <ScriptsTab v-else-if="activeTab === 'scripts'" />
