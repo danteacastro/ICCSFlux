@@ -57,6 +57,72 @@ const tempMousePos = ref<PidPoint | null>(null)
 // Canvas ref for coordinate calculations
 const canvasRef = ref<HTMLElement | null>(null)
 
+// Symbol configuration modal state
+const showConfigModal = ref(false)
+const configSymbol = ref<PidSymbol | null>(null)
+const configForm = ref({
+  label: '',
+  channel: '',
+  showValue: false,
+  decimals: 1,
+  color: '#60a5fa',
+  rotation: 0
+})
+
+// Available channels for binding
+const availableChannels = computed(() => {
+  return Object.entries(store.channels).map(([name, ch]) => ({
+    name,
+    unit: ch.unit || '',
+    type: ch.channel_type
+  }))
+})
+
+// Open symbol config modal
+function openSymbolConfig(symbol: PidSymbol) {
+  configSymbol.value = symbol
+  configForm.value = {
+    label: symbol.label || '',
+    channel: symbol.channel || '',
+    showValue: symbol.showValue || false,
+    decimals: symbol.decimals ?? 1,
+    color: symbol.color || '#60a5fa',
+    rotation: symbol.rotation || 0
+  }
+  showConfigModal.value = true
+}
+
+// Save symbol config
+function saveSymbolConfig() {
+  if (!configSymbol.value) return
+
+  const newSymbols = props.pidLayer.symbols.map(s =>
+    s.id === configSymbol.value!.id
+      ? {
+          ...s,
+          label: configForm.value.label || undefined,
+          channel: configForm.value.channel || undefined,
+          showValue: configForm.value.showValue,
+          decimals: configForm.value.decimals,
+          color: configForm.value.color,
+          rotation: configForm.value.rotation
+        }
+      : s
+  )
+
+  emit('update:pidLayer', { ...props.pidLayer, symbols: newSymbols })
+  showConfigModal.value = false
+  configSymbol.value = null
+}
+
+// Handle symbol double-click for config
+function onSymbolDoubleClick(event: MouseEvent, symbol: PidSymbol) {
+  if (!props.editMode) return
+  event.preventDefault()
+  event.stopPropagation()
+  openSymbolConfig(symbol)
+}
+
 // Get canvas-relative coordinates from mouse event
 function getCanvasCoords(event: MouseEvent): PidPoint {
   if (!canvasRef.value) return { x: 0, y: 0 }
@@ -562,6 +628,7 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
       :class="{ selected: selectedSymbolId === symbol.id }"
       :style="getSymbolStyle(symbol)"
       @mousedown="onSymbolMouseDown($event, symbol)"
+      @dblclick="onSymbolDoubleClick($event, symbol)"
     >
       <!-- Symbol SVG -->
       <div
@@ -591,6 +658,79 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
     <div v-if="pipeDrawingMode" class="drawing-indicator">
       <span>Click to add points, double-click to finish</span>
     </div>
+
+    <!-- Symbol Configuration Modal -->
+    <Teleport to="body">
+      <div v-if="showConfigModal" class="modal-overlay" @click.self="showConfigModal = false">
+        <div class="symbol-config-modal">
+          <h3>Configure Symbol</h3>
+
+          <div class="config-form">
+            <div class="form-group">
+              <label>Label</label>
+              <input
+                v-model="configForm.label"
+                type="text"
+                placeholder="e.g., SOV-101"
+                class="form-input"
+              />
+            </div>
+
+            <div class="form-group">
+              <label>Bind to Channel</label>
+              <select v-model="configForm.channel" class="form-select">
+                <option value="">-- None --</option>
+                <option v-for="ch in availableChannels" :key="ch.name" :value="ch.name">
+                  {{ ch.name }} ({{ ch.unit || ch.type }})
+                </option>
+              </select>
+            </div>
+
+            <div class="form-group form-row">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="configForm.showValue" />
+                Show Value
+              </label>
+            </div>
+
+            <div class="form-group" v-if="configForm.showValue">
+              <label>Decimals</label>
+              <input
+                v-model.number="configForm.decimals"
+                type="number"
+                min="0"
+                max="6"
+                class="form-input small"
+              />
+            </div>
+
+            <div class="form-group">
+              <label>Color</label>
+              <input
+                v-model="configForm.color"
+                type="color"
+                class="form-color"
+              />
+            </div>
+
+            <div class="form-group">
+              <label>Rotation</label>
+              <select v-model.number="configForm.rotation" class="form-select">
+                <option :value="0">0°</option>
+                <option :value="90">90°</option>
+                <option :value="180">180°</option>
+                <option :value="270">270°</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn btn-secondary" @click="showConfigModal = false">Cancel</button>
+            <button class="btn btn-primary" @click="saveSymbolConfig">Save</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -680,12 +820,18 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  cursor: move;
-  pointer-events: auto;
+  cursor: default;
+  pointer-events: none;
   transition: box-shadow 0.15s;
 }
 
-.pid-symbol.selected {
+/* Only interactive in edit mode */
+.edit-mode .pid-symbol {
+  cursor: move;
+  pointer-events: auto;
+}
+
+.edit-mode .pid-symbol.selected {
   outline: 2px dashed #3b82f6;
   outline-offset: 4px;
 }
@@ -756,5 +902,130 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   border-radius: 6px;
   font-size: 12px;
   pointer-events: none;
+}
+
+/* Symbol Configuration Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.symbol-config-modal {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 320px;
+  max-width: 400px;
+}
+
+.symbol-config-modal h3 {
+  margin: 0 0 16px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.form-input,
+.form-select {
+  padding: 8px 10px;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.85rem;
+}
+
+.form-input:focus,
+.form-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.form-input.small {
+  width: 80px;
+}
+
+.form-color {
+  width: 50px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.form-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  margin: 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-secondary {
+  background: #374151;
+  color: #fff;
+}
+
+.btn-secondary:hover {
+  background: #4b5563;
+}
+
+.btn-primary {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #2563eb;
 }
 </style>

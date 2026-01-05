@@ -2726,8 +2726,28 @@ class DAQService:
         - Alarm history
         - Alarm configurations (for orphaned channels)
         - localStorage alarm data
+
+        Also clears retained MQTT messages for individual alarm topics to prevent
+        stale alarms from reappearing when frontend reconnects.
         """
         base = self.get_topic_base()
+
+        # Clear retained MQTT messages for all known active alarms
+        # This prevents stale alarm messages from persisting on the broker
+        if self.alarm_manager:
+            active_alarms = self.alarm_manager.get_active_alarms()
+            for alarm in active_alarms:
+                # Publish empty retained message to clear the retained alarm
+                self.mqtt_client.publish(
+                    f"{base}/alarms/active/{alarm.alarm_id}",
+                    "",  # Empty payload clears retained message
+                    retain=True,
+                    qos=1
+                )
+            if active_alarms:
+                logger.info(f"Cleared {len(active_alarms)} retained alarm messages from MQTT broker")
+
+        # Also publish clear notification to frontend
         self.mqtt_client.publish(
             f"{base}/alarms/cleared",
             json.dumps({
