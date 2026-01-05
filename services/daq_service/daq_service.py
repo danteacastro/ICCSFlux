@@ -500,7 +500,7 @@ class DAQService:
             # This clears old alarms and creates new alarm configs from the new channels
             if self.alarm_manager:
                 self.alarm_manager.clear_all(clear_configs=True)
-            self._init_alarm_manager()
+            self._init_alarm_manager(from_project=True)
 
             # Load scripts from project
             # Scripts with run_mode=acquisition or session will auto-start when triggered
@@ -1128,13 +1128,12 @@ class DAQService:
             })
 
         base = self.get_topic_base()
-        self.mqtt_client.publish(
-            f"{base}/script/status",
-            json.dumps({
-                "scripts": scripts,
-                "timestamp": time.time()
-            })
-        )
+        payload = json.dumps({
+            "scripts": scripts,
+            "timestamp": time.time()
+        })
+        logger.info(f"Publishing script status to {base}/script/status: {len(scripts)} scripts")
+        self.mqtt_client.publish(f"{base}/script/status", payload)
 
     def _init_user_variables(self):
         """Initialize the user variable manager with callbacks"""
@@ -1153,13 +1152,24 @@ class DAQService:
         )
         logger.info("User variable manager initialized")
 
-    def _init_alarm_manager(self):
-        """Initialize the enhanced alarm manager with ISA-18.2 compliant alarm configuration"""
+    def _init_alarm_manager(self, from_project: bool = False):
+        """Initialize the enhanced alarm manager with ISA-18.2 compliant alarm configuration
+
+        Args:
+            from_project: If True, create alarm configs from current channels (project loaded).
+                         If False, just create empty alarm manager (no project loaded yet).
+        """
         data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
         self.alarm_manager = AlarmManager(
             data_dir=data_dir,
             publish_callback=self._alarm_manager_publish
         )
+
+        # Only create alarm configs from channels when a project is explicitly loaded
+        # This prevents stale alarm configs when no project is loaded
+        if not from_project:
+            logger.info("Alarm manager initialized (no project - no alarm configs)")
+            return
 
         # Auto-create alarm configs from channel configs
         for name, channel in self.config.channels.items():
@@ -1233,10 +1243,10 @@ class DAQService:
             data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
             audit_dir = data_dir / "audit"
             self.audit_trail = AuditTrail(
-                log_dir=audit_dir,
-                max_file_size_mb=50,
-                max_files=100,
-                compress_old=True
+                audit_dir=audit_dir,
+                node_id=getattr(self.config.system, 'node_id', 'node-001'),
+                retention_days=365,
+                max_file_size_mb=50.0
             )
             logger.info(f"Audit trail initialized at {audit_dir}")
         except Exception as e:
@@ -1284,9 +1294,8 @@ class DAQService:
             archive_dir = data_dir / 'archives'
 
             self.archive_manager = ArchiveManager(
-                archive_dir=archive_dir,
-                retention_years=10,  # FDA requirement
-                compress=True
+                data_dir=data_dir,
+                archive_dir=archive_dir
             )
 
             # Link audit trail if available
@@ -1393,6 +1402,10 @@ class DAQService:
 
     def _sequence_set_output(self, channel: str, value: Any):
         """Callback for sequence to set output"""
+        self._set_output_value(channel, value)
+
+    def _set_output_value(self, channel: str, value: Any):
+        """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences)"""
         if channel in self.config.channels:
             ch = self.config.channels[channel]
             if ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT,
@@ -1946,8 +1959,8 @@ class DAQService:
             self._handle_script_list()
         elif topic == f"{base}/script/get":
             self._handle_script_get(payload)
-        elif topic == f"{base}/script/status":
-            self._publish_script_status()
+        # NOTE: Do NOT handle script/status here - it's our own outbound topic
+        # Handling it would cause an infinite publish loop
 
         # === NOTEBOOK ===
         elif topic == f"{base}/notebook/save":
