@@ -298,13 +298,6 @@ function handleRetryConnection() {
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="logo">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-          </svg>
-          <span class="title">DCFlux</span>
-        </div>
-
         <!-- Navigation Tabs -->
         <nav class="header-tabs">
           <button
@@ -546,18 +539,6 @@ function handleRetryConnection() {
   display: flex;
   align-items: center;
   gap: 24px;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #60a5fa;
-}
-
-.title {
-  font-size: 1.1rem;
-  font-weight: 700;
 }
 
 .header-tabs {

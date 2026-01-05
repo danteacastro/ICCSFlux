@@ -18,26 +18,40 @@ const store = useDashboardStore()
 // Currently selected symbol type for adding
 const selectedSymbolType = ref<ScadaSymbolType>('solenoidValve')
 
-// Available symbols with display names
+// Available symbols with display names - grouped by category
 const availableSymbols: { type: ScadaSymbolType; name: string }[] = [
+  // Valves
   { type: 'solenoidValve', name: 'Solenoid Valve' },
-  { type: 'checkValve', name: 'Check Valve' },
+  { type: 'controlValve', name: 'Control Valve' },
   { type: 'ballValve', name: 'Ball Valve' },
   { type: 'gateValve', name: 'Gate Valve' },
-  { type: 'controlValve', name: 'Control Valve' },
+  { type: 'checkValve', name: 'Check Valve' },
   { type: 'reliefValve', name: 'Relief Valve' },
+  { type: 'butterflyValve', name: 'Butterfly Valve' },
+  { type: 'threeWayValve', name: '3-Way Valve' },
+  // Equipment
   { type: 'pump', name: 'Pump' },
-  { type: 'fan', name: 'Fan' },
+  { type: 'compressor', name: 'Compressor' },
+  { type: 'blower', name: 'Blower/Fan' },
   { type: 'motor', name: 'Motor' },
+  { type: 'filter', name: 'Filter' },
+  { type: 'mixer', name: 'Mixer' },
+  // Vessels
   { type: 'tank', name: 'Tank' },
-  { type: 'vessel', name: 'Vessel' },
+  { type: 'horizontalTank', name: 'Horizontal Tank' },
+  { type: 'reactor', name: 'Reactor' },
+  { type: 'column', name: 'Column/Tower' },
+  // Heat Exchangers
   { type: 'heatExchanger', name: 'Heat Exchanger' },
   { type: 'heater', name: 'Heater' },
   { type: 'cooler', name: 'Cooler' },
-  { type: 'filter', name: 'Filter' },
-  { type: 'sensor', name: 'Sensor' },
+  { type: 'boiler', name: 'Boiler' },
+  // Instruments
+  { type: 'pressureTransducer', name: 'Pressure Transmitter' },
+  { type: 'temperatureElement', name: 'Temperature Element' },
   { type: 'flowMeter', name: 'Flow Meter' },
-  { type: 'gauge', name: 'Gauge' }
+  { type: 'levelTransmitter', name: 'Level Transmitter' },
+  { type: 'pressureGauge', name: 'Pressure Gauge' }
 ]
 
 // Pipe drawing options
