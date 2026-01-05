@@ -86,8 +86,8 @@ const hasPermission = (permission: string): boolean => {
 }
 
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
-const isSupervisor = computed(() => ['admin', 'supervisor'].includes(currentUser.value?.role || ''))
-const isOperator = computed(() => ['admin', 'supervisor', 'operator'].includes(currentUser.value?.role || ''))
+const isEngineer = computed(() => ['admin', 'engineer'].includes(currentUser.value?.role || ''))
+const isOperator = computed(() => ['admin', 'engineer', 'operator'].includes(currentUser.value?.role || ''))
 
 // ============================================================================
 // COMPOSABLE
@@ -96,8 +96,8 @@ const isOperator = computed(() => ['admin', 'supervisor', 'operator'].includes(c
 export function useAuth() {
   const mqtt = useMqtt()
 
-  // Initialize MQTT handlers once
-  if (!handlersInitialized && mqtt.client.value) {
+  // Initialize MQTT handlers once when connected
+  if (!handlersInitialized && mqtt.connected.value) {
     initializeHandlers()
   }
 
@@ -105,41 +105,19 @@ export function useAuth() {
     if (handlersInitialized) return
     handlersInitialized = true
 
-    const client = mqtt.client.value
-    if (!client) return
+    // NOTE: Backend uses node-prefixed topics: nisystem/nodes/{node_id}/auth/...
+    // We use wildcard (+) to receive from any node
+    const nodePrefix = 'nisystem/nodes/+'
 
-    const prefix = 'nisystem'
-
-    // Subscribe to auth topics
-    client.subscribe(`${prefix}/auth/status`)
-    client.subscribe(`${prefix}/users/+/response`)
-    client.subscribe(`${prefix}/audit/+/response`)
-    client.subscribe(`${prefix}/archive/+/response`)
-
-    // Handle auth status updates
-    client.on('message', (topic: string, payload: Buffer) => {
-      try {
-        const data = JSON.parse(payload.toString())
-
-        if (topic === `${prefix}/auth/status`) {
-          handleAuthStatus(data)
-        } else if (topic === `${prefix}/users/list/response`) {
-          handleUsersListResponse(data)
-        } else if (topic === `${prefix}/users/create/response` ||
-                   topic === `${prefix}/users/update/response` ||
-                   topic === `${prefix}/users/delete/response`) {
-          handleUserMutationResponse(data)
-        } else if (topic === `${prefix}/audit/query/response`) {
-          handleAuditQueryResponse(data)
-        } else if (topic === `${prefix}/archive/list/response`) {
-          handleArchiveListResponse(data)
-        } else if (topic === `${prefix}/archive/verify/response`) {
-          handleArchiveVerifyResponse(data)
-        }
-      } catch (e) {
-        console.error('Error parsing auth message:', e)
-      }
-    })
+    // Subscribe to auth topics using the public subscribe API
+    mqtt.subscribe(`${nodePrefix}/auth/status`, handleAuthStatus)
+    mqtt.subscribe(`${nodePrefix}/users/list/response`, handleUsersListResponse)
+    mqtt.subscribe(`${nodePrefix}/users/create/response`, handleUserMutationResponse)
+    mqtt.subscribe(`${nodePrefix}/users/update/response`, handleUserMutationResponse)
+    mqtt.subscribe(`${nodePrefix}/users/delete/response`, handleUserMutationResponse)
+    mqtt.subscribe(`${nodePrefix}/audit/query/response`, handleAuditQueryResponse)
+    mqtt.subscribe(`${nodePrefix}/archive/list/response`, handleArchiveListResponse)
+    mqtt.subscribe(`${nodePrefix}/archive/verify/response`, handleArchiveVerifyResponse)
   }
 
   function handleAuthStatus(data: AuthStatus) {
@@ -200,8 +178,7 @@ export function useAuth() {
   // ============================================================================
 
   async function login(username: string, password: string): Promise<boolean> {
-    const client = mqtt.client.value
-    if (!client || !mqtt.connected.value) {
+    if (!mqtt.connected.value) {
       authError.value = 'Not connected to server'
       return false
     }
@@ -209,11 +186,11 @@ export function useAuth() {
     isLoggingIn.value = true
     authError.value = null
 
-    client.publish('nisystem/auth/login', JSON.stringify({
+    mqtt.sendNodeCommand('auth/login', {
       username,
       password,
       source_ip: 'dashboard'
-    }))
+    })
 
     // Wait for response (with timeout)
     return new Promise((resolve) => {
@@ -232,19 +209,17 @@ export function useAuth() {
   }
 
   function logout() {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/auth/logout', JSON.stringify({}))
+    mqtt.sendNodeCommand('auth/logout', {})
     authenticated.value = false
     currentUser.value = null
   }
 
   function requestAuthStatus() {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/auth/status/request', JSON.stringify({}))
+    mqtt.sendNodeCommand('auth/status/request', {})
   }
 
   // ============================================================================
@@ -252,32 +227,28 @@ export function useAuth() {
   // ============================================================================
 
   function listUsers() {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
     isLoadingUsers.value = true
-    client.publish('nisystem/users/list', JSON.stringify({}))
+    mqtt.sendNodeCommand('users/list', {})
   }
 
   function createUser(user: { username: string; password: string; role: string; display_name?: string; email?: string }) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/users/create', JSON.stringify(user))
+    mqtt.sendNodeCommand('users/create', user)
   }
 
   function updateUser(username: string, updates: { password?: string; role?: string; display_name?: string; email?: string; enabled?: boolean }) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/users/update', JSON.stringify({ username, ...updates }))
+    mqtt.sendNodeCommand('users/update', { username, ...updates })
   }
 
   function deleteUser(username: string) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/users/delete', JSON.stringify({ username }))
+    mqtt.sendNodeCommand('users/delete', { username })
   }
 
   // ============================================================================
@@ -291,11 +262,10 @@ export function useAuth() {
     username?: string
     limit?: number
   } = {}) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
     isLoadingAudit.value = true
-    client.publish('nisystem/audit/query', JSON.stringify(options))
+    mqtt.sendNodeCommand('audit/query', options)
   }
 
   function exportAuditEvents(options: {
@@ -303,10 +273,9 @@ export function useAuth() {
     start_time?: string
     end_time?: string
   } = {}) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/audit/export', JSON.stringify(options))
+    mqtt.sendNodeCommand('audit/export', options)
   }
 
   // ============================================================================
@@ -319,25 +288,22 @@ export function useAuth() {
     end_date?: string
     limit?: number
   } = {}) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
     isLoadingArchives.value = true
-    client.publish('nisystem/archive/list', JSON.stringify(options))
+    mqtt.sendNodeCommand('archive/list', options)
   }
 
   function verifyArchive(archiveId: string) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/archive/verify', JSON.stringify({ archive_id: archiveId }))
+    mqtt.sendNodeCommand('archive/verify', { archive_id: archiveId })
   }
 
   function retrieveArchive(archiveId: string) {
-    const client = mqtt.client.value
-    if (!client) return
+    if (!mqtt.connected.value) return
 
-    client.publish('nisystem/archive/retrieve', JSON.stringify({ archive_id: archiveId }))
+    mqtt.sendNodeCommand('archive/retrieve', { archive_id: archiveId })
   }
 
   // ============================================================================
@@ -382,7 +348,7 @@ export function useAuth() {
 
     // Computed permissions
     isAdmin,
-    isSupervisor,
+    isEngineer,
     isOperator,
     hasPermission,
 

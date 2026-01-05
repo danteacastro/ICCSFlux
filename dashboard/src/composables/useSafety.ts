@@ -1119,9 +1119,21 @@ export function useSafety() {
     watch(() => store.channels, (newChannels, oldChannels) => {
       initializeAlarmConfigs()
 
-      // If channels were removed (or all channels cleared), clean up orphaned alarms
-      if (oldChannels && Object.keys(oldChannels).length > 0) {
-        if (Object.keys(newChannels).length === 0) {
+      const newCount = Object.keys(newChannels).length
+      const oldCount = oldChannels ? Object.keys(oldChannels).length : 0
+
+      // If no channels (no project loaded), clear all stale alarms
+      if (newCount === 0) {
+        if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0) {
+          console.log('[SAFETY] No channels (no project loaded), clearing stale alarms')
+          clearAllAlarms(false)  // Don't add to history since there's no project context
+          alarmHistory.value = []  // Also clear history
+          // Clear alarm configs for channels that no longer exist
+          alarmConfigs.value = {}
+        }
+      } else if (oldCount > 0) {
+        // Channels changed - check for orphaned alarms
+        if (newCount === 0) {
           // All channels removed - clear all alarms
           console.log('[SAFETY] All channels removed, clearing all alarms')
           clearAllAlarms(true)
