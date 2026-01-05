@@ -199,6 +199,10 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/variables/#`,  // User variables / Playground
         `${nodePrefix}/test-session/#`,  // Test session management
         `${nodePrefix}/formulas/#`,  // Formula blocks
+        `${nodePrefix}/auth/#`,  // Authentication topics (login, logout, status)
+        `${nodePrefix}/users/#`,  // User management (admin)
+        `${nodePrefix}/audit/#`,  // Audit trail
+        `${nodePrefix}/archive/#`,  // Archive management
         `${nodePrefix}/heartbeat`,  // Service heartbeat
         `${nodePrefix}/command/ack`,  // Command acknowledgments
         `${nodePrefix}/config/channel/deleted`,
