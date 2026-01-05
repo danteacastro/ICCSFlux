@@ -1,4 +1,4 @@
-import { ref, computed, readonly } from 'vue'
+import { ref, computed, readonly, watch } from 'vue'
 import { useMqtt } from './useMqtt'
 
 // ============================================================================
@@ -100,6 +100,13 @@ export function useAuth() {
   if (!handlersInitialized && mqtt.connected.value) {
     initializeHandlers()
   }
+
+  // Watch for MQTT connection to initialize handlers if not already done
+  watch(() => mqtt.connected.value, (connected) => {
+    if (connected && !handlersInitialized) {
+      initializeHandlers()
+    }
+  }, { immediate: true })
 
   function initializeHandlers() {
     if (handlersInitialized) return
