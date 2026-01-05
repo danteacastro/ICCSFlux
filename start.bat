@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM ============================================================================
 REM NISystem Complete Startup Script
 REM Starts all necessary services for the NISystem
@@ -32,22 +33,34 @@ if errorlevel 1 (
 REM ============================================================================
 REM Step 0: Clean up orphaned processes from previous runs
 REM ============================================================================
-echo [0/4] Cleaning up orphaned processes...
+echo [0/5] Cleaning up orphaned processes...
 venv\Scripts\python.exe -c "from launcher.service_manager import cleanup_orphaned_processes; cleanup_orphaned_processes()" 2>nul
 echo.
 
 REM ============================================================================
-REM Step 1: Start MQTT Broker (Mosquitto)
+REM Step 1: Start MQTT Broker (Mosquitto) - with security if configured
 REM ============================================================================
-echo [1/4] Starting MQTT Broker (Mosquitto)...
+echo [1/5] Starting MQTT Broker (Mosquitto)...
 echo.
 
 tasklist /FI "IMAGENAME eq mosquitto.exe" 2>NUL | find /I /N "mosquitto.exe">NUL
 if "%ERRORLEVEL%"=="0" (
     echo   - MQTT Broker already running
 ) else (
-    echo   - Starting Mosquitto...
-    start "NISystem MQTT Broker" "C:\Program Files\mosquitto\mosquitto.exe" -c mosquitto_ws.conf
+    REM Check if security is configured (password file exists)
+    if exist "config\mosquitto_passwd" (
+        echo   - Starting Mosquitto with SECURITY ENABLED...
+        start "NISystem MQTT Broker" "C:\Program Files\mosquitto\mosquitto.exe" -c config\mosquitto_secure.conf
+        set MQTT_SECURE=1
+        set MQTT_USERNAME=backend
+        set MQTT_PASSWORD=nisystem_backend_2024
+    ) else (
+        echo   - WARNING: MQTT security not configured!
+        echo   - Run setup_mqtt_security.bat to enable authentication
+        echo   - Starting Mosquitto WITHOUT security...
+        start "NISystem MQTT Broker" "C:\Program Files\mosquitto\mosquitto.exe" -c mosquitto_ws.conf
+        set MQTT_SECURE=0
+    )
     timeout /t 2 /nobreak >nul
     echo   - MQTT Broker started
 )
@@ -150,12 +163,27 @@ if "%ERRORLEVEL%"=="0" (
     echo   [ERROR] DAQ Service: NOT RUNNING
 )
 
+REM Check Watchdog
+venv\Scripts\python.exe -c "import psutil; exit(0 if any('watchdog.py' in ' '.join(p.cmdline()).lower() for p in psutil.process_iter(['cmdline']) if p.cmdline()) else 1)" 2>nul
+if "%ERRORLEVEL%"=="0" (
+    echo   [OK] Watchdog: Running (monitoring DAQ health)
+) else (
+    echo   [WARN] Watchdog: NOT RUNNING (DAQ health not monitored)
+)
+
 REM Check Frontend
 netstat -ano | findstr ":5173" >nul 2>&1
 if "%ERRORLEVEL%"=="0" (
     echo   [OK] Frontend: Running on http://localhost:5173
 ) else (
     echo   [ERROR] Frontend: NOT RUNNING
+)
+
+REM Check MQTT Security
+if exist "config\mosquitto_passwd" (
+    echo   [OK] MQTT Security: ENABLED (authentication required)
+) else (
+    echo   [WARN] MQTT Security: DISABLED (run setup_mqtt_security.bat)
 )
 
 echo.
@@ -190,9 +218,17 @@ echo   [1] View DAQ Service Logs (last 50 lines)
 echo   [2] View DAQ Service Status via MQTT
 echo   [3] Restart DAQ Service
 echo   [4] Restart Frontend
-echo   [5] Stop All Services
-echo   [6] Open Dashboard
+echo   [5] Restart Watchdog
+echo   [6] Stop All Services
+echo   [7] Open Dashboard
+echo   [8] Enable MQTT Security (first-time setup)
 echo   [0] Exit Menu (keep services running)
+echo.
+if exist "config\mosquitto_passwd" (
+    echo   Security: ENABLED
+) else (
+    echo   Security: DISABLED - Select [8] to enable
+)
 echo.
 set /p choice="Select option: "
 
@@ -200,8 +236,10 @@ if "%choice%"=="1" goto VIEWLOGS
 if "%choice%"=="2" goto VIEWSTATUS
 if "%choice%"=="3" goto RESTARTDAQ
 if "%choice%"=="4" goto RESTARTFRONTEND
-if "%choice%"=="5" goto STOPALL
-if "%choice%"=="6" goto OPENDASH
+if "%choice%"=="5" goto RESTARTWATCHDOG
+if "%choice%"=="6" goto STOPALL
+if "%choice%"=="7" goto OPENDASH
+if "%choice%"=="8" goto SETUPSECURITY
 if "%choice%"=="0" goto END
 goto MENU
 
@@ -248,6 +286,18 @@ echo Frontend restarted.
 timeout /t 3 /nobreak >nul
 goto MENU
 
+:RESTARTWATCHDOG
+echo.
+echo Restarting Watchdog...
+REM Kill existing watchdog
+venv\Scripts\python.exe -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'watchdog.py' in ' '.join(p.cmdline()).lower()]" 2>nul
+timeout /t 2 /nobreak >nul
+REM Start new watchdog
+start "NISystem Watchdog" /MIN venv\Scripts\python.exe services\daq_service\watchdog.py -c config\system.ini
+echo Watchdog restarted.
+timeout /t 2 /nobreak >nul
+goto MENU
+
 :OPENDASH
 start http://localhost:5173
 goto MENU
@@ -256,6 +306,8 @@ goto MENU
 echo.
 echo Stopping all services...
 echo.
+echo Stopping Watchdog...
+venv\Scripts\python.exe -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'watchdog.py' in ' '.join(p.cmdline()).lower()]" 2>nul
 echo Stopping DAQ Service...
 venv\Scripts\python.exe -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'daq_service' in ' '.join(p.cmdline()).lower()]" 2>nul
 echo Stopping Frontend...
@@ -266,6 +318,47 @@ echo.
 echo All services stopped.
 timeout /t 2 /nobreak >nul
 exit /b 0
+
+:SETUPSECURITY
+echo.
+echo ================================================================================
+echo   MQTT Security Setup
+echo ================================================================================
+echo.
+if exist "config\mosquitto_passwd" (
+    echo Security is already enabled!
+    echo.
+    echo To reset security, delete config\mosquitto_passwd and run this again.
+    pause
+    goto MENU
+)
+echo This will enable MQTT authentication to protect against:
+echo   - Unauthorized control of outputs
+echo   - Code injection via scripts
+echo   - Unauthorized user management
+echo.
+echo Default credentials will be created:
+echo   Backend:   backend / nisystem_backend_2024
+echo   Dashboard: dashboard / nisystem_dashboard_2024
+echo.
+echo IMPORTANT: Change these passwords in production!
+echo.
+set /p confirm="Enable security now? (Y/N): "
+if /i "%confirm%"=="Y" (
+    echo.
+    echo Creating password file...
+    "C:\Program Files\mosquitto\mosquitto_passwd.exe" -c -b "config\mosquitto_passwd" backend nisystem_backend_2024
+    "C:\Program Files\mosquitto\mosquitto_passwd.exe" -b "config\mosquitto_passwd" dashboard nisystem_dashboard_2024
+    echo.
+    echo Security enabled! Restart all services to apply.
+    echo.
+    set /p restart="Restart all services now? (Y/N): "
+    if /i "!restart!"=="Y" (
+        goto STOPALL
+    )
+)
+pause
+goto MENU
 
 :END
 echo.
