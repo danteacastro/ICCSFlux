@@ -442,7 +442,105 @@ const currentDrawingPath = computed(() => {
   return path
 })
 
-// Pipe selection
+// Pipe selection and segment dragging
+const draggingSegment = ref<{
+  pipeId: string
+  segmentIndex: number  // index of first point in segment
+  orientation: 'horizontal' | 'vertical'
+  startY: number
+  startX: number
+  originalPoints: PidPoint[]
+} | null>(null)
+
+function onPipeMouseDown(event: MouseEvent, pipe: PidPipe) {
+  if (!props.editMode) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  // Select the pipe
+  selectedPipeId.value = pipe.id
+  selectedSymbolId.value = null
+  emit('select:pipe', pipe.id)
+  emit('select:symbol', null)
+
+  // Find which segment was clicked
+  const coords = getCanvasCoords(event)
+  let closestSegment = 0
+  let minDist = Infinity
+
+  for (let i = 0; i < pipe.points.length - 1; i++) {
+    const p1 = pipe.points[i]
+    const p2 = pipe.points[i + 1]
+    const dist = distanceToSegment(coords.x, coords.y, p1.x, p1.y, p2.x, p2.y)
+    if (dist < minDist) {
+      minDist = dist
+      closestSegment = i
+    }
+  }
+
+  // Determine segment orientation (horizontal if dx > dy, vertical otherwise)
+  const p1 = pipe.points[closestSegment]
+  const p2 = pipe.points[closestSegment + 1]
+  const dx = Math.abs(p2.x - p1.x)
+  const dy = Math.abs(p2.y - p1.y)
+  const orientation = dx > dy ? 'horizontal' : 'vertical'
+
+  draggingSegment.value = {
+    pipeId: pipe.id,
+    segmentIndex: closestSegment,
+    orientation,
+    startX: coords.x,
+    startY: coords.y,
+    originalPoints: pipe.points.map(p => ({ ...p }))
+  }
+
+  window.addEventListener('mousemove', onSegmentMove)
+  window.addEventListener('mouseup', onSegmentEnd)
+}
+
+function onSegmentMove(event: MouseEvent) {
+  if (!draggingSegment.value) return
+
+  const coords = getCanvasCoords(event)
+  const { pipeId, segmentIndex, orientation, startX, startY, originalPoints } = draggingSegment.value
+
+  // Calculate delta perpendicular to segment orientation
+  let deltaX = 0
+  let deltaY = 0
+
+  if (orientation === 'horizontal') {
+    // Horizontal segment - shift up/down
+    deltaY = coords.y - startY
+  } else {
+    // Vertical segment - shift left/right
+    deltaX = coords.x - startX
+  }
+
+  // Move both points of this segment
+  const newPoints = originalPoints.map((p, i) => {
+    if (i === segmentIndex || i === segmentIndex + 1) {
+      return {
+        x: p.x + deltaX,
+        y: p.y + deltaY
+      }
+    }
+    return { ...p }
+  })
+
+  const newPipes = props.pidLayer.pipes.map(p =>
+    p.id === pipeId ? { ...p, points: newPoints } : p
+  )
+
+  emit('update:pidLayer', { ...props.pidLayer, pipes: newPipes })
+}
+
+function onSegmentEnd() {
+  draggingSegment.value = null
+  window.removeEventListener('mousemove', onSegmentMove)
+  window.removeEventListener('mouseup', onSegmentEnd)
+}
+
+// Legacy click handler (for selection only when not dragging)
 function onPipeClick(event: MouseEvent, pipe: PidPipe) {
   if (!props.editMode) return
   event.stopPropagation()
@@ -464,6 +562,27 @@ function onPipePointMouseDown(event: MouseEvent, pipeId: string, pointIndex: num
   draggingPipePoint.value = { pipeId, pointIndex }
   window.addEventListener('mousemove', onPipePointMove)
   window.addEventListener('mouseup', onPipePointEnd)
+}
+
+// Right-click to delete a pipe point
+function onPipePointRightClick(event: MouseEvent, pipeId: string, pointIndex: number) {
+  if (!props.editMode) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  const pipe = props.pidLayer.pipes.find(p => p.id === pipeId)
+  if (!pipe) return
+
+  // Don't allow deleting if only 2 points remain (minimum for a pipe)
+  if (pipe.points.length <= 2) return
+
+  // Remove the point
+  const newPoints = pipe.points.filter((_, i) => i !== pointIndex)
+  const newPipes = props.pidLayer.pipes.map(p =>
+    p.id === pipeId ? { ...p, points: newPoints } : p
+  )
+
+  emit('update:pidLayer', { ...props.pidLayer, pipes: newPipes })
 }
 
 function onPipePointMove(event: MouseEvent) {
@@ -553,6 +672,17 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
     <svg class="pipes-layer">
       <!-- Existing pipes -->
       <g v-for="pipe in pidLayer.pipes" :key="pipe.id" class="pipe-group">
+        <!-- Wider invisible hit area for easier clicking -->
+        <path
+          :d="generatePipePath(pipe)"
+          stroke="transparent"
+          stroke-width="12"
+          fill="none"
+          class="pipe-hit-area"
+          @mousedown.stop="onPipeMouseDown($event, pipe)"
+          @dblclick.stop="onPipeDoubleClick($event, pipe)"
+        />
+        <!-- Visible pipe -->
         <path
           :d="generatePipePath(pipe)"
           :stroke="pipe.color || '#60a5fa'"
@@ -562,9 +692,8 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
           stroke-linejoin="round"
           fill="none"
           class="pipe-path"
-          :class="{ selected: selectedPipeId === pipe.id }"
-          @click.stop="onPipeClick($event, pipe)"
-          @dblclick.stop="onPipeDoubleClick($event, pipe)"
+          :class="{ selected: selectedPipeId === pipe.id, dragging: draggingSegment?.pipeId === pipe.id }"
+          pointer-events="none"
         />
 
         <!-- Flow animation -->
@@ -589,6 +718,7 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
             class="pipe-point"
             :class="{ 'first': idx === 0, 'last': idx === pipe.points.length - 1 }"
             @mousedown="onPipePointMouseDown($event, pipe.id, idx)"
+            @contextmenu.prevent="onPipePointRightClick($event, pipe.id, idx)"
           />
         </g>
       </g>
@@ -645,18 +775,17 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
         {{ getSymbolValue(symbol) }}
       </div>
 
-      <!-- Resize handles (edit mode only) -->
-      <template v-if="editMode && selectedSymbolId === symbol.id">
-        <div class="resize-handle nw" data-handle="nw" @mousedown.stop="startResize($event, symbol, 'nw')" />
-        <div class="resize-handle ne" data-handle="ne" @mousedown.stop="startResize($event, symbol, 'ne')" />
-        <div class="resize-handle sw" data-handle="sw" @mousedown.stop="startResize($event, symbol, 'sw')" />
-        <div class="resize-handle se" data-handle="se" @mousedown.stop="startResize($event, symbol, 'se')" />
-      </template>
     </div>
 
     <!-- Drawing mode indicator -->
     <div v-if="pipeDrawingMode" class="drawing-indicator">
-      <span>Click to add points, double-click to finish</span>
+      <span v-if="!isDrawingPipe">Click to start pipe</span>
+      <span v-else>Click to add bend, double-click to finish (Esc to cancel)</span>
+    </div>
+
+    <!-- Edit mode help -->
+    <div v-if="editMode && !pipeDrawingMode && selectedPipeId" class="edit-indicator">
+      <span>Drag segment to shift • Right-click point to delete • Del to remove pipe</span>
     </div>
 
     <!-- Symbol Configuration Modal -->
@@ -763,23 +892,36 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   z-index: 1;
 }
 
-.edit-mode .pipes-layer .pipe-path,
+.edit-mode .pipes-layer .pipe-hit-area,
 .edit-mode .pipes-layer .pipe-point {
   pointer-events: auto;
 }
 
-.pipe-path {
-  cursor: pointer;
-  transition: stroke-width 0.15s;
+.pipe-hit-area {
+  cursor: grab;
 }
 
-.pipe-path:hover {
+.pipe-hit-area:active {
+  cursor: grabbing;
+}
+
+.pipe-path {
+  transition: stroke-width 0.15s, filter 0.15s;
+}
+
+.pipe-group:hover .pipe-path {
   stroke-width: 5;
+  filter: drop-shadow(0 0 3px rgba(96, 165, 250, 0.5));
 }
 
 .pipe-path.selected {
   stroke-width: 5;
-  filter: drop-shadow(0 0 4px currentColor);
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.pipe-path.dragging {
+  stroke-width: 6;
+  filter: drop-shadow(0 0 8px #22c55e);
 }
 
 .pipe-flow-animation {
@@ -810,6 +952,19 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
 }
 
 .drawing-preview {
+  pointer-events: none;
+}
+
+.edit-indicator {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(34, 197, 94, 0.9);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
   pointer-events: none;
 }
 
