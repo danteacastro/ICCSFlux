@@ -429,14 +429,14 @@ export function useProjectManager() {
         // For V2 projects with embedded channels, send to backend
         if (mqtt.connected.value && data.channels) {
           // Send the full project for backend to apply channels/system config
-          mqtt.sendCommand('project/import/json', data)
+          mqtt.sendNodeCommand('project/import/json', data)
         }
       } else if (isLegacyBundle(data)) {
         project = migrateLegacyBundle(data)
 
         // For legacy bundles, also send backend config via MQTT
         if (mqtt.connected.value && data.backend) {
-          mqtt.sendCommand('config/load/full', data.backend)
+          mqtt.sendNodeCommand('config/load/full', data.backend)
         }
       } else {
         return { success: false, message: 'Invalid project file format' }
