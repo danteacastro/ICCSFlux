@@ -104,6 +104,46 @@ const alarmCallbacks: ((alarm: any, event: 'triggered' | 'updated' | 'cleared') 
 // Generic topic subscriptions (shared)
 const topicCallbacks: Map<string, ((payload: any) => void)[]> = new Map()
 
+/**
+ * Check if a topic matches an MQTT-style pattern with wildcards
+ * Supports: + (single level wildcard), # (multi-level wildcard)
+ * Examples:
+ *   topicMatchesPattern('nisystem/nodes/node-001/project/loaded', 'nisystem/nodes/+/project/loaded') -> true
+ *   topicMatchesPattern('nisystem/nodes/node-001/channels/TC001', 'nisystem/nodes/+/channels/#') -> true
+ */
+function topicMatchesPattern(topic: string, pattern: string): boolean {
+  // Exact match - fast path
+  if (topic === pattern) return true
+
+  const topicParts = topic.split('/')
+  const patternParts = pattern.split('/')
+
+  let ti = 0
+  let pi = 0
+
+  while (pi < patternParts.length) {
+    const pp = patternParts[pi]
+
+    if (pp === '#') {
+      // # matches everything from here to the end
+      return true
+    } else if (pp === '+') {
+      // + matches exactly one level
+      if (ti >= topicParts.length) return false
+      ti++
+      pi++
+    } else {
+      // Literal match required
+      if (ti >= topicParts.length || topicParts[ti] !== pp) return false
+      ti++
+      pi++
+    }
+  }
+
+  // Pattern fully consumed - topic must also be fully consumed
+  return ti === topicParts.length
+}
+
 export function useMqtt(prefix: string = 'nisystem') {
   // Store the prefix (first caller wins)
   if (!handlersInitialized) {
@@ -120,14 +160,20 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function connect(brokerUrl: string = 'ws://localhost:9001', username?: string, password?: string) {
+    const mqttUser = username || import.meta.env.VITE_MQTT_USERNAME
+    const mqttPass = password || import.meta.env.VITE_MQTT_PASSWORD
+
     const options: IClientOptions = {
       clientId: `nisystem-dashboard-${Math.random().toString(16).slice(2, 8)}`,
       clean: false, // Changed to false to allow message queuing
       reconnectPeriod: getReconnectDelay(),
       connectTimeout: 30000,
-      // MQTT Authentication (optional - for secured brokers)
-      username: username || import.meta.env.VITE_MQTT_USERNAME,
-      password: password || import.meta.env.VITE_MQTT_PASSWORD,
+    }
+
+    // Only add auth if credentials are provided
+    if (mqttUser && mqttPass) {
+      options.username = mqttUser
+      options.password = mqttPass
     }
 
     client.value = mqtt.connect(brokerUrl, options)
@@ -255,10 +301,11 @@ export function useMqtt(prefix: string = 'nisystem') {
           }
         }
 
-        // Handle generic topic subscriptions
-        const callbacks = topicCallbacks.get(topic)
-        if (callbacks) {
-          callbacks.forEach(cb => cb(payload))
+        // Handle generic topic subscriptions (supports MQTT-style wildcards: + for single level)
+        for (const [pattern, callbacks] of topicCallbacks.entries()) {
+          if (topicMatchesPattern(topic, pattern)) {
+            callbacks.forEach(cb => cb(payload))
+          }
         }
       } catch (e) {
         console.error('Error parsing MQTT message:', e)
@@ -850,6 +897,25 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   /**
+   * Send a command to a specific node (or the active/first known node)
+   * Uses node-prefixed topic: nisystem/nodes/{node_id}/{command}
+   */
+  function sendNodeCommand(command: string, payload?: any, nodeId?: string) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+
+    // Use specified node, or active node, or first known node, or default
+    const targetNodeId = nodeId || activeNodeId.value || knownNodes.value.keys().next().value || 'node-001'
+    const topic = `${systemPrefix}/nodes/${targetNodeId}/${command}`
+    const message = payload !== undefined ? JSON.stringify(payload) : '{}'
+
+    console.log('[MQTT] sendNodeCommand:', topic, message)
+    client.value.publish(topic, message)
+  }
+
+  /**
    * Subscribe to a specific topic with a callback
    * Returns an unsubscribe function
    */
@@ -1146,6 +1212,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     setOutput,
     resetCounter,
     sendCommand,
+    sendNodeCommand,
     subscribe,
 
     // Discovery

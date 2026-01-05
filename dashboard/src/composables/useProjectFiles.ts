@@ -163,17 +163,20 @@ export function useProjectFiles() {
   const store = useDashboardStore()
 
   // Subscribe to MQTT responses
+  // NOTE: Backend uses node-prefixed topics: nisystem/nodes/{node_id}/project/...
+  // We use wildcard (+) to receive from any node
   function setupSubscriptions() {
     if (initialized.value) return
     initialized.value = true
 
     const prefix = 'nisystem'
+    const nodePrefix = `${prefix}/nodes/+`  // Wildcard for any node
 
-    mqtt.subscribe(`${prefix}/project/list/response`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/list/response`, (payload: any) => {
       projects.value = payload.projects || []
     })
 
-    mqtt.subscribe(`${prefix}/project/loaded`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/loaded`, (payload: any) => {
       console.log('[PROJECT LOADING] Received project/loaded message:', {
         success: payload.success,
         hasProject: !!payload.project,
@@ -205,7 +208,7 @@ export function useProjectFiles() {
       isLoading.value = false
     })
 
-    mqtt.subscribe(`${prefix}/project/response`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/response`, (payload: any) => {
       isLoading.value = false
       if (!payload.success) {
         error.value = payload.message
@@ -214,7 +217,7 @@ export function useProjectFiles() {
       }
     })
 
-    mqtt.subscribe(`${prefix}/project/current`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/current`, (payload: any) => {
       console.log('[PROJECT LOADING] Received project/current message:', {
         hasProject: !!payload.project,
         filename: payload.filename
@@ -239,19 +242,19 @@ export function useProjectFiles() {
       }
     })
 
-    mqtt.subscribe(`${prefix}/config/list/response`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/config/list/response`, (payload: any) => {
       configs.value = payload.configs || []
     })
   }
 
   // List available projects
   function listProjects() {
-    mqtt.sendCommand('project/list')
+    mqtt.sendNodeCommand('project/list')
   }
 
   // List available configs
   function listConfigs() {
-    mqtt.sendCommand('config/list')
+    mqtt.sendNodeCommand('config/list')
   }
 
   // Load a project (backend will also load associated config)
@@ -266,14 +269,14 @@ export function useProjectFiles() {
         resolve(false)
       }, 10000)
 
-      // Listen for response
-      const unsubscribe = mqtt.subscribe('nisystem/project/loaded', (payload: any) => {
+      // Listen for response (using wildcard for node ID)
+      const unsubscribe = mqtt.subscribe('nisystem/nodes/+/project/loaded', (payload: any) => {
         clearTimeout(timeout)
         unsubscribe()
         resolve(payload.success)
       })
 
-      mqtt.sendCommand('project/load', { filename })
+      mqtt.sendNodeCommand('project/load', { filename })
     })
   }
 
@@ -292,7 +295,7 @@ export function useProjectFiles() {
         resolve(false)
       }, 10000)
 
-      const unsubscribe = mqtt.subscribe('nisystem/project/response', (payload: any) => {
+      const unsubscribe = mqtt.subscribe('nisystem/nodes/+/project/response', (payload: any) => {
         clearTimeout(timeout)
         unsubscribe()
         if (payload.success) {
@@ -303,7 +306,7 @@ export function useProjectFiles() {
         resolve(payload.success)
       })
 
-      mqtt.sendCommand('project/save', { filename, data: projectData })
+      mqtt.sendNodeCommand('project/save', { filename, data: projectData })
     })
   }
 
@@ -317,7 +320,7 @@ export function useProjectFiles() {
         resolve(false)
       }, 5000)
 
-      const unsubscribe = mqtt.subscribe('nisystem/project/response', (payload: any) => {
+      const unsubscribe = mqtt.subscribe('nisystem/nodes/+/project/response', (payload: any) => {
         clearTimeout(timeout)
         unsubscribe()
         if (payload.success) {
@@ -326,13 +329,13 @@ export function useProjectFiles() {
         resolve(payload.success)
       })
 
-      mqtt.sendCommand('project/delete', { filename })
+      mqtt.sendNodeCommand('project/delete', { filename })
     })
   }
 
   // Get current project from backend
   function getCurrentProject() {
-    mqtt.sendCommand('project/get-current')
+    mqtt.sendNodeCommand('project/get-current')
   }
 
   // Collect current frontend state into project data
