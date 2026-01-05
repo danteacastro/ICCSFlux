@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-// Removed unused onUnmounted import
 import { useDashboardStore } from '../stores/dashboard'
+import { useMqtt } from '../composables/useMqtt'
 
 export interface StatusMessage {
   id: string
@@ -16,6 +16,7 @@ defineProps<{
 }>()
 
 const store = useDashboardStore()
+const mqtt = useMqtt('nisystem')
 const messages = ref<StatusMessage[]>([])
 const isMinimized = ref(false)
 
@@ -24,6 +25,11 @@ let prevAcquiring = false
 let prevRecording = false
 let prevConnected = false
 let prevSchedulerEnabled = false
+
+// Track previous alarm/warning state per channel to only log TRANSITIONS
+// Key: channel name, Value: { alarm: boolean, warning: boolean, seen: boolean }
+// 'seen' flag prevents logging on first observation (initial state after page load)
+const prevAlarmState = new Map<string, { alarm: boolean; warning: boolean; seen: boolean }>()
 
 function addMessage(type: StatusMessage['type'], source: string, message: string) {
   const newMessage: StatusMessage = {
@@ -106,29 +112,37 @@ watch(() => store.status, (status) => {
   }
 }, { deep: true })
 
-// Watch for channel alarms
+// Watch for channel alarms - only log TRANSITIONS (not initial state on page load)
 watch(() => store.values, (values) => {
   Object.entries(values).forEach(([name, value]) => {
-    if (value.alarm) {
-      // Only add alarm message if not recently added (debounce)
-      const recentAlarm = messages.value.find(
-        m => m.source === name && m.type === 'error' &&
-        (Date.now() - m.timestamp.getTime()) < 5000
-      )
-      if (!recentAlarm) {
-        const config = store.channels[name]
-        addMessage('error', name, `Alarm: ${value.value.toFixed(2)} ${config?.unit || ''}`)
-      }
-    } else if (value.warning) {
-      const recentWarning = messages.value.find(
-        m => m.source === name && m.type === 'warning' &&
-        (Date.now() - m.timestamp.getTime()) < 5000
-      )
-      if (!recentWarning) {
-        const config = store.channels[name]
-        addMessage('warning', name, `Warning: ${value.value.toFixed(2)} ${config?.unit || ''}`)
-      }
+    const prev = prevAlarmState.get(name)
+    const currentAlarm = !!value.alarm
+    const currentWarning = !!value.warning
+
+    if (!prev) {
+      // First observation of this channel - just record state, don't log
+      // This prevents logging alarms that were already active before page load
+      prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
+      return
     }
+
+    // Only log when transitioning TO alarm (was false, now true)
+    if (currentAlarm && !prev.alarm) {
+      const config = store.channels[name]
+      addMessage('error', name, `Alarm: ${value.value.toFixed(2)} ${config?.unit || ''}`)
+    }
+    // Only log when transitioning TO warning (was false, now true, and not in alarm)
+    else if (currentWarning && !prev.warning && !currentAlarm) {
+      const config = store.channels[name]
+      addMessage('warning', name, `Warning: ${value.value.toFixed(2)} ${config?.unit || ''}`)
+    }
+    // Log when alarm clears (was in alarm, now not)
+    else if (!currentAlarm && prev.alarm) {
+      addMessage('success', name, 'Alarm cleared')
+    }
+
+    // Update previous state
+    prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
   })
 }, { deep: true })
 
@@ -142,6 +156,23 @@ onMounted(() => {
     prevConnected = store.status.status === 'online'
     prevSchedulerEnabled = store.status.scheduler_enabled
   }
+
+  // Subscribe to alarms/cleared to clear stale alarm messages
+  mqtt.subscribe('nisystem/nodes/+/alarms/cleared', () => {
+    // Clear all error and warning messages (alarms) from the log
+    messages.value = messages.value.filter(m => m.type !== 'error' && m.type !== 'warning')
+    // Reset alarm state tracking so new alarms can be logged
+    prevAlarmState.clear()
+    addMessage('info', 'System', 'Alarms cleared')
+  })
+
+  // Also subscribe to project/loaded to clear the log when a new project loads
+  mqtt.subscribe('nisystem/nodes/+/project/loaded', () => {
+    messages.value = []
+    // Reset alarm state tracking for the new project
+    prevAlarmState.clear()
+    addMessage('info', 'System', 'Project loaded')
+  })
 })
 
 const messageTypeIcon = {
