@@ -46,10 +46,15 @@ PROJECT_SCHEMA = {
         "channels", "system", "pages", "scripts", "alarms",
         "recording", "safety", "variables", "metadata"
     ],
-    "channel_required_fields": ["name", "type"],
+    # Note: When channels is a dict, name comes from the key
+    # When channels is a list, name is a required field in each object
+    "channel_required_fields_list": ["name", "type"],  # For list format
+    "channel_required_fields_dict": [],  # For dict format, name=key, type optional
     "channel_valid_types": [
         "analog_input", "analog_output", "digital_input", "digital_output",
-        "thermocouple", "counter", "virtual", "calculated", "modbus", "rest"
+        "thermocouple", "voltage", "current", "rtd", "counter", "virtual",
+        "calculated", "modbus", "rest", "strain", "iepe", "resistance",
+        "modbus_register", "modbus_coil"
     ]
 }
 
@@ -281,27 +286,46 @@ class ProjectManager:
             if not isinstance(channels, (list, dict)):
                 result.add_error("'channels' must be a list or dict")
             else:
-                channel_list = channels if isinstance(channels, list) else channels.values()
-                for i, ch in enumerate(channel_list):
+                # Handle both list format (legacy) and dict format (current)
+                is_dict_format = isinstance(channels, dict)
+
+                if is_dict_format:
+                    # Dict format: key is channel name, value is config
+                    items = [(name, ch) for name, ch in channels.items()]
+                else:
+                    # List format: each item has 'name' and 'type' fields
+                    items = [(i, ch) for i, ch in enumerate(channels)]
+
+                for key, ch in items:
                     if not isinstance(ch, dict):
-                        result.add_error(f"Channel {i}: must be a dict")
+                        result.add_error(f"Channel {key}: must be a dict")
                         continue
 
-                    # Check required channel fields
-                    for field in PROJECT_SCHEMA["channel_required_fields"]:
-                        if field not in ch:
-                            result.add_error(f"Channel {ch.get('name', i)}: missing required field '{field}'")
+                    # Check required channel fields based on format
+                    if is_dict_format:
+                        # Dict format: name comes from key, type field can be 'channel_type' or 'type'
+                        required_fields = PROJECT_SCHEMA["channel_required_fields_dict"]
+                    else:
+                        # List format: requires 'name' and 'type' inside each object
+                        required_fields = PROJECT_SCHEMA["channel_required_fields_list"]
 
-                    # Check channel type
-                    ch_type = ch.get("type", "")
+                    for field in required_fields:
+                        if field not in ch:
+                            ch_name = key if is_dict_format else ch.get('name', key)
+                            result.add_error(f"Channel {ch_name}: missing required field '{field}'")
+
+                    # Check channel type - accept 'type' or 'channel_type'
+                    ch_type = ch.get("type") or ch.get("channel_type", "")
                     if ch_type and ch_type not in PROJECT_SCHEMA["channel_valid_types"]:
-                        result.add_warning(f"Channel {ch.get('name', i)}: unknown type '{ch_type}'")
+                        ch_name = key if is_dict_format else ch.get('name', key)
+                        result.add_warning(f"Channel {ch_name}: unknown type '{ch_type}'")
 
                     # Validate safety config consistency
                     if ch.get("safety_action"):
-                        if not ch.get("high_alarm") and not ch.get("low_alarm"):
+                        if not ch.get("high_alarm") and not ch.get("low_alarm") and not ch.get("hihi_limit") and not ch.get("hi_limit"):
+                            ch_name = key if is_dict_format else ch.get('name', key)
                             result.add_warning(
-                                f"Channel {ch.get('name', i)}: has safety_action but no alarm limits configured"
+                                f"Channel {ch_name}: has safety_action but no alarm limits configured"
                             )
 
         # Validate safety actions if present

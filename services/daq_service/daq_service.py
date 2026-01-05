@@ -500,6 +500,7 @@ class DAQService:
             # This clears old alarms and creates new alarm configs from the new channels
             if self.alarm_manager:
                 self.alarm_manager.clear_all(clear_configs=True)
+            self._publish_alarms_cleared(reason="project_loaded")
             self._init_alarm_manager(from_project=True)
 
             # Load scripts from project
@@ -2310,9 +2311,13 @@ class DAQService:
             logger.info("[STATE MACHINE] Transitioning: stopped → starting")
 
             # Only reload from system.ini if no project is loaded
-            # If a project is loaded, its config is already applied and should not be overwritten
+            # If a project is loaded (from file OR imported from JSON), its config is already applied
             if self.current_project_path:
                 logger.info(f"Using project config: {self.current_project_path.name} ({len(self.config.channels)} channels)")
+            elif self.current_project_data:
+                # Project was imported from JSON (no file path, but has project data)
+                project_name = self.current_project_data.get("name", "Imported Project")
+                logger.info(f"Using imported project config: {project_name} ({len(self.config.channels)} channels)")
             else:
                 # No project loaded - reload from system.ini to pick up any changes
                 logger.info("No project loaded - reloading configuration from system.ini...")
@@ -2339,7 +2344,7 @@ class DAQService:
             # Audit trail: Log acquisition start
             if self.audit_trail:
                 self.audit_trail.log_event(
-                    event_type=AuditEventType.SESSION_START,
+                    event_type=AuditEventType.ACQUISITION_STARTED,
                     user=self.auth_username or "system",
                     description="Data acquisition started",
                     details={"channels": len(self.config.channels) if self.config else 0}
@@ -2397,7 +2402,7 @@ class DAQService:
             # Audit trail: Log acquisition stop
             if self.audit_trail:
                 self.audit_trail.log_event(
-                    event_type=AuditEventType.SESSION_END,
+                    event_type=AuditEventType.ACQUISITION_STOPPED,
                     user=self.auth_username or "system",
                     description="Data acquisition stopped"
                 )
@@ -2707,6 +2712,30 @@ class DAQService:
             retain=True,
             qos=1  # At least once delivery for status
         )
+
+    def _publish_alarms_cleared(self, reason: str = "project_change"):
+        """Publish alarm cleared message to signal frontend to clear stale alarm data.
+
+        This is called when:
+        - A new project is loaded (clears previous project's alarms)
+        - A project is closed (clears all alarms)
+        - No project is configured at startup
+
+        The frontend should listen for this message and clear:
+        - Active alarms
+        - Alarm history
+        - Alarm configurations (for orphaned channels)
+        - localStorage alarm data
+        """
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/alarms/cleared",
+            json.dumps({
+                "reason": reason,
+                "timestamp": datetime.now().isoformat()
+            })
+        )
+        logger.debug(f"Published alarms/cleared message, reason: {reason}")
 
     # =========================================================================
     # AUTHENTICATION HANDLERS (Session-based with UserSessionManager)
@@ -3592,6 +3621,7 @@ class DAQService:
         # Alarms are per-project, so with no project there should be no alarms
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
+        self._publish_alarms_cleared(reason="no_project")
 
         logger.info("No project configured - starting with empty state")
 
@@ -3845,6 +3875,7 @@ class DAQService:
         # Clear alarm state - alarms are per-project, not global
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
+        self._publish_alarms_cleared(reason="project_closed")
 
         logger.info("Project closed - now in empty state")
 
@@ -3974,12 +4005,17 @@ class DAQService:
         """Get the current project data"""
         base = self.get_topic_base()
 
+        # Handle both file-based projects and JSON-imported projects
+        has_project = bool(self.current_project_path or self.current_project_data)
+
         self.mqtt_client.publish(
             f"{base}/project/current",
             json.dumps({
-                "filename": self.current_project_path.name if self.current_project_path else None,
+                "filename": self.current_project_path.name if self.current_project_path else (
+                    self.current_project_data.get("name", "Imported Project") if self.current_project_data else None
+                ),
                 "path": str(self.current_project_path) if self.current_project_path else None,
-                "project": self.current_project_data if self.current_project_path else None
+                "project": self.current_project_data if has_project else None
             })
         )
 
