@@ -262,7 +262,12 @@ const hasError = computed(() => {
 
 .status-messages.minimized {
   max-height: 36px;
-  width: 160px;
+  width: auto;
+}
+
+/* When minimized, hide the "Status Log" text but keep icon and badge */
+.minimized .title span:first-of-type {
+  display: none;
 }
 
 .status-messages.has-error {
