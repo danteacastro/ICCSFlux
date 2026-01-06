@@ -157,8 +157,17 @@ class ScriptRuntime:
             # Build the execution namespace with nisystem API
             namespace = self._build_namespace()
 
+            # Preprocess code: strip 'await' keywords for sync execution
+            # This allows the same script to work in both Pyodide (async) and backend (sync)
+            import re
+            code = self.script.code
+            # Replace 'await next_scan()' with 'next_scan()'
+            # Replace 'await wait_for(...)' with 'wait_for(...)'
+            # Replace 'await wait_until(...)' with 'wait_until(...)'
+            code = re.sub(r'\bawait\s+(next_scan|wait_for|wait_until)\s*\(', r'\1(', code)
+
             # Compile and execute
-            code_obj = compile(self.script.code, f"<script:{self.script.name}>", 'exec')
+            code_obj = compile(code, f"<script:{self.script.name}>", 'exec')
             exec(code_obj, namespace)
 
             # If script has a main loop, it should have exited by now

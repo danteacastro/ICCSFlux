@@ -206,7 +206,8 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/heartbeat`,  // Service heartbeat
         `${nodePrefix}/command/ack`,  // Command acknowledgments
         `${nodePrefix}/config/channel/deleted`,
-        `${nodePrefix}/config/channel/bulk-create/response`
+        `${nodePrefix}/config/channel/bulk-create/response`,
+        `${nodePrefix}/script/#`  // Script published values and status
       ]
 
       topics.forEach(topic => {
@@ -302,6 +303,9 @@ export function useMqtt(prefix: string = 'nisystem') {
           } else if (restOfTopic === 'correlation/rules/list/response') {
             // Correlation rules sync from backend
             soeComposable.handleCorrelationRulesSync(payload)
+          } else if (restOfTopic === 'script/values') {
+            // Script-published values from backend (py.* channels)
+            handleScriptValues(payload)
           }
         }
 
@@ -369,6 +373,39 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
     systemStatus.value = status
     statusCallbacks.forEach(cb => cb(status))
+  }
+
+  function handleScriptValues(payload: Record<string, any>) {
+    // Handle script-published values from backend (py.* channels)
+    // Payload format: { "DrawNumber": 1, "DrawTarget": 10.0, "_timestamp": 1234567890.123 }
+    const timestamp = payload._timestamp ? payload._timestamp * 1000 : Date.now()
+
+    Object.entries(payload).forEach(([name, value]) => {
+      if (name === '_timestamp') return  // Skip metadata
+
+      // Store as py.{name} channel value so widgets can bind to it
+      const channelName = `py.${name}`
+      channelValues.value[channelName] = {
+        name: channelName,
+        value: typeof value === 'number' ? value : 0,
+        timestamp,
+        alarm: false,
+        warning: false,
+        quality: 'good',
+        disconnected: false
+      }
+    })
+
+    // Notify data callbacks
+    const numericValues: Record<string, number> = {}
+    Object.entries(payload).forEach(([name, value]) => {
+      if (name !== '_timestamp' && typeof value === 'number') {
+        numericValues[`py.${name}`] = value
+      }
+    })
+    if (Object.keys(numericValues).length > 0) {
+      dataCallbacks.forEach(cb => cb(numericValues))
+    }
   }
 
   function handleChannelConfig(payload: { channels: Record<string, any> }) {
