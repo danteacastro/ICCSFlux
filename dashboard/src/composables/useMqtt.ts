@@ -379,6 +379,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       Object.entries(payload.channels).forEach(([name, ch]) => {
         configs[name] = {
           name: ch.name || name,  // TAG is the only identifier
+          physical_channel: ch.physical_channel || '',  // NI-DAQmx address (e.g., cDAQ1Mod1/ai0)
           // display_name removed - use name (TAG) everywhere
           channel_type: ch.channel_type || ch.type as any,
           unit: ch.units || '',
@@ -874,18 +875,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     return false
   }
 
-  // Commands - using backend's topic structure
+  // Commands - using backend's node-prefixed topic structure
   function sendSystemCommand(command: string, payload?: any) {
-    if (!client.value || !connected.value) {
-      console.error('[MQTT] sendSystemCommand: not connected, command:', command)
-      return
-    }
-
-    const topic = `${systemPrefix}/system/${command}`
-    const message = payload !== undefined ? JSON.stringify(payload) : '{}'
-
-    console.log('[MQTT] Publishing to topic:', topic, 'message:', message)
-    client.value.publish(topic, message)
+    // Use sendNodeCommand to ensure correct node-prefixed topic
+    // Backend subscribes to: nisystem/nodes/{node_id}/system/{command}
+    sendNodeCommand(`system/${command}`, payload)
   }
 
   function sendCommand(command: string, payload?: any) {
@@ -981,12 +975,12 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function setOutput(channelName: string, value: number | boolean) {
-    // Output commands go to nisystem/commands/<channel_name>
+    // Output commands go to node-prefixed topic
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/commands/${channelName}`, JSON.stringify({ value }))
+    sendNodeCommand(`commands/${channelName}`, { value })
   }
 
   function resetCounter(channelName: string) {
@@ -995,7 +989,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/channel/reset`, JSON.stringify({ channel: channelName }))
+    sendNodeCommand('channel/reset', { channel: channelName })
   }
 
   // Discovery functions
@@ -1007,7 +1001,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     isScanning.value = true
     discoveryResult.value = null
     discoveryChannels.value = []
-    client.value.publish(`${systemPrefix}/discovery/scan`, '')
+    sendNodeCommand('discovery/scan', {})
     console.log('Discovery scan requested')
   }
 
@@ -1015,7 +1009,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     discoveryCallbacks.push(callback)
   }
 
-  // Config update functions
+  // Config update functions - use sendNodeCommand for node-prefixed topics
   function updateChannelConfig(channelName: string, config: any) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
@@ -1025,7 +1019,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       channel: channelName,
       config: config
     }
-    client.value.publish(`${systemPrefix}/config/channel/update`, JSON.stringify(payload))
+    sendNodeCommand('config/channel/update', payload)
     console.log('Channel config update sent:', channelName)
   }
 
@@ -1035,7 +1029,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       return
     }
     const payload = configName ? { config: configName } : {}
-    client.value.publish(`${systemPrefix}/config/save`, JSON.stringify(payload))
+    sendNodeCommand('config/save', payload)
     console.log('Config save requested')
   }
 
@@ -1052,7 +1046,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       name,
       config
     }
-    client.value.publish(`${systemPrefix}/config/channel/create`, JSON.stringify(payload))
+    sendNodeCommand('config/channel/create', payload)
     console.log('Channel create sent:', name)
   }
 
@@ -1065,7 +1059,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       name,
       force
     }
-    client.value.publish(`${systemPrefix}/config/channel/delete`, JSON.stringify(payload))
+    sendNodeCommand('config/channel/delete', payload)
     console.log('Channel delete sent:', name)
   }
 
@@ -1075,7 +1069,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       return
     }
     const payload = { channels }
-    client.value.publish(`${systemPrefix}/config/channel/bulk-create`, JSON.stringify(payload))
+    sendNodeCommand('config/channel/bulk-create', payload)
     console.log('Bulk create sent:', channels.length, 'channels')
   }
 
@@ -1098,13 +1092,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  // Recording management functions
+  // Recording management functions - use sendNodeCommand for node-prefixed topics
   function updateRecordingConfig(config: Partial<RecordingConfig>) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/recording/config`, JSON.stringify(config))
+    sendNodeCommand('recording/config', config)
     console.log('Recording config update sent')
   }
 
@@ -1113,7 +1107,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/recording/config/get`, '')
+    sendNodeCommand('recording/config/get', {})
   }
 
   function listRecordedFiles() {
@@ -1121,7 +1115,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/recording/list`, '')
+    sendNodeCommand('recording/list', {})
   }
 
   function deleteRecordedFile(filename: string) {
@@ -1129,14 +1123,14 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    client.value.publish(`${systemPrefix}/recording/delete`, JSON.stringify({ filename }))
+    sendNodeCommand('recording/delete', { filename })
   }
 
   function sendScriptValues(values: Record<string, number>) {
     if (!client.value || !connected.value) {
       return
     }
-    client.value.publish(`${systemPrefix}/recording/script-values`, JSON.stringify({ values }))
+    sendNodeCommand('recording/script-values', { values })
   }
 
   function onRecordingResponse(callback: (result: any) => void) {
