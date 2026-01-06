@@ -530,6 +530,31 @@
       "description": "Solenoid Valve 3",
       "log": true,
       "group": "Valves"
+    },
+    "Ifm_cnt": {
+      "physical_channel": "cDAQ-9189-DHWSIMMod6/ctr1",
+      "channel_type": "counter",
+      "counter_edge": "rising",
+      "units": "pulses",
+      "pulses_per_unit": 6000,
+      "display_name": "Flow Counter",
+      "description": "DHW Flow Counter - ifm (6000 pulses/gallon)",
+      "log": true,
+      "log_interval_ms": 1000,
+      "precision": 0,
+      "group": "Counters"
+    },
+    "Power_Draw": {
+      "physical_channel": "cDAQ-9189-DHWSIMMod6/ctr0",
+      "channel_type": "counter",
+      "counter_edge": "rising",
+      "units": "pulses",
+      "display_name": "Power Counter",
+      "description": "Power consumption counter",
+      "log": true,
+      "log_interval_ms": 1000,
+      "precision": 0,
+      "group": "Counters"
     }
   },
   "layout": {
@@ -1246,7 +1271,17 @@
     "calculatedParams": [],
     "sequences": [],
     "transformations": [],
-    "triggers": []
+    "triggers": [],
+    "pythonScripts": [
+      {
+        "id": "dhw-draw-profile",
+        "name": "DHW Draw Profile",
+        "description": "24-hour domestic hot water draw profile test. Opens valves, monitors flow counter until target gallons reached, waits for period, repeats.",
+        "run_mode": "session",
+        "enabled": true,
+        "code": "# ═══════════════════════════════════════════════════════════════════════════════\n# DHW Draw Profile Test Script\n# ═══════════════════════════════════════════════════════════════════════════════\n# Runs a 24-hour domestic hot water draw profile test\n#\n# Hardware:\n#   - Ifm_cnt: Flow meter counter (6000 pulses per gallon)\n#   - Power_Draw: Power consumption counter\n#   - SV1, SV2, SV3: Solenoid valves (digital outputs)\n#\n# The script:\n#   1. Opens solenoid valve(s) to start draw\n#   2. Monitors Ifm_cnt until target gallons reached\n#   3. Closes valve when target reached\n#   4. Waits for draw period to complete\n#   5. Records new baseline and moves to next draw (delta calculation, no reset needed)\n#   6. Repeats for 24 hours\n# ═══════════════════════════════════════════════════════════════════════════════\n\n# ═══════════════════════════════════════════════════════════════════════════════\n# CONFIGURATION - Edit these values for your test\n# ═══════════════════════════════════════════════════════════════════════════════\n\n# Flow meter calibration\nPULSES_PER_GALLON = 6000  # 1/6000 gallons per pulse\n\n# Test duration\nTEST_DURATION_HOURS = 24\n\n# Draw schedule: list of (target_gallons, period_seconds, solenoids)\n#   - target_gallons: how much water to draw\n#   - period_seconds: total time from start of this draw to start of next\n#   - solenoids: which valve(s) to open for this draw\n#\n# Example: DOE-style 6 draws per hour, 10 gallons each, alternating valves\nDRAW_SCHEDULE = [\n    # (gallons, period, solenoids)\n    (10.0, 600, ['SV1']),        # Draw 1: 10 gal via SV1, wait until 10 min\n    (10.0, 600, ['SV1']),        # Draw 2: 10 gal via SV1, wait until 20 min\n    (10.0, 600, ['SV1']),        # Draw 3: 10 gal via SV1, wait until 30 min\n    (10.0, 600, ['SV1']),        # Draw 4: 10 gal via SV1, wait until 40 min\n    (10.0, 600, ['SV1']),        # Draw 5: 10 gal via SV1, wait until 50 min\n    (10.0, 600, ['SV1']),        # Draw 6: 10 gal via SV1, wait until 60 min\n]\n\n# Safety limits\nMAX_DRAW_TIME_SECONDS = 300  # Max time valve can be open per draw\nMIN_FLOW_RATE_GPM = 0.5      # Minimum flow to detect (safety cutoff)\nFLOW_CHECK_DELAY = 10        # Seconds to wait before checking flow rate\n\n# ═══════════════════════════════════════════════════════════════════════════════\n# INITIALIZATION\n# ═══════════════════════════════════════════════════════════════════════════════\n\n# State tracking\ndraw_number = 0\nschedule_index = 0\ntotal_gallons_drawn = 0\ntotal_draws_completed = 0\ntest_start_time = None\ndraw_start_time = None\ndraw_start_pulses = 0\n\n# Flow rate calculator for safety monitoring\nflow_rate_calc = RateCalculator(window_seconds=5)\n\ndef pulses_to_gallons(pulses):\n    \"\"\"Convert counter pulses to gallons\"\"\"\n    return pulses / PULSES_PER_GALLON\n\ndef open_valves(solenoids):\n    \"\"\"Open specified solenoid valves\"\"\"\n    for valve in solenoids:\n        outputs.set(valve, True)\n    print(f\"[{time_of_day()}] Valves OPEN: {', '.join(solenoids)}\")\n\ndef close_valves():\n    \"\"\"Close all solenoid valves\"\"\"\n    for valve in ['SV1', 'SV2', 'SV3']:\n        outputs.set(valve, False)\n    print(f\"[{time_of_day()}] Valves CLOSED\")\n\ndef get_current_pulses():\n    \"\"\"Get current flow counter value\"\"\"\n    return tags.get('Ifm_cnt', default=0)\n\ndef get_power_pulses():\n    \"\"\"Get current power counter value\"\"\"\n    return tags.get('Power_Draw', default=0)\n\n# ═══════════════════════════════════════════════════════════════════════════════\n# MAIN TEST LOOP\n# ═══════════════════════════════════════════════════════════════════════════════\n\n# Ensure valves are closed at start\nclose_valves()\n\n# Record test start\ntest_start_time = now()\nprint(f\"\")\nprint(f\"═══════════════════════════════════════════════════════════════════\")\nprint(f\"  DHW DRAW PROFILE TEST STARTED\")\nprint(f\"  Time: {now_iso()}\")\nprint(f\"  Duration: {TEST_DURATION_HOURS} hours\")\nprint(f\"  Schedule: {len(DRAW_SCHEDULE)} draws per cycle\")\nprint(f\"═══════════════════════════════════════════════════════════════════\")\nprint(f\"\")\n\ntry:\n    while session.active:\n        test_elapsed = elapsed_since(test_start_time)\n        test_elapsed_hours = test_elapsed / 3600\n\n        # Check if test is complete\n        if test_elapsed_hours >= TEST_DURATION_HOURS:\n            print(f\"\")\n            print(f\"═══════════════════════════════════════════════════════════════════\")\n            print(f\"  TEST COMPLETE!\")\n            print(f\"  Total draws: {total_draws_completed}\")\n            print(f\"  Total gallons: {total_gallons_drawn:.2f}\")\n            print(f\"  Duration: {test_elapsed_hours:.2f} hours\")\n            print(f\"═══════════════════════════════════════════════════════════════════\")\n            break\n\n        # Get current draw from schedule (cycles through)\n        target_gallons, draw_period, solenoids = DRAW_SCHEDULE[schedule_index]\n\n        # Increment draw counter\n        draw_number += 1\n\n        print(f\"\")\n        print(f\"─── DRAW #{draw_number} ───────────────────────────────────────────────\")\n        print(f\"  Target: {target_gallons:.2f} gallons\")\n        print(f\"  Period: {draw_period} seconds\")\n        print(f\"  Valves: {', '.join(solenoids)}\")\n        print(f\"  Test elapsed: {test_elapsed/3600:.2f} hours\")\n\n        # Record draw start\n        draw_start_time = now()\n        draw_start_pulses = get_current_pulses()\n\n        # ═══════════════════════════════════════════════════════════════════\n        # PHASE 1: Draw water until target reached\n        # ═══════════════════════════════════════════════════════════════════\n\n        open_valves(solenoids)\n\n        draw_complete = False\n        draw_aborted = False\n        gallons_this_draw = 0\n\n        while session.active and not draw_complete and not draw_aborted:\n            current_pulses = get_current_pulses()\n            pulses_this_draw = current_pulses - draw_start_pulses\n            gallons_this_draw = pulses_to_gallons(pulses_this_draw)\n\n            draw_elapsed = elapsed_since(draw_start_time)\n\n            # Update flow rate for safety monitoring\n            flow_rate_pulses = flow_rate_calc.update(current_pulses)\n            flow_rate_gpm = pulses_to_gallons(flow_rate_pulses) * 60  # Convert to GPM\n\n            # Publish live values\n            publish('DrawNumber', draw_number)\n            publish('DrawTarget', target_gallons, units='gal')\n            publish('DrawCurrent', gallons_this_draw, units='gal')\n            publish('DrawProgress', min(100, (gallons_this_draw / target_gallons) * 100), units='%')\n            publish('FlowRate', flow_rate_gpm, units='GPM')\n            publish('DrawElapsed', draw_elapsed, units='s')\n            publish('TestProgress', (test_elapsed / (TEST_DURATION_HOURS * 3600)) * 100, units='%')\n            publish('TotalGallons', total_gallons_drawn + gallons_this_draw, units='gal')\n\n            # Check if target reached\n            if gallons_this_draw >= target_gallons:\n                draw_complete = True\n                print(f\"  [TARGET REACHED] {gallons_this_draw:.2f} gal in {draw_elapsed:.1f}s\")\n                break\n\n            # Safety: Max draw time exceeded\n            if draw_elapsed > MAX_DRAW_TIME_SECONDS:\n                draw_aborted = True\n                print(f\"  [SAFETY] Max draw time exceeded! Got {gallons_this_draw:.2f} gal\")\n                break\n\n            # Safety: Check for no flow (after initial delay)\n            if draw_elapsed > FLOW_CHECK_DELAY and flow_rate_gpm < MIN_FLOW_RATE_GPM:\n                draw_aborted = True\n                print(f\"  [SAFETY] No flow detected! Rate: {flow_rate_gpm:.2f} GPM\")\n                break\n\n            await next_scan()\n\n        # Close valves\n        close_valves()\n\n        # Update totals\n        total_gallons_drawn += gallons_this_draw\n        total_draws_completed += 1\n\n        # ═══════════════════════════════════════════════════════════════════\n        # PHASE 2: Wait for remainder of draw period\n        # ═══════════════════════════════════════════════════════════════════\n\n        draw_elapsed = elapsed_since(draw_start_time)\n        wait_time = draw_period - draw_elapsed\n\n        if wait_time > 0:\n            print(f\"  Waiting {wait_time:.1f}s until next draw...\")\n\n            while session.active and elapsed_since(draw_start_time) < draw_period:\n                # Update published values during wait\n                remaining = draw_period - elapsed_since(draw_start_time)\n                publish('WaitRemaining', max(0, remaining), units='s')\n                publish('DrawStatus', 0)  # 0 = waiting\n\n                # Update test progress\n                current_test_elapsed = elapsed_since(test_start_time)\n                publish('TestProgress', (current_test_elapsed / (TEST_DURATION_HOURS * 3600)) * 100, units='%')\n\n                await next_scan()\n\n        # Move to next draw in schedule (cycle back to start if needed)\n        schedule_index = (schedule_index + 1) % len(DRAW_SCHEDULE)\n\n        print(f\"  Draw #{draw_number} complete. Total: {total_gallons_drawn:.2f} gal\")\n\nfinally:\n    # ═══════════════════════════════════════════════════════════════════\n    # CLEANUP - Always close valves when script stops\n    # ═══════════════════════════════════════════════════════════════════\n    close_valves()\n    print(f\"\")\n    print(f\"[{time_of_day()}] Script stopped. Valves closed.\")\n    print(f\"  Total draws: {total_draws_completed}\")\n    print(f\"  Total gallons: {total_gallons_drawn:.2f}\")\n"
+      }
+    ]
   },
   "recording": {
     "config": {
@@ -1269,7 +1304,9 @@
       "Tank_7",
       "Tank_8",
       "Ifm",
+      "Ifm_cnt",
       "NGin",
+      "Power_Draw",
       "T_gas",
       "T_amb",
       "T_flu",

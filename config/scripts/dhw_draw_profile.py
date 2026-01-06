@@ -13,7 +13,7 @@
 #   2. Monitors Ifm_cnt until target gallons reached
 #   3. Closes valve when target reached
 #   4. Waits for draw period to complete
-#   5. Resets counter and moves to next draw
+#   5. Records new baseline and moves to next draw (delta calculation, no reset needed)
 #   6. Repeats for 24 hours
 # ═══════════════════════════════════════════════════════════════════════════════
 
