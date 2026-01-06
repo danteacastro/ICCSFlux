@@ -1320,7 +1320,12 @@ asyncio.ensure_future(__user_script__())
     }
   }
 
-  function importScripts(scriptsList: PythonScript[]): void {
+  function importScripts(scriptsList: PythonScript[], clearExisting: boolean = true): void {
+    // Clear existing scripts to prevent duplicates when loading a project
+    if (clearExisting) {
+      scripts.value = {}
+      scriptOutputs.value = {}
+    }
     for (const script of scriptsList) {
       scripts.value[script.id] = script
       scriptOutputs.value[script.id] = []

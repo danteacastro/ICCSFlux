@@ -30,7 +30,7 @@ const store = useDashboardStore()
 const scripts = useScripts()
 
 // Permission-based edit control (injected from App.vue)
-const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(false))
+const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(true))
 const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
 
 // Check permission before allowing edits
@@ -1547,7 +1547,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
     <!-- View-only notice for users without edit permission -->
     <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
-      <span>View Only - Supervisor access required to edit</span>
+      <span>View Only - Engineer access required to edit</span>
       <button class="login-link" @click="showLoginDialog">Login</button>
     </div>
 

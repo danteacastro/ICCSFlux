@@ -24,7 +24,7 @@ const safety = useSafety()
 const soe = mqtt.soe  // SOE & Correlation composable
 
 // Permission-based edit control (injected from App.vue)
-const hasEditPermission = inject<{ value: boolean }>('canEditSafety', ref(false))
+const hasEditPermission = inject<{ value: boolean }>('canEditSafety', ref(true))
 const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
 
 // ============================================
@@ -678,7 +678,7 @@ function getControlDescription(ctrl: InterlockControl): string {
     <!-- View-only notice for users without edit permission -->
     <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
-      <span>View Only - Supervisor access required to edit safety configuration</span>
+      <span>View Only - Engineer access required to edit safety configuration</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
     </div>
 

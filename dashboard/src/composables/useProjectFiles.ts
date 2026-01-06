@@ -18,6 +18,7 @@ import { ref, computed } from 'vue'
 import { useMqtt } from './useMqtt'
 import { useDashboardStore } from '../stores/dashboard'
 import { usePythonScripts } from './usePythonScripts'
+import { useBackendScripts } from './useBackendScripts'
 import type { ChannelConfig, ChannelType } from '../types'
 
 // Channel config as stored in the project JSON file
@@ -546,11 +547,33 @@ export function useProjectFiles() {
         localStorage.setItem('nisystem-triggers', JSON.stringify(data.scripts.triggers))
       }
       // Extended script types (v2.1+)
-      if (data.scripts.pythonScripts) {
+      if (data.scripts.pythonScripts && data.scripts.pythonScripts.length > 0) {
         localStorage.setItem('nisystem-python-scripts', JSON.stringify(data.scripts.pythonScripts))
-        // Notify usePythonScripts composable to reload scripts
+        // Notify usePythonScripts composable to reload scripts (frontend/Pyodide)
         const pythonScripts = usePythonScripts()
         pythonScripts.importScripts(data.scripts.pythonScripts)
+
+        // ALSO send scripts to backend via MQTT for server-side execution
+        const backendScripts = useBackendScripts()
+
+        // Clear existing scripts first to prevent duplicates
+        console.log('[PROJECT LOADING] Clearing existing backend scripts...')
+        backendScripts.clearAllScripts()
+
+        // Small delay to let clear messages propagate before adding new scripts
+        setTimeout(() => {
+          console.log('[PROJECT LOADING] Sending', data.scripts.pythonScripts.length, 'scripts to backend...')
+          for (const script of data.scripts.pythonScripts) {
+            backendScripts.addScript({
+              name: script.name,
+              code: script.code,
+              description: script.description || '',
+              runMode: script.runMode || script.run_mode || 'manual',
+              enabled: script.enabled !== false
+            })
+            console.log('[PROJECT LOADING] Added script to backend:', script.name)
+          }
+        }, 100)
       }
       if (data.scripts.functionBlocks) {
         localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks))

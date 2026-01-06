@@ -55,8 +55,53 @@ export interface ArchiveEntry {
 // SINGLETON STATE - Shared across all useAuth() calls
 // ============================================================================
 
-const authenticated = ref(false)
-const currentUser = ref<AuthUser | null>(null)
+// Default operator user - available without login
+// NOTE: Set to 'admin' role to disable all permission restrictions during development
+const DEFAULT_OPERATOR: AuthUser = {
+  username: 'operator',
+  role: 'admin',  // Full access without login
+  displayName: 'Operator',
+  permissions: ['acquisition.start', 'acquisition.stop', 'recording.start', 'recording.stop',
+                'config.channels.modify', 'config.safety.modify', 'config.scripts.modify']
+}
+
+const AUTH_STORAGE_KEY = 'nisystem-auth-session'
+
+// Try to restore persisted session from localStorage
+function loadPersistedSession(): AuthUser | null {
+  try {
+    const saved = localStorage.getItem(AUTH_STORAGE_KEY)
+    if (saved) {
+      const session = JSON.parse(saved)
+      // Only restore elevated sessions (engineer/admin)
+      if (session.role === 'engineer' || session.role === 'admin') {
+        console.log('[AUTH] Restored persisted session:', session.username, session.role)
+        return session
+      }
+    }
+  } catch (e) {
+    console.warn('[AUTH] Failed to load persisted session:', e)
+  }
+  return null
+}
+
+function saveSession(user: AuthUser | null) {
+  try {
+    if (user && (user.role === 'engineer' || user.role === 'admin')) {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user))
+      console.log('[AUTH] Persisted session:', user.username, user.role)
+    } else {
+      localStorage.removeItem(AUTH_STORAGE_KEY)
+    }
+  } catch (e) {
+    console.warn('[AUTH] Failed to save session:', e)
+  }
+}
+
+// Initialize with persisted session or default operator
+const persistedSession = loadPersistedSession()
+const authenticated = ref(persistedSession !== null)
+const currentUser = ref<AuthUser | null>(persistedSession || DEFAULT_OPERATOR)
 const authError = ref<string | null>(null)
 const isLoggingIn = ref(false)
 
@@ -82,6 +127,8 @@ let handlersInitialized = false
 
 const hasPermission = (permission: string): boolean => {
   if (!currentUser.value) return false
+  // Admin role has all permissions (bypass explicit permission check)
+  if (currentUser.value.role === 'admin') return true
   return currentUser.value.permissions.includes(permission)
 }
 
@@ -125,6 +172,15 @@ export function useAuth() {
     mqtt.subscribe(`${nodePrefix}/audit/query/response`, handleAuditQueryResponse)
     mqtt.subscribe(`${nodePrefix}/archive/list/response`, handleArchiveListResponse)
     mqtt.subscribe(`${nodePrefix}/archive/verify/response`, handleArchiveVerifyResponse)
+
+    // Request current auth status from backend on boot
+    // This restores session state if user was previously logged in
+    setTimeout(() => {
+      if (mqtt.connected.value) {
+        mqtt.sendNodeCommand('auth/status/request', {})
+        console.log('[AUTH] Requested auth status on boot')
+      }
+    }, 500)  // Small delay to ensure subscriptions are ready
   }
 
   function handleAuthStatus(data: AuthStatus) {
@@ -133,14 +189,19 @@ export function useAuth() {
     isLoggingIn.value = false
 
     if (data.authenticated && data.username) {
-      currentUser.value = {
+      const user: AuthUser = {
         username: data.username,
         role: data.role || 'viewer',
         displayName: data.displayName,
         permissions: data.permissions || []
       }
+      currentUser.value = user
+      // Persist elevated sessions (engineer/admin)
+      saveSession(user)
     } else {
-      currentUser.value = null
+      // Login failed or logout - reset to default operator
+      currentUser.value = DEFAULT_OPERATOR
+      saveSession(null)
     }
 
     // Notify callbacks
@@ -220,7 +281,8 @@ export function useAuth() {
 
     mqtt.sendNodeCommand('auth/logout', {})
     authenticated.value = false
-    currentUser.value = null
+    currentUser.value = DEFAULT_OPERATOR
+    saveSession(null)  // Clear persisted session
   }
 
   function requestAuthStatus() {

@@ -498,9 +498,10 @@ class DAQService:
 
             # Reinitialize alarm manager with new channel configs
             # This clears old alarms and creates new alarm configs from the new channels
+            # IMPORTANT: Clear MQTT retained messages BEFORE clearing alarm manager
+            self._publish_alarms_cleared(reason="project_loaded")
             if self.alarm_manager:
                 self.alarm_manager.clear_all(clear_configs=True)
-            self._publish_alarms_cleared(reason="project_loaded")
             self._init_alarm_manager(from_project=True)
 
             # Load scripts from project
@@ -1385,11 +1386,13 @@ class DAQService:
 
     def _user_var_recording_start(self):
         """Callback for user variable manager to start recording"""
-        self._start_recording()
+        if self.recording_manager and not self.recording:
+            self._handle_recording_start({})
 
     def _user_var_recording_stop(self):
         """Callback for user variable manager to stop recording"""
-        self._stop_recording()
+        if self.recording_manager and self.recording:
+            self._handle_recording_stop()
 
     def _user_var_run_sequence(self, sequence_id: str):
         """Callback for user variable manager to run a sequence"""
@@ -1399,7 +1402,9 @@ class DAQService:
     def _user_var_stop_sequence(self):
         """Callback for user variable manager to stop running sequence"""
         if self.sequence_manager:
-            self.sequence_manager.abort_current_sequence()
+            running = self.sequence_manager.get_running_sequence()
+            if running:
+                self.sequence_manager.abort_sequence(running.id)
 
     def _sequence_set_output(self, channel: str, value: Any):
         """Callback for sequence to set output"""
@@ -2731,9 +2736,9 @@ class DAQService:
         stale alarms from reappearing when frontend reconnects.
         """
         base = self.get_topic_base()
+        cleared_count = 0
 
-        # Clear retained MQTT messages for all known active alarms
-        # This prevents stale alarm messages from persisting on the broker
+        # Clear retained MQTT messages for all known active alarms from AlarmManager
         if self.alarm_manager:
             active_alarms = self.alarm_manager.get_active_alarms()
             for alarm in active_alarms:
@@ -2744,8 +2749,21 @@ class DAQService:
                     retain=True,
                     qos=1
                 )
-            if active_alarms:
-                logger.info(f"Cleared {len(active_alarms)} retained alarm messages from MQTT broker")
+                cleared_count += 1
+
+        # Also clear any alarms tracked in legacy alarms_active dict
+        for source in list(self.alarms_active.keys()):
+            self.mqtt_client.publish(
+                f"{base}/alarms/active/{source}",
+                "",  # Empty payload clears retained message
+                retain=True,
+                qos=1
+            )
+            cleared_count += 1
+        self.alarms_active.clear()
+
+        if cleared_count > 0:
+            logger.info(f"Cleared {cleared_count} retained alarm messages from MQTT broker")
 
         # Also publish clear notification to frontend
         self.mqtt_client.publish(
@@ -3639,9 +3657,10 @@ class DAQService:
 
         # No project to load - clear alarm state to start fresh
         # Alarms are per-project, so with no project there should be no alarms
+        # IMPORTANT: Clear MQTT retained messages BEFORE clearing alarm manager
+        self._publish_alarms_cleared(reason="no_project")
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
-        self._publish_alarms_cleared(reason="no_project")
 
         logger.info("No project configured - starting with empty state")
 
@@ -3893,9 +3912,10 @@ class DAQService:
         self._save_last_project_path(None)  # Clear persisted path
 
         # Clear alarm state - alarms are per-project, not global
+        # IMPORTANT: Clear MQTT retained messages BEFORE clearing alarm manager
+        self._publish_alarms_cleared(reason="project_closed")
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
-        self._publish_alarms_cleared(reason="project_closed")
 
         logger.info("Project closed - now in empty state")
 

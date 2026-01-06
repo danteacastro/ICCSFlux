@@ -27,7 +27,7 @@
   },
   "channels": {
     "RTD_in": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod1/ai0",
+      "physical_channel": "cDAQ9189-241B4D9Mod1/ai0",
       "channel_type": "rtd",
       "rtd_type": "Pt3851",
       "resistance_config": "3Wire",
@@ -46,7 +46,7 @@
       "group": "Water Temps"
     },
     "RTD_out": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod1/ai1",
+      "physical_channel": "cDAQ9189-241B4D9Mod1/ai1",
       "channel_type": "rtd",
       "rtd_type": "Pt3851",
       "resistance_config": "3Wire",
@@ -67,7 +67,7 @@
       "group": "Water Temps"
     },
     "TC_in": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai0",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai0",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -84,7 +84,7 @@
       "group": "Water Temps"
     },
     "TC_out": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai1",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai1",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -103,7 +103,7 @@
       "group": "Water Temps"
     },
     "Tank_1": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai2",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai2",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -120,7 +120,7 @@
       "alarm_deadband": 1
     },
     "Tank_2": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai3",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai3",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -137,7 +137,7 @@
       "alarm_deadband": 1
     },
     "Tank_3": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai4",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai4",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -154,7 +154,7 @@
       "alarm_deadband": 1
     },
     "Tank_4": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai5",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai5",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -171,7 +171,7 @@
       "alarm_deadband": 1
     },
     "Tank_5": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai6",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai6",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -188,7 +188,7 @@
       "alarm_deadband": 1
     },
     "Tank_6": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai7",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai7",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -205,7 +205,7 @@
       "alarm_deadband": 1
     },
     "Tank_7": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai8",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai8",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -222,7 +222,7 @@
       "alarm_deadband": 1
     },
     "Tank_8": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai9",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai9",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -239,7 +239,7 @@
       "alarm_deadband": 1
     },
     "T_gas": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai10",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai10",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -256,7 +256,7 @@
       "alarm_deadband": 1
     },
     "T_amb": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai11",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai11",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -273,7 +273,7 @@
       "alarm_deadband": 1
     },
     "T_flu": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai12",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai12",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -290,7 +290,7 @@
       "alarm_deadband": 1
     },
     "T_ex1": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai13",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai13",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -307,7 +307,7 @@
       "alarm_deadband": 1
     },
     "T_ex2": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai14",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai14",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -324,7 +324,7 @@
       "alarm_deadband": 1
     },
     "T_ex3": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod2/ai15",
+      "physical_channel": "cDAQ9189-241B4D9Mod2/ai15",
       "channel_type": "thermocouple",
       "thermocouple_type": "T",
       "units": "degF",
@@ -341,7 +341,7 @@
       "alarm_deadband": 1
     },
     "Ifm": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai8",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai8",
       "channel_type": "current",
       "current_range_ma": 20,
       "units": "GPM",
@@ -363,7 +363,7 @@
       "alarm_deadband": 1
     },
     "NGin": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai9",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai9",
       "channel_type": "current",
       "current_range_ma": 20,
       "units": "SCFH",
@@ -385,7 +385,7 @@
       "alarm_deadband": 1
     },
     "RH_W": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai3",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai3",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -405,7 +405,7 @@
       "alarm_deadband": 1
     },
     "RH_E": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai5",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai5",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -425,7 +425,7 @@
       "alarm_deadband": 1
     },
     "RH_rm": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai1",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai1",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -445,7 +445,7 @@
       "alarm_deadband": 1
     },
     "T_rm": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai2",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai2",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -465,7 +465,7 @@
       "alarm_deadband": 1
     },
     "T_W": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai4",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai4",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -485,7 +485,7 @@
       "alarm_deadband": 1
     },
     "T_E": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod7/ai6",
+      "physical_channel": "cDAQ9189-241B4D9Mod7/ai6",
       "channel_type": "voltage",
       "voltage_range": 10,
       "terminal_config": "DIFF",
@@ -505,7 +505,7 @@
       "alarm_deadband": 1
     },
     "SV1": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod8/port0/line0",
+      "physical_channel": "cDAQ9189-241B4D9Mod8/port0/line0",
       "channel_type": "digital_output",
       "default_state": false,
       "display_name": "Solenoid Valve 1",
@@ -514,7 +514,7 @@
       "group": "Valves"
     },
     "SV2": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod8/port0/line1",
+      "physical_channel": "cDAQ9189-241B4D9Mod8/port0/line1",
       "channel_type": "digital_output",
       "default_state": false,
       "display_name": "Solenoid Valve 2",
@@ -523,7 +523,7 @@
       "group": "Valves"
     },
     "SV3": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod8/port0/line2",
+      "physical_channel": "cDAQ9189-241B4D9Mod8/port0/line2",
       "channel_type": "digital_output",
       "default_state": false,
       "display_name": "Solenoid Valve 3",
@@ -532,7 +532,7 @@
       "group": "Valves"
     },
     "Ifm_cnt": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod6/ctr1",
+      "physical_channel": "cDAQ9189-241B4D9Mod5/ctr1",
       "channel_type": "counter",
       "counter_edge": "rising",
       "units": "pulses",
@@ -545,7 +545,7 @@
       "group": "Counters"
     },
     "Power_Draw": {
-      "physical_channel": "cDAQ-9189-DHWSIMMod6/ctr0",
+      "physical_channel": "cDAQ9189-241B4D9Mod5/ctr0",
       "channel_type": "counter",
       "counter_edge": "rising",
       "units": "pulses",

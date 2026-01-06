@@ -1,14 +1,30 @@
 """
-Hardware Reader for NISystem
-Reads from real NI hardware using nidaqmx library
-Provides the same interface as HardwareSimulator for drop-in replacement
+Hardware Reader for NISystem - CONTINUOUS BUFFERED ACQUISITION
+
+Uses continuous buffered acquisition for reliable, fast data collection.
+The hardware samples continuously at a set rate, and software reads from
+a FIFO buffer. This eliminates blocking on ADC settling time.
+
+Architecture:
+  Hardware Layer:           Software Layer:
+  ┌──────────────┐          ┌──────────────┐
+  │ DAQ samples  │   FIFO   │ Background   │
+  │ continuously │ ──────→  │ thread reads │ → latest_values dict
+  │ at 10 Hz     │  Buffer  │ buffer       │
+  └──────────────┘          └──────────────┘
+                                    ↓
+                            read_all() returns
+                            latest values INSTANTLY
+
+This is how LabVIEW DAQmx works - hardware timing, software just grabs latest.
 """
 
 import logging
 import threading
 import time
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from queue import Queue
 
 from config_parser import NISystemConfig, ChannelConfig, ChannelType, ThermocoupleType, ModuleConfig
 
@@ -22,7 +38,8 @@ try:
         Edge,
         CountDirection,
         FrequencyUnits,
-        READ_ALL_AVAILABLE
+        READ_ALL_AVAILABLE,
+        SampleTimingType
     )
     from nidaqmx.stream_readers import (
         AnalogMultiChannelReader,
@@ -35,6 +52,10 @@ except ImportError:
     NIDAQMX_AVAILABLE = False
 
 logger = logging.getLogger('HardwareReader')
+
+# Configuration for continuous acquisition
+SAMPLE_RATE_HZ = 10  # Hardware sample rate (samples per second per channel)
+BUFFER_SIZE = 100    # Hardware buffer size (samples per channel)
 
 
 # Mapping from our ThermocoupleType enum to nidaqmx constants
@@ -112,32 +133,55 @@ class TaskGroup:
     task: Any  # nidaqmx.Task
     channel_names: List[str]
     module_name: str
-    channel_type: ChannelType
+    channel_type: ChannelType  # Primary type (for single-type tasks)
+    is_continuous: bool = False  # Whether using continuous acquisition
+    reader: Any = None  # Stream reader for continuous acquisition
+    channel_types: Dict[str, Any] = field(default_factory=dict)  # Per-channel types for mixed tasks
 
 
 class HardwareReader:
     """
-    Reads from real NI hardware using nidaqmx.
-    Provides the same interface as HardwareSimulator.
+    Reads from real NI hardware using nidaqmx with CONTINUOUS BUFFERED ACQUISITION.
+
+    Instead of on-demand reads (which block on ADC settling), this uses:
+    - Hardware-timed continuous sampling at SAMPLE_RATE_HZ
+    - Background thread reads from hardware FIFO buffer
+    - read_all() returns latest cached values INSTANTLY
+
+    This matches LabVIEW's recommended DAQmx architecture.
     """
 
-    def __init__(self, config: NISystemConfig):
+    def __init__(self, config: NISystemConfig, sample_rate: float = SAMPLE_RATE_HZ):
         if not NIDAQMX_AVAILABLE:
             raise RuntimeError("nidaqmx library not available - cannot use HardwareReader")
 
         self.config = config
-        self.tasks: Dict[str, TaskGroup] = {}  # module_name -> TaskGroup
+        self.sample_rate = sample_rate
+        self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
 
         # Output state cache (for read-back)
         self.output_values: Dict[str, float] = {}
 
+        # CONTINUOUS ACQUISITION: Latest values from background thread
+        self.latest_values: Dict[str, float] = {}
+        self.value_timestamps: Dict[str, float] = {}  # When each value was last updated
+
+        # Background reader thread control
+        self._running = False
+        self._reader_thread: Optional[threading.Thread] = None
+        self._error_count = 0
+        self._max_errors = 10  # Stop after this many consecutive errors
+
         # Lock for thread safety
         self.lock = threading.Lock()
 
         # Initialize tasks
         self._create_tasks()
+
+        # Start continuous acquisition
+        self._start_continuous_acquisition()
 
     def _get_physical_channel_path(self, channel: ChannelConfig) -> str:
         """
@@ -236,12 +280,27 @@ class HardwareReader:
         return ""
 
     def _create_tasks(self):
-        """Create nidaqmx tasks for all input channels, grouped by module"""
+        """
+        Create nidaqmx tasks for all input channels.
 
-        # Group channels by module and type
+        IMPORTANT: NI-DAQmx only allows ONE continuous acquisition task per module.
+        Therefore, we group ALL analog input channels on the same module into a
+        SINGLE task, regardless of channel type (voltage, current, thermocouple, etc.).
+
+        This is valid because NI-DAQmx allows mixing different add_ai_*_chan methods
+        in the same task.
+        """
+
+        # Group channels by module
         # For channels with direct paths (containing '/'), extract module from path
-        module_channels: Dict[str, Dict[ChannelType, List[ChannelConfig]]] = {}
+        module_channels: Dict[str, List[ChannelConfig]] = {}
         direct_path_modules: set = set()  # Track modules that come from direct paths
+
+        # Analog input types that can share a continuous task
+        ANALOG_INPUT_TYPES = {
+            ChannelType.THERMOCOUPLE, ChannelType.VOLTAGE, ChannelType.CURRENT,
+            ChannelType.RTD, ChannelType.STRAIN, ChannelType.IEPE, ChannelType.RESISTANCE
+        }
 
         for name, channel in self.config.channels.items():
             # Determine the module key for grouping
@@ -254,13 +313,11 @@ class HardwareReader:
                 module_key = channel.module
 
             if module_key not in module_channels:
-                module_channels[module_key] = {}
-            if channel.channel_type not in module_channels[module_key]:
-                module_channels[module_key][channel.channel_type] = []
-            module_channels[module_key][channel.channel_type].append(channel)
+                module_channels[module_key] = []
+            module_channels[module_key].append(channel)
 
-        # Create tasks for each module/type combination
-        for module_name, type_channels in module_channels.items():
+        # Create tasks for each module
+        for module_name, channels in module_channels.items():
             # For direct-path modules, skip the module config check
             if module_name not in direct_path_modules:
                 module = self.config.modules.get(module_name)
@@ -268,44 +325,225 @@ class HardwareReader:
                     logger.debug(f"Skipping module {module_name} - not found or not enabled")
                     continue
 
-            for channel_type, channels in type_channels.items():
+            # Separate analog inputs (which share a task) from other types
+            analog_channels = [c for c in channels if c.channel_type in ANALOG_INPUT_TYPES]
+            digital_in_channels = [c for c in channels if c.channel_type == ChannelType.DIGITAL_INPUT]
+            digital_out_channels = [c for c in channels if c.channel_type == ChannelType.DIGITAL_OUTPUT]
+            analog_out_channels = [c for c in channels if c.channel_type == ChannelType.ANALOG_OUTPUT]
+            counter_channels = [c for c in channels if c.channel_type == ChannelType.COUNTER]
+
+            # Create ONE continuous task for ALL analog inputs on this module
+            if analog_channels:
                 try:
-                    self._create_task_for_type(module_name, channel_type, channels)
+                    self._create_combined_analog_task(module_name, analog_channels)
                 except Exception as e:
-                    logger.error(f"Failed to create task for {module_name}/{channel_type}: {e}")
+                    logger.error(f"Failed to create analog task for {module_name}: {e}")
 
-    def _create_task_for_type(self, module_name: str, channel_type: ChannelType,
-                              channels: List[ChannelConfig]):
-        """Create a task for a specific channel type on a module"""
+            # Digital inputs (not continuous, separate task OK)
+            if digital_in_channels:
+                try:
+                    task_name = f"{module_name}_digital_input"
+                    self._create_digital_input_task(task_name, module_name, digital_in_channels)
+                except Exception as e:
+                    logger.error(f"Failed to create digital input task for {module_name}: {e}")
 
-        task_name = f"{module_name}_{channel_type.value}"
+            # Digital outputs (individual tasks per channel)
+            if digital_out_channels:
+                self._create_digital_output_tasks(digital_out_channels)
 
-        if channel_type == ChannelType.THERMOCOUPLE:
-            self._create_thermocouple_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.VOLTAGE:
-            self._create_voltage_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.CURRENT:
-            self._create_current_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.RTD:
-            self._create_rtd_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.STRAIN:
-            self._create_strain_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.IEPE:
-            self._create_iepe_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.RESISTANCE:
-            self._create_resistance_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.DIGITAL_INPUT:
-            self._create_digital_input_task(task_name, module_name, channels)
-        elif channel_type == ChannelType.DIGITAL_OUTPUT:
-            self._create_digital_output_tasks(channels)
-        elif channel_type == ChannelType.ANALOG_OUTPUT:
-            self._create_analog_output_tasks(channels)
-        elif channel_type == ChannelType.COUNTER:
-            self._create_counter_tasks(channels)
+            # Analog outputs (individual tasks per channel)
+            if analog_out_channels:
+                self._create_analog_output_tasks(analog_out_channels)
+
+            # Counters (individual tasks per channel)
+            if counter_channels:
+                self._create_counter_tasks(counter_channels)
+
+    def _create_combined_analog_task(self, module_name: str, channels: List[ChannelConfig]):
+        """
+        Create a SINGLE continuous acquisition task for ALL analog input channels on a module.
+
+        NI-DAQmx allows mixing different channel types (voltage, current, thermocouple, RTD, etc.)
+        in the same task. This is essential because NI-DAQmx only allows ONE continuous
+        acquisition task per module.
+        """
+        from nidaqmx.constants import (
+            CurrentShuntResistorLocation, RTDType, ResistanceConfiguration,
+            ExcitationSource, StrainGageBridgeType, BridgeConfiguration, Coupling, CJCSource
+        )
+
+        task_name = f"{module_name}_analog"
+        task = nidaqmx.Task(task_name)
+        channel_names = []
+        channel_types: Dict[str, ChannelType] = {}  # Track type per channel for post-processing
+
+        try:
+            for channel in channels:
+                phys_chan = self._get_physical_channel_path(channel)
+
+                if channel.channel_type == ChannelType.THERMOCOUPLE:
+                    # Thermocouple
+                    tc_type = NI_TCType.K  # Default
+                    if channel.thermocouple_type:
+                        tc_type_str = TC_TYPE_MAP.get(channel.thermocouple_type, 'K')
+                        tc_type = getattr(NI_TCType, tc_type_str, NI_TCType.K)
+                    cjc = get_cjc_source(channel.cjc_source)
+
+                    task.ai_channels.add_ai_thrmcpl_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        thermocouple_type=tc_type,
+                        cjc_source=cjc
+                    )
+                    logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.VOLTAGE:
+                    # Voltage
+                    v_range = channel.voltage_range or 10.0
+                    term_config = get_terminal_config(channel.terminal_config)
+
+                    task.ai_channels.add_ai_voltage_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        terminal_config=term_config,
+                        min_val=-v_range,
+                        max_val=v_range
+                    )
+                    logger.info(f"Added voltage: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.CURRENT:
+                    # Current (4-20mA)
+                    max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
+                    term_config = get_terminal_config(channel.terminal_config)
+
+                    task.ai_channels.add_ai_current_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        terminal_config=term_config,
+                        min_val=0.0,
+                        max_val=max_current,
+                        shunt_resistor_loc=CurrentShuntResistorLocation.INTERNAL
+                    )
+                    logger.info(f"Added current: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.RTD:
+                    # RTD
+                    rtd_type_map = {
+                        'Pt100': RTDType.PT_3750, 'PT100': RTDType.PT_3750,
+                        'Pt385': RTDType.PT_3851, 'PT385': RTDType.PT_3851,
+                        'Pt3851': RTDType.PT_3851, 'PT3851': RTDType.PT_3851,
+                        'Pt3916': RTDType.PT_3916, 'PT3916': RTDType.PT_3916,
+                    }
+                    wiring_map = {
+                        '2-wire': ResistanceConfiguration.TWO_WIRE,
+                        '2Wire': ResistanceConfiguration.TWO_WIRE,
+                        '3-wire': ResistanceConfiguration.THREE_WIRE,
+                        '3Wire': ResistanceConfiguration.THREE_WIRE,
+                        '4-wire': ResistanceConfiguration.FOUR_WIRE,
+                        '4Wire': ResistanceConfiguration.FOUR_WIRE,
+                    }
+                    rtd_type = rtd_type_map.get(channel.rtd_type, RTDType.PT_3851)
+                    wiring = wiring_map.get(channel.resistance_config or channel.rtd_wiring,
+                                           ResistanceConfiguration.THREE_WIRE)
+
+                    task.ai_channels.add_ai_rtd_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        rtd_type=rtd_type,
+                        resistance_config=wiring,
+                        current_excit_source=ExcitationSource.INTERNAL,
+                        current_excit_val=channel.excitation_current or channel.rtd_current or 0.001,
+                        r_0=channel.rtd_resistance or 100.0
+                    )
+                    logger.info(f"Added RTD: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.STRAIN:
+                    # Strain gauge
+                    bridge_map = {
+                        'full-bridge': BridgeConfiguration.FULL_BRIDGE,
+                        'half-bridge': BridgeConfiguration.HALF_BRIDGE,
+                        'quarter-bridge': BridgeConfiguration.QUARTER_BRIDGE,
+                    }
+                    bridge_config = bridge_map.get(channel.strain_config, BridgeConfiguration.FULL_BRIDGE)
+
+                    task.ai_channels.add_ai_strain_gage_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        strain_config=bridge_config,
+                        voltage_excit_source=ExcitationSource.INTERNAL,
+                        voltage_excit_val=channel.strain_excitation_voltage or 2.5,
+                        gage_factor=channel.strain_gage_factor or 2.0,
+                        nominal_gage_resistance=channel.strain_resistance or 350.0
+                    )
+                    logger.info(f"Added strain: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.IEPE:
+                    # IEPE accelerometer
+                    coupling = Coupling.AC if (channel.iepe_coupling or 'AC').upper() == 'AC' else Coupling.DC
+
+                    task.ai_channels.add_ai_accel_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        sensitivity=channel.iepe_sensitivity or 100.0,
+                        current_excit_source=ExcitationSource.INTERNAL,
+                        current_excit_val=channel.iepe_current or 0.004
+                    )
+                    task.ai_channels[channel.name].ai_coupling = coupling
+                    logger.info(f"Added IEPE: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type == ChannelType.RESISTANCE:
+                    # Resistance
+                    wiring_map = {
+                        '2-wire': ResistanceConfiguration.TWO_WIRE,
+                        '4-wire': ResistanceConfiguration.FOUR_WIRE,
+                    }
+                    wiring = wiring_map.get(channel.resistance_wiring, ResistanceConfiguration.FOUR_WIRE)
+
+                    task.ai_channels.add_ai_resistance_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        resistance_config=wiring,
+                        current_excit_source=ExcitationSource.INTERNAL,
+                        current_excit_val=0.001,
+                        min_val=0.0,
+                        max_val=channel.resistance_range or 10000.0
+                    )
+                    logger.info(f"Added resistance: {channel.name} -> {phys_chan}")
+
+                channel_names.append(channel.name)
+                channel_types[channel.name] = channel.channel_type
+
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
+            # Store task with channel type info for the reader thread
+            task_group = TaskGroup(
+                task=task,
+                channel_names=channel_names,
+                module_name=module_name,
+                channel_type=ChannelType.VOLTAGE,  # Generic - we track per-channel in channel_types
+                is_continuous=True,
+                reader=reader,
+                channel_types=channel_types  # Per-channel types for post-processing (e.g., current mA conversion)
+            )
+
+            self.tasks[task_name] = task_group
+            logger.info(f"Created combined analog task {task_name} with {len(channel_names)} channels at {self.sample_rate} Hz")
+
+        except Exception as e:
+            task.close()
+            raise
 
     def _create_thermocouple_task(self, task_name: str, module_name: str,
                                    channels: List[ChannelConfig]):
-        """Create thermocouple input task"""
+        """Create thermocouple input task with CONTINUOUS acquisition"""
         task = nidaqmx.Task(task_name)
         channel_names = []
 
@@ -332,19 +570,34 @@ class HardwareReader:
                 logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
                            f"(type={tc_type_str}, cjc={channel.cjc_source})")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            # Note: TC modules may have lower max sample rates (check NI specs)
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.THERMOCOUPLE
+                channel_type=ChannelType.THERMOCOUPLE,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_voltage_task(self, task_name: str, module_name: str,
                               channels: List[ChannelConfig]):
-        """Create voltage input task"""
+        """Create voltage input task with CONTINUOUS acquisition"""
         task = nidaqmx.Task(task_name)
         channel_names = []
 
@@ -364,19 +617,33 @@ class HardwareReader:
                 channel_names.append(channel.name)
                 logger.info(f"Added voltage channel: {channel.name} -> {phys_chan} (terminal={channel.terminal_config})")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.VOLTAGE
+                channel_type=ChannelType.VOLTAGE,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_current_task(self, task_name: str, module_name: str,
                               channels: List[ChannelConfig]):
-        """Create current input task (4-20mA)"""
+        """Create current input task (4-20mA) with CONTINUOUS acquisition"""
         from nidaqmx.constants import CurrentShuntResistorLocation
 
         task = nidaqmx.Task(task_name)
@@ -403,19 +670,33 @@ class HardwareReader:
                 logger.info(f"Added current channel: {channel.name} -> {phys_chan} "
                            f"(terminal={channel.terminal_config}, range=0-{channel.current_range_ma}mA)")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.CURRENT
+                channel_type=ChannelType.CURRENT,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_rtd_task(self, task_name: str, module_name: str,
                           channels: List[ChannelConfig]):
-        """Create RTD (Resistance Temperature Detector) input task"""
+        """Create RTD (Resistance Temperature Detector) input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import (
             RTDType, ResistanceConfiguration, ExcitationSource
         )
@@ -464,19 +745,33 @@ class HardwareReader:
                 logger.info(f"Added RTD channel: {channel.name} -> {phys_chan} "
                            f"(type={channel.rtd_type}, wiring={channel.rtd_wiring}, R0={channel.rtd_resistance})")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.RTD
+                channel_type=ChannelType.RTD,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_strain_task(self, task_name: str, module_name: str,
                              channels: List[ChannelConfig]):
-        """Create strain gauge input task"""
+        """Create strain gauge input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import (
             StrainGageBridgeType, BridgeConfiguration, ExcitationSource
         )
@@ -509,19 +804,33 @@ class HardwareReader:
                 logger.info(f"Added strain channel: {channel.name} -> {phys_chan} "
                            f"(config={channel.strain_config}, GF={channel.strain_gage_factor})")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.STRAIN
+                channel_type=ChannelType.STRAIN,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_iepe_task(self, task_name: str, module_name: str,
                            channels: List[ChannelConfig]):
-        """Create IEPE (accelerometer/microphone) input task"""
+        """Create IEPE (accelerometer/microphone) input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import ExcitationSource, Coupling
 
         task = nidaqmx.Task(task_name)
@@ -547,19 +856,33 @@ class HardwareReader:
                 logger.info(f"Added IEPE channel: {channel.name} -> {phys_chan} "
                            f"(sensitivity={channel.iepe_sensitivity} mV/g, coupling={channel.iepe_coupling})")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.IEPE
+                channel_type=ChannelType.IEPE,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
 
     def _create_resistance_task(self, task_name: str, module_name: str,
                                   channels: List[ChannelConfig]):
-        """Create resistance measurement input task"""
+        """Create resistance measurement input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import ResistanceConfiguration, ExcitationSource
 
         task = nidaqmx.Task(task_name)
@@ -588,12 +911,26 @@ class HardwareReader:
                 logger.info(f"Added resistance channel: {channel.name} -> {phys_chan} "
                            f"(wiring={channel.resistance_wiring}, range=0-{channel.resistance_range}Ω)")
 
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.sample_rate,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            # Create stream reader for efficient buffer reading
+            reader = AnalogMultiChannelReader(task.in_stream)
+
             self.tasks[task_name] = TaskGroup(
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.RESISTANCE
+                channel_type=ChannelType.RESISTANCE,
+                is_continuous=True,
+                reader=reader
             )
+            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+
         except Exception as e:
             task.close()
             raise
@@ -725,68 +1062,179 @@ class HardwareReader:
             except Exception as e:
                 logger.error(f"Failed to create counter task for {channel.name}: {e}")
 
+    # =========================================================================
+    # CONTINUOUS ACQUISITION MANAGEMENT
+    # =========================================================================
+
+    def _start_continuous_acquisition(self):
+        """Start all continuous acquisition tasks and the background reader thread"""
+        logger.info("Starting continuous acquisition...")
+
+        # Start all continuous tasks
+        for task_name, task_group in self.tasks.items():
+            if task_group.is_continuous:
+                try:
+                    task_group.task.start()
+                    logger.info(f"Started continuous task: {task_name}")
+                except Exception as e:
+                    logger.error(f"Failed to start task {task_name}: {e}")
+
+        # Start background reader thread
+        self._running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_thread_func,
+            name="HardwareReader-Continuous",
+            daemon=True
+        )
+        self._reader_thread.start()
+        logger.info("Continuous acquisition started")
+
+    def _stop_continuous_acquisition(self):
+        """Stop the background reader thread and all continuous tasks"""
+        logger.info("Stopping continuous acquisition...")
+        self._running = False
+
+        # Wait for reader thread to finish
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+
+        # Stop all continuous tasks
+        for task_name, task_group in self.tasks.items():
+            if task_group.is_continuous:
+                try:
+                    task_group.task.stop()
+                    logger.info(f"Stopped continuous task: {task_name}")
+                except Exception as e:
+                    logger.error(f"Failed to stop task {task_name}: {e}")
+
+        logger.info("Continuous acquisition stopped")
+
+    def _reader_thread_func(self):
+        """
+        Background thread that continuously reads from hardware buffers.
+        Updates self.latest_values with the most recent samples.
+        """
+        logger.info("Background reader thread started")
+
+        # Pre-allocate numpy arrays for each task (for efficiency)
+        task_buffers: Dict[str, np.ndarray] = {}
+        for task_name, task_group in self.tasks.items():
+            if task_group.is_continuous:
+                num_channels = len(task_group.channel_names)
+                # Read a small batch each iteration (latest samples only)
+                task_buffers[task_name] = np.zeros((num_channels, 1), dtype=np.float64)
+
+        while self._running:
+            try:
+                now = time.time()
+
+                # Read from each continuous task
+                for task_name, task_group in self.tasks.items():
+                    if not task_group.is_continuous or task_group.reader is None:
+                        continue
+
+                    try:
+                        # Check how many samples are available
+                        available = task_group.task.in_stream.avail_samp_per_chan
+
+                        if available > 0:
+                            # Read all available samples, keep only the latest
+                            num_channels = len(task_group.channel_names)
+                            samples_to_read = min(available, BUFFER_SIZE)
+                            buffer = np.zeros((num_channels, samples_to_read), dtype=np.float64)
+
+                            # Read using stream reader (more efficient than task.read())
+                            task_group.reader.read_many_sample(
+                                buffer,
+                                number_of_samples_per_channel=samples_to_read,
+                                timeout=0.1  # Short timeout since data should be ready
+                            )
+
+                            # Update latest values (last sample from each channel)
+                            with self.lock:
+                                for i, name in enumerate(task_group.channel_names):
+                                    value = buffer[i, -1]  # Last sample
+
+                                    # Convert current from Amps to mA
+                                    # Use per-channel type from channel_types dict if available
+                                    ch_type = task_group.channel_types.get(name, task_group.channel_type)
+                                    if ch_type == ChannelType.CURRENT:
+                                        value = value * 1000.0
+
+                                    self.latest_values[name] = value
+                                    self.value_timestamps[name] = now
+
+                            self._error_count = 0  # Reset error count on success
+
+                    except Exception as e:
+                        self._error_count += 1
+                        if self._error_count <= 3:  # Only log first few errors
+                            logger.warning(f"Error reading {task_name}: {e}")
+                        # Set NaN for all channels in this task
+                        with self.lock:
+                            for name in task_group.channel_names:
+                                self.latest_values[name] = float('nan')
+
+                # Read digital inputs (on-demand, they're fast)
+                for task_name, task_group in self.tasks.items():
+                    if task_group.channel_type == ChannelType.DIGITAL_INPUT:
+                        try:
+                            raw_data = task_group.task.read(timeout=0.1)
+                            with self.lock:
+                                if isinstance(raw_data, list):
+                                    for i, name in enumerate(task_group.channel_names):
+                                        self.latest_values[name] = 1.0 if raw_data[i] else 0.0
+                                else:
+                                    self.latest_values[task_group.channel_names[0]] = 1.0 if raw_data else 0.0
+                        except Exception as e:
+                            logger.warning(f"Error reading digital inputs {task_name}: {e}")
+
+                # Read counters (on-demand)
+                for name, task in self.counter_tasks.items():
+                    try:
+                        value = task.read(timeout=0.1)
+                        channel = self.config.channels.get(name)
+                        if channel and channel.counter_mode == "period" and value > 0:
+                            value = 1.0 / value
+                        with self.lock:
+                            self.latest_values[name] = value
+                    except Exception as e:
+                        with self.lock:
+                            self.latest_values[name] = float('nan')
+
+                # Check for too many errors
+                if self._error_count >= self._max_errors:
+                    logger.error(f"Too many consecutive errors ({self._error_count}), stopping reader")
+                    break
+
+                # Small sleep to prevent CPU spinning (10Hz effective read rate)
+                time.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Reader thread error: {e}")
+                self._error_count += 1
+                time.sleep(0.1)
+
+        logger.info("Background reader thread stopped")
+
+    # =========================================================================
+    # PUBLIC API
+    # =========================================================================
+
     def read_channel(self, channel_name: str) -> Optional[float]:
-        """Read a single channel value"""
-        values = self.read_all()
-        return values.get(channel_name)
+        """Read a single channel value (returns cached value)"""
+        with self.lock:
+            return self.latest_values.get(channel_name)
 
     def read_all(self) -> Dict[str, float]:
         """
         Read all channels and return raw values.
-        This matches the HardwareSimulator.read_all() interface.
+        This returns CACHED values from the background reader thread - INSTANT!
+        No hardware blocking here.
         """
-        values = {}
-
         with self.lock:
-            # Read from grouped input tasks
-            for task_name, task_group in self.tasks.items():
-                try:
-                    if task_group.channel_type == ChannelType.DIGITAL_INPUT:
-                        # Digital reads return booleans
-                        raw_data = task_group.task.read()
-                        if isinstance(raw_data, list):
-                            for i, name in enumerate(task_group.channel_names):
-                                values[name] = 1.0 if raw_data[i] else 0.0
-                        else:
-                            # Single channel
-                            values[task_group.channel_names[0]] = 1.0 if raw_data else 0.0
-                    else:
-                        # Analog reads return floats
-                        raw_data = task_group.task.read()
-                        if isinstance(raw_data, list):
-                            for i, name in enumerate(task_group.channel_names):
-                                value = raw_data[i]
-                                # Convert current from Amps to mA
-                                if task_group.channel_type == ChannelType.CURRENT:
-                                    value = value * 1000.0
-                                values[name] = value
-                        else:
-                            # Single channel
-                            value = raw_data
-                            if task_group.channel_type == ChannelType.CURRENT:
-                                value = value * 1000.0
-                            values[task_group.channel_names[0]] = value
-
-                except Exception as e:
-                    logger.error(f"Error reading task {task_name}: {e}")
-                    # Return NaN for failed channels
-                    for name in task_group.channel_names:
-                        values[name] = float('nan')
-
-            # Read counter tasks individually
-            for name, task in self.counter_tasks.items():
-                try:
-                    value = task.read()
-                    channel = self.config.channels.get(name)
-
-                    # For period mode, convert to frequency
-                    if channel and channel.counter_mode == "period" and value > 0:
-                        value = 1.0 / value  # Convert period to frequency
-
-                    values[name] = value
-                except Exception as e:
-                    logger.error(f"Error reading counter {name}: {e}")
-                    values[name] = 0.0
+            # Copy latest values
+            values = dict(self.latest_values)
 
             # Include current output states
             for name, value in self.output_values.items():
@@ -868,6 +1316,9 @@ class HardwareReader:
     def close(self):
         """Close all tasks and release hardware"""
         logger.info("Closing hardware reader tasks...")
+
+        # Stop continuous acquisition first (stops background thread)
+        self._stop_continuous_acquisition()
 
         with self.lock:
             # Close input tasks

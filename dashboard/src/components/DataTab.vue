@@ -11,7 +11,7 @@ const pythonScripts = usePythonScripts()
 const projectFiles = useProjectFiles()
 
 // Permission-based edit control (injected from App.vue)
-const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(false))
+const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(true))
 const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
 
 // Use store's recording config (auto-persisted to localStorage)

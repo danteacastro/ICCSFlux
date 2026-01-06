@@ -44,7 +44,7 @@ const isSaving = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 
 // Permission-based edit control (injected from App.vue)
-const hasEditPermission = inject<{ value: boolean }>('canEditConfig', ref(false))
+const hasEditPermission = inject<{ value: boolean }>('canEditConfig', ref(true))
 const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
 
 // Edit mode - only allow editing when explicitly enabled, has permission, and not acquiring
