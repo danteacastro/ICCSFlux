@@ -159,6 +159,9 @@ const initialized = ref(false)
 // Callbacks for project events
 const projectLoadedCallbacks: ((data: ProjectData) => void)[] = []
 
+// Guard to prevent duplicate script loading when both project/loaded and project/current are received
+let scriptLoadingTimeout: ReturnType<typeof setTimeout> | null = null
+
 export function useProjectFiles() {
   const mqtt = useMqtt()
   const store = useDashboardStore()
@@ -385,7 +388,44 @@ export function useProjectFiles() {
     const notebookEntries = JSON.parse(localStorage.getItem('nisystem_notebook') || '[]')
     const experiments = JSON.parse(localStorage.getItem('nisystem_experiments') || '[]')
 
+    // IMPORTANT: Include channels from store so they're saved back to the project
+    // Convert store channels to project channel format
+    const channels: Record<string, ProjectChannelConfig> = {}
+    for (const [name, ch] of Object.entries(store.channels)) {
+      channels[name] = {
+        physical_channel: ch.physical_channel,
+        channel_type: ch.channel_type,
+        unit: ch.unit,
+        group: ch.group,
+        description: ch.description,
+        // Legacy limits
+        low_limit: ch.low_limit,
+        high_limit: ch.high_limit,
+        low_warning: ch.low_warning,
+        high_warning: ch.high_warning,
+        // ISA-18.2 alarm config
+        alarm_enabled: ch.alarm_enabled,
+        hihi_limit: ch.hihi_limit,
+        hi_limit: ch.hi_limit,
+        lo_limit: ch.lo_limit,
+        lolo_limit: ch.lolo_limit,
+        alarm_priority: ch.alarm_priority,
+        alarm_deadband: ch.alarm_deadband,
+        alarm_delay_sec: ch.alarm_delay_sec,
+        alarm_clear_delay_sec: ch.alarm_clear_delay_sec,
+        safety_action: ch.safety_action,
+        // Display settings
+        chartable: ch.chartable,
+        color: ch.color,
+        visible: ch.visible,
+        scale_slope: ch.scale_slope,
+        scale_offset: ch.scale_offset,
+        invert: ch.invert
+      }
+    }
+
     return {
+      channels,  // Include channels so they're saved!
       layout: {
         widgets: layout.widgets,
         pages: layout.pages,                    // Multi-page support
@@ -554,14 +594,20 @@ export function useProjectFiles() {
         pythonScripts.importScripts(data.scripts.pythonScripts)
 
         // ALSO send scripts to backend via MQTT for server-side execution
+        // Use debouncing to prevent duplicate loading when both project/loaded and project/current fire
+        if (scriptLoadingTimeout) {
+          clearTimeout(scriptLoadingTimeout)
+          console.log('[PROJECT LOADING] Debouncing script load - clearing previous timeout')
+        }
+
         const backendScripts = useBackendScripts()
 
         // Clear existing scripts first to prevent duplicates
         console.log('[PROJECT LOADING] Clearing existing backend scripts...')
         backendScripts.clearAllScripts()
 
-        // Small delay to let clear messages propagate before adding new scripts
-        setTimeout(() => {
+        // Debounced script loading - only the last call within 200ms will execute
+        scriptLoadingTimeout = setTimeout(() => {
           console.log('[PROJECT LOADING] Sending', data.scripts.pythonScripts.length, 'scripts to backend...')
           for (const script of data.scripts.pythonScripts) {
             backendScripts.addScript({
@@ -573,7 +619,8 @@ export function useProjectFiles() {
             })
             console.log('[PROJECT LOADING] Added script to backend:', script.name)
           }
-        }, 100)
+          scriptLoadingTimeout = null
+        }, 200)
       }
       if (data.scripts.functionBlocks) {
         localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks))

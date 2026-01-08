@@ -433,6 +433,10 @@ class ScriptManager:
 
         self._lock = threading.Lock()
 
+        # Track which outputs are controlled by scripts during active session
+        # This allows selective lockout of only script-controlled channels
+        self._controlled_outputs: Set[str] = set()
+
         logger.info("ScriptManager initialized")
 
     # =========================================================================
@@ -631,8 +635,20 @@ class ScriptManager:
         return False
 
     def set_output(self, channel: str, value: Any) -> None:
+        # Track this channel as script-controlled for session lockout
+        self._controlled_outputs.add(channel)
         if self.on_set_output:
             self.on_set_output(channel, value)
+
+    def get_controlled_outputs(self) -> Set[str]:
+        """Get the set of output channels controlled by scripts during this session.
+        Used by DAQ service to implement selective session lockout."""
+        return self._controlled_outputs.copy()
+
+    def clear_controlled_outputs(self) -> None:
+        """Clear the controlled outputs tracking. Called when session ends."""
+        self._controlled_outputs.clear()
+        logger.debug("Cleared controlled outputs tracking")
 
     def start_acquisition(self) -> None:
         if self.on_start_acquisition:

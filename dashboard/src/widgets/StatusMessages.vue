@@ -113,27 +113,53 @@ watch(() => store.status, (status) => {
 }, { deep: true })
 
 // Watch for channel alarms - only log TRANSITIONS (not initial state on page load)
+// IMPORTANT: We must wait for channel config to be loaded before tracking alarm state.
+// Otherwise, the first values arrive with alarm=false (no config), then when config loads,
+// the next update shows alarm=true, which appears as a false "transition".
 watch(() => store.values, (values) => {
   Object.entries(values).forEach(([name, value]) => {
     const prev = prevAlarmState.get(name)
     const currentAlarm = !!value.alarm
     const currentWarning = !!value.warning
 
+    // Check if this channel has alarm config (limits defined)
+    const config = store.channels[name]
+    const hasAlarmConfig = config && (
+      config.low_limit !== undefined ||
+      config.high_limit !== undefined ||
+      config.low_warning !== undefined ||
+      config.high_warning !== undefined ||
+      config.hihi_limit !== undefined ||
+      config.lolo_limit !== undefined ||
+      config.hi_limit !== undefined ||
+      config.lo_limit !== undefined
+    )
+
     if (!prev) {
-      // First observation of this channel - just record state, don't log
-      // This prevents logging alarms that were already active before page load
+      // First observation of this channel
+      if (!hasAlarmConfig) {
+        // Channel has no alarm config yet - don't record state
+        // This prevents false transitions when config loads later
+        return
+      }
+      // Channel has config - record initial state without logging
+      prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
+      return
+    }
+
+    // If we previously recorded state without config, but now have config,
+    // update our baseline without logging (avoid false transition)
+    if (!prev.seen && hasAlarmConfig) {
       prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
       return
     }
 
     // Only log when transitioning TO alarm (was false, now true)
     if (currentAlarm && !prev.alarm) {
-      const config = store.channels[name]
       addMessage('error', name, `Alarm: ${value.value.toFixed(2)} ${config?.unit || ''}`)
     }
     // Only log when transitioning TO warning (was false, now true, and not in alarm)
     else if (currentWarning && !prev.warning && !currentAlarm) {
-      const config = store.channels[name]
       addMessage('warning', name, `Warning: ${value.value.toFixed(2)} ${config?.unit || ''}`)
     }
     // Log when alarm clears (was in alarm, now not)
@@ -145,6 +171,16 @@ watch(() => store.values, (values) => {
     prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
   })
 }, { deep: true })
+
+// Watch for channel config changes (new project loaded)
+// When channels change, reset our alarm tracking to avoid false transitions
+watch(() => Object.keys(store.channels).length, (newCount, oldCount) => {
+  if (newCount !== oldCount) {
+    // Channel set has changed - reset alarm state
+    // This handles project load/close without relying solely on MQTT messages
+    prevAlarmState.clear()
+  }
+})
 
 onMounted(() => {
   addMessage('info', 'System', 'Dashboard initialized')
