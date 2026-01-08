@@ -25,7 +25,8 @@ from single_instance import SingleInstance
 # Configuration
 APP_NAME = "NISystem"
 MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
+MQTT_PORT = 1884  # WebSocket-enabled port (matches mosquitto_ws.conf)
+MQTT_WS_PORT = 9002  # WebSocket port for browser connections
 HEALTH_TIMEOUT_SEC = 10.0
 HEARTBEAT_INTERVAL_SEC = 2.0
 
@@ -110,7 +111,7 @@ class ServiceManager:
             self._on_status_change(status)
 
     def start_mosquitto(self) -> bool:
-        """Start Mosquitto MQTT broker"""
+        """Start Mosquitto MQTT broker with WebSocket support"""
         if self.mqtt_process and self.mqtt_process.poll() is None:
             print("Mosquitto already running")
             return True
@@ -133,21 +134,42 @@ class ServiceManager:
                 print(f"MQTT broker already running on port {MQTT_PORT}")
                 return True
 
-            # Start mosquitto
+            # Start mosquitto with config file for WebSocket support
             self.log_dir.mkdir(parents=True, exist_ok=True)
             log_file = self.log_dir / "mosquitto.log"
 
-            # Use -v for verbose logging
+            # Use config file with WebSocket support
+            # Check for secure config first, then fall back to basic config
+            secure_config = self.project_root / "config" / "mosquitto_secure.conf"
+            basic_config = self.project_root / "mosquitto_ws.conf"
+            passwd_file = self.project_root / "config" / "mosquitto_passwd"
+
+            if passwd_file.exists() and secure_config.exists():
+                config_file = secure_config
+                print(f"  Using SECURE config: {config_file}")
+            elif basic_config.exists():
+                config_file = basic_config
+                print(f"  Using basic config: {config_file}")
+            else:
+                # No config file, use port directly (no WebSocket support)
+                config_file = None
+                print(f"  WARNING: No config file found, starting without WebSocket support")
+
+            if config_file:
+                cmd = [mosquitto_path, '-v', '-c', str(config_file)]
+            else:
+                cmd = [mosquitto_path, '-v', '-p', str(MQTT_PORT)]
+
             if sys.platform == 'win32':
                 self.mqtt_process = subprocess.Popen(
-                    [mosquitto_path, '-v', '-p', str(MQTT_PORT)],
+                    cmd,
                     stdout=open(log_file, 'w'),
                     stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
             else:
                 self.mqtt_process = subprocess.Popen(
-                    [mosquitto_path, '-v', '-p', str(MQTT_PORT)],
+                    cmd,
                     stdout=open(log_file, 'w'),
                     stderr=subprocess.STDOUT
                 )
@@ -159,7 +181,7 @@ class ServiceManager:
                 print(f"ERROR: Mosquitto failed to start. Check {log_file}")
                 return False
 
-            print("Mosquitto started successfully")
+            print(f"Mosquitto started successfully on port {MQTT_PORT} (TCP) and {MQTT_WS_PORT} (WebSocket)")
             return True
 
         except Exception as e:
