@@ -446,8 +446,80 @@ function saveSystemSettings() {
 // Discovery state
 const isScanning = computed(() => mqtt.isScanning.value)
 const discoveryChannels = computed(() => mqtt.discoveryChannels.value)
+const discoveryResult = computed(() => mqtt.discoveryResult.value)
 const showDiscoveryPanel = ref(false)
 const selectedDiscoveryChannels = ref<string[]>([])
+
+// Tree view expansion state
+const expandedChassis = ref<Set<string>>(new Set())
+const expandedModules = ref<Set<string>>(new Set())
+
+// Toggle chassis expansion
+function toggleChassis(chassisName: string) {
+  if (expandedChassis.value.has(chassisName)) {
+    expandedChassis.value.delete(chassisName)
+  } else {
+    expandedChassis.value.add(chassisName)
+  }
+  // Force reactivity
+  expandedChassis.value = new Set(expandedChassis.value)
+}
+
+// Toggle module expansion
+function toggleModule(moduleName: string) {
+  if (expandedModules.value.has(moduleName)) {
+    expandedModules.value.delete(moduleName)
+  } else {
+    expandedModules.value.add(moduleName)
+  }
+  // Force reactivity
+  expandedModules.value = new Set(expandedModules.value)
+}
+
+// Expand all chassis and modules
+function expandAllDiscovery() {
+  if (discoveryResult.value?.chassis) {
+    discoveryResult.value.chassis.forEach((chassis: any) => {
+      expandedChassis.value.add(chassis.name)
+      chassis.modules?.forEach((mod: any) => {
+        expandedModules.value.add(mod.name)
+      })
+    })
+    expandedChassis.value = new Set(expandedChassis.value)
+    expandedModules.value = new Set(expandedModules.value)
+  }
+}
+
+// Collapse all
+function collapseAllDiscovery() {
+  expandedChassis.value = new Set()
+  expandedModules.value = new Set()
+}
+
+// Select all channels in a module
+function selectModuleChannels(module: any, select: boolean) {
+  module.channels?.forEach((ch: any) => {
+    const idx = selectedDiscoveryChannels.value.indexOf(ch.name)
+    if (select && idx === -1) {
+      selectedDiscoveryChannels.value.push(ch.name)
+    } else if (!select && idx >= 0) {
+      selectedDiscoveryChannels.value.splice(idx, 1)
+    }
+  })
+}
+
+// Check if all channels in a module are selected
+function isModuleFullySelected(module: any): boolean {
+  if (!module.channels?.length) return false
+  return module.channels.every((ch: any) => selectedDiscoveryChannels.value.includes(ch.name))
+}
+
+// Check if some channels in a module are selected
+function isModulePartiallySelected(module: any): boolean {
+  if (!module.channels?.length) return false
+  const selected = module.channels.filter((ch: any) => selectedDiscoveryChannels.value.includes(ch.name))
+  return selected.length > 0 && selected.length < module.channels.length
+}
 
 // Feedback messages
 const feedbackMessage = ref<{ type: 'success' | 'error' | 'info', text: string } | null>(null)
@@ -473,7 +545,11 @@ function scanDevices() {
 // Handle discovery result
 mqtt.onDiscovery((result) => {
   if (result.success) {
-    showFeedback('success', `Found ${result.devices?.length || 0} device(s)`)
+    const totalChannels = result.total_channels || 0
+    const chassisCount = result.chassis?.length || 0
+    showFeedback('success', `Found ${chassisCount} chassis, ${totalChannels} channels`)
+    // Auto-expand all on successful discovery
+    expandAllDiscovery()
   } else {
     showFeedback('error', result.error || 'Discovery failed')
   }
@@ -542,32 +618,84 @@ function getDefaultGroupName(channelType: string, moduleName: string): string {
   return groupNames[channelType] || moduleName || 'Ungrouped'
 }
 
-// Add discovered channels to config with smart defaults
-function addSelectedChannels() {
-  const channels = discoveryChannels.value.filter(ch =>
-    selectedDiscoveryChannels.value.includes(ch.physical_channel)
-  )
+// Get the next available tag number (finds gaps or uses max+1)
+function getNextTagNumber(): number {
+  const existingTags = Object.keys(store.channels)
+    .filter(name => /^tag_\d+$/.test(name))
+    .map(name => parseInt(name.replace('tag_', ''), 10))
+    .sort((a, b) => a - b)
 
-  if (channels.length === 0) {
+  // Find first gap or use max+1
+  let next = 0
+  for (const num of existingTags) {
+    if (num > next) break
+    next = num + 1
+  }
+  return next
+}
+
+// Add discovered channels to config with simple tag_N naming
+function addSelectedChannels() {
+  // Collect all selected channels from hierarchical data
+  const selectedChannels: any[] = []
+
+  if (discoveryResult.value?.chassis) {
+    for (const chassis of discoveryResult.value.chassis) {
+      for (const module of chassis.modules || []) {
+        for (const channel of module.channels || []) {
+          if (selectedDiscoveryChannels.value.includes(channel.name)) {
+            selectedChannels.push({
+              ...channel,
+              module_name: module.product_type,
+              module_device: module.name,
+              chassis_name: chassis.name
+            })
+          }
+        }
+      }
+    }
+  }
+
+  // Also check standalone devices
+  if (discoveryResult.value?.standalone_devices) {
+    for (const device of discoveryResult.value.standalone_devices) {
+      for (const channel of device.channels || []) {
+        if (selectedDiscoveryChannels.value.includes(channel.name)) {
+          selectedChannels.push({
+            ...channel,
+            module_name: device.product_type,
+            module_device: device.name,
+            chassis_name: ''
+          })
+        }
+      }
+    }
+  }
+
+  if (selectedChannels.length === 0) {
     showFeedback('error', 'No channels selected')
     return
   }
 
-  // Send to backend with smart configuration
-  channels.forEach((ch, index) => {
-    const channelType = ch.measurement_type || ch.channel_type || 'voltage'
-    const smartName = generateSmartChannelName(ch.physical_channel, channelType, index)
+  // Get starting tag number
+  let tagNum = getNextTagNumber()
+
+  // Send to backend with simple tag_N naming
+  selectedChannels.forEach((ch) => {
+    const tagName = `tag_${tagNum}`
+    tagNum++
+
+    const channelType = ch.category || ch.channel_type || 'voltage'
     const limits = getDefaultLimits(channelType)
     const group = getDefaultGroupName(channelType, ch.module_name)
     const units = getDefaultUnit(channelType as ChannelType)
 
-    mqtt.updateChannelConfig(smartName, {
-      name: smartName,  // TAG is the only identifier
-      physical_channel: ch.physical_channel,
+    mqtt.updateChannelConfig(tagName, {
+      name: tagName,  // TAG is the only identifier (tag_0, tag_1, etc.)
+      physical_channel: ch.name,  // Physical channel like "cDAQ1Mod1/ai0"
       channel_type: channelType,
-      // display_name removed - use name (TAG) everywhere
-      description: `${ch.module_name} - ${ch.physical_channel}`,
-      module: ch.module_name,
+      description: `${ch.module_name} - ${ch.description || ch.name}`,
+      module: ch.module_device,
       group: group,
       units: units,
       low_limit: limits.low,
@@ -579,10 +707,10 @@ function addSelectedChannels() {
       enabled: true
     })
 
-    channelEnabled.value[smartName] = true
+    channelEnabled.value[tagName] = true
   })
 
-  showFeedback('success', `Added ${channels.length} channel(s) with smart defaults`)
+  showFeedback('success', `Added ${selectedChannels.length} channel(s) as tag_0 through tag_${tagNum - 1}`)
   selectedDiscoveryChannels.value = []
   showDiscoveryPanel.value = false
   markDirty()
@@ -598,21 +726,62 @@ function toggleDiscoveryChannel(physicalChannel: string) {
 }
 
 function selectAllDiscoveryChannels() {
-  selectedDiscoveryChannels.value = discoveryChannels.value.map(ch => ch.physical_channel)
+  // Select all channels from hierarchical data
+  const allChannels: string[] = []
+
+  if (discoveryResult.value?.chassis) {
+    for (const chassis of discoveryResult.value.chassis) {
+      for (const module of chassis.modules || []) {
+        for (const channel of module.channels || []) {
+          allChannels.push(channel.name)
+        }
+      }
+    }
+  }
+
+  if (discoveryResult.value?.standalone_devices) {
+    for (const device of discoveryResult.value.standalone_devices) {
+      for (const channel of device.channels || []) {
+        allChannels.push(channel.name)
+      }
+    }
+  }
+
+  selectedDiscoveryChannels.value = allChannels
 }
 
 function deselectAllDiscoveryChannels() {
   selectedDiscoveryChannels.value = []
 }
 
-// Quick populate ALL discovered channels with smart defaults (one-click setup)
+// Get total channel count from hierarchical data
+function getTotalDiscoveryChannels(): number {
+  let count = 0
+  if (discoveryResult.value?.chassis) {
+    for (const chassis of discoveryResult.value.chassis) {
+      for (const module of chassis.modules || []) {
+        count += module.channels?.length || 0
+      }
+    }
+  }
+  if (discoveryResult.value?.standalone_devices) {
+    for (const device of discoveryResult.value.standalone_devices) {
+      count += device.channels?.length || 0
+    }
+  }
+  return count
+}
+
+// Quick populate ALL discovered channels with tag_N naming (one-click setup)
 function quickPopulateAllChannels() {
-  if (discoveryChannels.value.length === 0) {
+  const totalChannels = getTotalDiscoveryChannels()
+  if (totalChannels === 0) {
     showFeedback('error', 'No channels to add')
     return
   }
 
-  // Select all and add them
+  // Expand all, select all, and add them
+  expandAllDiscovery()
   selectAllDiscoveryChannels()
   addSelectedChannels()
 }
@@ -3315,10 +3484,13 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </template>
 
-            <template v-else-if="discoveryChannels.length > 0">
+            <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0">
               <div class="discovery-toolbar">
-                <span class="discovery-count">{{ discoveryChannels.length }} channels found</span>
+                <span class="discovery-count">{{ getTotalDiscoveryChannels() }} channels found</span>
                 <div class="discovery-actions">
+                  <button class="btn-link" @click="expandAllDiscovery">Expand All</button>
+                  <button class="btn-link" @click="collapseAllDiscovery">Collapse All</button>
+                  <span class="separator">|</span>
                   <button class="btn-link" @click="selectAllDiscoveryChannels">Select All</button>
                   <button class="btn-link" @click="deselectAllDiscoveryChannels">Deselect All</button>
                 </div>
@@ -3327,39 +3499,122 @@ watch(() => Object.keys(store.channels), () => {
               <!-- Quick Populate Banner -->
               <div class="quick-populate-banner">
                 <div class="banner-text">
-                  <strong>Quick Setup:</strong> Add all channels with smart names and defaults
+                  <strong>Quick Setup:</strong> Add all channels as tag_0, tag_1, tag_2, etc.
                 </div>
                 <button class="btn btn-success" @click="quickPopulateAllChannels">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
                     <polyline points="22 4 12 14.01 9 11.01"/>
                   </svg>
-                  Populate All ({{ discoveryChannels.length }})
+                  Populate All ({{ getTotalDiscoveryChannels() }})
                 </button>
               </div>
 
-              <div class="discovery-list">
-                <div
-                  v-for="(channel, idx) in discoveryChannels"
-                  :key="channel.physical_channel"
-                  class="discovery-item"
-                  :class="{ selected: selectedDiscoveryChannels.includes(channel.physical_channel) }"
-                  @click="toggleDiscoveryChannel(channel.physical_channel)"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="selectedDiscoveryChannels.includes(channel.physical_channel)"
-                    @click.stop
-                    @change="toggleDiscoveryChannel(channel.physical_channel)"
-                  />
-                  <div class="channel-info">
-                    <div class="channel-physical">{{ channel.physical_channel }}</div>
-                    <div class="channel-details">
-                      <span class="type-badge" :class="channel.measurement_type || channel.channel_type">
-                        {{ channel.measurement_type || channel.channel_type }}
-                      </span>
-                      <span class="module-name">{{ channel.module_name }}</span>
-                      <span class="smart-name-preview">→ {{ generateSmartChannelName(channel.physical_channel, channel.measurement_type || channel.channel_type || 'voltage', idx) }}</span>
+              <!-- Simulation Mode Banner -->
+              <div v-if="discoveryResult?.simulation_mode" class="simulation-banner">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span>Simulation Mode - No real hardware detected</span>
+              </div>
+
+              <!-- Tree View -->
+              <div class="discovery-tree">
+                <!-- Chassis -->
+                <div v-for="chassis in discoveryResult.chassis" :key="chassis.name" class="tree-chassis">
+                  <div class="tree-header chassis-header" @click="toggleChassis(chassis.name)">
+                    <svg class="tree-arrow" :class="{ expanded: expandedChassis.has(chassis.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5l8 7-8 7V5z"/>
+                    </svg>
+                    <svg class="tree-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    <span class="tree-name">{{ chassis.name }}</span>
+                    <span class="tree-type">{{ chassis.product_type }}</span>
+                    <span class="tree-count">{{ chassis.modules?.length || 0 }} modules</span>
+                  </div>
+
+                  <!-- Modules within Chassis -->
+                  <div v-if="expandedChassis.has(chassis.name)" class="tree-children">
+                    <div v-for="module in chassis.modules" :key="module.name" class="tree-module">
+                      <div class="tree-header module-header" @click="toggleModule(module.name)">
+                        <svg class="tree-arrow" :class="{ expanded: expandedModules.has(module.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5l8 7-8 7V5z"/>
+                        </svg>
+                        <input
+                          type="checkbox"
+                          :checked="isModuleFullySelected(module)"
+                          :indeterminate="isModulePartiallySelected(module)"
+                          @click.stop
+                          @change="selectModuleChannels(module, ($event.target as HTMLInputElement).checked)"
+                        />
+                        <span class="tree-name">Slot {{ module.slot }}: {{ module.product_type }}</span>
+                        <span class="tree-desc">{{ module.description }}</span>
+                        <span class="tree-count">{{ module.channels?.length || 0 }} ch</span>
+                      </div>
+
+                      <!-- Channels within Module -->
+                      <div v-if="expandedModules.has(module.name)" class="tree-children channel-list">
+                        <div
+                          v-for="channel in module.channels"
+                          :key="channel.name"
+                          class="tree-channel"
+                          :class="{ selected: selectedDiscoveryChannels.includes(channel.name) }"
+                          @click="toggleDiscoveryChannel(channel.name)"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="selectedDiscoveryChannels.includes(channel.name)"
+                            @click.stop
+                            @change="toggleDiscoveryChannel(channel.name)"
+                          />
+                          <span class="channel-name">{{ channel.name }}</span>
+                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="channel-desc">{{ channel.description }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Standalone Devices -->
+                <div v-for="device in discoveryResult.standalone_devices" :key="device.name" class="tree-module standalone">
+                  <div class="tree-header module-header" @click="toggleModule(device.name)">
+                    <svg class="tree-arrow" :class="{ expanded: expandedModules.has(device.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5l8 7-8 7V5z"/>
+                    </svg>
+                    <input
+                      type="checkbox"
+                      :checked="isModuleFullySelected(device)"
+                      :indeterminate="isModulePartiallySelected(device)"
+                      @click.stop
+                      @change="selectModuleChannels(device, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="tree-name">{{ device.product_type }}</span>
+                    <span class="tree-desc">{{ device.description }}</span>
+                    <span class="tree-count">{{ device.channels?.length || 0 }} ch</span>
+                  </div>
+
+                  <!-- Channels -->
+                  <div v-if="expandedModules.has(device.name)" class="tree-children channel-list">
+                    <div
+                      v-for="channel in device.channels"
+                      :key="channel.name"
+                      class="tree-channel"
+                      :class="{ selected: selectedDiscoveryChannels.includes(channel.name) }"
+                      @click="toggleDiscoveryChannel(channel.name)"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="selectedDiscoveryChannels.includes(channel.name)"
+                        @click.stop
+                        @change="toggleDiscoveryChannel(channel.name)"
+                      />
+                      <span class="channel-name">{{ channel.name }}</span>
+                      <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                      <span class="channel-desc">{{ channel.description }}</span>
                     </div>
                   </div>
                 </div>
@@ -5029,6 +5284,183 @@ input[type="checkbox"] {
 .empty-discovery .hint {
   font-size: 0.75rem;
   color: #444;
+}
+
+/* Simulation Mode Banner */
+.simulation-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 0.8rem;
+  margin-bottom: 12px;
+}
+
+/* Tree View Styles */
+.discovery-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tree-chassis {
+  background: #1a1a2e;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tree-module {
+  background: #1e1e32;
+  border-radius: 4px;
+  margin: 2px 0;
+}
+
+.tree-module.standalone {
+  background: #1a1a2e;
+  border-radius: 6px;
+}
+
+.tree-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tree-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chassis-header {
+  background: #252540;
+}
+
+.module-header {
+  padding-left: 24px;
+}
+
+.tree-arrow {
+  color: #666;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.tree-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.tree-name {
+  font-weight: 600;
+  color: #fff;
+  font-size: 0.85rem;
+}
+
+.tree-type {
+  font-size: 0.75rem;
+  color: #888;
+  padding: 2px 6px;
+  background: #2a2a4a;
+  border-radius: 3px;
+}
+
+.tree-desc {
+  font-size: 0.75rem;
+  color: #666;
+  flex: 1;
+}
+
+.tree-count {
+  font-size: 0.7rem;
+  color: #888;
+  background: #2a2a4a;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.tree-children {
+  padding-left: 16px;
+}
+
+.tree-children.channel-list {
+  padding: 4px 8px 8px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-channel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tree-channel:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tree-channel.selected {
+  background: rgba(59, 130, 246, 0.15);
+  border-left: 2px solid #3b82f6;
+}
+
+.tree-channel input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.tree-channel .channel-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #ddd;
+  min-width: 140px;
+}
+
+.tree-channel .channel-desc {
+  font-size: 0.7rem;
+  color: #666;
+  flex: 1;
+}
+
+.tree-header input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Type badge colors by category */
+.type-badge.thermocouple { background: #dc2626; color: #fff; }
+.type-badge.rtd { background: #ea580c; color: #fff; }
+.type-badge.voltage { background: #16a34a; color: #fff; }
+.type-badge.current { background: #2563eb; color: #fff; }
+.type-badge.strain { background: #7c3aed; color: #fff; }
+.type-badge.iepe { background: #db2777; color: #fff; }
+.type-badge.digital_input { background: #0891b2; color: #fff; }
+.type-badge.digital_output { background: #059669; color: #fff; }
+.type-badge.analog_output { background: #d97706; color: #fff; }
+.type-badge.counter { background: #7c3aed; color: #fff; }
+
+/* Toolbar separator */
+.discovery-actions .separator {
+  color: #444;
+  margin: 0 4px;
 }
 
 /* Modal transitions */
