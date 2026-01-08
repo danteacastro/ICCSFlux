@@ -261,8 +261,8 @@ class ServiceManager:
             print("WARNING: paho-mqtt not available, health monitoring disabled")
             return
 
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
+        def on_connect(client, userdata, flags, reason_code, properties):
+            if reason_code == 0:
                 client.subscribe("nisystem/heartbeat")
                 client.subscribe("nisystem/status/system")
 
@@ -274,7 +274,8 @@ class ServiceManager:
             except Exception:
                 pass
 
-        self._mqtt_client = mqtt.Client()
+        # Use callback API version 2 to avoid deprecation warning
+        self._mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self._mqtt_client.on_connect = on_connect
         self._mqtt_client.on_message = on_message
 
