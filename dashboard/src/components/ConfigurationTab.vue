@@ -339,14 +339,21 @@ function addNewChannel() {
     return
   }
 
+  // Check for duplicate TAG - tags must be unique project-wide
+  const tagName = newChannelForm.value.name.trim()
+  if (store.channels[tagName]) {
+    showFeedback('error', `Tag "${tagName}" already exists. Tags must be unique across all nodes.`)
+    return
+  }
+
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
 
   const config = {
-    name: newChannelForm.value.name,  // TAG is the only identifier
-    physical_channel: newChannelForm.value.physical_channel || newChannelForm.value.name,
+    name: tagName,  // TAG is the only identifier
+    physical_channel: newChannelForm.value.physical_channel || tagName,
     channel_type: newChannelForm.value.channel_type,
     // display_name removed - use name (TAG) everywhere
     unit: newChannelForm.value.unit || getDefaultUnit(newChannelForm.value.channel_type),
@@ -355,9 +362,9 @@ function addNewChannel() {
     enabled: true
   }
 
-  mqtt.updateChannelConfig(newChannelForm.value.name, config)
-  showFeedback('success', `Adding channel: ${newChannelForm.value.name}`)
-  channelEnabled.value[newChannelForm.value.name] = true
+  mqtt.updateChannelConfig(tagName, config)
+  showFeedback('success', `Adding channel: ${tagName}`)
+  channelEnabled.value[tagName] = true
   showAddChannelModal.value = false
   markDirty()
 }
@@ -815,7 +822,10 @@ function addSelectedChannels() {
       high_warning: limits.highWarn,
       log: true,
       log_interval_ms: 1000,
-      enabled: true
+      enabled: true,
+      // Source tracking (for multi-node systems)
+      node_id: ch.node_id || 'node-001',  // Default to local node if not specified
+      source_type: ch.is_crio ? 'crio' : 'cdaq'  // Track data source type
     })
 
     channelEnabled.value[tagName] = true
@@ -2163,6 +2173,7 @@ watch(() => Object.keys(store.channels), () => {
               <!-- TAG - channel identifier (read-only) -->
               <td class="col-tag">
                 <span class="tag-display">{{ name }}</span>
+                <span v-if="config.source_type === 'crio'" class="source-badge crio" title="Remote cRIO node">cRIO</span>
               </td>
               <!-- CHANNEL - cDAQ physical location -->
               <td class="col-channel editable-cell" @click.stop>
@@ -4597,6 +4608,23 @@ watch(() => Object.keys(store.channels), () => {
 .col-enable { text-align: center; }
 .col-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 600; }
 .col-actions { width: 50px; text-align: center; }
+
+/* Source Badge - indicates which node a channel comes from */
+.source-badge {
+  margin-left: 6px;
+  padding: 1px 4px;
+  font-size: 0.6rem;
+  font-weight: 500;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.source-badge.crio {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
 
 /* Type Badge */
 .type-badge {
