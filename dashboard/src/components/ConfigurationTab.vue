@@ -650,6 +650,53 @@ function pushConfigToCrio(node: any) {
   showFeedback('info', `Pushing config to ${node.node_id}...`)
 }
 
+// Auto-push config to all connected cRIO nodes
+// Called after successful save if there are cRIO channels in the project
+function autoPushToCrioNodes() {
+  if (!mqtt.connected.value) return
+
+  // Find all unique cRIO node IDs from channels with source_type === 'crio'
+  const crioNodeIds = new Set<string>()
+  for (const [_name, config] of Object.entries(store.channels)) {
+    const ch = config as any
+    if (ch.source_type === 'crio' && ch.node_id) {
+      crioNodeIds.add(ch.node_id)
+    }
+  }
+
+  if (crioNodeIds.size === 0) return  // No cRIO channels
+
+  // Get current channel configs from store
+  const channelConfigs = Object.values(store.channels || {})
+  const scripts = store.pythonScripts || []
+  const safeStateOutputs = channelConfigs
+    .filter((ch: any) => ch.channel_type === 'digital_output')
+    .map((ch: any) => ch.name)
+
+  // Push to each cRIO node
+  for (const nodeId of crioNodeIds) {
+    // Check if node is online from discovery results
+    const crioNode = discoveryResult.value?.crio_nodes?.find((n: any) => n.node_id === nodeId)
+    if (crioNode && crioNode.status !== 'online') {
+      console.log(`Skipping push to ${nodeId} - node is offline`)
+      continue
+    }
+
+    mqtt.pushCrioConfig(nodeId, {
+      channels: channelConfigs,
+      scripts: scripts,
+      safe_state_outputs: safeStateOutputs,
+      scan_rate_hz: store.status?.scan_rate_hz || 100,
+      publish_rate_hz: store.status?.publish_rate_hz || 10
+    })
+    console.log(`Auto-pushed config to cRIO: ${nodeId}`)
+  }
+
+  if (crioNodeIds.size > 0) {
+    showFeedback('info', `Config pushed to ${crioNodeIds.size} cRIO node(s)`)
+  }
+}
+
 // Generate smart channel name from physical channel
 function generateSmartChannelName(physicalChannel: string, channelType: string, index: number): string {
   // Extract module number and channel index from physical channel
@@ -942,6 +989,9 @@ function applyConfigChanges() {
   mqtt.sendNodeCommand('config/apply', {
     restart_acquisition: false  // Just reinitialize, don't start acquisition
   })
+
+  // Also push to any cRIO nodes if present
+  autoPushToCrioNodes()
 
   showFeedback('info', 'Applying configuration to hardware...')
   configDirty.value = false
@@ -1656,6 +1706,8 @@ async function saveToFile() {
       if (success) {
         showFeedback('success', `Saved to project: ${currentProject}`)
         configDirty.value = false
+        // Auto-push to any cRIO nodes if present
+        autoPushToCrioNodes()
       } else {
         showFeedback('error', 'Failed to save project')
       }
@@ -1691,6 +1743,8 @@ async function createAndSaveProject() {
       configDirty.value = false
       showCreateProjectDialog.value = false
       newProjectName.value = ''
+      // Auto-push to any cRIO nodes if present
+      autoPushToCrioNodes()
     } else {
       showFeedback('error', 'Failed to create project')
     }
@@ -1974,12 +2028,23 @@ watch(() => Object.keys(store.channels), () => {
     <!-- Search and Actions Bar -->
     <div class="actions-bar">
       <div class="left-actions">
-        <button class="action-btn add-btn" @click="openAddChannelModal">
+        <!-- Group 1: Channel Operations -->
+        <button class="action-btn primary" @click="openAddChannelModal" title="Add a new channel manually">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
-          Add Channel
+          Add
         </button>
+        <button class="action-btn" @click="scanDevices" :disabled="isScanning" title="Scan for NI hardware devices">
+          <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 6v6l4 2"/>
+          </svg>
+          <span v-else class="spinner"></span>
+          {{ isScanning ? 'Scanning...' : 'Scan' }}
+        </button>
+
+        <!-- Search -->
         <div class="search-box">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
@@ -1991,29 +2056,19 @@ watch(() => Object.keys(store.channels), () => {
             class="search-input"
           />
         </div>
-        <button class="action-btn scan-btn" @click="scanDevices" :disabled="isScanning">
-          <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M12 6v6l4 2"/>
-          </svg>
-          <span v-else class="spinner"></span>
-          {{ isScanning ? 'Scanning...' : 'Scan Devices' }}
-        </button>
-        <button class="action-btn settings-btn" @click="openSystemSettings">
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Group 2: View/Mode Toggles -->
+        <button class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
           </svg>
           Settings
         </button>
-        <button class="action-btn safety-btn" @click="openSafetyActionsModal">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          Safety Actions
-        </button>
         <button
-          class="action-btn edit-btn"
+          class="action-btn"
           :class="{ active: editMode, 'no-permission': !hasEditPermission.value }"
           @click="toggleEditMode"
           :disabled="store.isAcquiring"
@@ -2023,11 +2078,11 @@ watch(() => Object.keys(store.channels), () => {
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
-          {{ editMode ? 'EDITING' : 'EDIT' }}
+          {{ editMode ? 'EDITING' : 'Edit' }}
           <span v-if="!hasEditPermission.value" class="lock-badge">🔒</span>
         </button>
         <button
-          class="action-btn limit-colors-btn"
+          class="action-btn"
           :class="{ active: showLimitColors }"
           @click="showLimitColors = !showLimitColors"
           title="Toggle alarm/warning colors based on channel limits"
@@ -2037,11 +2092,23 @@ watch(() => Object.keys(store.channels), () => {
             <path d="M12 8v4"/>
             <path d="M12 16h.01"/>
           </svg>
-          {{ showLimitColors ? 'Limits ON' : 'Limits OFF' }}
+          {{ showLimitColors ? 'Limits ON' : 'Limits' }}
         </button>
+
+        <!-- Group 3: Safety (orange - draws attention) -->
+        <button class="action-btn warning" @click="openSafetyActionsModal" title="Configure safety interlocks and actions">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          Safety
+        </button>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Group 4: File Operations -->
         <button
-          class="action-btn save-btn"
-          :class="{ dirty: configDirty, 'project-save': projectFiles.currentProject.value }"
+          class="action-btn primary"
+          :class="{ dirty: configDirty }"
           @click="saveToFile()"
           :disabled="isSaving"
           :title="projectFiles.currentProject.value
@@ -2057,34 +2124,21 @@ watch(() => Object.keys(store.channels), () => {
           {{ isSaving ? 'Saving...' : 'Save' }}
           <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
-        <button
-          class="action-btn apply-btn"
-          @click="applyConfigChanges"
-          :disabled="!mqtt.connected.value"
-          title="Apply channel config to hardware (reinitialize DAQ tasks, does NOT save to file)"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-            <polyline points="22 4 12 14.01 9 11.01"/>
-          </svg>
-          Apply
-        </button>
-        <div class="toolbar-divider"></div>
-        <button class="action-btn export-btn" @click="exportProject" :disabled="isExporting" title="Download project as .json file to your computer">
+        <button class="action-btn" @click="exportProject" :disabled="isExporting" title="Export project as .json file to your computer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
-          Download
+          Export
         </button>
-        <button class="action-btn import-btn" @click="triggerImport" title="Load project from a .json file on your computer">
+        <button class="action-btn" @click="triggerImport" title="Import project from a .json file on your computer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          Upload
+          Import
         </button>
         <input
           ref="importFileInput"
@@ -2093,6 +2147,22 @@ watch(() => Object.keys(store.channels), () => {
           style="display: none"
           @change="handleImportFile"
         />
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Group 5: Apply (blue - sends to hardware) -->
+        <button
+          class="action-btn accent"
+          @click="applyConfigChanges"
+          :disabled="!mqtt.connected.value"
+          title="Apply channel config to hardware (reinitialize DAQ tasks)"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          Apply
+        </button>
       </div>
       <div class="right-info">
         <div v-if="projectFiles.currentProject.value" class="project-indicator" :title="`Project: ${projectFiles.currentProject.value}`">
@@ -2101,30 +2171,12 @@ watch(() => Object.keys(store.channels), () => {
           </svg>
           {{ projectFiles.currentProject.value.replace('.json', '') }}
         </div>
-        <div class="channel-count">
-          {{ filteredChannels.length }} channels
-        </div>
         <div v-if="store.status?.simulation_mode" class="sim-mode-indicator" title="Running in simulation mode - no real hardware">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
           </svg>
           SIM MODE
         </div>
-        <div class="connection-status" :class="{ connected: mqtt.connected.value }">
-          {{ mqtt.connected.value ? 'MQTT Connected' : 'MQTT Disconnected' }}
-        </div>
-        <button class="theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
-          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="5"/>
-            <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
-            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
-            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-          </svg>
-        </button>
       </div>
     </div>
 
@@ -4561,11 +4613,6 @@ watch(() => Object.keys(store.channels), () => {
   color: #555;
 }
 
-.channel-count {
-  font-size: 0.75rem;
-  color: #666;
-}
-
 /* Main Content */
 .main-content {
   display: flex;
@@ -5235,27 +5282,70 @@ input[type="checkbox"] {
   cursor: not-allowed;
 }
 
-.edit-btn {
-  border-color: #3b82f6;
+/* Primary buttons (green) - constructive actions: Add, Save */
+.action-btn.primary {
+  background: #166534;
+  border-color: #22c55e;
+  color: #fff;
 }
 
-.edit-btn.active {
+.action-btn.primary:hover:not(:disabled) {
+  background: #15803d;
+  border-color: #4ade80;
+}
+
+.action-btn.primary.dirty {
+  animation: pulse-dirty 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dirty {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { box-shadow: 0 0 8px 2px rgba(34, 197, 94, 0.6); }
+}
+
+/* Accent buttons (blue) - send to hardware: Apply */
+.action-btn.accent {
+  background: #1e40af;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.action-btn.accent:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #60a5fa;
+}
+
+/* Warning buttons (orange) - safety/attention: Safety */
+.action-btn.warning {
+  background: #78350f;
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.action-btn.warning:hover:not(:disabled) {
+  background: #92400e;
+  border-color: #fbbf24;
+  color: #fef3c7;
+}
+
+/* Active state for toggle buttons */
+.action-btn.active {
   background: #3b82f6;
   color: #fff;
-  border-color: #3b82f6;
-}
-
-.edit-btn:hover:not(:disabled):not(.active) {
   border-color: #60a5fa;
-  color: #60a5fa;
 }
 
-.edit-btn.no-permission {
+.action-btn.active:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+/* No permission state */
+.action-btn.no-permission {
   opacity: 0.6;
   border-color: #6b7280;
 }
 
-.edit-btn.no-permission:hover {
+.action-btn.no-permission:hover {
   border-color: #f59e0b;
   color: #f59e0b;
 }
@@ -5263,44 +5353,6 @@ input[type="checkbox"] {
 .lock-badge {
   font-size: 0.7rem;
   margin-left: 4px;
-}
-
-.limit-colors-btn {
-  border-color: #6b7280;
-}
-
-.limit-colors-btn.active {
-  background: #f59e0b;
-  color: #000;
-  border-color: #f59e0b;
-}
-
-.limit-colors-btn:hover:not(.active) {
-  border-color: #9ca3af;
-  color: #9ca3af;
-}
-
-.scan-btn:hover:not(:disabled) {
-  border-color: #22c55e;
-  color: #22c55e;
-}
-
-.save-btn:hover:not(:disabled) {
-  border-color: #3b82f6;
-  color: #3b82f6;
-}
-
-.connection-status {
-  font-size: 0.7rem;
-  padding: 4px 8px;
-  border-radius: 3px;
-  background: #451a03;
-  color: #fbbf24;
-}
-
-.connection-status.connected {
-  background: #14532d;
-  color: #22c55e;
 }
 
 .project-indicator {
@@ -5327,17 +5379,6 @@ input[type="checkbox"] {
   flex-shrink: 0;
 }
 
-/* Save button when saving to project (blue accent) */
-.save-btn.project-save {
-  border-color: #3b82f6;
-  color: #60a5fa;
-}
-
-.save-btn.project-save:hover {
-  background: #1e3a8a;
-  border-color: #60a5fa;
-}
-
 .sim-mode-indicator {
   display: flex;
   align-items: center;
@@ -5356,34 +5397,6 @@ input[type="checkbox"] {
   width: 14px;
   height: 14px;
   fill: currentColor;
-}
-
-.theme-toggle {
-  background: transparent;
-  border: 1px solid #3a3a5a;
-  border-radius: 4px;
-  padding: 4px 6px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-
-.theme-toggle:hover {
-  border-color: #60a5fa;
-  background: rgba(96, 165, 250, 0.1);
-}
-
-.theme-toggle svg {
-  width: 16px;
-  height: 16px;
-  fill: #a0a0c0;
-  transition: fill 0.2s;
-}
-
-.theme-toggle:hover svg {
-  fill: #60a5fa;
 }
 
 /* Spinner */
@@ -5556,17 +5569,6 @@ input[type="checkbox"] {
   font-size: 0.75rem;
   font-family: 'JetBrains Mono', monospace;
   margin-left: 8px;
-}
-
-/* Apply Button */
-.action-btn.apply-btn {
-  background: #10b981;
-  border-color: #10b981;
-}
-
-.action-btn.apply-btn:hover:not(:disabled) {
-  background: #059669;
-  border-color: #059669;
 }
 
 .discovery-list {
@@ -6026,24 +6028,6 @@ input[type="checkbox"] {
   color: #60a5fa;
 }
 
-/* Add Channel Button */
-.add-btn {
-  background: #166534 !important;
-  border-color: #22c55e !important;
-  color: #22c55e !important;
-}
-
-.add-btn:hover:not(:disabled) {
-  background: #14532d !important;
-  color: #fff !important;
-}
-
-/* Settings Button */
-.settings-btn:hover:not(:disabled) {
-  border-color: #8b5cf6;
-  color: #8b5cf6;
-}
-
 /* Delete Button in table */
 .col-actions {
   display: flex;
@@ -6474,15 +6458,6 @@ input[type="checkbox"] {
   border-radius: 4px;
 }
 
-.safety-btn {
-  background: #14532d !important;
-  border-color: #22c55e !important;
-}
-
-.safety-btn:hover {
-  background: #166534 !important;
-}
-
 /* Color Picker */
 .color-picker-row {
   display: flex;
@@ -6512,10 +6487,6 @@ input[type="checkbox"] {
 }
 
 /* Dirty indicator */
-.save-btn.dirty {
-  border-color: #f59e0b;
-}
-
 .dirty-indicator {
   color: #f59e0b;
   font-weight: bold;
@@ -6528,25 +6499,6 @@ input[type="checkbox"] {
   height: 24px;
   background: #2a2a4a;
   margin: 0 8px;
-}
-
-/* Export/Import buttons */
-.export-btn {
-  background: linear-gradient(135deg, #1e3a5f 0%, #0f2744 100%);
-  border-color: #3b82f6;
-}
-
-.export-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #2563eb 0%, #1e3a5f 100%);
-}
-
-.import-btn {
-  background: linear-gradient(135deg, #1e3a5f 0%, #0f2744 100%);
-  border-color: #8b5cf6;
-}
-
-.import-btn:hover {
-  background: linear-gradient(135deg, #7c3aed 0%, #1e3a5f 100%);
 }
 
 /* Save As Dialog */
