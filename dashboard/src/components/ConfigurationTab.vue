@@ -1941,18 +1941,34 @@ watch(() => Object.keys(store.channels), () => {
 
 <template>
   <div class="config-tab">
-    <!-- Channel Type Tabs -->
-    <div class="type-tabs">
-      <button
-        v-for="tab in channelTypeTabs"
-        :key="tab.id"
-        class="type-tab"
-        :class="{ active: activeTypeTab === tab.id }"
-        @click="activeTypeTab = tab.id"
-      >
-        <span class="tab-icon">{{ tab.icon }}</span>
-        {{ tab.label }}
-      </button>
+    <!-- Channel Type Tabs + Status Bar -->
+    <div class="type-tabs-row">
+      <div class="type-tabs">
+        <button
+          v-for="tab in channelTypeTabs"
+          :key="tab.id"
+          class="type-tab"
+          :class="{ active: activeTypeTab === tab.id }"
+          @click="activeTypeTab = tab.id"
+        >
+          <span class="tab-icon">{{ tab.icon }}</span>
+          {{ tab.label }}
+        </button>
+      </div>
+      <div class="status-compact">
+        <span class="status-item channels">{{ Object.keys(store.channels).length }} ch</span>
+        <span class="status-item mqtt" :class="{ connected: mqtt.connected.value }">
+          {{ mqtt.connected.value ? 'MQTT' : 'Disconnected' }}
+        </span>
+        <button class="theme-toggle-small" @click="toggleTheme" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Search and Actions Bar -->
@@ -3633,23 +3649,9 @@ watch(() => Object.keys(store.channels), () => {
       </div>
     </div>
 
-    <!-- Info Panel -->
-    <div class="info-panel">
-      <div class="info-item">
-        <span class="info-label">Total Channels:</span>
-        <span class="info-value">{{ Object.keys(store.channels).length }}</span>
-      </div>
-      <div class="info-item">
-        <span class="info-label">Scan Rate:</span>
-        <span class="info-value">{{ store.status?.scan_rate_hz || '--' }} Hz</span>
-      </div>
-      <div class="info-item">
-        <span class="info-label">Publish Rate:</span>
-        <span class="info-value">{{ store.status?.publish_rate_hz || '--' }} Hz</span>
-      </div>
-      <div class="info-item" v-if="store.status?.simulation_mode">
-        <span class="info-label sim">SIMULATION MODE</span>
-      </div>
+    <!-- Simulation Mode Warning (only when active) -->
+    <div v-if="store.status?.simulation_mode" class="sim-banner">
+      <span class="sim-icon">⚠️</span> SIMULATION MODE - No real hardware connected
     </div>
 
     <!-- Discovery Panel Modal -->
@@ -4430,14 +4432,68 @@ watch(() => Object.keys(store.channels), () => {
   background: #0a0a14;
 }
 
-/* Channel Type Tabs */
+/* Channel Type Tabs Row (tabs + status) */
+.type-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #0f0f1a;
+  border-bottom: 1px solid #2a2a4a;
+}
+
 .type-tabs {
   display: flex;
   gap: 2px;
-  padding: 8px 16px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
   overflow-x: auto;
+}
+
+/* Compact Status Bar (right side of tabs) */
+.status-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.65rem;
+}
+
+.status-item {
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.status-item.channels {
+  background: #1e293b;
+  color: #94a3b8;
+}
+
+.status-item.mqtt {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.status-item.mqtt.connected {
+  background: #14532d;
+  color: #86efac;
+}
+
+.theme-toggle-small {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.theme-toggle-small:hover {
+  background: #334155;
+  color: #e2e8f0;
 }
 
 .type-tab {
@@ -5099,35 +5155,21 @@ watch(() => Object.keys(store.channels), () => {
   opacity: 1;
 }
 
-/* Info Panel */
-.info-panel {
+/* Simulation Mode Banner */
+.sim-banner {
   display: flex;
-  gap: 24px;
-  padding: 8px 16px;
-  background: #0f0f1a;
-  border-top: 1px solid #2a2a4a;
-}
-
-.info-item {
-  display: flex;
-  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: #451a03;
+  color: #fbbf24;
   font-size: 0.75rem;
-}
-
-.info-label {
-  color: #666;
-}
-
-.info-value {
-  color: #888;
   font-weight: 500;
 }
 
-.info-label.sim {
-  color: #fbbf24;
-  background: #451a03;
-  padding: 2px 6px;
-  border-radius: 3px;
+.sim-icon {
+  font-size: 0.85rem;
 }
 
 /* Checkbox styling */
