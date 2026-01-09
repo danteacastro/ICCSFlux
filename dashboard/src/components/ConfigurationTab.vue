@@ -435,7 +435,7 @@ function saveSystemSettings() {
     return
   }
 
-  mqtt.sendCommand('config/system/update', {
+  mqtt.sendNodeCommand('config/system/update', {
     scan_rate_hz: systemSettingsForm.value.scan_rate_hz,
     publish_rate_hz: systemSettingsForm.value.publish_rate_hz
   })
@@ -453,6 +453,7 @@ const selectedDiscoveryChannels = ref<string[]>([])
 // Tree view expansion state
 const expandedChassis = ref<Set<string>>(new Set())
 const expandedModules = ref<Set<string>>(new Set())
+const expandedCrioNodes = ref<Set<string>>(new Set())
 
 // Toggle chassis expansion
 function toggleChassis(chassisName: string) {
@@ -476,7 +477,18 @@ function toggleModule(moduleName: string) {
   expandedModules.value = new Set(expandedModules.value)
 }
 
-// Expand all chassis and modules
+// Toggle cRIO node expansion
+function toggleCrioNode(nodeId: string) {
+  if (expandedCrioNodes.value.has(nodeId)) {
+    expandedCrioNodes.value.delete(nodeId)
+  } else {
+    expandedCrioNodes.value.add(nodeId)
+  }
+  // Force reactivity
+  expandedCrioNodes.value = new Set(expandedCrioNodes.value)
+}
+
+// Expand all chassis, modules, and cRIO nodes
 function expandAllDiscovery() {
   if (discoveryResult.value?.chassis) {
     discoveryResult.value.chassis.forEach((chassis: any) => {
@@ -488,12 +500,24 @@ function expandAllDiscovery() {
     expandedChassis.value = new Set(expandedChassis.value)
     expandedModules.value = new Set(expandedModules.value)
   }
+  // Also expand cRIO nodes
+  if (discoveryResult.value?.crio_nodes) {
+    discoveryResult.value.crio_nodes.forEach((node: any) => {
+      expandedCrioNodes.value.add(node.node_id)
+      node.modules?.forEach((mod: any) => {
+        expandedModules.value.add(mod.name)
+      })
+    })
+    expandedCrioNodes.value = new Set(expandedCrioNodes.value)
+    expandedModules.value = new Set(expandedModules.value)
+  }
 }
 
 // Collapse all
 function collapseAllDiscovery() {
   expandedChassis.value = new Set()
   expandedModules.value = new Set()
+  expandedCrioNodes.value = new Set()
 }
 
 // Select all channels in a module
@@ -543,6 +567,7 @@ function scanDevices() {
   selectedDiscoveryChannels.value = []
   expandedChassis.value = new Set()
   expandedModules.value = new Set()
+  expandedCrioNodes.value = new Set()
 
   showFeedback('info', 'Scanning for NI devices...')
   mqtt.scanDevices()
@@ -561,13 +586,62 @@ mqtt.onDiscovery((result) => {
   if (result.success) {
     const totalChannels = result.total_channels || 0
     const chassisCount = result.chassis?.length || 0
-    showFeedback('success', `Found ${chassisCount} chassis, ${totalChannels} channels`)
+    const crioCount = result.crio_nodes?.length || 0
+    const parts = []
+    if (chassisCount > 0) parts.push(`${chassisCount} cDAQ`)
+    if (crioCount > 0) parts.push(`${crioCount} cRIO`)
+    const deviceText = parts.length > 0 ? parts.join(', ') : 'No devices'
+    showFeedback('success', `Found ${deviceText}, ${totalChannels} channels`)
     // Auto-expand all on successful discovery
     expandAllDiscovery()
   } else {
     showFeedback('error', result.error || result.message || 'Discovery failed')
   }
 })
+
+// Handle cRIO response (push config result)
+mqtt.onCrioResponse((result) => {
+  if (result.success) {
+    showFeedback('success', result.message || 'Config pushed to cRIO')
+  } else {
+    showFeedback('error', result.message || 'Failed to push config to cRIO')
+  }
+})
+
+// Push current project config to a cRIO node
+function pushConfigToCrio(node: any) {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+
+  if (node.status !== 'online') {
+    showFeedback('error', `cRIO ${node.node_id} is offline`)
+    return
+  }
+
+  // Get current channel configs from store
+  const channelConfigs = Object.values(store.channels || {})
+
+  // Get scripts from store (if available)
+  const scripts = store.pythonScripts || []
+
+  // Get safe state outputs (all DO channels)
+  const safeStateOutputs = channelConfigs
+    .filter((ch: any) => ch.channel_type === 'digital_output')
+    .map((ch: any) => ch.name)
+
+  // Push config to cRIO
+  mqtt.pushCrioConfig(node.node_id, {
+    channels: channelConfigs,
+    scripts: scripts,
+    safe_state_outputs: safeStateOutputs,
+    scan_rate_hz: store.status?.scan_rate_hz || 100,
+    publish_rate_hz: store.status?.publish_rate_hz || 10
+  })
+
+  showFeedback('info', `Pushing config to ${node.node_id}...`)
+}
 
 // Generate smart channel name from physical channel
 function generateSmartChannelName(physicalChannel: string, channelType: string, index: number): string {
@@ -686,6 +760,26 @@ function addSelectedChannels() {
     }
   }
 
+  // Include cRIO node channels
+  if (discoveryResult.value?.crio_nodes) {
+    for (const node of discoveryResult.value.crio_nodes) {
+      for (const module of node.modules || []) {
+        for (const channel of module.channels || []) {
+          if (selectedDiscoveryChannels.value.includes(channel.name)) {
+            selectedChannels.push({
+              ...channel,
+              module_name: module.product_type,
+              module_device: module.name,
+              chassis_name: node.node_id,
+              node_id: node.node_id,  // Track source cRIO node
+              is_crio: true
+            })
+          }
+        }
+      }
+    }
+  }
+
   if (selectedChannels.length === 0) {
     showFeedback('error', 'No channels selected')
     return
@@ -767,6 +861,17 @@ function selectAllDiscoveryChannels() {
     }
   }
 
+  // Include cRIO node channels
+  if (discoveryResult.value?.crio_nodes) {
+    for (const node of discoveryResult.value.crio_nodes) {
+      for (const module of node.modules || []) {
+        for (const channel of module.channels || []) {
+          allChannels.push(channel.name)
+        }
+      }
+    }
+  }
+
   selectedDiscoveryChannels.value = allChannels
 }
 
@@ -787,6 +892,14 @@ function getTotalDiscoveryChannels(): number {
   if (discoveryResult.value?.standalone_devices) {
     for (const device of discoveryResult.value.standalone_devices) {
       count += device.channels?.length || 0
+    }
+  }
+  // Include cRIO node channels
+  if (discoveryResult.value?.crio_nodes) {
+    for (const node of discoveryResult.value.crio_nodes) {
+      for (const module of node.modules || []) {
+        count += module.channels?.length || 0
+      }
     }
   }
   return count
@@ -1800,6 +1913,15 @@ const tableColumns = computed(() => {
 // Initialize enable states on mount and when channels change
 onMounted(() => {
   initializeEnableStates()
+
+  // Register callback for system settings update response
+  mqtt.onSystemUpdate((result: any) => {
+    if (result.success) {
+      showFeedback('success', `System settings updated: Scan ${result.scan_rate_hz} Hz, Publish ${result.publish_rate_hz} Hz`)
+    } else {
+      showFeedback('error', `Failed to update system settings: ${result.error || 'Unknown error'}`)
+    }
+  })
 })
 
 watch(() => Object.keys(store.channels), () => {
@@ -3540,7 +3662,7 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </template>
 
-            <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0">
+            <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0 || discoveryResult?.crio_nodes?.length > 0">
               <div class="discovery-toolbar">
                 <span class="discovery-count">{{ getTotalDiscoveryChannels() }} channels found</span>
                 <div class="discovery-actions">
@@ -3577,7 +3699,7 @@ watch(() => Object.keys(store.channels), () => {
 
               <!-- Tree View -->
               <div class="discovery-tree">
-                <!-- Chassis -->
+                <!-- Chassis (cDAQ) -->
                 <div v-for="chassis in discoveryResult.chassis" :key="chassis.name" class="tree-chassis">
                   <div class="tree-header chassis-header" @click="toggleChassis(chassis.name)">
                     <svg class="tree-arrow" :class="{ expanded: expandedChassis.has(chassis.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -3588,6 +3710,7 @@ watch(() => Object.keys(store.channels), () => {
                       <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
                     </svg>
                     <span class="tree-name">{{ chassis.name }}</span>
+                    <span class="device-badge cdaq">cDAQ</span>
                     <span class="tree-type">{{ chassis.product_type }}</span>
                     <span class="tree-count">{{ chassis.modules?.length || 0 }} modules</span>
                   </div>
@@ -3671,6 +3794,87 @@ watch(() => Object.keys(store.channels), () => {
                       <span class="channel-name">{{ channel.name }}</span>
                       <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
                       <span class="channel-desc">{{ channel.description }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- cRIO Nodes (Remote CompactRIO devices) -->
+                <div v-for="node in discoveryResult.crio_nodes" :key="node.node_id" class="tree-crio">
+                  <div class="tree-header crio-header" @click="toggleCrioNode(node.node_id)">
+                    <svg class="tree-arrow" :class="{ expanded: expandedCrioNodes.has(node.node_id) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5l8 7-8 7V5z"/>
+                    </svg>
+                    <!-- cRIO icon (server/rack) -->
+                    <svg class="tree-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="2" width="20" height="8" rx="2"/>
+                      <rect x="2" y="14" width="20" height="8" rx="2"/>
+                      <circle cx="6" cy="6" r="1" fill="currentColor"/>
+                      <circle cx="6" cy="18" r="1" fill="currentColor"/>
+                    </svg>
+                    <span class="tree-name">{{ node.node_id }}</span>
+                    <span class="device-badge crio">cRIO</span>
+                    <span class="tree-type">{{ node.product_type }}</span>
+                    <span class="crio-status" :class="node.status">{{ node.status }}</span>
+                    <span class="tree-count">{{ node.modules?.length || 0 }} modules</span>
+                  </div>
+
+                  <!-- cRIO Info Bar -->
+                  <div v-if="expandedCrioNodes.has(node.node_id)" class="crio-info-bar">
+                    <span class="crio-ip">{{ node.ip_address }}</span>
+                    <span class="crio-serial" v-if="node.serial_number">S/N: {{ node.serial_number }}</span>
+                    <span class="crio-last-seen">Last seen: {{ node.last_seen }}</span>
+                    <button
+                      class="btn-push-config"
+                      @click.stop="pushConfigToCrio(node)"
+                      :disabled="node.status !== 'online'"
+                      :title="node.status !== 'online' ? 'Node is offline' : 'Push current project config to this cRIO'"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                      </svg>
+                      Push Config
+                    </button>
+                  </div>
+
+                  <!-- Modules within cRIO -->
+                  <div v-if="expandedCrioNodes.has(node.node_id)" class="tree-children">
+                    <div v-for="module in node.modules" :key="module.name" class="tree-module">
+                      <div class="tree-header module-header" @click="toggleModule(module.name)">
+                        <svg class="tree-arrow" :class="{ expanded: expandedModules.has(module.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5l8 7-8 7V5z"/>
+                        </svg>
+                        <input
+                          type="checkbox"
+                          :checked="isModuleFullySelected(module)"
+                          :indeterminate="isModulePartiallySelected(module)"
+                          @click.stop
+                          @change="selectModuleChannels(module, ($event.target as HTMLInputElement).checked)"
+                        />
+                        <span class="tree-name">Slot {{ module.slot }}: {{ module.product_type }}</span>
+                        <span class="tree-desc">{{ module.description }}</span>
+                        <span class="tree-count">{{ module.channels?.length || 0 }} ch</span>
+                      </div>
+
+                      <!-- Channels within Module -->
+                      <div v-if="expandedModules.has(module.name)" class="tree-children channel-list">
+                        <div
+                          v-for="channel in module.channels"
+                          :key="channel.name"
+                          class="tree-channel"
+                          :class="{ selected: selectedDiscoveryChannels.includes(channel.name) }"
+                          @click="toggleDiscoveryChannel(channel.name)"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="selectedDiscoveryChannels.includes(channel.name)"
+                            @click.stop
+                            @change="toggleDiscoveryChannel(channel.name)"
+                          />
+                          <span class="channel-name">{{ channel.name }}</span>
+                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="channel-desc">{{ channel.description }}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -5435,6 +5639,112 @@ input[type="checkbox"] {
 
 .chassis-header {
   background: #252540;
+}
+
+/* cRIO node styling - distinct from cDAQ chassis */
+.tree-crio {
+  background: #1a2e1a;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #2a4a2a;
+}
+
+.crio-header {
+  background: #253525;
+}
+
+.crio-header:hover {
+  background: #2a402a;
+}
+
+.device-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.device-badge.crio {
+  background: #166534;
+  color: #86efac;
+}
+
+.device-badge.cdaq {
+  background: #1e40af;
+  color: #93c5fd;
+}
+
+.crio-status {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.crio-status.online {
+  background: #166534;
+  color: #86efac;
+}
+
+.crio-status.offline {
+  background: #991b1b;
+  color: #fca5a5;
+}
+
+.crio-status.unknown {
+  background: #854d0e;
+  color: #fde047;
+}
+
+.crio-info-bar {
+  display: flex;
+  gap: 16px;
+  padding: 6px 12px 6px 44px;
+  background: #1a2a1a;
+  font-size: 0.75rem;
+  color: #888;
+  border-top: 1px solid #2a4a2a;
+}
+
+.crio-ip {
+  font-family: monospace;
+  color: #60a5fa;
+}
+
+.crio-serial {
+  color: #888;
+}
+
+.crio-last-seen {
+  color: #666;
+}
+
+.btn-push-config {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #166534;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.2s;
+}
+
+.btn-push-config:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.btn-push-config:disabled {
+  background: #374151;
+  color: #6b7280;
+  cursor: not-allowed;
 }
 
 .module-header {

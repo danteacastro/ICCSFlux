@@ -1,0 +1,11 @@
+# cRIO Node Service Dependencies
+# Install on cRIO-9056 with: pip install -r requirements.txt
+
+# MQTT client
+paho-mqtt>=2.0.0
+
+# NI-DAQmx Python bindings (pre-installed on cRIO with NI Linux RT)
+# nidaqmx  # Usually pre-installed via NI package manager
+
+# NumPy for efficient array operations
+numpy>=1.21.0

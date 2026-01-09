@@ -38,6 +38,8 @@ const channelConfigs = ref<Record<string, ChannelConfig>>({})
 const discoveryResult = ref<any>(null)
 const discoveryChannels = ref<any[]>([])
 const isScanning = ref(false)
+let scanTimeoutId: ReturnType<typeof setTimeout> | null = null
+const SCAN_TIMEOUT_MS = 30000 // 30 second timeout for device scan
 
 // Channel lifecycle callbacks (shared)
 const channelDeletedCallbacks: ((channelName: string) => void)[] = []
@@ -100,6 +102,7 @@ const discoveryCallbacks: ((result: any) => void)[] = []
 const configUpdateCallbacks: ((result: any) => void)[] = []
 const recordingCallbacks: ((result: any) => void)[] = []
 const alarmCallbacks: ((alarm: any, event: 'triggered' | 'updated' | 'cleared') => void)[] = []
+const systemUpdateCallbacks: ((result: any) => void)[] = []
 
 // Generic topic subscriptions (shared)
 const topicCallbacks: Map<string, ((payload: any) => void)[]> = new Map()
@@ -207,7 +210,9 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/command/ack`,  // Command acknowledgments
         `${nodePrefix}/config/channel/deleted`,
         `${nodePrefix}/config/channel/bulk-create/response`,
-        `${nodePrefix}/script/#`  // Script published values and status
+        `${nodePrefix}/config/system/update/response`,  // System settings update response
+        `${nodePrefix}/script/#`,  // Script published values and status
+        `${nodePrefix}/crio/#`  // cRIO node management
       ]
 
       topics.forEach(topic => {
@@ -261,6 +266,7 @@ export function useMqtt(prefix: string = 'nisystem') {
           } else if (restOfTopic === 'config/response') {
             handleConfigResponse(payload)
           } else if (restOfTopic === 'discovery/result') {
+            console.log('[MQTT] Received discovery/result, calling handler')
             handleDiscoveryResult(payload)
           } else if (restOfTopic === 'discovery/channels') {
             handleDiscoveryChannels(payload)
@@ -278,6 +284,8 @@ export function useMqtt(prefix: string = 'nisystem') {
             handleChannelDeleted(payload)
           } else if (restOfTopic === 'config/channel/bulk-create/response') {
             handleBulkCreateResponse(payload)
+          } else if (restOfTopic === 'config/system/update/response') {
+            handleSystemUpdateResponse(payload)
           } else if (restOfTopic.startsWith('watchdog/')) {
             handleWatchdogMessage(topic, payload)
           } else if (restOfTopic === 'variables/config') {
@@ -306,6 +314,12 @@ export function useMqtt(prefix: string = 'nisystem') {
           } else if (restOfTopic === 'script/values') {
             // Script-published values from backend (py.* channels)
             handleScriptValues(payload)
+          } else if (restOfTopic === 'crio/response') {
+            // cRIO operation response (push config, etc.)
+            handleCrioResponse(payload)
+          } else if (restOfTopic === 'crio/list/response') {
+            // cRIO list response
+            handleCrioListResponse(payload)
           }
         }
 
@@ -334,10 +348,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     const config = channelConfigs.value[channelName]
     const timestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now()
 
-    // Handle NaN values - backend sends value: null with value_string: "NaN"
-    // and quality: "bad" when hardware is disconnected
-    const isNaN = payload.value === null && payload.value_string === 'NaN'
+    // Handle NaN values - backend sends value: null with value_string for specific errors
+    // value_string can be: "NaN", "Open TC", "Inf"
+    // status can be: "disconnected", "open_thermocouple", "overflow"
+    const isNaN = payload.value === null || payload.value_string
     const isDisconnected = payload.status === 'disconnected' || payload.quality === 'bad'
+    const isOpenTC = payload.status === 'open_thermocouple'
+    const isOverflow = payload.status === 'overflow'
     const value = isNaN ? NaN : payload.value
 
     channelValues.value[channelName] = {
@@ -349,6 +366,11 @@ export function useMqtt(prefix: string = 'nisystem') {
       // Additional quality indicators
       quality: payload.quality || 'good',
       disconnected: isDisconnected,
+      // Specific error states for better UI feedback
+      openThermocouple: isOpenTC,
+      overflow: isOverflow,
+      valueString: payload.value_string || null,  // Human-readable error: "NaN", "Open TC", "Inf"
+      status: payload.status || 'normal',
       // Multi-node: store source node ID
       nodeId: nodeId || payload.node_id,
       // SOE: Store high-precision acquisition timestamp (microseconds since epoch)
@@ -525,9 +547,15 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleDiscoveryResult(payload: any) {
+    // Clear timeout since we got a response
+    if (scanTimeoutId) {
+      clearTimeout(scanTimeoutId)
+      scanTimeoutId = null
+    }
     discoveryResult.value = payload
     isScanning.value = false
-    console.log('Discovery result:', payload)
+    console.log('[MQTT] handleDiscoveryResult - chassis count:', payload?.chassis?.length, 'total channels:', payload?.total_channels)
+    console.log('[MQTT] discoveryResult.value now set, callbacks:', discoveryCallbacks.length)
     discoveryCallbacks.forEach(cb => cb(payload))
   }
 
@@ -588,6 +616,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     configUpdateCallbacks.forEach(cb => cb(payload))
   }
 
+  function handleSystemUpdateResponse(payload: any) {
+    console.log('System update response:', payload)
+    systemUpdateCallbacks.forEach(cb => cb(payload))
+  }
+
   function handleWatchdogMessage(topic: string, payload: any) {
     const subtopic = topic.split('/').pop()
 
@@ -617,11 +650,18 @@ export function useMqtt(prefix: string = 'nisystem') {
   // Get playground composable instance (singleton)
   const playground = usePlayground()
 
-  // Wire up playground MQTT handlers
+  // Wire up playground MQTT handlers - convert topics to node-prefixed
   playground.setMqttHandlers({
     publish: (topic: string, payload: any) => {
       if (client.value && connected.value) {
-        client.value.publish(topic, JSON.stringify(payload))
+        // Convert nisystem/xxx to nisystem/nodes/{nodeId}/xxx
+        let actualTopic = topic
+        if (topic.startsWith('nisystem/') && !topic.startsWith('nisystem/nodes/')) {
+          const targetNodeId = activeNodeId.value || knownNodes.value.keys().next().value || 'node-001'
+          actualTopic = topic.replace('nisystem/', `nisystem/nodes/${targetNodeId}/`)
+        }
+        console.log('[MQTT] Playground publish:', actualTopic, payload)
+        client.value.publish(actualTopic, JSON.stringify(payload))
       } else {
         console.warn('MQTT not connected, cannot publish:', topic)
       }
@@ -635,11 +675,18 @@ export function useMqtt(prefix: string = 'nisystem') {
   // Get Python scripts composable instance (singleton)
   const pythonScripts = usePythonScripts()
 
-  // Wire up Python scripts MQTT handlers
+  // Wire up Python scripts MQTT handlers - convert topics to node-prefixed
   pythonScripts.setMqttHandlers({
     publish: (topic: string, payload: any) => {
       if (client.value && connected.value) {
-        client.value.publish(topic, JSON.stringify(payload))
+        // Convert nisystem/xxx to nisystem/nodes/{nodeId}/xxx
+        let actualTopic = topic
+        if (topic.startsWith('nisystem/') && !topic.startsWith('nisystem/nodes/')) {
+          const targetNodeId = activeNodeId.value || knownNodes.value.keys().next().value || 'node-001'
+          actualTopic = topic.replace('nisystem/', `nisystem/nodes/${targetNodeId}/`)
+        }
+        console.log('[MQTT] PythonScripts publish:', actualTopic, payload)
+        client.value.publish(actualTopic, JSON.stringify(payload))
       } else {
         console.warn('MQTT not connected, cannot publish:', topic)
       }
@@ -996,19 +1043,19 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function enableScheduler() {
-    sendCommand('schedule/enable')
+    sendNodeCommand('schedule/enable')
   }
 
   function disableScheduler() {
-    sendCommand('schedule/disable')
+    sendNodeCommand('schedule/disable')
   }
 
   function loadConfig(configName: string) {
-    sendCommand('config/load', { config: configName })
+    sendNodeCommand('config/load', { config: configName })
   }
 
   function saveConfig(configName: string) {
-    sendCommand('config/save', { config: configName })
+    sendNodeCommand('config/save', { config: configName })
   }
 
   function setOutput(channelName: string, value: number | boolean) {
@@ -1035,11 +1082,35 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
+
+    // Clear any existing timeout
+    if (scanTimeoutId) {
+      clearTimeout(scanTimeoutId)
+    }
+
     isScanning.value = true
     discoveryResult.value = null
     discoveryChannels.value = []
     sendNodeCommand('discovery/scan', {})
-    console.log('Discovery scan requested')
+
+    // Set timeout to automatically reset scanning state if no response
+    scanTimeoutId = setTimeout(() => {
+      if (isScanning.value) {
+        console.warn('Discovery scan timed out after', SCAN_TIMEOUT_MS / 1000, 'seconds')
+        isScanning.value = false
+        scanTimeoutId = null
+      }
+    }, SCAN_TIMEOUT_MS)
+  }
+
+  function cancelScan() {
+    // Cancel any pending scan and reset state
+    if (scanTimeoutId) {
+      clearTimeout(scanTimeoutId)
+      scanTimeoutId = null
+    }
+    isScanning.value = false
+    console.log('Discovery scan cancelled')
   }
 
   function onDiscovery(callback: (result: any) => void) {
@@ -1174,6 +1245,80 @@ export function useMqtt(prefix: string = 'nisystem') {
     recordingCallbacks.push(callback)
   }
 
+  function onSystemUpdate(callback: (result: any) => void) {
+    systemUpdateCallbacks.push(callback)
+  }
+
+  // =========================================================================
+  // CRIO NODE MANAGEMENT
+  // =========================================================================
+
+  const crioCallbacks: Array<(result: any) => void> = []
+  const crioListCallbacks: Array<(result: any) => void> = []
+
+  /**
+   * Push configuration to a cRIO node.
+   * @param nodeId - Target cRIO node ID
+   * @param config - Configuration to push (channels, scripts, safe_state_outputs)
+   */
+  function pushCrioConfig(nodeId: string, config: {
+    channels?: any[],
+    scripts?: any[],
+    safe_state_outputs?: string[],
+    scan_rate_hz?: number,
+    publish_rate_hz?: number
+  }) {
+    if (!client.value || !connected.value) {
+      console.warn('[MQTT] Cannot push cRIO config: not connected')
+      return
+    }
+    sendNodeCommand('crio/push-config', {
+      node_id: nodeId,
+      ...config
+    })
+  }
+
+  /**
+   * Request list of all known cRIO nodes.
+   */
+  function listCrioNodes() {
+    if (!client.value || !connected.value) {
+      console.warn('[MQTT] Cannot list cRIO nodes: not connected')
+      return
+    }
+    sendNodeCommand('crio/list', {})
+  }
+
+  /**
+   * Register callback for cRIO operation responses.
+   */
+  function onCrioResponse(callback: (result: any) => void) {
+    crioCallbacks.push(callback)
+  }
+
+  /**
+   * Register callback for cRIO list responses.
+   */
+  function onCrioList(callback: (result: any) => void) {
+    crioListCallbacks.push(callback)
+  }
+
+  /**
+   * Handle cRIO response messages.
+   * Called from message handler when crio/response topic is received.
+   */
+  function handleCrioResponse(payload: any) {
+    crioCallbacks.forEach(cb => cb(payload))
+  }
+
+  /**
+   * Handle cRIO list response messages.
+   * Called from message handler when crio/list/response topic is received.
+   */
+  function handleCrioListResponse(payload: any) {
+    crioListCallbacks.forEach(cb => cb(payload))
+  }
+
   // Event subscription
   function onData(callback: (data: Record<string, number>) => void) {
     dataCallbacks.push(callback)
@@ -1252,6 +1397,7 @@ export function useMqtt(prefix: string = 'nisystem') {
 
     // Discovery
     scanDevices,
+    cancelScan,
     onDiscovery,
 
     // Config updates
@@ -1274,6 +1420,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     deleteRecordedFile,
     sendScriptValues,
     onRecordingResponse,
+    onSystemUpdate,
+
+    // cRIO node management
+    pushCrioConfig,
+    listCrioNodes,
+    onCrioResponse,
+    onCrioList,
 
     // Events
     onData,

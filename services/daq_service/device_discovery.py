@@ -183,6 +183,26 @@ class Chassis:
 
 
 @dataclass
+class CRIONode:
+    """Represents a remote cRIO node discovered via MQTT"""
+    node_id: str                 # e.g., "crio-001"
+    ip_address: str              # e.g., "192.168.1.50"
+    product_type: str            # e.g., "cRIO-9056"
+    serial_number: str
+    status: str                  # "online", "offline", "unknown"
+    last_seen: str               # ISO timestamp
+    channels: int = 0            # Number of configured channels
+    modules: List[Module] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            **asdict(self),
+            "modules": [mod.to_dict() for mod in self.modules],
+            "node_type": "crio"
+        }
+
+
+@dataclass
 class DiscoveryResult:
     """Complete discovery result"""
     success: bool
@@ -190,6 +210,7 @@ class DiscoveryResult:
     timestamp: str
     chassis: List[Chassis] = field(default_factory=list)
     standalone_devices: List[Module] = field(default_factory=list)
+    crio_nodes: List[CRIONode] = field(default_factory=list)  # Remote cRIO nodes
     total_channels: int = 0
     simulation_mode: bool = False
 
@@ -201,7 +222,8 @@ class DiscoveryResult:
             "simulation_mode": self.simulation_mode,
             "total_channels": self.total_channels,
             "chassis": [ch.to_dict() for ch in self.chassis],
-            "standalone_devices": [dev.to_dict() for dev in self.standalone_devices]
+            "standalone_devices": [dev.to_dict() for dev in self.standalone_devices],
+            "crio_nodes": [node.to_dict() for node in self.crio_nodes]
         }
 
 
@@ -211,14 +233,96 @@ class DeviceDiscovery:
 
     Scans the system for connected NI hardware and enumerates all available
     channels. Works with both real hardware and simulation mode.
+
+    Also tracks remote cRIO nodes that connect via MQTT.
     """
 
     def __init__(self):
         self._last_result: Optional[DiscoveryResult] = None
+        # Track cRIO nodes that have registered via MQTT
+        self._crio_nodes: Dict[str, CRIONode] = {}
+        self._crio_lock = __import__('threading').Lock()
 
-    def scan(self) -> DiscoveryResult:
+    def register_crio_node(self, node_id: str, status_data: Dict[str, Any]):
         """
-        Scan for all connected NI devices.
+        Register or update a cRIO node from MQTT status message.
+
+        Called by DAQ service when receiving status from cRIO nodes.
+
+        Args:
+            node_id: The node ID (e.g., "crio-001")
+            status_data: Status payload from cRIO node containing:
+                - ip_address: Node's IP address
+                - product_type: Hardware type (e.g., "cRIO-9056")
+                - serial_number: Hardware serial
+                - status: "online" or "offline"
+                - channels: Number of configured channels
+                - modules: Optional list of module info
+        """
+        from datetime import datetime
+
+        with self._crio_lock:
+            # Parse modules if provided
+            modules = []
+            for mod_data in status_data.get('modules', []):
+                mod = Module(
+                    name=mod_data.get('name', ''),
+                    product_type=mod_data.get('product_type', ''),
+                    serial_number=mod_data.get('serial_number', ''),
+                    slot=mod_data.get('slot', 0),
+                    chassis=node_id,
+                    category=mod_data.get('category', 'unknown'),
+                    description=mod_data.get('description', '')
+                )
+                # Parse channels
+                for ch_data in mod_data.get('channels', []):
+                    mod.channels.append(PhysicalChannel(
+                        name=ch_data.get('name', ''),
+                        device=mod.name,
+                        channel_type=ch_data.get('channel_type', ''),
+                        index=ch_data.get('index', 0),
+                        category=ch_data.get('category', ''),
+                        description=ch_data.get('description', '')
+                    ))
+                modules.append(mod)
+
+            self._crio_nodes[node_id] = CRIONode(
+                node_id=node_id,
+                ip_address=status_data.get('ip_address', 'unknown'),
+                product_type=status_data.get('product_type', 'cRIO'),
+                serial_number=status_data.get('serial_number', ''),
+                status=status_data.get('status', 'online'),
+                last_seen=datetime.utcnow().isoformat(),
+                channels=status_data.get('channels', 0),
+                modules=modules
+            )
+            logger.info(f"Registered cRIO node: {node_id} ({status_data.get('status', 'online')})")
+
+    def unregister_crio_node(self, node_id: str):
+        """Remove a cRIO node from tracking"""
+        with self._crio_lock:
+            if node_id in self._crio_nodes:
+                del self._crio_nodes[node_id]
+                logger.info(f"Unregistered cRIO node: {node_id}")
+
+    def mark_crio_offline(self, node_id: str):
+        """Mark a cRIO node as offline (but don't remove it)"""
+        with self._crio_lock:
+            if node_id in self._crio_nodes:
+                self._crio_nodes[node_id].status = 'offline'
+                logger.info(f"cRIO node offline: {node_id}")
+
+    def get_crio_nodes(self) -> List[CRIONode]:
+        """Get list of known cRIO nodes"""
+        with self._crio_lock:
+            return list(self._crio_nodes.values())
+
+    def scan(self, include_crio: bool = True) -> DiscoveryResult:
+        """
+        Scan for all connected NI devices (local and remote cRIO).
+
+        Args:
+            include_crio: If True, include registered cRIO nodes in results
 
         Returns:
             DiscoveryResult with all discovered hardware
@@ -228,20 +332,33 @@ class DeviceDiscovery:
 
         if not NIDAQMX_AVAILABLE:
             logger.info("nidaqmx not available, returning simulated discovery")
-            return self._get_simulated_result(timestamp)
+            result = self._get_simulated_result(timestamp)
+        else:
+            try:
+                result = self._scan_real_hardware(timestamp)
+            except Exception as e:
+                logger.error(f"Hardware scan failed: {e}")
+                result = DiscoveryResult(
+                    success=False,
+                    message=f"Scan failed: {str(e)}",
+                    timestamp=timestamp,
+                    simulation_mode=False
+                )
 
-        try:
-            result = self._scan_real_hardware(timestamp)
-            self._last_result = result
-            return result
-        except Exception as e:
-            logger.error(f"Hardware scan failed: {e}")
-            return DiscoveryResult(
-                success=False,
-                message=f"Scan failed: {str(e)}",
-                timestamp=timestamp,
-                simulation_mode=False
-            )
+        # Add cRIO nodes to result
+        if include_crio:
+            crio_nodes = self.get_crio_nodes()
+            result.crio_nodes = crio_nodes
+
+            # Add cRIO channel count to total
+            crio_channels = sum(node.channels for node in crio_nodes)
+            result.total_channels += crio_channels
+
+            if crio_nodes:
+                result.message += f", {len(crio_nodes)} cRIO nodes ({crio_channels} remote channels)"
+
+        self._last_result = result
+        return result
 
     def _scan_real_hardware(self, timestamp: str) -> DiscoveryResult:
         """Scan real NI hardware using nidaqmx"""
