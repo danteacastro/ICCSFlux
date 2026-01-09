@@ -537,13 +537,27 @@ function scanDevices() {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
+
+  // Clear all local discovery state before starting new scan
+  // This ensures subsequent scans show fresh results without stale selections
+  selectedDiscoveryChannels.value = []
+  expandedChassis.value = new Set()
+  expandedModules.value = new Set()
+
   showFeedback('info', 'Scanning for NI devices...')
   mqtt.scanDevices()
   showDiscoveryPanel.value = true
 }
 
+// Close discovery panel and cancel any pending scan
+function closeDiscoveryPanel() {
+  showDiscoveryPanel.value = false
+  mqtt.cancelScan()
+}
+
 // Handle discovery result
 mqtt.onDiscovery((result) => {
+  console.log('[ConfigTab] onDiscovery callback fired:', result?.success, result?.total_channels)
   if (result.success) {
     const totalChannels = result.total_channels || 0
     const chassisCount = result.chassis?.length || 0
@@ -551,7 +565,7 @@ mqtt.onDiscovery((result) => {
     // Auto-expand all on successful discovery
     expandAllDiscovery()
   } else {
-    showFeedback('error', result.error || 'Discovery failed')
+    showFeedback('error', result.error || result.message || 'Discovery failed')
   }
 })
 
@@ -679,8 +693,11 @@ function addSelectedChannels() {
 
   // Get starting tag number
   let tagNum = getNextTagNumber()
+  const startTagNum = tagNum
 
-  // Send to backend with simple tag_N naming
+  // Build channel configs for bulk create
+  const channelsToCreate: any[] = []
+
   selectedChannels.forEach((ch) => {
     const tagName = `tag_${tagNum}`
     tagNum++
@@ -690,7 +707,7 @@ function addSelectedChannels() {
     const group = getDefaultGroupName(channelType, ch.module_name)
     const units = getDefaultUnit(channelType as ChannelType)
 
-    mqtt.updateChannelConfig(tagName, {
+    channelsToCreate.push({
       name: tagName,  // TAG is the only identifier (tag_0, tag_1, etc.)
       physical_channel: ch.name,  // Physical channel like "cDAQ1Mod1/ai0"
       channel_type: channelType,
@@ -710,9 +727,12 @@ function addSelectedChannels() {
     channelEnabled.value[tagName] = true
   })
 
-  showFeedback('success', `Added ${selectedChannels.length} channel(s) as tag_0 through tag_${tagNum - 1}`)
+  // Use bulk create for efficiency (sends all at once)
+  mqtt.bulkCreateChannels(channelsToCreate)
+
+  showFeedback('success', `Added ${selectedChannels.length} channel(s) as tag_${startTagNum} through tag_${tagNum - 1}`)
   selectedDiscoveryChannels.value = []
-  showDiscoveryPanel.value = false
+  closeDiscoveryPanel()
   markDirty()
 }
 
@@ -787,21 +807,21 @@ function quickPopulateAllChannels() {
 }
 
 // Apply configuration changes and reinitialize DAQ tasks (without starting acquisition)
+// This does NOT save to a project file - it just tells the backend to use the current channel config
 function applyConfigChanges() {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
 
-  // First save current config
-  saveToFile()
-
-  // Then request backend to reinitialize tasks with new config
-  mqtt.sendCommand('config/apply', {
-    restart_acquisition: false  // Just prep, don't start
+  // Send config/apply to backend - reinitialize hardware tasks with current channel config
+  // This makes the backend start publishing with the current channel names/settings
+  mqtt.sendNodeCommand('config/apply', {
+    restart_acquisition: false  // Just reinitialize, don't start acquisition
   })
 
-  showFeedback('info', 'Applying configuration changes...')
+  showFeedback('info', 'Applying configuration to hardware...')
+  configDirty.value = false
 }
 
 // Channel type tabs - each type needs unique columns, so keep them separate
@@ -868,10 +888,27 @@ const filteredChannels = computed(() => {
   return channels
 })
 
-// Get current value for a channel
+// Get current value for a channel (shows error strings for problematic channels)
 function getCurrentValue(channelName: string): string {
   const value = store.values[channelName]
   if (!value) return '--'
+
+  // Check for specific error conditions (from backend validation)
+  if (value.status === 'open_thermocouple' || value.openThermocouple) {
+    return value.valueString || 'Open TC'
+  }
+  if (value.status === 'overflow' || value.overflow) {
+    return value.valueString || 'Inf'
+  }
+  if (value.disconnected || value.quality === 'bad') {
+    return value.valueString || 'NaN'
+  }
+
+  // Check for NaN/invalid numeric value
+  if (typeof value.value !== 'number' || Number.isNaN(value.value)) {
+    return value.valueString || 'NaN'
+  }
+
   return value.value.toFixed(2)
 }
 
@@ -1009,9 +1046,30 @@ function getScaledMax(channelName: string): string {
   return config.scaled_max?.toString() || config.eng_units_max?.toString() || '100'
 }
 
-// Get alarm status (respects ISA-18.2 alarm_enabled flag)
-function getAlarmStatus(channelName: string): 'normal' | 'warning' | 'alarm' {
-  if (!showLimitColors.value) return 'normal'  // Limit colors disabled globally
+// Get channel status including errors and alarms
+// Returns status class for styling the value cell
+function getAlarmStatus(channelName: string): 'normal' | 'warning' | 'alarm' | 'stale' | 'disconnected' | 'open-tc' | 'overflow' {
+  const value = store.values[channelName]
+
+  // No data - stale/not connected
+  if (!value) return 'stale'
+
+  // Check for specific error conditions FIRST (these take precedence over alarms)
+  if (value.status === 'open_thermocouple' || value.openThermocouple) {
+    return 'open-tc'
+  }
+  if (value.status === 'overflow' || value.overflow) {
+    return 'overflow'
+  }
+  if (value.disconnected || value.quality === 'bad') {
+    return 'disconnected'
+  }
+  if (typeof value.value !== 'number' || Number.isNaN(value.value)) {
+    return 'disconnected'
+  }
+
+  // Check alarm/warning only if limit colors enabled
+  if (!showLimitColors.value) return 'normal'
 
   // Check if this channel has alarms enabled (ISA-18.2)
   const config = store.channels[channelName]
@@ -1020,8 +1078,6 @@ function getAlarmStatus(channelName: string): 'normal' | 'warning' | 'alarm' {
     if (config.alarm_enabled === false) return 'normal'
   }
 
-  const value = store.values[channelName]
-  if (!value) return 'normal'
   if (value.alarm) return 'alarm'
   if (value.warning) return 'warning'
   return 'normal'
@@ -1857,7 +1913,7 @@ watch(() => Object.keys(store.channels), () => {
           class="action-btn apply-btn"
           @click="applyConfigChanges"
           :disabled="!mqtt.connected.value"
-          title="Save and reinitialize hardware tasks (does not start acquisition)"
+          title="Apply channel config to hardware (reinitialize DAQ tasks, does NOT save to file)"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -3465,11 +3521,11 @@ watch(() => Object.keys(store.channels), () => {
 
     <!-- Discovery Panel Modal -->
     <Transition name="modal">
-      <div v-if="showDiscoveryPanel" class="discovery-overlay" @click.self="showDiscoveryPanel = false">
+      <div v-if="showDiscoveryPanel" class="discovery-overlay" @click.self="closeDiscoveryPanel">
         <div class="discovery-panel">
           <div class="discovery-header">
             <h3>Device Discovery</h3>
-            <button class="close-btn" @click="showDiscoveryPanel = false">
+            <button class="close-btn" @click="closeDiscoveryPanel">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
@@ -3634,7 +3690,7 @@ watch(() => Object.keys(store.channels), () => {
           </div>
 
           <div class="discovery-footer">
-            <button class="btn btn-secondary" @click="showDiscoveryPanel = false">Cancel</button>
+            <button class="btn btn-secondary" @click="closeDiscoveryPanel">Cancel</button>
             <button class="btn btn-secondary" @click="scanDevices" :disabled="isScanning">
               Rescan
             </button>
@@ -4390,6 +4446,46 @@ watch(() => Object.keys(store.channels), () => {
 
 .col-value.scaled.warning { color: #fbbf24; }
 .col-value.scaled.alarm { color: #ef4444; }
+
+/* Error status styles for channel values */
+.col-value.stale .value {
+  color: #666;
+}
+
+.col-value.disconnected .value {
+  color: #f97316;
+  font-style: italic;
+}
+
+.col-value.open-tc .value {
+  color: #dc2626;
+  font-style: italic;
+}
+
+.col-value.overflow .value {
+  color: #a855f7;
+  font-style: italic;
+}
+
+/* Row-level error indicators */
+.channel-row.stale {
+  background: rgba(107, 114, 128, 0.1);
+}
+
+.channel-row.disconnected {
+  background: rgba(249, 115, 22, 0.1);
+  border-left: 3px solid #f97316;
+}
+
+.channel-row.open-tc {
+  background: rgba(220, 38, 38, 0.1);
+  border-left: 3px solid #dc2626;
+}
+
+.channel-row.overflow {
+  background: rgba(168, 85, 247, 0.1);
+  border-left: 3px solid #a855f7;
+}
 
 .digital-state {
   padding: 2px 8px;
