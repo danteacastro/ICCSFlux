@@ -513,6 +513,133 @@ export const useDashboardStore = defineStore('dashboard', () => {
     editMode.value = !editMode.value
   }
 
+  /**
+   * Auto-generate widgets for all visible channels based on channel type.
+   * Creates a sensible default widget for each channel type:
+   * - Analog inputs (thermocouple, rtd, voltage, etc.) → numeric display
+   * - Digital inputs → LED indicator
+   * - Digital outputs → toggle switch
+   * - Analog outputs → setpoint control
+   * - Counters → numeric display
+   *
+   * Widgets are arranged in a grid layout automatically.
+   *
+   * @param options Configuration for auto-generation
+   * @returns Number of widgets created
+   */
+  function autoGenerateWidgets(options?: {
+    channelFilter?: (channel: ChannelConfig) => boolean  // Optional filter function
+    widgetSize?: 'compact' | 'normal' | 'large'          // Size preset (default: compact)
+    columns?: number                                     // Grid columns (default 4)
+  }): number {
+    ensureDefaultPage()
+    const page = pages.value.find(p => p.id === currentPageId.value)
+    if (!page) return 0
+
+    const opts = {
+      widgetSize: 'compact',
+      columns: 4,
+      ...options
+    }
+
+    // Get all visible channels
+    const channelsToAdd = Object.values(channels.value).filter(ch => {
+      // Skip invisible channels
+      if (ch.visible === false) return false
+      // Apply custom filter if provided
+      if (opts.channelFilter && !opts.channelFilter(ch)) return false
+      return true
+    })
+
+    if (channelsToAdd.length === 0) {
+      console.warn('[AUTO-WIDGETS] No visible channels to create widgets for')
+      return 0
+    }
+
+    // Map channel type to widget type
+    function getWidgetTypeForChannel(channel: ChannelConfig): WidgetType {
+      switch (channel.channel_type) {
+        // Analog inputs → numeric display
+        case 'thermocouple':
+        case 'rtd':
+        case 'voltage':
+        case 'current':
+        case 'strain':
+        case 'iepe':
+        case 'resistance':
+        case 'modbus_register':
+        case 'counter':
+          return 'numeric'
+
+        // Digital inputs → LED indicator
+        case 'digital_input':
+        case 'modbus_coil':
+          return 'led'
+
+        // Digital outputs → toggle switch
+        case 'digital_output':
+          return 'toggle'
+
+        // Analog outputs → setpoint control
+        case 'analog_output':
+          return 'setpoint'
+
+        // Default fallback
+        default:
+          return 'numeric'
+      }
+    }
+
+    // Get widget size based on preset
+    function getWidgetSize(type: WidgetType): { w: number; h: number } {
+      const sizes = {
+        compact: { numeric: { w: 2, h: 1 }, led: { w: 1, h: 1 }, toggle: { w: 1, h: 1 }, setpoint: { w: 2, h: 1 } },
+        normal:  { numeric: { w: 3, h: 1 }, led: { w: 1, h: 1 }, toggle: { w: 1, h: 1 }, setpoint: { w: 2, h: 1 } },
+        large:   { numeric: { w: 3, h: 2 }, led: { w: 2, h: 2 }, toggle: { w: 2, h: 2 }, setpoint: { w: 3, h: 2 } }
+      }
+      return sizes[opts.widgetSize][type] || { w: 3, h: 1 }
+    }
+
+    // Calculate starting Y position (below existing widgets)
+    const maxY = page.widgets.reduce((max, w) => Math.max(max, w.y + w.h), 0)
+
+    let widgetCount = 0
+    let currentX = 0
+    let currentY = maxY
+
+    // Create widgets in grid layout
+    for (const channel of channelsToAdd) {
+      const widgetType = getWidgetTypeForChannel(channel)
+      const size = getWidgetSize(widgetType)
+
+      // Check if widget fits in current row
+      if (currentX + size.w > opts.columns) {
+        currentX = 0
+        currentY += 2  // Move to next row (standard row height)
+      }
+
+      const widgetId = addWidget({
+        type: widgetType,
+        channel: channel.name,
+        x: currentX,
+        y: currentY,
+        w: size.w,
+        h: size.h,
+        label: channel.name,  // Use channel TAG as label
+        showUnit: true,
+        decimals: 2
+      })
+
+      if (widgetId) {
+        widgetCount++
+        currentX += size.w
+      }
+    }
+
+    console.log(`[AUTO-WIDGETS] Created ${widgetCount} widgets for ${channelsToAdd.length} channels`)
+    return widgetCount
+  }
+
   // ========================================================================
   // PIPE/CONNECTION ACTIONS (P&ID routing)
   // ========================================================================
@@ -1101,6 +1228,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Load on store creation
   loadRecordingConfigFromStorage()
 
+  // Ensure there's always a default page (Page 1) even with no project loaded
+  ensureDefaultPage()
+
   return {
     // State
     systemId,
@@ -1159,6 +1289,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     updateWidgetStyle,
     setEditMode,
     toggleEditMode,
+    autoGenerateWidgets,
     getLayout,
     setLayout,
     saveLayoutToStorage,

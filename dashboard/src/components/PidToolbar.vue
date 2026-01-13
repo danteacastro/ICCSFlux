@@ -56,10 +56,13 @@ const availableSymbols: { type: ScadaSymbolType; name: string }[] = [
 
 // Pipe drawing options
 const pipeColor = ref('#60a5fa')
-const pipeWidth = ref(3)
 const pipeDashed = ref(false)
 const pipeAnimated = ref(false)
-const pipePathType = ref<'polyline' | 'bezier' | 'orthogonal'>('polyline')
+
+// Toggle pipe drawing mode
+function togglePipeDrawing() {
+  store.setPidDrawingMode(!store.pidDrawingMode)
+}
 
 // Add a new symbol to the canvas
 function addSymbol() {
@@ -74,11 +77,6 @@ function addSymbol() {
     color: '#60a5fa',
     showValue: false
   })
-}
-
-// Toggle pipe drawing mode
-function togglePipeDrawing() {
-  store.setPidDrawingMode(!store.pidDrawingMode)
 }
 
 // Exit P&ID edit mode
@@ -147,12 +145,6 @@ function getSymbolPreview(type: ScadaSymbolType): string {
         {{ store.pidDrawingMode ? 'Drawing...' : 'Draw Pipe' }}
       </button>
 
-      <select v-model="pipePathType" class="pipe-type-select" title="Pipe Path Type">
-        <option value="polyline">Straight</option>
-        <option value="bezier">Curved</option>
-        <option value="orthogonal">Right-Angle</option>
-      </select>
-
       <input
         type="color"
         v-model="pipeColor"
@@ -196,6 +188,7 @@ function getSymbolPreview(type: ScadaSymbolType): string {
 .pid-toolbar {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   padding: 8px 16px;
   background: linear-gradient(to right, #1e3a5f, #2a4a6f);
@@ -288,8 +281,7 @@ button {
 }
 
 /* Inputs */
-.symbol-select,
-.pipe-type-select {
+.symbol-select {
   padding: 4px 8px;
   background: #2d3748;
   border: 1px solid #4a5568;
@@ -322,7 +314,6 @@ button {
 
 /* Help text */
 .toolbar-help {
-  margin-left: auto;
   font-size: 11px;
   color: #888;
   font-style: italic;

@@ -15,7 +15,7 @@ const isAcquiring = computed(() => store.status?.acquiring ?? false)
 const isSimulation = computed(() => store.status?.simulation_mode ?? false)
 
 const channelCount = computed(() => store.status?.channel_count ?? 0)
-const scanRate = computed(() => store.status?.scan_rate_hz ?? 0)
+const publishRate = computed(() => store.status?.publish_rate_hz ?? 0)
 
 // Running sequence info
 const runningSequence = computed(() => scripts.runningSequence.value)
@@ -80,7 +80,7 @@ const isDataStale = computed(() => {
         <span class="label">CH</span>
       </div>
       <div class="stat">
-        <span class="value">{{ scanRate }}</span>
+        <span class="value">{{ publishRate }}</span>
         <span class="label">Hz</span>
       </div>
       <div v-if="isSimulation" class="sim-badge">SIM</div>

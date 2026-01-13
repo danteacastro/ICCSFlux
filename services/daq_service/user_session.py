@@ -10,7 +10,7 @@ Provides user authentication and session management for:
 
 Features:
 - Simple password-based authentication (upgradeable to SSO/LDAP)
-- Role-based permissions (operator, supervisor, admin)
+- Role-based permissions (operator, engineer, admin)
 - Session timeout with configurable duration
 - Electronic signature support for critical actions
 """
@@ -31,10 +31,10 @@ logger = logging.getLogger('UserSession')
 
 
 class UserRole(Enum):
-    """User roles with hierarchical permissions"""
-    VIEWER = "viewer"           # Read-only access
-    OPERATOR = "operator"       # Can operate, acknowledge alarms
-    SUPERVISOR = "supervisor"   # Can modify configs, safety settings
+    """User roles with hierarchical permissions (ISA-95/IEC 62264 aligned)"""
+    VIEWER = "viewer"           # Read-only access, monitoring
+    OPERATOR = "operator"       # Day-to-day operations, acknowledge alarms, control outputs
+    ENGINEER = "engineer"       # Configure channels, alarms, safety settings, projects
     ADMIN = "admin"             # Full access including user management
 
 
@@ -56,7 +56,7 @@ class Permission(Enum):
     STOP_ACQUISITION = "acquisition.stop"
     CONTROL_OUTPUTS = "output.control"
 
-    # Supervisor permissions
+    # Engineer permissions
     MODIFY_CHANNELS = "config.channels.modify"
     MODIFY_ALARMS = "config.alarms.modify"
     MODIFY_SAFETY = "config.safety.modify"
@@ -90,7 +90,7 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
         Permission.STOP_ACQUISITION,
         Permission.CONTROL_OUTPUTS,
     },
-    UserRole.SUPERVISOR: {
+    UserRole.ENGINEER: {
         Permission.VIEW_DATA,
         Permission.VIEW_ALARMS,
         Permission.VIEW_CONFIG,

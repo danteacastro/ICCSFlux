@@ -389,13 +389,22 @@ class HardwareReader:
                         tc_type = getattr(NI_TCType, tc_type_str, NI_TCType.K)
                     cjc = get_cjc_source(channel.cjc_source)
 
-                    task.ai_channels.add_ai_thrmcpl_chan(
+                    ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         thermocouple_type=tc_type,
                         cjc_source=cjc
                     )
-                    logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
+
+                    # Enable open thermocouple detection
+                    # When TC is open/broken, NI-DAQmx will return a very large value (~1e308)
+                    # which our validation layer will detect and convert to NaN
+                    try:
+                        ai_chan.ai_open_thrmcpl_detect_enable = True
+                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (open TC detection enabled)")
+                    except Exception as e:
+                        logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
+                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.VOLTAGE:
                     # Voltage
@@ -560,15 +569,23 @@ class HardwareReader:
                 # Map CJC source from config
                 cjc = get_cjc_source(channel.cjc_source)
 
-                task.ai_channels.add_ai_thrmcpl_chan(
+                ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                     phys_chan,
                     name_to_assign_to_channel=channel.name,
                     thermocouple_type=tc_type,
                     cjc_source=cjc
                 )
                 channel_names.append(channel.name)
-                logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
-                           f"(type={tc_type_str}, cjc={channel.cjc_source})")
+
+                # Enable open thermocouple detection
+                try:
+                    ai_chan.ai_open_thrmcpl_detect_enable = True
+                    logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
+                               f"(type={tc_type_str}, cjc={channel.cjc_source}, open TC detection enabled)")
+                except Exception as e:
+                    logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
+                    logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
+                               f"(type={tc_type_str}, cjc={channel.cjc_source})")
 
             # Configure CONTINUOUS acquisition with hardware timing
             # Note: TC modules may have lower max sample rates (check NI specs)

@@ -19,6 +19,7 @@ import { useMqtt } from './useMqtt'
 import { useDashboardStore } from '../stores/dashboard'
 import { usePythonScripts } from './usePythonScripts'
 import { useBackendScripts } from './useBackendScripts'
+import { useSafety } from './useSafety'
 import type { ChannelConfig, ChannelType } from '../types'
 
 // Channel config as stored in the project JSON file
@@ -165,6 +166,7 @@ let scriptLoadingTimeout: ReturnType<typeof setTimeout> | null = null
 export function useProjectFiles() {
   const mqtt = useMqtt()
   const store = useDashboardStore()
+  const safety = useSafety()
 
   // Subscribe to MQTT responses
   // NOTE: Backend uses node-prefixed topics: nisystem/nodes/{node_id}/project/...
@@ -180,7 +182,7 @@ export function useProjectFiles() {
       projects.value = payload.projects || []
     })
 
-    mqtt.subscribe(`${nodePrefix}/project/loaded`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/loaded`, async (payload: any) => {
       console.log('[PROJECT LOADING] Received project/loaded message:', {
         success: payload.success,
         hasProject: !!payload.project,
@@ -194,7 +196,7 @@ export function useProjectFiles() {
         try {
           // Apply project data to frontend
           console.log('[PROJECT LOADING] Calling applyProjectData...')
-          applyProjectData(payload.project)
+          await applyProjectData(payload.project)
           console.log('[PROJECT LOADING] ✅ Project applied successfully')
 
           // Notify callbacks
@@ -221,7 +223,7 @@ export function useProjectFiles() {
       }
     })
 
-    mqtt.subscribe(`${nodePrefix}/project/current`, (payload: any) => {
+    mqtt.subscribe(`${nodePrefix}/project/current`, async (payload: any) => {
       console.log('[PROJECT LOADING] Received project/current message:', {
         hasProject: !!payload.project,
         filename: payload.filename
@@ -234,7 +236,7 @@ export function useProjectFiles() {
       if (payload.project) {
         try {
           console.log('[PROJECT LOADING] Applying current project data...')
-          applyProjectData(payload.project)
+          await applyProjectData(payload.project)
           console.log('[PROJECT LOADING] ✅ Current project applied successfully')
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
         } catch (err) {
@@ -389,42 +391,28 @@ export function useProjectFiles() {
     const experiments = JSON.parse(localStorage.getItem('nisystem_experiments') || '[]')
 
     // IMPORTANT: Include channels from store so they're saved back to the project
-    // Convert store channels to project channel format
+    // Spread ALL channel fields to preserve hardware-specific settings
+    // (rtd_type, thermocouple_type, voltage_range, terminal_config, log, precision, etc.)
     const channels: Record<string, ProjectChannelConfig> = {}
     for (const [name, ch] of Object.entries(store.channels)) {
-      channels[name] = {
-        physical_channel: ch.physical_channel,
-        channel_type: ch.channel_type,
-        unit: ch.unit,
-        group: ch.group,
-        description: ch.description,
-        // Legacy limits
-        low_limit: ch.low_limit,
-        high_limit: ch.high_limit,
-        low_warning: ch.low_warning,
-        high_warning: ch.high_warning,
-        // ISA-18.2 alarm config
-        alarm_enabled: ch.alarm_enabled,
-        hihi_limit: ch.hihi_limit,
-        hi_limit: ch.hi_limit,
-        lo_limit: ch.lo_limit,
-        lolo_limit: ch.lolo_limit,
-        alarm_priority: ch.alarm_priority,
-        alarm_deadband: ch.alarm_deadband,
-        alarm_delay_sec: ch.alarm_delay_sec,
-        alarm_clear_delay_sec: ch.alarm_clear_delay_sec,
-        safety_action: ch.safety_action,
-        // Display settings
-        chartable: ch.chartable,
-        color: ch.color,
-        visible: ch.visible,
-        scale_slope: ch.scale_slope,
-        scale_offset: ch.scale_offset,
-        invert: ch.invert
-      }
+      // Spread all fields from the channel to preserve everything
+      channels[name] = { ...ch } as unknown as ProjectChannelConfig
     }
 
+    // Preserve system, service, and schedules sections from loaded project
+    // These contain hardware config (scan_rate, mqtt settings) that shouldn't be lost
+    const system = currentProjectData.value?.system
+    const service = (currentProjectData.value as any)?.service
+    // Top-level schedules array (DHW draw schedules) - separate from scripts.schedules
+    const topLevelSchedules = (currentProjectData.value as any)?.schedules
+
     return {
+      // Preserve system config (mqtt, scan_rate, etc.) from loaded project
+      ...(system ? { system } : {}),
+      // Preserve service config (heartbeat, timeouts) from loaded project
+      ...(service ? { service } : {}),
+      // Preserve top-level schedules (DHW draw schedules) from loaded project
+      ...(topLevelSchedules ? { schedules: topLevelSchedules } : {}),
       channels,  // Include channels so they're saved!
       layout: {
         widgets: layout.widgets,
@@ -469,50 +457,33 @@ export function useProjectFiles() {
   }
 
   // Convert project channel config to store channel config
+  // IMPORTANT: Spread ALL fields to preserve hardware-specific settings
+  // (rtd_type, thermocouple_type, voltage_range, terminal_config, log, precision, etc.)
   function convertProjectChannel(name: string, pch: ProjectChannelConfig): ChannelConfig {
     return {
+      // Spread ALL fields from project channel to preserve everything
+      ...pch,
+      // Override specific fields with computed/normalized values
       name,  // TAG is the only identifier
-      // display_name removed - use name (TAG) everywhere
       channel_type: pch.channel_type as ChannelType,
-      physical_channel: pch.physical_channel,
       unit: pch.unit || pch.units || '',  // Support both 'unit' and 'units' (legacy)
       group: pch.group || 'Ungrouped',
-      description: pch.description,  // For tooltips/documentation only
-
-      // Legacy limit names (backward compatibility)
-      low_limit: pch.low_limit,
-      high_limit: pch.high_limit,
-      low_warning: pch.low_warning,
-      high_warning: pch.high_warning,
-
-      // ISA-18.2 Alarm Configuration
-      alarm_enabled: pch.alarm_enabled,
-      hihi_limit: pch.hihi_limit,
-      hi_limit: pch.hi_limit,
-      lo_limit: pch.lo_limit,
-      lolo_limit: pch.lolo_limit,
-      alarm_priority: pch.alarm_priority,
-      alarm_deadband: pch.alarm_deadband,
-      alarm_delay_sec: pch.alarm_delay_sec,
-      alarm_clear_delay_sec: pch.alarm_clear_delay_sec,
-      safety_action: pch.safety_action,
-
       chartable: pch.chartable !== false && pch.channel_type !== 'digital_output',
-      color: pch.color,
       visible: pch.visible !== false,
-      scale_slope: pch.scale_slope,
-      scale_offset: pch.scale_offset,
-      invert: pch.invert
-    }
+    } as ChannelConfig
   }
 
   // Apply loaded project data to frontend
-  function applyProjectData(data: ProjectData) {
+  async function applyProjectData(data: ProjectData) {
     console.log('[PROJECT LOADING] Starting to apply project data...')
     console.log('[PROJECT LOADING] Project name:', data.name)
     console.log('[PROJECT LOADING] Project version:', data.version)
     console.log('[PROJECT LOADING] Project config:', data.config)
     console.log('[PROJECT LOADING] Has embedded channels:', !!data.channels)
+
+    // CRITICAL: Clear all safety state FIRST to prevent ghost alarms from previous project
+    console.log('[PROJECT LOADING] Clearing old safety state before loading new project...')
+    safety.clearAllSafetyState('project_loading')
 
     // Apply embedded channels if present (v2.0+ merged config format)
     if (data.channels && Object.keys(data.channels).length > 0) {
@@ -526,6 +497,31 @@ export function useProjectFiles() {
       console.log('[PROJECT LOADING] Converted channels:', Object.keys(channelConfigs).length)
       store.setChannels(channelConfigs)
       console.log('[PROJECT LOADING] ✅ Channels applied to store')
+
+      // CRITICAL: Stop acquisition before sending channels (backend rejects bulk-create while acquiring)
+      const wasAcquiring = store.isAcquiring
+      if (wasAcquiring) {
+        console.log('[PROJECT LOADING] Stopping acquisition to apply new channels...')
+        mqtt.stopAcquisition()
+        // Wait for acquisition to stop before sending channels
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+
+      // CRITICAL: Send channels to backend so it knows about the new channel config
+      // Without this, the backend still has the old channel list and won't publish the new channel values
+      console.log('[PROJECT LOADING] Sending channels to backend via bulk-create...')
+      const channelArray = Object.values(channelConfigs)
+      mqtt.bulkCreateChannels(channelArray)
+      console.log('[PROJECT LOADING] ✅ Channels sent to backend:', channelArray.length, 'channels')
+
+      // Wait for backend to process channels before restarting acquisition
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Restart acquisition if it was running
+      if (wasAcquiring) {
+        console.log('[PROJECT LOADING] Restarting acquisition with new channels...')
+        mqtt.startAcquisition()
+      }
     }
 
     // Apply layout (supports both legacy single-page and multi-page)
@@ -558,6 +554,12 @@ export function useProjectFiles() {
           rowHeight: data.layout.rowHeight || 80
         })
         console.log('[PROJECT LOADING] ✅ Layout applied successfully')
+
+        // CRITICAL: Save layout to localStorage to prevent old cached layout from loading on next boot
+        // Without this, localStorage has stale layout data that overwrites the project layout
+        console.log('[PROJECT LOADING] Saving layout to localStorage to prevent cache issues...')
+        store.saveLayoutToStorage()
+        console.log('[PROJECT LOADING] ✅ Layout saved to localStorage')
       } catch (error) {
         console.error('[PROJECT LOADING] ❌ Error applying layout:', error)
         throw error
@@ -567,31 +569,24 @@ export function useProjectFiles() {
     }
 
     // Apply scripts to localStorage (useScripts will pick them up)
+    // IMPORTANT: Always write to localStorage, even if empty, to clear stale data from previous project
     if (data.scripts) {
-      if (data.scripts.calculatedParams) {
-        localStorage.setItem('nisystem-scripts', JSON.stringify(data.scripts.calculatedParams))
-      }
-      if (data.scripts.sequences) {
-        localStorage.setItem('nisystem-sequences', JSON.stringify(data.scripts.sequences))
-      }
-      if (data.scripts.schedules) {
-        localStorage.setItem('nisystem-schedules', JSON.stringify(data.scripts.schedules))
-      }
-      if (data.scripts.alarms) {
-        localStorage.setItem('nisystem-alarms', JSON.stringify(data.scripts.alarms))
-      }
-      if (data.scripts.transformations) {
-        localStorage.setItem('nisystem-transformations', JSON.stringify(data.scripts.transformations))
-      }
-      if (data.scripts.triggers) {
-        localStorage.setItem('nisystem-triggers', JSON.stringify(data.scripts.triggers))
-      }
-      // Extended script types (v2.1+)
-      if (data.scripts.pythonScripts && data.scripts.pythonScripts.length > 0) {
-        localStorage.setItem('nisystem-python-scripts', JSON.stringify(data.scripts.pythonScripts))
+      // Core script types - always write, even if empty
+      localStorage.setItem('nisystem-scripts', JSON.stringify(data.scripts.calculatedParams || []))
+      localStorage.setItem('nisystem-sequences', JSON.stringify(data.scripts.sequences || []))
+      localStorage.setItem('nisystem-schedules', JSON.stringify(data.scripts.schedules || []))
+      localStorage.setItem('nisystem-alarms', JSON.stringify(data.scripts.alarms || []))
+      localStorage.setItem('nisystem-transformations', JSON.stringify(data.scripts.transformations || []))
+      localStorage.setItem('nisystem-triggers', JSON.stringify(data.scripts.triggers || []))
+
+      // Extended script types (v2.1+) - always write, even if empty, to clear stale data
+      const pythonScripts = data.scripts.pythonScripts || []
+      localStorage.setItem('nisystem-python-scripts', JSON.stringify(pythonScripts))
+
+      if (pythonScripts.length > 0) {
         // Notify usePythonScripts composable to reload scripts (frontend/Pyodide)
-        const pythonScripts = usePythonScripts()
-        pythonScripts.importScripts(data.scripts.pythonScripts)
+        const pythonScriptsComposable = usePythonScripts()
+        pythonScriptsComposable.importScripts(pythonScripts)
 
         // ALSO send scripts to backend via MQTT for server-side execution
         // Use debouncing to prevent duplicate loading when both project/loaded and project/current fire
@@ -608,80 +603,90 @@ export function useProjectFiles() {
 
         // Debounced script loading - only the last call within 200ms will execute
         scriptLoadingTimeout = setTimeout(() => {
-          console.log('[PROJECT LOADING] Sending', data.scripts.pythonScripts.length, 'scripts to backend...')
-          for (const script of data.scripts.pythonScripts) {
+          console.log('[PROJECT LOADING] Sending', pythonScripts.length, 'scripts to backend...')
+          for (const script of pythonScripts) {
             backendScripts.addScript({
+              id: script.id,  // Preserve original ID to prevent duplicates
               name: script.name,
               code: script.code,
               description: script.description || '',
               runMode: script.runMode || script.run_mode || 'manual',
               enabled: script.enabled !== false
             })
-            console.log('[PROJECT LOADING] Added script to backend:', script.name)
+            console.log('[PROJECT LOADING] Added script to backend:', script.name, 'with ID:', script.id)
           }
           scriptLoadingTimeout = null
         }, 200)
       }
-      if (data.scripts.functionBlocks) {
-        localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks))
-      }
-      if (data.scripts.drawPatterns) {
-        localStorage.setItem('dcflux-draw-patterns', JSON.stringify(data.scripts.drawPatterns))
-      }
-      if (data.scripts.watchdogs) {
-        localStorage.setItem('dcflux-watchdogs', JSON.stringify(data.scripts.watchdogs))
-      }
-      if (data.scripts.stateMachines) {
-        localStorage.setItem('dcflux-state-machines', JSON.stringify(data.scripts.stateMachines))
-      }
-      if (data.scripts.reportTemplates) {
-        localStorage.setItem('dcflux-report-templates', JSON.stringify(data.scripts.reportTemplates))
-      }
-      if (data.scripts.scheduledReports) {
-        localStorage.setItem('dcflux-scheduled-reports', JSON.stringify(data.scripts.scheduledReports))
-      }
+
+      // Extended script types - always write, even if empty
+      localStorage.setItem('dcflux-function-blocks', JSON.stringify(data.scripts.functionBlocks || []))
+      localStorage.setItem('dcflux-draw-patterns', JSON.stringify(data.scripts.drawPatterns || { patterns: [], history: [] }))
+      localStorage.setItem('dcflux-watchdogs', JSON.stringify(data.scripts.watchdogs || []))
+      localStorage.setItem('dcflux-state-machines', JSON.stringify(data.scripts.stateMachines || []))
+      localStorage.setItem('dcflux-report-templates', JSON.stringify(data.scripts.reportTemplates || []))
+      localStorage.setItem('dcflux-scheduled-reports', JSON.stringify(data.scripts.scheduledReports || []))
+    } else {
+      // No scripts section in project - clear any stale data
+      localStorage.setItem('nisystem-scripts', JSON.stringify([]))
+      localStorage.setItem('nisystem-sequences', JSON.stringify([]))
+      localStorage.setItem('nisystem-schedules', JSON.stringify([]))
+      localStorage.setItem('nisystem-alarms', JSON.stringify([]))
+      localStorage.setItem('nisystem-transformations', JSON.stringify([]))
+      localStorage.setItem('nisystem-triggers', JSON.stringify([]))
+      localStorage.setItem('nisystem-python-scripts', JSON.stringify([]))
+      localStorage.setItem('dcflux-function-blocks', JSON.stringify([]))
+      localStorage.setItem('dcflux-draw-patterns', JSON.stringify({ patterns: [], history: [] }))
+      localStorage.setItem('dcflux-watchdogs', JSON.stringify([]))
+      localStorage.setItem('dcflux-state-machines', JSON.stringify([]))
+      localStorage.setItem('dcflux-report-templates', JSON.stringify([]))
+      localStorage.setItem('dcflux-scheduled-reports', JSON.stringify([]))
     }
 
-    // Apply recording settings
+    // Apply recording settings - always write, even if empty, to clear stale data
     if (data.recording) {
-      if (data.recording.config) {
-        localStorage.setItem('nisystem-recording-config', JSON.stringify(data.recording.config))
-      }
-      if (data.recording.selectedChannels) {
-        localStorage.setItem('nisystem-recording-channels', JSON.stringify(data.recording.selectedChannels))
-      }
+      localStorage.setItem('nisystem-recording-config', JSON.stringify(data.recording.config || {}))
+      localStorage.setItem('nisystem-recording-channels', JSON.stringify(data.recording.selectedChannels || []))
+    } else {
+      // No recording section in project - clear any stale data
+      localStorage.setItem('nisystem-recording-config', JSON.stringify({}))
+      localStorage.setItem('nisystem-recording-channels', JSON.stringify([]))
     }
 
-    // Apply safety settings
+    // Apply safety settings - always write, even if empty, to clear stale data
     if (data.safety) {
-      if (data.safety.alarmConfigs) {
-        // Save to both v1 and v2 keys for compatibility
-        localStorage.setItem('nisystem-alarm-configs', JSON.stringify(data.safety.alarmConfigs))
-        localStorage.setItem('nisystem-alarm-configs-v2', JSON.stringify(data.safety.alarmConfigs))
-      }
-      if (data.safety.interlocks) {
-        localStorage.setItem('nisystem-interlocks', JSON.stringify(data.safety.interlocks))
-      }
-      // Extended safety settings (v2.1+)
-      if (data.safety.safetyActions) {
-        localStorage.setItem('nisystem-safety-actions', JSON.stringify(data.safety.safetyActions))
-      }
-      if (data.safety.safeStateConfig) {
-        localStorage.setItem('nisystem-safe-state-config', JSON.stringify(data.safety.safeStateConfig))
-      }
-      if (data.safety.autoExecuteSafetyActions !== undefined) {
-        localStorage.setItem('nisystem-auto-execute-safety-actions', String(data.safety.autoExecuteSafetyActions))
-      }
+      // Save to both v1 and v2 keys for compatibility - always write, even if empty
+      localStorage.setItem('nisystem-alarm-configs', JSON.stringify(data.safety.alarmConfigs || {}))
+      localStorage.setItem('nisystem-alarm-configs-v2', JSON.stringify(data.safety.alarmConfigs || {}))
+      localStorage.setItem('nisystem-interlocks', JSON.stringify(data.safety.interlocks || []))
+
+      // Extended safety settings (v2.1+) - always write, even if empty
+      localStorage.setItem('nisystem-safety-actions', JSON.stringify(data.safety.safetyActions || {}))
+      localStorage.setItem('nisystem-safe-state-config', JSON.stringify(data.safety.safeStateConfig || {}))
+      localStorage.setItem('nisystem-auto-execute-safety-actions', String(data.safety.autoExecuteSafetyActions || false))
+
+      // IMPORTANT: Clear alarm history when loading new project to prevent ghost alarms
+      // Alarm history is per-project and should not persist across projects
+      localStorage.setItem('nisystem-alarm-history', JSON.stringify([]))
+    } else {
+      // No safety section in project - clear any stale data
+      localStorage.setItem('nisystem-alarm-configs', JSON.stringify({}))
+      localStorage.setItem('nisystem-alarm-configs-v2', JSON.stringify({}))
+      localStorage.setItem('nisystem-interlocks', JSON.stringify([]))
+      localStorage.setItem('nisystem-safety-actions', JSON.stringify({}))
+      localStorage.setItem('nisystem-safe-state-config', JSON.stringify({}))
+      localStorage.setItem('nisystem-auto-execute-safety-actions', 'false')
+      localStorage.setItem('nisystem-alarm-history', JSON.stringify([]))
     }
 
-    // Apply notebook data (v2.1+)
+    // Apply notebook data (v2.1+) - always write, even if empty, to clear stale data
     if (data.notebook) {
-      if (data.notebook.entries) {
-        localStorage.setItem('nisystem_notebook', JSON.stringify(data.notebook.entries))
-      }
-      if (data.notebook.experiments) {
-        localStorage.setItem('nisystem_experiments', JSON.stringify(data.notebook.experiments))
-      }
+      localStorage.setItem('nisystem_notebook', JSON.stringify(data.notebook.entries || []))
+      localStorage.setItem('nisystem_experiments', JSON.stringify(data.notebook.experiments || []))
+    } else {
+      // No notebook section in project - clear any stale data
+      localStorage.setItem('nisystem_notebook', JSON.stringify([]))
+      localStorage.setItem('nisystem_experiments', JSON.stringify([]))
     }
 
     currentProjectData.value = data
@@ -712,15 +717,36 @@ export function useProjectFiles() {
   }
 
   // Create new project (clear current state)
-  function newProject() {
+  async function newProject() {
+    console.log('[PROJECT] Starting fresh - clearing all state...')
+
+    // Stop acquisition if running (backend needs to be stopped before clearing channels)
+    if (store.isAcquiring) {
+      console.log('[PROJECT] Stopping acquisition...')
+      mqtt.stopAcquisition()
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+
     currentProject.value = null
     currentProjectData.value = null
 
-    // Clear layout
-    store.widgets.splice(0)
+    // Clear ALL pages and widgets (not just current page)
+    console.log('[PROJECT] Clearing pages and widgets...')
+    store.pages.forEach(page => page.widgets = [])
 
-    // Clear channels (this triggers alarm clearing via useSafety watcher)
+    // Clear channels from frontend (this triggers alarm clearing via useSafety watcher)
+    console.log('[PROJECT] Clearing channels...')
     store.setChannels({})
+
+    // Clear ALL safety state (alarms, history, configs, interlocks, safety actions)
+    // This ensures no ghost values persist in the safety system
+    console.log('[PROJECT] Clearing all safety state...')
+    safety.clearAllSafetyState('new_project')
+
+    // Clear layout from localStorage to prevent stale data
+    const layoutKey = `nisystem-layout-${store.systemId}`
+    localStorage.removeItem(layoutKey)
+    console.log('[PROJECT] Cleared layout from localStorage')
 
     // Clear localStorage items - core scripts
     localStorage.removeItem('nisystem-scripts')
@@ -746,6 +772,7 @@ export function useProjectFiles() {
     // Clear safety settings
     localStorage.removeItem('nisystem-alarm-configs')
     localStorage.removeItem('nisystem-alarm-configs-v2')
+    localStorage.removeItem('nisystem-alarm-history')
     localStorage.removeItem('nisystem-interlocks')
     localStorage.removeItem('nisystem-safety-actions')
     localStorage.removeItem('nisystem-safe-state-config')
@@ -754,6 +781,16 @@ export function useProjectFiles() {
     // Clear notebook data
     localStorage.removeItem('nisystem_notebook')
     localStorage.removeItem('nisystem_experiments')
+
+    // Ensure we have at least one empty page
+    console.log('[PROJECT] Ensuring default page...')
+    store.ensureDefaultPage()
+
+    // Clear all channel values to show "--" in widgets
+    console.log('[PROJECT] Clearing channel values...')
+    store.clearValues()
+
+    console.log('[PROJECT] ✅ Clean slate ready - all state cleared')
   }
 
   // Initialize on first use

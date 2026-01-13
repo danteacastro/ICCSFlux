@@ -201,10 +201,10 @@ defineExpose({
 </script>
 
 <template>
-  <!-- Vertical page tabs on right edge, below header -->
+  <!-- Horizontal page tabs under header, top left -->
   <Teleport to="body">
     <div class="page-tabs-container" :class="{ 'drag-mode': isDraggingWidget }">
-      <!-- Page tabs as vertical book tabs -->
+      <!-- Page tabs as horizontal tabs -->
       <div
         v-for="(page, index) in pages"
         :key="page.id"
@@ -322,79 +322,76 @@ defineExpose({
 </template>
 
 <style scoped>
-/* Page tabs container - fixed position on right edge below header */
+/* Page tabs container - horizontal position under header, top left */
 .page-tabs-container {
   position: fixed;
-  top: 48px; /* Below header */
-  right: 0;
+  top: 54px; /* Below header with gap */
+  left: 8px;
   z-index: 50;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 3px;
 }
 
 .page-tabs-container.drag-mode {
   background: rgba(59, 130, 246, 0.1);
-  box-shadow: -2px 0 8px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  border-radius: 0 0 4px 4px;
 }
 
-/* Individual page tab - book tab style */
+/* Individual page tab - slim horizontal style */
 .page-tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px 6px 10px;
+  gap: 4px;
+  padding: 3px 8px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
-  border-right: none;
-  border-radius: 6px 0 0 6px;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
   color: #888;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   cursor: pointer;
-  transition: all 0.2s;
-  min-width: 80px;
+  transition: all 0.15s;
+  min-width: 60px;
   position: relative;
-  margin-right: -1px;
 }
 
 .page-tab:hover {
   background: #252540;
   color: #ccc;
-  padding-left: 14px;
 }
 
 .page-tab.active {
   background: #0f0f1a;
   border-color: #3b82f6;
-  border-left: 3px solid #3b82f6;
+  border-bottom: 2px solid #3b82f6;
   color: #fff;
-  padding-left: 12px;
-  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
   z-index: 1;
 }
 
 .page-tab.drop-target {
   border: 1px dashed rgba(59, 130, 246, 0.5);
-  border-right: none;
+  border-top: none;
 }
 
 .page-tab.hover-active {
   background: rgba(59, 130, 246, 0.3) !important;
   border-color: #3b82f6;
   color: #fff;
-  transform: translateX(-4px);
+  transform: translateY(4px);
 }
 
 .tab-number {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  font-size: 0.7rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
   font-weight: 600;
 }
 
@@ -404,42 +401,43 @@ defineExpose({
 }
 
 .tab-name {
-  max-width: 60px;
+  max-width: 50px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Hover progress indicator */
+/* Hover progress indicator - horizontal */
 .hover-progress {
   position: absolute;
   left: 0;
-  top: 0;
-  width: 3px;
+  bottom: 0;
+  height: 3px;
   background: #3b82f6;
-  animation: progress-fill-vertical 0.6s linear forwards;
-  border-radius: 6px 0 0 6px;
+  animation: progress-fill-horizontal 0.6s linear forwards;
+  border-radius: 0 0 6px 6px;
 }
 
-@keyframes progress-fill-vertical {
-  from { height: 0; }
-  to { height: 100%; }
+@keyframes progress-fill-horizontal {
+  from { width: 0; }
+  to { width: 100%; }
 }
 
-/* Add tab button */
+/* Add tab button - inline with tabs */
 .add-tab-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin: 4px 8px 4px auto;
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
   background: transparent;
   border: 1px dashed #444;
-  border-radius: 4px;
-  color: #666;
+  border-top: none;
+  border-radius: 0 0 3px 3px;
+  color: #555;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.15s;
 }
 
 .add-tab-btn:hover {
@@ -458,7 +456,7 @@ defineExpose({
 .page-dropdown {
   position: fixed;
   top: 100px;
-  right: 20px;
+  left: 20px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 8px;

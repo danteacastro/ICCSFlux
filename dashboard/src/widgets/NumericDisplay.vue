@@ -44,9 +44,20 @@ const isDisconnected = computed(() => {
          (typeof channelValue.value.value === 'number' && Number.isNaN(channelValue.value.value))
 })
 
+// Check for specific error types for better status indication
+const isOpenTC = computed(() => channelValue.value?.openThermocouple || channelValue.value?.status === 'open_thermocouple')
+const isOverflow = computed(() => channelValue.value?.overflow || channelValue.value?.status === 'overflow')
+
 const displayValue = computed(() => {
   if (!channelValue.value) return '--'
-  if (isDisconnected.value) return 'NaN'  // Show NaN when disconnected
+  // Show specific error messages when available
+  if (isDisconnected.value) {
+    // Use human-readable error string if available
+    if (channelValue.value.valueString) {
+      return channelValue.value.valueString  // "Open TC", "Inf", "NaN"
+    }
+    return 'NaN'
+  }
   if (isStale.value) return '--'
   const val = channelValue.value.value
   if (typeof val !== 'number' || Number.isNaN(val)) return 'NaN'
@@ -64,6 +75,9 @@ const displayLabel = computed(() =>
 )
 
 const statusClass = computed(() => {
+  // Specific error types first (more specific status)
+  if (isOpenTC.value) return 'open-tc'
+  if (isOverflow.value) return 'overflow'
   if (isDisconnected.value) return 'disconnected'
   if (!channelValue.value || isStale.value) return 'stale'
   if (channelValue.value.alarm) return 'alarm'
@@ -164,6 +178,25 @@ const customStyles = computed(() => {
   font-style: italic;
 }
 
+/* Open Thermocouple - broken sensor (red with dashed border) */
+.open-tc {
+  border-color: #dc2626;
+  border-style: dashed;
+}
+.open-tc .value {
+  color: #dc2626;
+  font-style: italic;
+}
+
+/* Overflow - value out of measurement range (purple) */
+.overflow {
+  border-color: #a855f7;
+}
+.overflow .value {
+  color: #a855f7;
+  font-style: italic;
+}
+
 .warning {
   border-color: #fbbf24;
 }
@@ -249,6 +282,27 @@ const customStyles = computed(() => {
 
 .industrial.disconnected .value {
   color: #f97316;
+  font-style: italic;
+}
+
+.industrial.open-tc {
+  background: linear-gradient(180deg, #4a2d2d 0%, #2e1a1a 100%);
+  border-color: #dc2626;
+  border-style: dashed;
+}
+
+.industrial.open-tc .value {
+  color: #dc2626;
+  font-style: italic;
+}
+
+.industrial.overflow {
+  background: linear-gradient(180deg, #3d2d4a 0%, #251a2e 100%);
+  border-color: #a855f7;
+}
+
+.industrial.overflow .value {
+  color: #a855f7;
   font-style: italic;
 }
 

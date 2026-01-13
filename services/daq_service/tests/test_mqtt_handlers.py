@@ -111,7 +111,7 @@ class TestUserManagementHandlers:
     def test_list_users(self, session_manager):
         """Should list all users"""
         session_manager.create_user("user1", "pass", UserRole.OPERATOR)
-        session_manager.create_user("user2", "pass", UserRole.SUPERVISOR)
+        session_manager.create_user("user2", "pass", UserRole.ENGINEER)
 
         users = session_manager.list_users()
 
@@ -148,12 +148,12 @@ class TestUserManagementHandlers:
 
         result = session_manager.update_user(
             "updateme",
-            role="supervisor",
+            role="engineer",
             display_name="Updated Name"
         )
 
         assert result is True
-        assert session_manager.users["updateme"].role == UserRole.SUPERVISOR
+        assert session_manager.users["updateme"].role == UserRole.ENGINEER
         assert session_manager.users["updateme"].display_name == "Updated Name"
 
     def test_delete_user_handler(self, session_manager):
@@ -200,10 +200,10 @@ class TestPermissionChecks:
             Permission.MANAGE_USERS
         )
 
-    def test_supervisor_can_view_audit(self, session_manager):
-        """Supervisor should have VIEW_AUDIT permission"""
-        session_manager.create_user("super", "pass", UserRole.SUPERVISOR)
-        session = session_manager.authenticate("super", "pass")
+    def test_engineer_can_view_audit(self, session_manager):
+        """Engineer should have VIEW_AUDIT permission"""
+        session_manager.create_user("engineer", "pass", UserRole.ENGINEER)
+        session = session_manager.authenticate("engineer", "pass")
 
         assert session_manager.has_permission(
             session.session_id,
@@ -347,7 +347,7 @@ class TestAuthIntegration:
 
     def test_config_change_with_signature(self, session_manager, audit_trail):
         """Config changes should require electronic signature"""
-        session_manager.create_user("signer", "signerpass", UserRole.SUPERVISOR)
+        session_manager.create_user("signer", "signerpass", UserRole.ENGINEER)
         session = session_manager.authenticate("signer", "signerpass")
 
         # Create signature
@@ -398,7 +398,7 @@ class TestPayloadValidation:
 
     def test_create_user_valid_role(self, session_manager):
         """Should only accept valid roles"""
-        valid_roles = ["viewer", "operator", "supervisor", "admin"]
+        valid_roles = ["viewer", "operator", "engineer", "admin"]
 
         for role in valid_roles:
             user = session_manager.create_user(

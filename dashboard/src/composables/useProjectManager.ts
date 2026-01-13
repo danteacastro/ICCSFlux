@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from './useMqtt'
+import { useProjectFiles } from './useProjectFiles'
 
 /**
  * Project File Structure (v2)
@@ -171,42 +172,34 @@ export function useProjectManager() {
   // COLLECT ALL FRONTEND STATE (new ProjectFile format)
   // ============================================================================
 
-  function collectAllState(): Omit<ProjectFile, 'version' | 'type' | 'name' | 'description' | 'createdAt' | 'modifiedAt' | 'configFile'> & { channels?: Record<string, any> } {
+  function collectAllState(): Omit<ProjectFile, 'version' | 'type' | 'name' | 'description' | 'createdAt' | 'modifiedAt' | 'configFile'> & { channels?: Record<string, any>; system?: any; service?: any } {
     const layout = store.getLayout()
+    const projectFiles = useProjectFiles()
 
     // IMPORTANT: Include channels from store so they're saved/downloaded
+    // Spread ALL channel fields to preserve hardware-specific settings
+    // (rtd_type, thermocouple_type, voltage_range, terminal_config, log, precision, etc.)
     const channels: Record<string, any> = {}
     for (const [name, ch] of Object.entries(store.channels)) {
-      channels[name] = {
-        physical_channel: ch.physical_channel,
-        channel_type: ch.channel_type,
-        unit: ch.unit,
-        group: ch.group,
-        description: ch.description,
-        low_limit: ch.low_limit,
-        high_limit: ch.high_limit,
-        low_warning: ch.low_warning,
-        high_warning: ch.high_warning,
-        alarm_enabled: ch.alarm_enabled,
-        hihi_limit: ch.hihi_limit,
-        hi_limit: ch.hi_limit,
-        lo_limit: ch.lo_limit,
-        lolo_limit: ch.lolo_limit,
-        alarm_priority: ch.alarm_priority,
-        alarm_deadband: ch.alarm_deadband,
-        alarm_delay_sec: ch.alarm_delay_sec,
-        alarm_clear_delay_sec: ch.alarm_clear_delay_sec,
-        safety_action: ch.safety_action,
-        chartable: ch.chartable,
-        color: ch.color,
-        visible: ch.visible,
-        scale_slope: ch.scale_slope,
-        scale_offset: ch.scale_offset,
-        invert: ch.invert
-      }
+      // Spread all fields from the channel to preserve everything
+      channels[name] = { ...ch }
     }
 
+    // Preserve system, service, and schedules sections from loaded project
+    // These contain hardware config (scan_rate, mqtt settings) that shouldn't be lost
+    const currentProject = projectFiles.currentProjectData.value
+    const system = currentProject?.system
+    const service = (currentProject as any)?.service
+    // Top-level schedules array (DHW draw schedules) - separate from scripts.schedules
+    const topLevelSchedules = (currentProject as any)?.schedules
+
     return {
+      // Preserve system config (mqtt, scan_rate, etc.) from loaded project
+      ...(system ? { system } : {}),
+      // Preserve service config (heartbeat, timeouts) from loaded project
+      ...(service ? { service } : {}),
+      // Preserve top-level schedules (DHW draw schedules) from loaded project
+      ...(topLevelSchedules ? { schedules: topLevelSchedules } : {}),
       channels,  // Include channels!
       layout: {
         pages: layout.pages || [],

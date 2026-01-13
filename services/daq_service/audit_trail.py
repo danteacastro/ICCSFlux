@@ -44,6 +44,7 @@ class AuditEventType(Enum):
     CONFIG_SYSTEM_MODIFIED = "config.system.modified"
     CONFIG_SAFETY_MODIFIED = "config.safety.modified"
     CONFIG_ALARM_MODIFIED = "config.alarm.modified"
+    CONFIG_CHANGE = "config.change"
 
     # Project operations
     PROJECT_LOADED = "project.loaded"
@@ -78,6 +79,7 @@ class AuditEventType(Enum):
 
     # User management
     USER_LOGIN = "user.login"
+    USER_LOGIN_FAILED = "user.login.failed"
     USER_LOGOUT = "user.logout"
     USER_SESSION_TIMEOUT = "user.session.timeout"
 

@@ -1,0 +1,1284 @@
+{
+  "layout": {
+    "widgets": [
+      {
+        "id": "title-main",
+        "type": "title",
+        "label": "23875 UEF-FHR DHW Test System",
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1,
+        "style": {
+          "fontSize": 18,
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "scheduler-status",
+        "type": "scheduler_status",
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 6,
+        "label": "Draw Schedule"
+      },
+      {
+        "id": "chart-cht",
+        "type": "chart",
+        "label": "CHT - Temperature Profile",
+        "channels": [
+          "TC_in",
+          "TC_out",
+          "Tank_1",
+          "Tank_4",
+          "Tank_8"
+        ],
+        "x": 6,
+        "y": 1,
+        "w": 9,
+        "h": 8,
+        "timeRange": 600,
+        "yAxisAuto": true,
+        "showGrid": true,
+        "showLegend": true,
+        "showDigitalDisplay": true
+      },
+      {
+        "id": "title-totals",
+        "type": "title",
+        "label": "Totals",
+        "x": 15,
+        "y": 1,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e40af",
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-ifm-tot",
+        "type": "numeric",
+        "channel": "Ifm",
+        "label": "Ifm_tot",
+        "x": 15,
+        "y": 2,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e40af"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "numeric-ngin-tot",
+        "type": "numeric",
+        "channel": "NGin",
+        "label": "NGin_tot",
+        "x": 15,
+        "y": 3,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e3a5f"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "title-water",
+        "type": "title",
+        "label": "Water Temps",
+        "x": 18,
+        "y": 1,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#b45309",
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-tc-in",
+        "type": "numeric",
+        "channel": "TC_in",
+        "x": 18,
+        "y": 2,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#b45309"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tc-out",
+        "type": "numeric",
+        "channel": "TC_out",
+        "x": 18,
+        "y": 3,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#b45309"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-rtd-in",
+        "type": "numeric",
+        "channel": "RTD_in",
+        "x": 18,
+        "y": 4,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#b45309"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-rtd-out",
+        "type": "numeric",
+        "channel": "RTD_out",
+        "x": 18,
+        "y": 5,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#b45309"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "title-tank",
+        "type": "title",
+        "label": "Tank Temps",
+        "x": 21,
+        "y": 1,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534",
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-tank1",
+        "type": "numeric",
+        "channel": "Tank_1",
+        "x": 21,
+        "y": 2,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank2",
+        "type": "numeric",
+        "channel": "Tank_2",
+        "x": 21,
+        "y": 3,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank3",
+        "type": "numeric",
+        "channel": "Tank_3",
+        "x": 21,
+        "y": 4,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank4",
+        "type": "numeric",
+        "channel": "Tank_4",
+        "x": 21,
+        "y": 5,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank5",
+        "type": "numeric",
+        "channel": "Tank_5",
+        "x": 21,
+        "y": 6,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank6",
+        "type": "numeric",
+        "channel": "Tank_6",
+        "x": 21,
+        "y": 7,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank7",
+        "type": "numeric",
+        "channel": "Tank_7",
+        "x": 21,
+        "y": 8,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-tank8",
+        "type": "numeric",
+        "channel": "Tank_8",
+        "x": 21,
+        "y": 9,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#166534"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "title-24hr",
+        "type": "title",
+        "label": "24hr Totals",
+        "x": 15,
+        "y": 4,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e40af",
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-ifm-24tot",
+        "type": "numeric",
+        "channel": "Ifm",
+        "label": "Ifm_24tot",
+        "x": 15,
+        "y": 5,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e40af"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "numeric-ngin-24tot",
+        "type": "numeric",
+        "channel": "NGin",
+        "label": "NGin_24tot",
+        "x": 15,
+        "y": 6,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e3a5f"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "title-gas",
+        "type": "title",
+        "label": "Gas/Ambient",
+        "x": 15,
+        "y": 7,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#7c2d12",
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-t-gas",
+        "type": "numeric",
+        "channel": "T_gas",
+        "x": 15,
+        "y": 8,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#7c2d12"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "chart-flow",
+        "type": "chart",
+        "label": "Flow & Gas",
+        "channels": [
+          "Ifm",
+          "NGin"
+        ],
+        "x": 6,
+        "y": 9,
+        "w": 9,
+        "h": 6,
+        "timeRange": 600,
+        "yAxisAuto": true,
+        "showGrid": true,
+        "showLegend": true,
+        "showDigitalDisplay": true
+      },
+      {
+        "id": "numeric-t-amb",
+        "type": "numeric",
+        "channel": "T_amb",
+        "x": 18,
+        "y": 6,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#7c2d12"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-t-flu",
+        "type": "numeric",
+        "channel": "T_flu",
+        "x": 18,
+        "y": 7,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#7c2d12"
+        },
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-ifm",
+        "type": "numeric",
+        "channel": "Ifm",
+        "label": "Flow Rate",
+        "x": 18,
+        "y": 8,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e3a5f"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "numeric-ngin",
+        "type": "numeric",
+        "channel": "NGin",
+        "label": "Gas Rate",
+        "x": 18,
+        "y": 9,
+        "w": 3,
+        "h": 1,
+        "style": {
+          "backgroundColor": "#1e3a5f"
+        },
+        "decimals": 2,
+        "compact": true
+      },
+      {
+        "id": "title-valves",
+        "type": "title",
+        "label": "Valves",
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 1,
+        "style": {
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "led-sv1",
+        "type": "led",
+        "channel": "SV1",
+        "x": 0,
+        "y": 8,
+        "w": 2,
+        "h": 2,
+        "style": {
+          "onColor": "#22c55e",
+          "offColor": "#166534"
+        },
+        "showLabel": true,
+        "showUnit": true,
+        "showValue": true,
+        "label": "SV1"
+      },
+      {
+        "id": "led-sv2",
+        "type": "led",
+        "channel": "SV2",
+        "x": 2,
+        "y": 8,
+        "w": 2,
+        "h": 2,
+        "style": {
+          "onColor": "#22c55e",
+          "offColor": "#166534"
+        },
+        "showLabel": true,
+        "showUnit": true,
+        "showValue": true,
+        "label": "SV2"
+      },
+      {
+        "id": "led-sv3",
+        "type": "led",
+        "channel": "SV3",
+        "x": 4,
+        "y": 8,
+        "w": 2,
+        "h": 2,
+        "style": {
+          "onColor": "#22c55e",
+          "offColor": "#166534"
+        },
+        "showLabel": true,
+        "showUnit": true,
+        "showValue": true,
+        "label": "SV3"
+      },
+      {
+        "id": "title-room",
+        "type": "title",
+        "label": "Room Environment",
+        "x": 0,
+        "y": 12,
+        "w": 6,
+        "h": 1,
+        "style": {
+          "textAlign": "center"
+        }
+      },
+      {
+        "id": "numeric-t-rm",
+        "type": "numeric",
+        "channel": "T_rm",
+        "x": 0,
+        "y": 13,
+        "w": 2,
+        "h": 1,
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "numeric-rh-rm",
+        "type": "numeric",
+        "channel": "RH_rm",
+        "x": 2,
+        "y": 13,
+        "w": 2,
+        "h": 1,
+        "decimals": 1,
+        "compact": true
+      },
+      {
+        "id": "recording-status",
+        "type": "recording_status",
+        "x": 4,
+        "y": 13,
+        "w": 2,
+        "h": 2
+      },
+      {
+        "id": "system-status",
+        "type": "system_status",
+        "x": 21,
+        "y": 10,
+        "w": 3,
+        "h": 5
+      },
+      {
+        "id": "widget-1767717853523-sjfbw",
+        "type": "toggle",
+        "x": 0,
+        "y": 10,
+        "w": 2,
+        "h": 2,
+        "channel": "SV1",
+        "label": "SV1"
+      },
+      {
+        "id": "widget-1767717888131-jzred",
+        "type": "toggle",
+        "x": 2,
+        "y": 10,
+        "w": 2,
+        "h": 2,
+        "channel": "SV2",
+        "label": "SV2"
+      },
+      {
+        "id": "widget-1767718007809-fhzov",
+        "type": "toggle",
+        "x": 4,
+        "y": 10,
+        "w": 2,
+        "h": 2,
+        "channel": "SV3",
+        "label": "SV3"
+      }
+    ],
+    "pages": [
+      {
+        "id": "main",
+        "name": "Main Dashboard",
+        "order": 0,
+        "widgets": [
+          {
+            "id": "title-main",
+            "type": "title",
+            "label": "23875 UEF-FHR DHW Test System",
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1,
+            "style": {
+              "fontSize": 18,
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "scheduler-status",
+            "type": "scheduler_status",
+            "x": 0,
+            "y": 1,
+            "w": 6,
+            "h": 6,
+            "label": "Draw Schedule"
+          },
+          {
+            "id": "chart-cht",
+            "type": "chart",
+            "label": "CHT - Temperature Profile",
+            "channels": [
+              "TC_in",
+              "TC_out",
+              "Tank_1",
+              "Tank_4",
+              "Tank_8"
+            ],
+            "x": 6,
+            "y": 1,
+            "w": 9,
+            "h": 8,
+            "timeRange": 600,
+            "yAxisAuto": true,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true
+          },
+          {
+            "id": "title-totals",
+            "type": "title",
+            "label": "Totals",
+            "x": 15,
+            "y": 1,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e40af",
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-ifm-tot",
+            "type": "numeric",
+            "channel": "Ifm",
+            "label": "Ifm_tot",
+            "x": 15,
+            "y": 2,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e40af"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "numeric-ngin-tot",
+            "type": "numeric",
+            "channel": "NGin",
+            "label": "NGin_tot",
+            "x": 15,
+            "y": 3,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e3a5f"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "title-water",
+            "type": "title",
+            "label": "Water Temps",
+            "x": 18,
+            "y": 1,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#b45309",
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-tc-in",
+            "type": "numeric",
+            "channel": "TC_in",
+            "x": 18,
+            "y": 2,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#b45309"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tc-out",
+            "type": "numeric",
+            "channel": "TC_out",
+            "x": 18,
+            "y": 3,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#b45309"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-rtd-in",
+            "type": "numeric",
+            "channel": "RTD_in",
+            "x": 18,
+            "y": 4,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#b45309"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-rtd-out",
+            "type": "numeric",
+            "channel": "RTD_out",
+            "x": 18,
+            "y": 5,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#b45309"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "title-tank",
+            "type": "title",
+            "label": "Tank Temps",
+            "x": 21,
+            "y": 1,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534",
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-tank1",
+            "type": "numeric",
+            "channel": "Tank_1",
+            "x": 21,
+            "y": 2,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank2",
+            "type": "numeric",
+            "channel": "Tank_2",
+            "x": 21,
+            "y": 3,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank3",
+            "type": "numeric",
+            "channel": "Tank_3",
+            "x": 21,
+            "y": 4,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank4",
+            "type": "numeric",
+            "channel": "Tank_4",
+            "x": 21,
+            "y": 5,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank5",
+            "type": "numeric",
+            "channel": "Tank_5",
+            "x": 21,
+            "y": 6,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank6",
+            "type": "numeric",
+            "channel": "Tank_6",
+            "x": 21,
+            "y": 7,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank7",
+            "type": "numeric",
+            "channel": "Tank_7",
+            "x": 21,
+            "y": 8,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-tank8",
+            "type": "numeric",
+            "channel": "Tank_8",
+            "x": 21,
+            "y": 9,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#166534"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "title-24hr",
+            "type": "title",
+            "label": "24hr Totals",
+            "x": 15,
+            "y": 4,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e40af",
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-ifm-24tot",
+            "type": "numeric",
+            "channel": "Ifm",
+            "label": "Ifm_24tot",
+            "x": 15,
+            "y": 5,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e40af"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "numeric-ngin-24tot",
+            "type": "numeric",
+            "channel": "NGin",
+            "label": "NGin_24tot",
+            "x": 15,
+            "y": 6,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e3a5f"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "title-gas",
+            "type": "title",
+            "label": "Gas/Ambient",
+            "x": 15,
+            "y": 7,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#7c2d12",
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-t-gas",
+            "type": "numeric",
+            "channel": "T_gas",
+            "x": 15,
+            "y": 8,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#7c2d12"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "chart-flow",
+            "type": "chart",
+            "label": "Flow & Gas",
+            "channels": [
+              "Ifm",
+              "NGin"
+            ],
+            "x": 6,
+            "y": 9,
+            "w": 9,
+            "h": 6,
+            "timeRange": 600,
+            "yAxisAuto": true,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true
+          },
+          {
+            "id": "numeric-t-amb",
+            "type": "numeric",
+            "channel": "T_amb",
+            "x": 18,
+            "y": 6,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#7c2d12"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-t-flu",
+            "type": "numeric",
+            "channel": "T_flu",
+            "x": 18,
+            "y": 7,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#7c2d12"
+            },
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-ifm",
+            "type": "numeric",
+            "channel": "Ifm",
+            "label": "Flow Rate",
+            "x": 18,
+            "y": 8,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e3a5f"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "numeric-ngin",
+            "type": "numeric",
+            "channel": "NGin",
+            "label": "Gas Rate",
+            "x": 18,
+            "y": 9,
+            "w": 3,
+            "h": 1,
+            "style": {
+              "backgroundColor": "#1e3a5f"
+            },
+            "decimals": 2,
+            "compact": true
+          },
+          {
+            "id": "title-valves",
+            "type": "title",
+            "label": "Valves",
+            "x": 0,
+            "y": 7,
+            "w": 6,
+            "h": 1,
+            "style": {
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "led-sv1",
+            "type": "led",
+            "channel": "SV1",
+            "x": 0,
+            "y": 8,
+            "w": 2,
+            "h": 2,
+            "style": {
+              "onColor": "#22c55e",
+              "offColor": "#166534"
+            },
+            "showLabel": true,
+            "showUnit": true,
+            "showValue": true,
+            "label": "SV1"
+          },
+          {
+            "id": "led-sv2",
+            "type": "led",
+            "channel": "SV2",
+            "x": 2,
+            "y": 8,
+            "w": 2,
+            "h": 2,
+            "style": {
+              "onColor": "#22c55e",
+              "offColor": "#166534"
+            },
+            "showLabel": true,
+            "showUnit": true,
+            "showValue": true,
+            "label": "SV2"
+          },
+          {
+            "id": "led-sv3",
+            "type": "led",
+            "channel": "SV3",
+            "x": 4,
+            "y": 8,
+            "w": 2,
+            "h": 2,
+            "style": {
+              "onColor": "#22c55e",
+              "offColor": "#166534"
+            },
+            "showLabel": true,
+            "showUnit": true,
+            "showValue": true,
+            "label": "SV3"
+          },
+          {
+            "id": "title-room",
+            "type": "title",
+            "label": "Room Environment",
+            "x": 0,
+            "y": 12,
+            "w": 6,
+            "h": 1,
+            "style": {
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "numeric-t-rm",
+            "type": "numeric",
+            "channel": "T_rm",
+            "x": 0,
+            "y": 13,
+            "w": 2,
+            "h": 1,
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "numeric-rh-rm",
+            "type": "numeric",
+            "channel": "RH_rm",
+            "x": 2,
+            "y": 13,
+            "w": 2,
+            "h": 1,
+            "decimals": 1,
+            "compact": true
+          },
+          {
+            "id": "recording-status",
+            "type": "recording_status",
+            "x": 4,
+            "y": 13,
+            "w": 2,
+            "h": 2
+          },
+          {
+            "id": "system-status",
+            "type": "system_status",
+            "x": 21,
+            "y": 10,
+            "w": 3,
+            "h": 5
+          },
+          {
+            "id": "widget-1767717853523-sjfbw",
+            "type": "toggle",
+            "x": 0,
+            "y": 10,
+            "w": 2,
+            "h": 2,
+            "channel": "SV1",
+            "label": "SV1"
+          },
+          {
+            "id": "widget-1767717888131-jzred",
+            "type": "toggle",
+            "x": 2,
+            "y": 10,
+            "w": 2,
+            "h": 2,
+            "channel": "SV2",
+            "label": "SV2"
+          },
+          {
+            "id": "widget-1767718007809-fhzov",
+            "type": "toggle",
+            "x": 4,
+            "y": 10,
+            "w": 2,
+            "h": 2,
+            "channel": "SV3",
+            "label": "SV3"
+          }
+        ]
+      },
+      {
+        "id": "alarms",
+        "name": "Alarms & Safety",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "title-alarms",
+            "type": "title",
+            "label": "Alarm Summary",
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1,
+            "style": {
+              "fontSize": 18,
+              "textAlign": "center"
+            }
+          },
+          {
+            "id": "alarm-summary",
+            "type": "alarm_summary",
+            "x": 0,
+            "y": 1,
+            "w": 12,
+            "h": 10
+          },
+          {
+            "id": "interlock-status",
+            "type": "interlock_status",
+            "x": 12,
+            "y": 1,
+            "w": 12,
+            "h": 10
+          }
+        ]
+      }
+    ],
+    "currentPageId": "main",
+    "gridColumns": 24,
+    "rowHeight": 30
+  },
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [],
+    "schedules": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": [],
+    "pythonScripts": [
+      {
+        "id": "dhw-draw-profile",
+        "name": "DHW Draw Profile",
+        "description": "24-hour domestic hot water draw profile test. Opens valves, monitors flow counter until target gallons reached, waits for period, repeats.",
+        "run_mode": "session",
+        "enabled": true,
+        "code": "# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# DHW Draw Profile Test Script\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# Runs a 24-hour domestic hot water draw profile test\n#\n# Hardware:\n#   - Ifm_cnt: Flow meter counter (6000 pulses per gallon)\n#   - Power_Draw: Power consumption counter\n#   - SV1, SV2, SV3: Solenoid valves (digital outputs)\n#\n# The script:\n#   1. Opens solenoid valve(s) to start draw\n#   2. Monitors Ifm_cnt until target gallons reached\n#   3. Closes valve when target reached\n#   4. Waits for draw period to complete\n#   5. Records new baseline and moves to next draw (delta calculation, no reset needed)\n#   6. Repeats for 24 hours\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# CONFIGURATION - Edit these values for your test\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# Flow meter calibration\nPULSES_PER_GALLON = 6000  # 1/6000 gallons per pulse\n\n# Test duration\nTEST_DURATION_HOURS = 24\n\n# Draw schedule: list of (target_gallons, period_seconds, solenoids)\n#   - target_gallons: how much water to draw\n#   - period_seconds: total time from start of this draw to start of next\n#   - solenoids: which valve(s) to open for this draw\n#\n# Example: DOE-style 6 draws per hour, 10 gallons each, alternating valves\nDRAW_SCHEDULE = [\n    # (gallons, period, solenoids)\n    (10.0, 600, ['SV1']),        # Draw 1: 10 gal via SV1, wait until 10 min\n    (10.0, 600, ['SV1']),        # Draw 2: 10 gal via SV1, wait until 20 min\n    (10.0, 600, ['SV1']),        # Draw 3: 10 gal via SV1, wait until 30 min\n    (10.0, 600, ['SV1']),        # Draw 4: 10 gal via SV1, wait until 40 min\n    (10.0, 600, ['SV1']),        # Draw 5: 10 gal via SV1, wait until 50 min\n    (10.0, 600, ['SV1']),        # Draw 6: 10 gal via SV1, wait until 60 min\n]\n\n# Safety limits\nMAX_DRAW_TIME_SECONDS = 300  # Max time valve can be open per draw\nMIN_FLOW_RATE_GPM = 0.5      # Minimum flow to detect (safety cutoff)\nFLOW_CHECK_DELAY = 10        # Seconds to wait before checking flow rate\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# INITIALIZATION\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# State tracking\ndraw_number = 0\nschedule_index = 0\ntotal_gallons_drawn = 0\ntotal_draws_completed = 0\ntest_start_time = None\ndraw_start_time = None\ndraw_start_pulses = 0\n\n# Flow rate calculator for safety monitoring\nflow_rate_calc = RateCalculator(window_seconds=5)\n\ndef pulses_to_gallons(pulses):\n    \"\"\"Convert counter pulses to gallons\"\"\"\n    return pulses / PULSES_PER_GALLON\n\ndef open_valves(solenoids):\n    \"\"\"Open specified solenoid valves\"\"\"\n    for valve in solenoids:\n        outputs.set(valve, True)\n    print(f\"[{time_of_day()}] Valves OPEN: {', '.join(solenoids)}\")\n\ndef close_valves():\n    \"\"\"Close all solenoid valves\"\"\"\n    for valve in ['SV1', 'SV2', 'SV3']:\n        outputs.set(valve, False)\n    print(f\"[{time_of_day()}] Valves CLOSED\")\n\ndef get_current_pulses():\n    \"\"\"Get current flow counter value\"\"\"\n    return tags.get('Ifm_cnt', default=0)\n\ndef get_power_pulses():\n    \"\"\"Get current power counter value\"\"\"\n    return tags.get('Power_Draw', default=0)\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# MAIN TEST LOOP\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# Ensure valves are closed at start\nclose_valves()\n\n# Record test start\ntest_start_time = now()\nprint(f\"\")\nprint(f\"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\")\nprint(f\"  DHW DRAW PROFILE TEST STARTED\")\nprint(f\"  Time: {now_iso()}\")\nprint(f\"  Duration: {TEST_DURATION_HOURS} hours\")\nprint(f\"  Schedule: {len(DRAW_SCHEDULE)} draws per cycle\")\nprint(f\"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\")\nprint(f\"\")\n\ntry:\n    while session.active:\n        test_elapsed = elapsed_since(test_start_time)\n        test_elapsed_hours = test_elapsed / 3600\n\n        # Check if test is complete\n        if test_elapsed_hours >= TEST_DURATION_HOURS:\n            print(f\"\")\n            print(f\"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\")\n            print(f\"  TEST COMPLETE!\")\n            print(f\"  Total draws: {total_draws_completed}\")\n            print(f\"  Total gallons: {total_gallons_drawn:.2f}\")\n            print(f\"  Duration: {test_elapsed_hours:.2f} hours\")\n            print(f\"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\")\n            break\n\n        # Get current draw from schedule (cycles through)\n        target_gallons, draw_period, solenoids = DRAW_SCHEDULE[schedule_index]\n\n        # Increment draw counter\n        draw_number += 1\n\n        print(f\"\")\n        print(f\"\u2500\u2500\u2500 DRAW #{draw_number} \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\")\n        print(f\"  Target: {target_gallons:.2f} gallons\")\n        print(f\"  Period: {draw_period} seconds\")\n        print(f\"  Valves: {', '.join(solenoids)}\")\n        print(f\"  Test elapsed: {test_elapsed/3600:.2f} hours\")\n\n        # Record draw start\n        draw_start_time = now()\n        draw_start_pulses = get_current_pulses()\n\n        # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n        # PHASE 1: Draw water until target reached\n        # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n        open_valves(solenoids)\n\n        draw_complete = False\n        draw_aborted = False\n        gallons_this_draw = 0\n\n        while session.active and not draw_complete and not draw_aborted:\n            current_pulses = get_current_pulses()\n            pulses_this_draw = current_pulses - draw_start_pulses\n            gallons_this_draw = pulses_to_gallons(pulses_this_draw)\n\n            draw_elapsed = elapsed_since(draw_start_time)\n\n            # Update flow rate for safety monitoring\n            flow_rate_pulses = flow_rate_calc.update(current_pulses)\n            flow_rate_gpm = pulses_to_gallons(flow_rate_pulses) * 60  # Convert to GPM\n\n            # Publish live values\n            publish('DrawNumber', draw_number)\n            publish('DrawTarget', target_gallons, units='gal')\n            publish('DrawCurrent', gallons_this_draw, units='gal')\n            publish('DrawProgress', min(100, (gallons_this_draw / target_gallons) * 100), units='%')\n            publish('FlowRate', flow_rate_gpm, units='GPM')\n            publish('DrawElapsed', draw_elapsed, units='s')\n            publish('TestProgress', (test_elapsed / (TEST_DURATION_HOURS * 3600)) * 100, units='%')\n            publish('TotalGallons', total_gallons_drawn + gallons_this_draw, units='gal')\n\n            # Check if target reached\n            if gallons_this_draw >= target_gallons:\n                draw_complete = True\n                print(f\"  [TARGET REACHED] {gallons_this_draw:.2f} gal in {draw_elapsed:.1f}s\")\n                break\n\n            # Safety: Max draw time exceeded\n            if draw_elapsed > MAX_DRAW_TIME_SECONDS:\n                draw_aborted = True\n                print(f\"  [SAFETY] Max draw time exceeded! Got {gallons_this_draw:.2f} gal\")\n                break\n\n            # Safety: Check for no flow (after initial delay)\n            if draw_elapsed > FLOW_CHECK_DELAY and flow_rate_gpm < MIN_FLOW_RATE_GPM:\n                draw_aborted = True\n                print(f\"  [SAFETY] No flow detected! Rate: {flow_rate_gpm:.2f} GPM\")\n                break\n\n            await next_scan()\n\n        # Close valves\n        close_valves()\n\n        # Update totals\n        total_gallons_drawn += gallons_this_draw\n        total_draws_completed += 1\n\n        # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n        # PHASE 2: Wait for remainder of draw period\n        # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n        draw_elapsed = elapsed_since(draw_start_time)\n        wait_time = draw_period - draw_elapsed\n\n        if wait_time > 0:\n            print(f\"  Waiting {wait_time:.1f}s until next draw...\")\n\n            while session.active and elapsed_since(draw_start_time) < draw_period:\n                # Update published values during wait\n                remaining = draw_period - elapsed_since(draw_start_time)\n                publish('WaitRemaining', max(0, remaining), units='s')\n                publish('DrawStatus', 0)  # 0 = waiting\n\n                # Update test progress\n                current_test_elapsed = elapsed_since(test_start_time)\n                publish('TestProgress', (current_test_elapsed / (TEST_DURATION_HOURS * 3600)) * 100, units='%')\n\n                await next_scan()\n\n        # Move to next draw in schedule (cycle back to start if needed)\n        schedule_index = (schedule_index + 1) % len(DRAW_SCHEDULE)\n\n        print(f\"  Draw #{draw_number} complete. Total: {total_gallons_drawn:.2f} gal\")\n\nfinally:\n    # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n    # CLEANUP - Always close valves when script stops\n    # \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n    close_valves()\n    print(f\"\")\n    print(f\"[{time_of_day()}] Script stopped. Valves closed.\")\n    print(f\"  Total draws: {total_draws_completed}\")\n    print(f\"  Total gallons: {total_gallons_drawn:.2f}\")\n"
+      }
+    ],
+    "functionBlocks": [],
+    "drawPatterns": {
+      "patterns": [],
+      "history": []
+    },
+    "watchdogs": [],
+    "stateMachines": [],
+    "reportTemplates": [],
+    "scheduledReports": []
+  },
+  "recording": {
+    "config": {
+      "interval_ms": 5000,
+      "format": "csv",
+      "autoRotate": true,
+      "rotateInterval": "daily"
+    },
+    "selectedChannels": [
+      "TC_in",
+      "TC_out",
+      "RTD_in",
+      "RTD_out",
+      "Tank_1",
+      "Tank_2",
+      "Tank_3",
+      "Tank_4",
+      "Tank_5",
+      "Tank_6",
+      "Tank_7",
+      "Tank_8",
+      "Ifm",
+      "Ifm_cnt",
+      "NGin",
+      "Power_Draw",
+      "T_gas",
+      "T_amb",
+      "T_flu",
+      "T_rm",
+      "RH_rm"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": [
+      {
+        "id": "high-temp-outlet",
+        "channel": "TC_out",
+        "condition": "high",
+        "threshold": 180,
+        "severity": "warning",
+        "message": "Outlet temperature high"
+      },
+      {
+        "id": "critical-temp-outlet",
+        "channel": "TC_out",
+        "condition": "high",
+        "threshold": 200,
+        "severity": "critical",
+        "message": "Outlet temperature critical - check system"
+      }
+    ],
+    "interlocks": [],
+    "safetyActions": {},
+    "safeStateConfig": {},
+    "autoExecuteSafetyActions": false
+  },
+  "notebook": {
+    "entries": [],
+    "experiments": []
+  },
+  "name": "DHW Test System",
+  "type": "nisystem-project",
+  "version": "1.0",
+  "config": "system.ini",
+  "created": "2026-01-06T10:48:05.586693",
+  "modified": "2026-01-06T10:48:05.587322"
+}

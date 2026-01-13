@@ -299,10 +299,10 @@
             <div class="form-group">
               <label>Role *</label>
               <select v-model="userForm.role" required>
-                <option value="viewer">Viewer - Read-only access</option>
-                <option value="operator">Operator - Run sessions, basic operations</option>
-                <option value="supervisor">Supervisor - Configure channels, manage sessions</option>
-                <option value="admin">Admin - Full system access</option>
+                <option value="viewer">Viewer - Read-only monitoring access</option>
+                <option value="operator">Operator - Day-to-day operations, alarm acknowledgment</option>
+                <option value="engineer">Engineer - Configure channels, alarms, safety, projects</option>
+                <option value="admin">Admin - Full system access, user management</option>
               </select>
             </div>
             <div v-if="editingUser" class="form-group checkbox-group">
@@ -891,7 +891,7 @@ function formatBytes(bytes: number): string {
 }
 
 .role-admin { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
-.role-supervisor { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.role-engineer { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
 .role-operator { background: rgba(0, 122, 204, 0.2); color: #6cb8ff; }
 .role-viewer { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
 

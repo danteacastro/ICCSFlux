@@ -206,7 +206,7 @@ class FormulaBlock:
 class TestSessionConfig:
     """Configuration for test session behavior"""
     enable_scheduler: bool = True
-    start_recording: bool = True
+    start_recording: bool = False  # Don't auto-start recording with session by default
     enable_triggers: bool = True
     reset_variables: List[str] = field(default_factory=list)  # Variable IDs to reset on start
     run_sequence_id: Optional[str] = None  # Optional sequence to run at start
@@ -222,7 +222,7 @@ class TestSessionConfig:
     def from_dict(cls, data: Dict[str, Any]) -> 'TestSessionConfig':
         return cls(
             enable_scheduler=data.get('enable_scheduler', True),
-            start_recording=data.get('start_recording', True),
+            start_recording=data.get('start_recording', False),  # Default to False
             enable_triggers=data.get('enable_triggers', True),
             reset_variables=data.get('reset_variables', []),
             run_sequence_id=data.get('run_sequence_id'),
@@ -980,29 +980,42 @@ class UserVariableManager:
 
             started_at = self.session.started_at
 
-        # Callbacks (outside lock)
+        # Callbacks (outside lock) - wrap each individually so one failure doesn't prevent others
+        # Stop any running sequences
         try:
-            # Stop any running sequences
             if self.stop_sequence:
                 self.stop_sequence()
+        except Exception as e:
+            logger.error(f"Error stopping sequence: {e}")
 
-            # Run stop sequence if configured
+        # Run stop sequence if configured
+        try:
             if self.session.config.stop_sequence_id and self.run_sequence:
                 self.run_sequence(self.session.config.stop_sequence_id)
+        except Exception as e:
+            logger.error(f"Error running stop sequence: {e}")
 
-            # Stop recording
+        # Stop recording if session started it
+        try:
             if self.session.config.start_recording and self.recording_stop:
                 self.recording_stop()
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}")
 
-            # Disable scheduler
+        # Disable scheduler
+        try:
             if self.session.config.enable_scheduler and self.scheduler_enable:
                 self.scheduler_enable(False)
+                logger.info("Scheduler disabled by session stop")
+        except Exception as e:
+            logger.error(f"Error disabling scheduler: {e}")
 
-            # Custom callback
+        # Custom callback
+        try:
             if self.on_session_stop:
                 self.on_session_stop()
         except Exception as e:
-            logger.error(f"Error in session stop callbacks: {e}")
+            logger.error(f"Error in on_session_stop callback: {e}")
 
         # Mark session inactive
         with self.lock:

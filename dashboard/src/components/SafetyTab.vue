@@ -675,12 +675,12 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 <template>
   <div class="safety-tab">
-    <!-- View-only notice for users without edit permission -->
-    <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <!-- View-only notice DISABLED during development -->
+    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Engineer access required to edit safety configuration</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
-    </div>
+    </div> -->
 
     <!-- Header with section tabs and summary -->
     <div class="safety-header">

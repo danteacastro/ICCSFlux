@@ -57,7 +57,7 @@ class TestEventLogging:
             previous_value="degC",
             new_value="degF",
             reason="Customer requirement",
-            user_role="supervisor",
+            user_role="engineer",
             source_ip="192.168.1.100",
             session_id="sess123"
         )
@@ -158,7 +158,7 @@ class TestConfigChangeLogging:
         entry = audit_trail.log_config_change(
             config_type="channel",
             item_id="TC001",
-            user="supervisor",
+            user="engineer",
             previous_value={"unit": "degC"},
             new_value={"unit": "degF"},
             reason="Unit change"

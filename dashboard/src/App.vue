@@ -35,11 +35,12 @@ const activeTab = ref('overview')
 
 // Permission-based EDIT control (viewing is allowed for everyone)
 // These are provided to child components via provide/inject
-const canEditConfig = computed(() => auth.hasPermission('config.channels.modify') || auth.isOperator.value)
-const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isEngineer.value)
-const canEditData = computed(() => auth.hasPermission('recording.start') || auth.isOperator.value)
-const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isEngineer.value)
-const canEditAdmin = computed(() => auth.isAdmin.value)
+// NOTE: All permissions hardcoded to TRUE to disable auth during development
+const canEditConfig = computed(() => true)
+const canEditScripts = computed(() => true)
+const canEditData = computed(() => true)
+const canEditSafety = computed(() => true)
+const canEditAdmin = computed(() => true)
 
 // Provide edit permissions to child components
 provide('canEditConfig', canEditConfig)
@@ -143,6 +144,43 @@ const filteredChannels = computed(() => {
 })
 const mqtt = useMqtt('nisystem')
 
+// Startup dialog state
+const showStartupDialog = ref(false)
+const hasLastProject = ref(false)
+
+async function loadLastProject() {
+  showStartupDialog.value = false
+  console.log('[APP] User chose to load last project')
+
+  // Send command to backend to load the last used project from settings
+  mqtt.sendNodeCommand('project/load-last')
+
+  // Wait 2 seconds for backend response, then fall back to localStorage
+  setTimeout(() => {
+    if (!projectLoadHandled && !projectFiles.currentProjectData.value) {
+      console.log('[APP] No project from backend, trying localStorage...')
+      if (store.loadLayoutFromStorage()) {
+        console.log('[APP] ✅ Loaded layout from localStorage')
+      } else {
+        console.log('[APP] No saved layout found')
+      }
+    }
+  }, 2000)
+}
+
+async function startFresh() {
+  showStartupDialog.value = false
+  console.log('[APP] User chose to start fresh - clearing all state')
+  // Clear everything: frontend state, backend channels, localStorage, layout
+  await projectFiles.newProject()
+  console.log('[APP] ✅ Clean slate ready - user can now configure from Config tab')
+}
+
+function continueWithFreshSystem() {
+  showStartupDialog.value = false
+  console.log('[APP] User acknowledged fresh system state')
+}
+
 onMounted(() => {
   // Connect to MQTT broker via WebSocket (port 9002 per mosquitto_ws.conf)
   mqtt.connect('ws://localhost:9002')
@@ -203,33 +241,43 @@ onMounted(() => {
     }, 100)
   })
 
-  // Watch for channel config and load project
-  const checkChannels = setInterval(() => {
-    if (Object.keys(mqtt.channelConfigs.value).length > 0) {
-      store.setChannels(mqtt.channelConfigs.value)
-      console.log('[APP] Channels loaded, requesting current project...')
+  // Wait for MQTT connection and backend initialization
+  // Backend now starts with NO channels/project - user chooses what to load
+  const checkMqttReady = setInterval(() => {
+    // Check if MQTT is connected and backend has published initial state
+    if (mqtt.client.value && mqtt.isConnected.value) {
+      console.log('[APP] MQTT connected, initializing frontend...')
 
-      clearInterval(checkChannels)
+      // Set any channels that exist (may be empty if backend just started)
+      if (Object.keys(mqtt.channelConfigs.value).length > 0) {
+        store.setChannels(mqtt.channelConfigs.value)
+        console.log('[APP] Channels loaded from backend:', Object.keys(mqtt.channelConfigs.value).length)
+      } else {
+        console.log('[APP] No channels from backend (clean slate)')
+      }
 
-      // Request current project from backend
+      clearInterval(checkMqttReady)
+
+      // Ensure we have at least one empty page for the Overview tab
+      store.ensureDefaultPage()
+
+      // Request current project from backend to determine system state
+      // ALWAYS show startup dialog to inform user of system state
+      console.log('[APP] ✅ Boot complete - requesting current project from backend...')
       projectFiles.getCurrentProject()
 
-      // Wait 2 seconds for backend response, then fall back to localStorage
+      // Wait for backend to respond, then ALWAYS show dialog with appropriate state info
       setTimeout(() => {
-        if (!projectLoadHandled && !projectFiles.currentProjectData.value) {
-          console.log('[APP] No project from backend after 2s, trying localStorage...')
-          if (!store.loadLayoutFromStorage()) {
-            console.log('[APP] No saved layout, generating default')
-            store.generateDefaultLayout()
-          }
-
-          const urlPageId = getPageFromUrl()
-          if (urlPageId && store.pages.some(p => p.id === urlPageId)) {
-            store.switchPage(urlPageId)
-          }
-          console.log('[APP] Fallback complete - pages:', store.pages.length, 'widgets:', store.widgets.length)
+        if (projectFiles.currentProjectData.value) {
+          console.log('[APP] Backend has project loaded - showing dialog with load/fresh options')
+          hasLastProject.value = true
+        } else {
+          console.log('[APP] Backend has no project - showing dialog with fresh system message')
+          hasLastProject.value = false
         }
-      }, 2000)
+        // ALWAYS show dialog to inform user of system state
+        showStartupDialog.value = true
+      }, 1000)
     }
   }, 100)
 
@@ -247,9 +295,31 @@ onMounted(() => {
     // Channel config will be refreshed via the config/channels topic
   })
 
+  // Listen for backend startup cleared event
+  // This triggers when the DAQ service restarts and clears all state
+  mqtt.subscribe('nisystem/nodes/+/system/startup-cleared', (payload: any) => {
+    console.log('[APP] Backend cleared startup state, checking system state...')
+
+    // Request current project to determine system state
+    projectFiles.getCurrentProject()
+
+    // Wait a bit for any project to be loaded, then ALWAYS show dialog
+    setTimeout(() => {
+      if (projectFiles.currentProjectData.value) {
+        console.log('[APP] Project available after startup - showing dialog with load/fresh options')
+        hasLastProject.value = true
+      } else {
+        console.log('[APP] No project after startup - showing dialog with fresh system message')
+        hasLastProject.value = false
+      }
+      // ALWAYS show dialog to inform user of system state
+      showStartupDialog.value = true
+    }, 500)
+  })
+
   // Cleanup interval on unmount
   onUnmounted(() => {
-    clearInterval(checkChannels)
+    clearInterval(checkMqttReady)
   })
 })
 
@@ -512,6 +582,82 @@ function handleRetryConnection() {
       @close="showLoginDialog = false"
       @success="showLoginDialog = false"
     />
+
+    <!-- Startup Dialog -->
+    <Transition name="modal">
+      <div v-if="showStartupDialog" class="startup-overlay">
+        <div class="startup-dialog">
+          <!-- Has Last Project: Show choice between Load/Fresh -->
+          <template v-if="hasLastProject">
+            <div class="startup-header">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <h2>Welcome to NISystem</h2>
+              <p>Would you like to load your previous project or start fresh?</p>
+            </div>
+
+            <div class="startup-actions">
+              <button class="startup-btn primary" @click="loadLastProject">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+                <div>
+                  <strong>Load Last Project</strong>
+                  <span>Continue where you left off</span>
+                </div>
+              </button>
+
+              <button class="startup-btn secondary" @click="startFresh">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                </svg>
+                <div>
+                  <strong>Start Fresh</strong>
+                  <span>Configure new channels from scratch</span>
+                </div>
+              </button>
+            </div>
+
+            <div class="startup-hint">
+              You can manage projects anytime from the Config tab
+            </div>
+          </template>
+
+          <!-- No Last Project: Show fresh system message -->
+          <template v-else>
+            <div class="startup-header">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+              </svg>
+              <h2>Fresh System - Ready to Configure</h2>
+              <p class="fresh-message">
+                No previous project found. The system is starting with a clean slate.
+                <br><br>
+                Configure your channels, widgets, and settings from the Config tab.
+              </p>
+            </div>
+
+            <div class="startup-actions">
+              <button class="startup-btn primary full-width" @click="continueWithFreshSystem">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+                <div>
+                  <strong>Continue</strong>
+                  <span>Begin configuration</span>
+                </div>
+              </button>
+            </div>
+
+            <div class="startup-hint">
+              Start by adding channels in Config → Channel Configuration
+            </div>
+          </template>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -841,5 +987,156 @@ function handleRetryConnection() {
   border-color: #ef4444;
   color: #ef4444;
   background: rgba(239, 68, 68, 0.1);
+}
+
+/* Startup Dialog */
+.startup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 20px;
+}
+
+.startup-dialog {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 2px solid #3b82f6;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  max-width: 600px;
+  width: 100%;
+  overflow: hidden;
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.startup-header {
+  text-align: center;
+  padding: 40px 40px 32px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.1) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.startup-header svg {
+  color: #3b82f6;
+  margin-bottom: 20px;
+}
+
+.startup-header h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 12px;
+}
+
+.startup-header p {
+  font-size: 1rem;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.startup-actions {
+  padding: 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.startup-btn {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: #1a1a2e;
+  border: 2px solid #2a2a4a;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+  width: 100%;
+}
+
+.startup-btn:hover {
+  background: #242442;
+  border-color: #3b82f6;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.2);
+}
+
+.startup-btn svg {
+  flex-shrink: 0;
+  color: #3b82f6;
+}
+
+.startup-btn.primary:hover svg {
+  color: #60a5fa;
+}
+
+.startup-btn.secondary svg {
+  color: #22c55e;
+}
+
+.startup-btn.secondary:hover {
+  border-color: #22c55e;
+  box-shadow: 0 8px 20px rgba(34, 197, 94, 0.2);
+}
+
+.startup-btn.secondary:hover svg {
+  color: #4ade80;
+}
+
+.startup-btn div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.startup-btn strong {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+  display: block;
+}
+
+.startup-btn span {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  display: block;
+}
+
+.startup-btn.full-width {
+  justify-content: center;
+}
+
+.fresh-message {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #d1d5db;
+  max-width: 480px;
+}
+
+.startup-hint {
+  text-align: center;
+  padding: 0 40px 32px;
+  font-size: 0.85rem;
+  color: #6b7280;
 }
 </style>

@@ -213,19 +213,18 @@ class ServiceManager:
             env['PYTHONUNBUFFERED'] = '1'
 
             if sys.platform == 'win32':
+                # Start DAQ service in a VISIBLE console window so errors are visible
+                # Use 'start' command to open a new window that stays open on error
+                cmd = f'start "NISystem DAQ Service" cmd /k "{python_exe}" "{self.daq_service_path}" -c "{self.config_path}"'
                 self.daq_process = subprocess.Popen(
-                    [python_exe, str(self.daq_service_path), '-c', str(self.config_path)],
-                    stdout=open(log_file, 'a'),
-                    stderr=subprocess.STDOUT,
+                    cmd,
                     cwd=str(self.project_root),
                     env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    shell=True
                 )
             else:
                 self.daq_process = subprocess.Popen(
                     [python_exe, str(self.daq_service_path), '-c', str(self.config_path)],
-                    stdout=open(log_file, 'a'),
-                    stderr=subprocess.STDOUT,
                     cwd=str(self.project_root),
                     env=env
                 )

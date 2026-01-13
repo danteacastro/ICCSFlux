@@ -1,0 +1,29 @@
+{
+  "backups": [
+    {
+      "backup_path": "config\\projects\\backups\\DHW Test System_20260106_120623.json",
+      "original_path": "config\\projects\\DHW Test System.json",
+      "timestamp": "2026-01-06T12:06:23.268784",
+      "file_hash": "db2c2bd7d0bde27387f29bef1be36d2bc6f73063b9989602f87022355c57e361",
+      "size_bytes": 46852,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\DHW Test System_20260108_133134.json",
+      "original_path": "config\\projects\\DHW Test System.json",
+      "timestamp": "2026-01-08T13:31:34.195203",
+      "file_hash": "b291a6764a118472e5937835f24ab330b9085eb44c339fd7a5f87742c6ff375f",
+      "size_bytes": 44776,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\DHW Test System_20260108_133859.json",
+      "original_path": "config\\projects\\DHW Test System.json",
+      "timestamp": "2026-01-08T13:38:59.239491",
+      "file_hash": "f586cf72402da357b30dfe70c101137b4024e82361a54de27ecaa03a362906d0",
+      "size_bytes": 70180,
+      "reason": "pre_save"
+    }
+  ],
+  "updated": "2026-01-08T13:38:59.252835"
+}

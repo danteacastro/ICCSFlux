@@ -163,6 +163,37 @@ const systemSettingsForm = ref({
   publish_rate_hz: 10
 })
 
+// Project Manager State
+const showProjectManager = ref(false)
+
+function openProjectManager() {
+  // Request fresh project list from backend
+  projectFiles.listProjects()
+  showProjectManager.value = true
+}
+
+async function loadSelectedProject(filename: string) {
+  const success = await projectFiles.loadProject(filename)
+  if (success) {
+    showFeedback('success', `Loaded project: ${filename}`)
+    showProjectManager.value = false
+    configDirty.value = false
+  } else {
+    showFeedback('error', `Failed to load project: ${filename}`)
+  }
+}
+
+async function startNewProject() {
+  if (configDirty.value) {
+    if (!confirm('You have unsaved changes. Start a new project anyway?')) {
+      return
+    }
+  }
+  await projectFiles.newProject()
+  showProjectManager.value = false
+  showFeedback('success', 'Started fresh - all state cleared, ready to configure')
+}
+
 // Safety Actions Management State
 const showSafetyActionsModal = ref(false)
 const editingSafetyAction = ref<{
@@ -448,6 +479,34 @@ function saveSystemSettings() {
   })
   showFeedback('info', 'Updating system settings...')
   showSystemSettings.value = false
+}
+
+// Auto-generate widgets
+function autoGenerateWidgets() {
+  const channelCount = Object.keys(store.channels).filter(name => {
+    const ch = store.channels[name]
+    return ch.visible !== false
+  }).length
+
+  if (channelCount === 0) {
+    showFeedback('warning', 'No channels available to generate widgets')
+    return
+  }
+
+  const confirmed = window.confirm(
+    `This will create ${channelCount} widgets for all visible channels.\n\n` +
+    'Widgets will be placed on the Overview page below existing widgets.\n\n' +
+    'Continue?'
+  )
+
+  if (!confirmed) return
+
+  const count = store.autoGenerateWidgets({
+    widgetSize: 'compact',  // Can be 'compact', 'normal', or 'large'
+    columns: 4              // Grid columns
+  })
+
+  showFeedback('success', `Created ${count} widgets! Go to Overview page to see them.`)
 }
 
 // Discovery state
@@ -2060,12 +2119,27 @@ watch(() => Object.keys(store.channels), () => {
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
+        <button class="action-btn" @click="openProjectManager" title="Manage projects - load existing or start new">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Projects
+        </button>
         <button class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
           </svg>
           Settings
+        </button>
+        <button class="action-btn accent" @click="autoGenerateWidgets" title="Auto-generate widgets for all channels based on channel type">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          Auto-Gen Widgets
         </button>
         <button
           class="action-btn"
@@ -4196,6 +4270,85 @@ watch(() => Object.keys(store.channels), () => {
             <button class="btn btn-primary" @click="saveSystemSettings">
               Apply Settings
             </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Project Manager Dialog -->
+    <Transition name="modal">
+      <div v-if="showProjectManager" class="discovery-overlay" @click.self="showProjectManager = false">
+        <div class="settings-dialog">
+          <div class="discovery-header">
+            <h3>Project Manager</h3>
+            <button class="close-btn" @click="showProjectManager = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="settings-content">
+            <!-- Current Project -->
+            <div v-if="projectFiles.currentProject.value" class="current-project-banner">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <div>
+                <strong>Current Project:</strong> {{ projectFiles.currentProject.value.replace('.json', '') }}
+              </div>
+            </div>
+            <div v-else class="current-project-banner no-project">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              <div>No project loaded - start fresh or load an existing project</div>
+            </div>
+
+            <!-- New Project Button -->
+            <div class="form-row">
+              <button class="btn btn-primary" @click="startNewProject" style="width: 100%;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                Start New Project
+              </button>
+            </div>
+
+            <!-- Available Projects -->
+            <div class="form-row" style="margin-top: 24px;">
+              <label>Available Projects</label>
+              <div v-if="projectFiles.projects.value.length === 0" class="no-projects-message">
+                No saved projects found. Create channels and click "Save" to create your first project.
+              </div>
+              <div v-else class="projects-list">
+                <div
+                  v-for="project in projectFiles.projects.value"
+                  :key="project.filename"
+                  class="project-item"
+                  :class="{ active: project.filename === projectFiles.currentProject.value }"
+                >
+                  <div class="project-info">
+                    <div class="project-name">{{ project.name }}</div>
+                    <div class="project-meta">{{ project.modified }}</div>
+                  </div>
+                  <button
+                    class="btn btn-secondary btn-sm"
+                    @click="loadSelectedProject(project.filename)"
+                    :disabled="project.filename === projectFiles.currentProject.value"
+                  >
+                    {{ project.filename === projectFiles.currentProject.value ? 'Current' : 'Load' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="discovery-footer">
+            <button class="btn btn-secondary" @click="showProjectManager = false">Close</button>
           </div>
         </div>
       </div>
@@ -6587,5 +6740,89 @@ input[type="checkbox"] {
   padding: 12px 16px;
   border-top: 1px solid #2a2a4a;
   justify-content: flex-end;
+}
+
+/* Project Manager Styles */
+.current-project-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid #22c55e;
+  border-radius: 6px;
+  color: #4ade80;
+  margin-bottom: 24px;
+}
+
+.current-project-banner.no-project {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: #fbbf24;
+  color: #fcd34d;
+}
+
+.current-project-banner svg {
+  flex-shrink: 0;
+}
+
+.no-projects-message {
+  padding: 24px;
+  text-align: center;
+  color: #888;
+  font-size: 0.9rem;
+  background: rgba(75, 85, 99, 0.1);
+  border-radius: 6px;
+  border: 1px dashed #4b5563;
+}
+
+.projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.project-item:hover {
+  background: #242442;
+  border-color: #3a3a5a;
+}
+
+.project-item.active {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: #3b82f6;
+}
+
+.project-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-name {
+  font-weight: 600;
+  color: #fff;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+
+.project-meta {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 0.8rem;
 }
 </style>

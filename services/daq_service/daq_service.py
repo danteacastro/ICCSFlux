@@ -1682,6 +1682,7 @@ class DAQService:
             # Subscribe to project management topics
             client.subscribe(f"{base}/project/list")
             client.subscribe(f"{base}/project/load")
+            client.subscribe(f"{base}/project/load-last")  # Load last used project from settings
             client.subscribe(f"{base}/project/import")  # Import from any path
             client.subscribe(f"{base}/project/import/json")  # Import JSON directly
             client.subscribe(f"{base}/project/close")   # Close to empty state
@@ -1949,6 +1950,8 @@ class DAQService:
             self._handle_project_list()
         elif topic == f"{base}/project/load":
             self._handle_project_load(payload)
+        elif topic == f"{base}/project/load-last":
+            self._handle_project_load_last()
         elif topic == f"{base}/project/save":
             self._handle_project_save(payload)
         elif topic == f"{base}/project/delete":
@@ -3835,6 +3838,122 @@ class DAQService:
             self.alarm_manager.clear_all(clear_configs=True)
 
         logger.info("No project configured - starting with empty state")
+
+    def _clear_startup_state(self):
+        """Clear all state on startup to provide clean slate for user
+
+        User will choose via UI whether to load last project or start fresh.
+        This prevents conflicts between old backend state and user's choice.
+
+        Clears:
+        - All channels (from INI config)
+        - Channel values
+        - Alarm configs and active alarms
+        - Scripts/sequences/schedules
+        - Current project reference
+        """
+        logger.info("Clearing startup state - awaiting user project choice...")
+
+        # Clear current project reference
+        self.current_project_path = None
+
+        # Clear all channels from config
+        # Keep hardware settings (MQTT broker, device name, scan rate) but remove channels
+        if self.config:
+            logger.info(f"Clearing {len(self.config.channels)} channels from config")
+            self.config.channels.clear()
+
+        # Clear channel values
+        self.channel_values.clear()
+
+        # Clear alarm manager (configs and active alarms)
+        if self.alarm_manager:
+            logger.info("Clearing alarm manager")
+            self.alarm_manager.clear_all(clear_configs=True)
+            # Publish alarms cleared to MQTT
+            self._publish_alarms_cleared(reason="startup_clean_slate")
+
+        # Clear script manager
+        if self.script_manager:
+            logger.info("Clearing script manager")
+            # Stop all running scripts first
+            self.script_manager.stop_all_scripts()
+            # Clear all scripts and runtimes
+            self.script_manager.scripts.clear()
+            self.script_manager.runtimes.clear()
+            self.script_manager.clear_controlled_outputs()
+
+        # Clear sequence manager
+        if self.sequence_manager:
+            logger.info("Clearing sequence manager")
+            # Clear all sequences if method exists
+            if hasattr(self.sequence_manager, 'sequences'):
+                self.sequence_manager.sequences.clear()
+
+        # Clear scheduler jobs if they exist
+        if self.scheduler and hasattr(self.scheduler, 'jobs'):
+            logger.info("Clearing scheduler jobs")
+            for job_id in list(self.scheduler.jobs.keys()):
+                self.scheduler.remove_job(job_id)
+
+        # Publish empty channel configs to MQTT
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/config/channels",
+            json.dumps({}),
+            retain=True,
+            qos=1
+        )
+
+        # Publish startup cleared event to trigger frontend dialog
+        # This tells frontend to show the "Load Last Project" or "Start Fresh" dialog
+        self.mqtt_client.publish(
+            f"{base}/system/startup-cleared",
+            json.dumps({
+                "cleared": True,
+                "timestamp": datetime.now().isoformat(),
+                "reason": "service_started"
+            }),
+            retain=False,  # Don't retain - only for current session
+            qos=1
+        )
+
+        logger.info("✓ Startup state cleared - ready for user to load project or start fresh")
+
+    def _handle_project_load_last(self):
+        """Load the last used project from settings"""
+        base = self.get_topic_base()
+
+        # Try to load the last project path from settings
+        last_path = self._load_last_project_path()
+
+        if not last_path:
+            logger.info("No last project found in settings")
+            self.mqtt_client.publish(
+                f"{base}/project/loaded",
+                json.dumps({
+                    "success": False,
+                    "message": "No last project found"
+                })
+            )
+            return
+
+        if not last_path.exists():
+            logger.warning(f"Last project file not found: {last_path}")
+            # Clear invalid path from settings
+            self._save_last_project_path(None)
+            self.mqtt_client.publish(
+                f"{base}/project/loaded",
+                json.dumps({
+                    "success": False,
+                    "message": f"Last project file not found: {last_path.name}"
+                })
+            )
+            return
+
+        # Load the project
+        logger.info(f"Loading last used project: {last_path}")
+        self._load_project_from_path(last_path, publish=True)
 
     def _handle_project_list(self):
         """List available project files from default projects directory"""
@@ -7388,8 +7507,8 @@ class DAQService:
 
         logger.info("DAQ Service started")
 
-        # Try to load last project (if one was saved)
-        self._try_load_last_project()
+        # Clear all state on startup - user will choose to load project or start fresh via UI
+        self._clear_startup_state()
 
     def stop(self):
         """Stop the DAQ service gracefully"""

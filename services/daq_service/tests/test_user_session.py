@@ -99,13 +99,13 @@ class TestUserCreation:
 
         result = session_manager.update_user(
             username="updatetest",
-            role="supervisor",
+            role="engineer",
             display_name="Updated Name"
         )
 
         assert result is True
         user = session_manager.users["updatetest"]
-        assert user.role == UserRole.SUPERVISOR
+        assert user.role == UserRole.ENGINEER
         assert user.display_name == "Updated Name"
 
     def test_update_password(self, session_manager):
@@ -366,10 +366,10 @@ class TestPermissions:
         assert not session_manager.has_permission(session.session_id, Permission.MODIFY_CHANNELS)
         assert not session_manager.has_permission(session.session_id, Permission.MANAGE_USERS)
 
-    def test_supervisor_permissions(self, session_manager):
-        """Supervisor should have config permissions"""
-        session_manager.create_user("super", "pass", UserRole.SUPERVISOR)
-        session = session_manager.authenticate("super", "pass")
+    def test_engineer_permissions(self, session_manager):
+        """Engineer should have config permissions"""
+        session_manager.create_user("engineer", "pass", UserRole.ENGINEER)
+        session = session_manager.authenticate("engineer", "pass")
 
         # Should have
         assert session_manager.has_permission(session.session_id, Permission.VIEW_DATA)
@@ -408,7 +408,7 @@ class TestElectronicSignature:
 
     def test_create_signature(self, session_manager):
         """Should create electronic signature with valid credentials"""
-        session_manager.create_user("signer", "signerpass", UserRole.SUPERVISOR)
+        session_manager.create_user("signer", "signerpass", UserRole.ENGINEER)
         session = session_manager.authenticate("signer", "signerpass")
 
         signature = session_manager.create_electronic_signature(
@@ -427,7 +427,7 @@ class TestElectronicSignature:
 
     def test_signature_wrong_password(self, session_manager):
         """Electronic signature should fail with wrong password"""
-        session_manager.create_user("badsigner", "correct", UserRole.SUPERVISOR)
+        session_manager.create_user("badsigner", "correct", UserRole.ENGINEER)
         session = session_manager.authenticate("badsigner", "correct")
 
         signature = session_manager.create_electronic_signature(
@@ -460,13 +460,13 @@ class TestPersistence:
         """Users should be saved to disk and reloaded"""
         # Create manager and add user
         manager1 = UserSessionManager(data_dir=temp_dir)
-        manager1.create_user("persistent", "pass", UserRole.SUPERVISOR)
+        manager1.create_user("persistent", "pass", UserRole.ENGINEER)
 
         # Create new manager instance (should load from disk)
         manager2 = UserSessionManager(data_dir=temp_dir)
 
         assert "persistent" in manager2.users
-        assert manager2.users["persistent"].role == UserRole.SUPERVISOR
+        assert manager2.users["persistent"].role == UserRole.ENGINEER
 
     def test_password_survives_reload(self, temp_dir):
         """Password hash should survive reload"""
@@ -487,7 +487,7 @@ class TestUserInfo:
         session_manager.create_user(
             username="infotest",
             password="secret",
-            role=UserRole.SUPERVISOR,
+            role=UserRole.ENGINEER,
             display_name="Info Test",
             email="info@test.com"
         )
@@ -497,14 +497,14 @@ class TestUserInfo:
         assert info is not None
         assert info["username"] == "infotest"
         assert info["display_name"] == "Info Test"
-        assert info["role"] == "supervisor"
+        assert info["role"] == "engineer"
         assert "password" not in info
         assert "password_hash" not in info
 
     def test_list_users(self, session_manager):
         """Should list all users"""
         session_manager.create_user("list1", "pass", UserRole.OPERATOR)
-        session_manager.create_user("list2", "pass", UserRole.SUPERVISOR)
+        session_manager.create_user("list2", "pass", UserRole.ENGINEER)
 
         users = session_manager.list_users()
 

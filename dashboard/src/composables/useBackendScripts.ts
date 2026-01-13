@@ -25,7 +25,7 @@
  * - script/output - Script console output (subscribe)
  */
 
-import { ref, computed, readonly } from 'vue'
+import { ref, computed, readonly, watch } from 'vue'
 import { useMqtt } from './useMqtt'
 
 // =============================================================================
@@ -97,10 +97,17 @@ let handlersInitialized = false
 export function useBackendScripts() {
   const mqtt = useMqtt()
 
-  // Initialize MQTT handlers once
+  // Initialize MQTT handlers once when connected
   if (!handlersInitialized && mqtt.connected.value) {
     initializeHandlers()
   }
+
+  // Watch for connection to initialize handlers if not already done
+  watch(mqtt.connected, (connected) => {
+    if (connected && !handlersInitialized) {
+      initializeHandlers()
+    }
+  })
 
   function initializeHandlers() {
     if (handlersInitialized) return
@@ -203,13 +210,15 @@ export function useBackendScripts() {
   // ===========================================================================
 
   function addScript(script: {
+    id?: string  // Allow passing existing ID to preserve identity
     name: string
     code: string
     description?: string
     runMode?: ScriptRunMode
     enabled?: boolean
   }): string {
-    const id = `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    // Use provided ID or generate new one
+    const id = script.id || `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
 
     mqtt.sendNodeCommand('script/add', {
       id,
@@ -269,12 +278,11 @@ export function useBackendScripts() {
   }
 
   function clearAllScripts() {
-    // Stop running scripts first, then remove all
-    stopAllScripts()
-    for (const id of Object.keys(scripts.value)) {
-      removeScript(id)
-    }
-    // Clear local state immediately (backend will also be cleared via MQTT)
+    // Send clear-all command to backend - this ensures ALL scripts are cleared
+    // even if frontend state is stale or empty (e.g., after page refresh)
+    mqtt.sendNodeCommand('script/clear-all', {})
+
+    // Clear local state immediately
     scripts.value = {}
     scriptOutputs.value = {}
   }

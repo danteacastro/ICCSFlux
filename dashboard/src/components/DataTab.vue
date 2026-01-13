@@ -384,12 +384,12 @@ const scheduleDayLabels = [
 
 <template>
   <div class="data-tab">
-    <!-- View-only notice for users without edit permission -->
-    <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <!-- View-only notice DISABLED during development -->
+    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Operator access required to manage recordings</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
-    </div>
+    </div> -->
 
     <!-- Recording Status Bar -->
     <div class="status-bar" :class="{ recording: isRecording }">

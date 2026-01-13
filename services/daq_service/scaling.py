@@ -7,10 +7,113 @@ Supports:
 - 4-20mA scaling (maps 4-20mA to engineering units)
 - Map/range scaling (maps one range to another)
 - Counter/pulse scaling (pulses or frequency to engineering units)
+- Value validation (NaN, Inf, open thermocouple detection)
 """
 
+import math
 from typing import Optional, Tuple
 from config_parser import ChannelConfig, ChannelType
+
+
+# Open thermocouple detection threshold
+# NI DAQmx returns ~+/- 1e308 (near max float) for open thermocouples
+OPEN_THERMOCOUPLE_THRESHOLD = 1e300
+
+# Maximum reasonable value for any channel (prevents overflow in calculations)
+MAX_REASONABLE_VALUE = 1e15
+
+
+def is_valid_value(value: float) -> bool:
+    """
+    Check if a value is valid for processing.
+
+    Returns False for:
+    - NaN (not a number)
+    - Positive or negative infinity
+    - Values indicating open thermocouple (~1e308)
+    - Unreasonably large values (> 1e15)
+
+    Args:
+        value: The value to check
+
+    Returns:
+        True if value is valid and can be processed
+    """
+    if value is None:
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    if math.isnan(value):
+        return False
+    if math.isinf(value):
+        return False
+    if abs(value) > OPEN_THERMOCOUPLE_THRESHOLD:
+        return False
+    return True
+
+
+def validate_and_clamp(value: float,
+                       min_valid: float = -MAX_REASONABLE_VALUE,
+                       max_valid: float = MAX_REASONABLE_VALUE) -> Tuple[float, str]:
+    """
+    Validate a value and return a clamped version if needed.
+
+    Args:
+        value: The value to validate
+        min_valid: Minimum acceptable value (default: -1e15)
+        max_valid: Maximum acceptable value (default: 1e15)
+
+    Returns:
+        Tuple of (validated_value, status)
+        Status is one of: 'good', 'nan', 'inf', 'open_tc', 'clamped_high', 'clamped_low'
+    """
+    if value is None:
+        return float('nan'), 'nan'
+
+    if not isinstance(value, (int, float)):
+        return float('nan'), 'nan'
+
+    if math.isnan(value):
+        return float('nan'), 'nan'
+
+    if math.isinf(value):
+        return float('nan'), 'inf'
+
+    # Open thermocouple detection (NI DAQmx returns ~1e308)
+    if abs(value) > OPEN_THERMOCOUPLE_THRESHOLD:
+        return float('nan'), 'open_tc'
+
+    # Clamp to reasonable range
+    if value > max_valid:
+        return max_valid, 'clamped_high'
+    if value < min_valid:
+        return min_valid, 'clamped_low'
+
+    return value, 'good'
+
+
+def get_value_quality(value: float) -> str:
+    """
+    Get the quality status of a value for MQTT publishing.
+
+    Returns:
+        'good' - Valid value
+        'bad' - NaN, Inf, or open thermocouple
+        'uncertain' - Clamped or suspicious value
+    """
+    if value is None:
+        return 'bad'
+    if not isinstance(value, (int, float)):
+        return 'bad'
+    if math.isnan(value):
+        return 'bad'
+    if math.isinf(value):
+        return 'bad'
+    if abs(value) > OPEN_THERMOCOUPLE_THRESHOLD:
+        return 'bad'
+    if abs(value) > MAX_REASONABLE_VALUE:
+        return 'uncertain'
+    return 'good'
 
 
 def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:

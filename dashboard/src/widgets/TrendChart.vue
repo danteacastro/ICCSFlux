@@ -32,6 +32,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'configure'): void
+  (e: 'update:yAxisMin', value: number): void
+  (e: 'update:yAxisMax', value: number): void
+  (e: 'update:yAxisAuto', value: boolean): void
+  (e: 'update:timeRange', value: number): void
 }>()
 
 const store = useDashboardStore()
@@ -50,6 +54,28 @@ const viewEnd = ref(props.timeRange || 300)
 
 // Cursor state
 const activeCursors = ref<{ id: string; x: number; values: { channel: string; value: number | null }[] }[]>([])
+
+// Y-axis editing state (direct editing without config menu)
+const showYAxisEditor = ref(false)
+const editingYMin = ref<number | null>(null)
+const editingYMax = ref<number | null>(null)
+const yAxisEditorRef = ref<HTMLDivElement | null>(null)
+const yMinInputRef = ref<HTMLInputElement | null>(null)
+
+// Local Y-axis state for direct manipulation
+const localYAxisAuto = ref(props.yAxisAuto !== false)
+const localYMin = ref(props.yAxisMin ?? 0)
+const localYMax = ref(props.yAxisMax ?? 100)
+
+// Quick time ranges (in seconds)
+const timeRangeOptions = [
+  { label: '1m', value: 60 },
+  { label: '5m', value: 300 },
+  { label: '15m', value: 900 },
+  { label: '1h', value: 3600 },
+  { label: '4h', value: 14400 },
+]
+const activeTimeRange = ref(props.timeRange || 300)
 
 // Data buffer: [timestamps, ...channelData]
 const dataBuffer = ref<(number | null)[][]>([[]])
@@ -137,8 +163,8 @@ function initChart() {
   const showGrid = props.showGrid !== false
   const gridStyle = showGrid ? { stroke: '#333', width: 1 } : { show: false }
 
-  // Build Y-axis config
-  const yAxisAuto = props.yAxisAuto !== false
+  // Build Y-axis config (use local values for direct editing)
+  const yAxisAuto = localYAxisAuto.value
 
   // Support for multiple Y-axes
   const axes: uPlot.Axis[] = [
@@ -195,7 +221,7 @@ function initChart() {
   } else {
     scales.y = {
       auto: false,
-      range: [props.yAxisMin ?? 0, props.yAxisMax ?? 100]
+      range: [localYMin.value, localYMax.value]
     }
   }
 
@@ -402,8 +428,128 @@ function resetZoom() {
   scrollPosition.value = 1
 }
 
-// Future: Add persistent cursors (would need to save to widget config)
-// function addCursor() { ... }
+// ========== DIRECT Y-AXIS EDITING (no config menu needed) ==========
+
+// Open Y-axis editor popup when clicking on the Y-axis area
+function openYAxisEditor() {
+  editingYMin.value = localYMin.value
+  editingYMax.value = localYMax.value
+  showYAxisEditor.value = true
+  nextTick(() => {
+    yMinInputRef.value?.focus()
+    yMinInputRef.value?.select()
+  })
+}
+
+// Apply Y-axis changes
+function applyYAxisChanges() {
+  if (editingYMin.value !== null && editingYMax.value !== null) {
+    const min = Math.min(editingYMin.value, editingYMax.value)
+    const max = Math.max(editingYMin.value, editingYMax.value)
+    localYMin.value = min
+    localYMax.value = max
+    localYAxisAuto.value = false
+    emit('update:yAxisMin', min)
+    emit('update:yAxisMax', max)
+    emit('update:yAxisAuto', false)
+    reinitChart()
+  }
+  showYAxisEditor.value = false
+}
+
+// Cancel Y-axis editing
+function cancelYAxisEditor() {
+  showYAxisEditor.value = false
+}
+
+// Handle Enter/Escape in Y-axis inputs
+function handleYAxisKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    applyYAxisChanges()
+  } else if (e.key === 'Escape') {
+    cancelYAxisEditor()
+  }
+}
+
+// Double-click Y-axis to auto-scale
+function autoScaleYAxis() {
+  localYAxisAuto.value = true
+  emit('update:yAxisAuto', true)
+  reinitChart()
+}
+
+// Mouse wheel on Y-axis to zoom
+function handleYAxisWheel(e: WheelEvent) {
+  e.preventDefault()
+  if (localYAxisAuto.value) {
+    // First, turn off auto-scale and use current visible range
+    const range = localYMax.value - localYMin.value
+    localYAxisAuto.value = false
+    emit('update:yAxisAuto', false)
+  }
+
+  const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8  // scroll down = zoom out
+  const range = localYMax.value - localYMin.value
+  const center = (localYMin.value + localYMax.value) / 2
+  const newRange = range * zoomFactor
+
+  localYMin.value = center - newRange / 2
+  localYMax.value = center + newRange / 2
+
+  emit('update:yAxisMin', localYMin.value)
+  emit('update:yAxisMax', localYMax.value)
+  reinitChart()
+}
+
+// ========== QUICK TIME RANGE BUTTONS ==========
+
+function setTimeRange(seconds: number) {
+  activeTimeRange.value = seconds
+  viewStart.value = 0
+  viewEnd.value = seconds
+  emit('update:timeRange', seconds)
+  isPaused.value = false
+  scrollPosition.value = 1
+}
+
+function goLive() {
+  isPaused.value = false
+  scrollPosition.value = 1
+  viewEnd.value = activeTimeRange.value
+}
+
+// ========== CSV EXPORT ==========
+
+function exportToCSV() {
+  if (dataBuffer.value[0]?.length === 0) return
+
+  const headers = ['Timestamp', ...props.channels]
+  const rows = dataBuffer.value[0]!.map((timestamp, i) => {
+    const date = new Date((timestamp ?? 0) * 1000).toISOString()
+    const values = props.channels.map((_, chIdx) => {
+      const val = dataBuffer.value[chIdx + 1]?.[i]
+      return val !== null && val !== undefined ? val.toFixed(4) : ''
+    })
+    return [date, ...values].join(',')
+  })
+
+  const csv = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `trend_${props.label || 'data'}_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Reinit chart helper
+function reinitChart() {
+  if (chart) {
+    chart.destroy()
+    nextTick(() => initChart())
+  }
+}
 
 // Scrollbar handling
 function onScroll(e: Event) {
@@ -465,6 +611,12 @@ watch(() => Object.keys(store.values).length, (newLen, oldLen) => {
     }
   }
 })
+
+// Sync props to local state when props change (e.g., from config modal)
+watch(() => props.yAxisAuto, (val) => { localYAxisAuto.value = val !== false })
+watch(() => props.yAxisMin, (val) => { if (val !== undefined) localYMin.value = val })
+watch(() => props.yAxisMax, (val) => { if (val !== undefined) localYMax.value = val })
+watch(() => props.timeRange, (val) => { if (val !== undefined) activeTimeRange.value = val })
 
 // Toggle channel visibility
 function toggleChannelVisibility(channel: string) {
@@ -576,8 +728,86 @@ function toggleChannelVisibility(channel: string) {
       </div>
     </div>
 
-    <!-- Chart Container -->
-    <div ref="chartContainer" class="chart-container"></div>
+    <!-- Quick Time Range Buttons -->
+    <div class="time-range-bar">
+      <button
+        v-for="tr in timeRangeOptions"
+        :key="tr.value"
+        class="time-range-btn"
+        :class="{ active: activeTimeRange === tr.value && !isPaused }"
+        @click="setTimeRange(tr.value)"
+      >
+        {{ tr.label }}
+      </button>
+      <button
+        class="time-range-btn live-btn"
+        :class="{ active: !isPaused }"
+        @click="goLive"
+      >
+        LIVE
+      </button>
+      <div class="time-range-spacer"></div>
+      <button class="time-range-btn export-btn" @click="exportToCSV" title="Export to CSV">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Chart Container with Y-Axis Click Zone -->
+    <div class="chart-wrapper">
+      <!-- Y-Axis Click Zone (for direct editing) -->
+      <div
+        class="y-axis-zone"
+        @click="openYAxisEditor"
+        @dblclick.prevent="autoScaleYAxis"
+        @wheel.prevent="handleYAxisWheel"
+        :title="localYAxisAuto ? 'Click: Edit range • Wheel: Zoom • Mode: AUTO' : `Click: Edit range • Wheel: Zoom • Range: ${localYMin.toFixed(1)} - ${localYMax.toFixed(1)}`"
+      >
+        <div class="y-axis-label">
+          <span v-if="localYAxisAuto" class="auto-badge">AUTO</span>
+          <span v-else class="range-display">
+            <span class="range-max">{{ localYMax.toFixed(1) }}</span>
+            <span class="range-min">{{ localYMin.toFixed(1) }}</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- Chart Container -->
+      <div ref="chartContainer" class="chart-container"></div>
+
+      <!-- Y-Axis Editor Popup -->
+      <div v-if="showYAxisEditor" ref="yAxisEditorRef" class="y-axis-editor">
+        <div class="y-axis-editor-title">Y-Axis Range</div>
+        <div class="y-axis-editor-row">
+          <label>Max:</label>
+          <input
+            type="number"
+            v-model.number="editingYMax"
+            @keydown="handleYAxisKeydown"
+            step="any"
+          />
+        </div>
+        <div class="y-axis-editor-row">
+          <label>Min:</label>
+          <input
+            ref="yMinInputRef"
+            type="number"
+            v-model.number="editingYMin"
+            @keydown="handleYAxisKeydown"
+            step="any"
+          />
+        </div>
+        <div class="y-axis-editor-actions">
+          <button class="y-axis-btn auto" @click="autoScaleYAxis">Auto</button>
+          <button class="y-axis-btn cancel" @click="cancelYAxisEditor">Cancel</button>
+          <button class="y-axis-btn apply" @click="applyYAxisChanges">Apply</button>
+        </div>
+        <div class="y-axis-editor-hint">Enter to apply • Esc to cancel</div>
+      </div>
+    </div>
 
     <!-- X-Axis Scrollbar (for history navigation) -->
     <div v-if="showScrollbar" class="scrollbar-container">
@@ -746,6 +976,217 @@ function toggleChannelVisibility(channel: string) {
   height: 16px;
   background: #2a2a4a;
   margin: 0 2px;
+}
+
+/* Quick Time Range Bar */
+.time-range-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid var(--border-color, #2a2a4a);
+  flex-shrink: 0;
+}
+
+.time-range-btn {
+  background: transparent;
+  border: 1px solid #333;
+  color: #888;
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.time-range-btn:hover {
+  background: #333;
+  color: #fff;
+}
+
+.time-range-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.time-range-btn.live-btn.active {
+  background: #22c55e;
+  border-color: #22c55e;
+}
+
+.time-range-spacer {
+  flex: 1;
+}
+
+.time-range-btn.export-btn {
+  padding: 3px 6px;
+}
+
+/* Chart Wrapper with Y-Axis Zone */
+.chart-wrapper {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.y-axis-zone {
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: rgba(59, 130, 246, 0.05);
+  border-right: 1px solid var(--border-color, #2a2a4a);
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.y-axis-zone:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.y-axis-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  font-size: 0.6rem;
+  color: #888;
+}
+
+.auto-badge {
+  background: #3b82f6;
+  color: #fff;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-size: 0.55rem;
+  font-weight: 600;
+}
+
+.range-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+}
+
+.range-max {
+  color: #f472b6;
+}
+
+.range-min {
+  color: #60a5fa;
+}
+
+/* Y-Axis Editor Popup */
+.y-axis-editor {
+  position: absolute;
+  top: 50%;
+  left: 50px;
+  transform: translateY(-50%);
+  background: #1a1a2e;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  padding: 10px;
+  z-index: 100;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  min-width: 160px;
+}
+
+.y-axis-editor-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #3b82f6;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.y-axis-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.y-axis-editor-row label {
+  font-size: 0.65rem;
+  color: #888;
+  width: 30px;
+}
+
+.y-axis-editor-row input {
+  flex: 1;
+  background: #0f0f1a;
+  border: 1px solid #333;
+  border-radius: 3px;
+  color: #fff;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  width: 80px;
+}
+
+.y-axis-editor-row input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.y-axis-editor-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.y-axis-btn {
+  flex: 1;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.y-axis-btn.auto {
+  background: #1e3a5f;
+  color: #60a5fa;
+}
+
+.y-axis-btn.auto:hover {
+  background: #2563eb;
+  color: #fff;
+}
+
+.y-axis-btn.cancel {
+  background: #333;
+  color: #888;
+}
+
+.y-axis-btn.cancel:hover {
+  background: #444;
+  color: #fff;
+}
+
+.y-axis-btn.apply {
+  background: #22c55e;
+  color: #fff;
+}
+
+.y-axis-btn.apply:hover {
+  background: #16a34a;
+}
+
+.y-axis-editor-hint {
+  font-size: 0.55rem;
+  color: #666;
+  margin-top: 6px;
+  text-align: center;
 }
 
 .chart-container {

@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
+import { useSafety } from '../composables/useSafety'
 
 export interface StatusMessage {
   id: string
@@ -17,6 +18,7 @@ defineProps<{
 
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
+const safety = useSafety()
 const messages = ref<StatusMessage[]>([])
 const isMinimized = ref(false)
 
@@ -238,9 +240,59 @@ const hasError = computed(() => {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
         </svg>
-        <span>Status Log</span>
+        <span v-if="!isMinimized">Status Log</span>
         <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount }}</span>
       </div>
+
+      <!-- Status Indicators -->
+      <div class="status-group" @click.stop>
+        <!-- Safety Status -->
+        <div
+          v-if="safety.hasLatchedAlarms.value"
+          class="safety-indicator latched"
+          @click="safety.resetAllLatched()"
+          title="Click to reset all latched alarms"
+        >
+          {{ safety.latchedAlarmCount.value }} LATCHED
+        </div>
+        <div
+          v-if="safety.interlockStatuses.value.some(s => !s.satisfied && s.enabled && !s.bypassed)"
+          class="safety-indicator blocked"
+          title="Some interlocks are blocking actions"
+        >
+          {{ safety.interlockStatuses.value.filter(s => !s.satisfied && s.enabled && !s.bypassed).length }} BLOCKED
+        </div>
+        <div
+          v-if="safety.hasActiveAlarms.value"
+          class="safety-indicator alarm"
+        >
+          {{ safety.alarmCounts.value.active }} ALARM
+        </div>
+        <div
+          v-if="!safety.hasLatchedAlarms.value &&
+                !safety.hasActiveAlarms.value &&
+                !safety.interlockStatuses.value.some(s => !s.satisfied && s.enabled && !s.bypassed)"
+          class="safety-indicator clear"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+          OK
+        </div>
+
+        <!-- Service Status -->
+        <div class="status-item" :class="{ active: mqtt.connected.value, error: !mqtt.connected.value }" title="MQTT Connection">
+          <span class="dot"></span><span class="label">MQ</span>
+        </div>
+        <div class="status-item" :class="{ active: store.isConnected, error: !store.isConnected }" title="DAQ Service">
+          <span class="dot"></span><span class="label">DAQ</span>
+        </div>
+        <div class="status-item" :class="{ active: store.isAcquiring, inactive: !store.isAcquiring }" title="Acquisition">
+          <span class="dot"></span><span class="label">ACQ</span>
+        </div>
+        <div v-if="store.status?.simulation_mode" class="status-badge sim" title="Simulation Mode">SIM</div>
+      </div>
+
       <div class="header-actions">
         <button v-if="!isMinimized" class="action-btn" @click.stop="clearMessages" title="Clear log">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -299,11 +351,6 @@ const hasError = computed(() => {
 .status-messages.minimized {
   max-height: 36px;
   width: auto;
-}
-
-/* When minimized, hide the "Status Log" text but keep icon and badge */
-.minimized .title span:first-of-type {
-  display: none;
 }
 
 .status-messages.has-error {
@@ -488,5 +535,113 @@ const hasError = computed(() => {
 
 .message-move {
   transition: transform 0.2s ease;
+}
+
+/* Service Status Indicators */
+.status-group {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.55rem;
+  font-weight: 600;
+  color: #666;
+  padding: 2px 4px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+}
+
+.status-item .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #6b7280;
+}
+
+.status-item.active {
+  color: #86efac;
+}
+.status-item.active .dot {
+  background: #22c55e;
+  box-shadow: 0 0 4px #22c55e;
+}
+
+.status-item.error {
+  color: #fca5a5;
+}
+.status-item.error .dot {
+  background: #ef4444;
+}
+
+.status-item.inactive {
+  color: #6b7280;
+}
+.status-item.inactive .dot {
+  background: #4b5563;
+}
+
+.status-item .label {
+  text-transform: uppercase;
+}
+
+.status-badge {
+  font-size: 0.5rem;
+  font-weight: 700;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.status-badge.sim {
+  color: #fbbf24;
+  background: #451a03;
+}
+
+/* Safety Status Indicators */
+.safety-indicator {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 0.5rem;
+  font-weight: 700;
+}
+
+.safety-indicator.latched {
+  background: #7f1d1d;
+  color: #fca5a5;
+  cursor: pointer;
+  animation: pulse-safety 1s infinite;
+}
+
+.safety-indicator.latched:hover {
+  background: #991b1b;
+}
+
+.safety-indicator.blocked {
+  background: #78350f;
+  color: #fbbf24;
+}
+
+.safety-indicator.alarm {
+  background: #7f1d1d;
+  color: #fca5a5;
+  animation: pulse-safety 1s infinite;
+}
+
+.safety-indicator.clear {
+  background: #14532d;
+  color: #86efac;
+}
+
+@keyframes pulse-safety {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 </style>

@@ -454,6 +454,75 @@ class ScriptManager:
             logger.info(f"Added script: {script.name} ({script.id})")
             return True
 
+    def add_script_from_dict(self, data: dict) -> bool:
+        """Add a script from dictionary data.
+
+        Why this method exists:
+        - MQTT handlers receive script data as JSON (dict), not Script objects
+        - This provides a clean one-liner for adding scripts from API calls
+        - Handles both 'runMode' (frontend) and 'run_mode' (backend) field names
+        - Centralizes dict->Script conversion so MQTT handlers stay simple
+
+        Example:
+            data = {'id': 'abc', 'name': 'My Script', 'code': 'x=1', 'run_mode': 'session'}
+            script_manager.add_script_from_dict(data)
+        """
+        # Normalize run_mode field name (backend uses snake_case, frontend uses camelCase)
+        if 'run_mode' in data and 'runMode' not in data:
+            data['runMode'] = data['run_mode']
+
+        script = Script.from_dict(data)
+        return self.add_script(script)
+
+    def update_script(self, script_id: str, updates: dict) -> bool:
+        """Update an existing script with partial data.
+
+        Why this method exists:
+        - Allows partial updates without replacing the entire script
+        - Common pattern: update just the code, or just enable/disable
+        - Preserves fields not in the updates dict
+        - Handles camelCase/snake_case field name variations
+
+        Example:
+            script_manager.update_script('my-script', {'name': 'New Name'})
+            script_manager.update_script('my-script', {'enabled': False})
+            script_manager.update_script('my-script', {'run_mode': 'session'})
+        """
+        with self._lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                logger.error(f"Script not found for update: {script_id}")
+                return False
+
+            # Stop if running before updating
+            if script_id in self.runtimes and self.runtimes[script_id].is_running():
+                self.stop_script(script_id)
+
+            # Apply updates
+            if 'name' in updates:
+                script.name = updates['name']
+            if 'code' in updates:
+                script.code = updates['code']
+            if 'description' in updates:
+                script.description = updates['description']
+            if 'enabled' in updates:
+                script.enabled = updates['enabled']
+
+            # Handle run_mode with both naming conventions
+            run_mode = updates.get('runMode') or updates.get('run_mode')
+            if run_mode:
+                if isinstance(run_mode, str):
+                    try:
+                        script.run_mode = ScriptRunMode(run_mode)
+                    except ValueError:
+                        logger.warning(f"Invalid run_mode: {run_mode}")
+                elif isinstance(run_mode, ScriptRunMode):
+                    script.run_mode = run_mode
+
+            script.modified_at = datetime.now().isoformat()
+            logger.info(f"Updated script: {script.name} ({script_id})")
+            return True
+
     def remove_script(self, script_id: str) -> bool:
         """Remove a script"""
         with self._lock:
@@ -640,8 +709,22 @@ class ScriptManager:
         if self.on_set_output:
             self.on_set_output(channel, value)
 
+    @property
+    def controlled_outputs(self) -> Set[str]:
+        """Direct access to the set of output channels controlled by scripts.
+
+        Why this property exists:
+        - Testing: Allows tests to inject controlled outputs without calling set_output()
+        - Inspection: Lets external code check/modify the set directly
+        - Consistency: Provides Pythonic property access alongside get_controlled_outputs()
+
+        Note: Returns the actual set (not a copy) for direct manipulation.
+        Use get_controlled_outputs() if you need a safe copy.
+        """
+        return self._controlled_outputs
+
     def get_controlled_outputs(self) -> Set[str]:
-        """Get the set of output channels controlled by scripts during this session.
+        """Get a COPY of the controlled outputs set (safe for iteration).
         Used by DAQ service to implement selective session lockout."""
         return self._controlled_outputs.copy()
 

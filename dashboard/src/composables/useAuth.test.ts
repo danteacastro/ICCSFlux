@@ -85,8 +85,8 @@ describe('useAuth', () => {
       expect(auth.isAdmin.value).toBe(false)
     })
 
-    it('isSupervisor should return false when not authenticated', () => {
-      expect(auth.isSupervisor.value).toBe(false)
+    it('isEngineer should return false when not authenticated', () => {
+      expect(auth.isEngineer.value).toBe(false)
     })
 
     it('isOperator should return false when not authenticated', () => {
@@ -209,7 +209,7 @@ describe('useAuth', () => {
     })
 
     it('should publish update user message', () => {
-      auth.updateUser('testuser', { role: 'supervisor', enabled: true })
+      auth.updateUser('testuser', { role: 'engineer', enabled: true })
 
       expect(mockMqttClient.publish).toHaveBeenCalledWith(
         'nisystem/users/update',
@@ -217,7 +217,7 @@ describe('useAuth', () => {
       )
       expect(mockMqttClient.publish).toHaveBeenCalledWith(
         'nisystem/users/update',
-        expect.stringContaining('"role":"supervisor"')
+        expect.stringContaining('"role":"engineer"')
       )
     })
 
@@ -416,7 +416,7 @@ describe('Auth Flow Integration', () => {
       const auth = useAuth()
 
       expect(auth.isAdmin).toBeDefined()
-      expect(auth.isSupervisor).toBeDefined()
+      expect(auth.isEngineer).toBeDefined()
       expect(auth.isOperator).toBeDefined()
       expect(typeof auth.hasPermission).toBe('function')
     })

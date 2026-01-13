@@ -2,12 +2,16 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 import { usePythonScripts } from '../composables/usePythonScripts'
+import { useBackendScripts } from '../composables/useBackendScripts'
 import { useDashboardStore } from '../stores/dashboard'
 import type { PythonScript, ScriptOutput } from '../types/python-scripts'
-import { SCRIPT_TEMPLATES } from '../types/python-scripts'
+import { SCRIPT_TEMPLATES, DEFAULT_SCRIPT_CODE } from '../types/python-scripts'
 
 const store = useDashboardStore()
+// Pyodide is still used for syntax validation
 const pythonScripts = usePythonScripts()
+// Backend scripts - actual execution happens server-side
+const backendScripts = useBackendScripts()
 
 // =============================================================================
 // STATE
@@ -47,20 +51,24 @@ let validationSuccessTimeout: ReturnType<typeof setTimeout> | null = null
 // COMPUTED
 // =============================================================================
 
+// Use backend scripts for the main script list
 const selectedScript = computed(() =>
-  selectedScriptId.value ? pythonScripts.scripts.value[selectedScriptId.value] : null
+  selectedScriptId.value ? backendScripts.scripts.value[selectedScriptId.value] : null
 )
 
+// Running state comes from backend
 const isScriptRunning = computed(() =>
-  selectedScriptId.value ? pythonScripts.runningScripts.value.has(selectedScriptId.value) : false
+  selectedScriptId.value ? backendScripts.runningScriptIds.value.has(selectedScriptId.value) : false
 )
 
+// Outputs come from backend
 const currentScriptOutputs = computed(() =>
-  selectedScriptId.value ? (pythonScripts.scriptOutputs.value[selectedScriptId.value] || []) : []
+  selectedScriptId.value ? backendScripts.getScriptOutputs(selectedScriptId.value) : []
 )
 
+// Imported data still handled locally (could be synced later)
 const currentScriptImportedData = computed(() =>
-  selectedScript.value?.importedData || []
+  selectedScriptId.value ? (pythonScripts.scripts.value[selectedScriptId.value]?.importedData || []) : []
 )
 
 const channelNames = computed(() => Object.keys(store.values || {}))
@@ -230,8 +238,8 @@ function registerPythonLanguage() {
 // =============================================================================
 
 watch(selectedScriptId, (id) => {
-  if (id && pythonScripts.scripts.value[id] && editor) {
-    const script = pythonScripts.scripts.value[id]
+  if (id && backendScripts.scripts.value[id] && editor) {
+    const script = backendScripts.scripts.value[id]
     editor.setValue(script.code)
     lastSavedCode.value = script.code
     isDirty.value = false
@@ -261,24 +269,34 @@ function openNewScriptModal() {
 function createNewScript() {
   if (!newScriptName.value.trim()) return
 
-  const script = pythonScripts.createScript(
-    newScriptName.value.trim(),
-    newScriptDescription.value.trim()
-  )
+  // Send to backend via MQTT
+  const scriptId = backendScripts.addScript({
+    name: newScriptName.value.trim(),
+    code: DEFAULT_SCRIPT_CODE,
+    description: newScriptDescription.value.trim(),
+    runMode: 'manual',
+    enabled: true
+  })
 
   showNewScriptModal.value = false
-  selectedScriptId.value = script.id
+  selectedScriptId.value = scriptId
 }
 
 function createFromTemplate(templateId: string) {
   const template = SCRIPT_TEMPLATES.find(t => t.id === templateId)
   if (!template) return
 
-  const script = pythonScripts.createScript(template.name, template.description)
-  pythonScripts.updateScript(script.id, { code: template.code })
+  // Send to backend via MQTT
+  const scriptId = backendScripts.addScript({
+    name: template.name,
+    code: template.code,
+    description: template.description,
+    runMode: 'manual',
+    enabled: true
+  })
 
   showTemplatesModal.value = false
-  selectedScriptId.value = script.id
+  selectedScriptId.value = scriptId
 
   // Update editor
   if (editor) {
@@ -292,7 +310,8 @@ function saveScript() {
   if (!selectedScriptId.value || !editor) return
 
   const code = editor.getValue()
-  pythonScripts.updateScript(selectedScriptId.value, { code })
+  // Send update to backend via MQTT
+  backendScripts.updateScript(selectedScriptId.value, { code })
   lastSavedCode.value = code
   isDirty.value = false
 }
@@ -304,7 +323,8 @@ function deleteScript() {
     return
   }
 
-  pythonScripts.deleteScript(selectedScriptId.value)
+  // Send delete to backend via MQTT
+  backendScripts.removeScript(selectedScriptId.value)
   selectedScriptId.value = null
 
   if (editor) {
@@ -313,21 +333,22 @@ function deleteScript() {
 }
 
 // =============================================================================
-// SCRIPT EXECUTION
+// SCRIPT EXECUTION (via backend)
 // =============================================================================
 
 async function toggleScript() {
   if (!selectedScriptId.value) return
 
   if (isScriptRunning.value) {
-    pythonScripts.stopScript(selectedScriptId.value)
+    // Stop script on backend
+    backendScripts.stopScript(selectedScriptId.value)
   } else {
     // Save before running
     if (isDirty.value) {
       saveScript()
     }
 
-    // Validate before running
+    // Validate syntax before running (uses Pyodide for quick check)
     const code = editor?.getValue() || ''
     const result = await pythonScripts.validateScript(code)
     validationErrors.value = result.errors
@@ -336,11 +357,12 @@ async function toggleScript() {
       // Show validation errors but allow running with warnings
       const hasErrors = result.errors.some(e => e.type === 'error')
       if (hasErrors) {
-        return // Don't run if there are errors
+        return // Don't run if there are syntax errors
       }
     }
 
-    await pythonScripts.startScript(selectedScriptId.value)
+    // Start script on backend
+    backendScripts.startScript(selectedScriptId.value)
   }
 }
 
@@ -395,12 +417,13 @@ function updateRunMode(event: Event) {
   if (!selectedScriptId.value) return
   const target = event.target as HTMLSelectElement
   const mode = target.value as 'manual' | 'acquisition' | 'session'
-  pythonScripts.setRunMode(selectedScriptId.value, mode)
+  // Update run mode on backend
+  backendScripts.updateScript(selectedScriptId.value, { runMode: mode })
 }
 
 function clearConsole() {
   if (selectedScriptId.value) {
-    pythonScripts.clearScriptOutput(selectedScriptId.value)
+    backendScripts.clearScriptOutput(selectedScriptId.value)
   }
 }
 
@@ -467,16 +490,16 @@ function getOutputTypeClass(type: string): string {
 }
 
 function getScriptStateIcon(id: string): string {
-  if (pythonScripts.runningScripts.value.has(id)) return '▶'
-  const status = pythonScripts.scriptStatuses.value[id]
-  if (status?.state === 'error') return '✕'
+  const script = backendScripts.scripts.value[id]
+  if (script?.state === 'running') return '▶'
+  if (script?.state === 'error') return '✕'
   return '○'
 }
 
 function getScriptStateClass(id: string): string {
-  if (pythonScripts.runningScripts.value.has(id)) return 'state-running'
-  const status = pythonScripts.scriptStatuses.value[id]
-  if (status?.state === 'error') return 'state-error'
+  const script = backendScripts.scripts.value[id]
+  if (script?.state === 'running') return 'state-running'
+  if (script?.state === 'error') return 'state-error'
   return 'state-idle'
 }
 </script>
@@ -499,7 +522,7 @@ function getScriptStateClass(id: string): string {
 
       <div class="scripts-list">
         <div
-          v-for="script in pythonScripts.scriptsList.value"
+          v-for="script in backendScripts.scriptsList.value"
           :key="script.id"
           class="script-item"
           :class="{ selected: selectedScriptId === script.id }"
@@ -511,7 +534,7 @@ function getScriptStateClass(id: string): string {
           <span class="script-name">{{ script.name }}</span>
         </div>
 
-        <div v-if="pythonScripts.scriptsList.value.length === 0" class="empty-state">
+        <div v-if="backendScripts.scriptsList.value.length === 0" class="empty-state">
           No scripts yet.<br>
           Click + to create one.
         </div>
@@ -593,7 +616,7 @@ function getScriptStateClass(id: string): string {
             class="btn"
             :class="isScriptRunning ? 'btn-danger' : 'btn-success'"
             @click="toggleScript"
-            :disabled="pythonScripts.isPyodideLoading.value"
+            title="Scripts run on the backend server"
           >
             {{ isScriptRunning ? '■ Stop' : '▶ Run' }}
           </button>
@@ -633,10 +656,10 @@ function getScriptStateClass(id: string): string {
         </div>
       </div>
 
-      <!-- Pyodide Loading Status -->
+      <!-- Pyodide Loading Status (only used for syntax validation) -->
       <div v-if="pythonScripts.isPyodideLoading.value" class="pyodide-loading">
         <div class="loading-spinner"></div>
-        <span>{{ pythonScripts.pyodideLoadMessage.value }}</span>
+        <span>Loading syntax validator... {{ pythonScripts.pyodideLoadMessage.value }}</span>
         <div class="progress-bar">
           <div
             class="progress-fill"

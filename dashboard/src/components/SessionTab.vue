@@ -2,24 +2,44 @@
 import { computed, onMounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { usePlayground } from '../composables/usePlayground'
-import { usePythonScripts } from '../composables/usePythonScripts'
+import { useBackendScripts } from '../composables/useBackendScripts'
+import { useMqtt } from '../composables/useMqtt'
 
 const store = useDashboardStore()
 const playground = usePlayground()
-const pythonScripts = usePythonScripts()
+// Backend scripts - run on the server, not in the browser
+const backendScripts = useBackendScripts()
+const mqtt = useMqtt()
 
-// Running Python scripts
-const runningScripts = computed(() => {
-  return pythonScripts.scriptsList.value.filter(s =>
-    pythonScripts.scriptStatuses.value[s.id]?.state === 'running'
-  )
-})
+// Running Python scripts (from backend)
+const runningScripts = computed(() => backendScripts.runningScripts.value)
 
 const idleScripts = computed(() => {
-  return pythonScripts.scriptsList.value.filter(s =>
-    pythonScripts.scriptStatuses.value[s.id]?.state !== 'running'
-  )
+  return backendScripts.scriptsList.value.filter(s => s.state !== 'running')
 })
+
+// Backend connection status
+const backendStatus = computed(() => {
+  if (!mqtt.connected.value) return 'Disconnected'
+  return 'Connected'
+})
+
+// All script outputs combined and sorted by timestamp
+const allScriptOutputs = computed(() => {
+  const outputs: Array<{ scriptId: string; type: string; message: string; timestamp: number }> = []
+  for (const [scriptId, scriptOutputs] of Object.entries(backendScripts.scriptOutputs.value)) {
+    for (const output of scriptOutputs) {
+      outputs.push({ ...output, scriptId })
+    }
+  }
+  return outputs.sort((a, b) => a.timestamp - b.timestamp)
+})
+
+// Get script name by ID
+function getScriptName(scriptId: string): string {
+  const script = backendScripts.scripts.value[scriptId]
+  return script?.name || scriptId.slice(0, 8)
+}
 
 // Format duration
 function formatDuration(ms: number | undefined): string {
@@ -38,14 +58,16 @@ function formatDuration(ms: number | undefined): string {
 
 // Get elapsed time for a script
 function getScriptElapsed(scriptId: string): string {
-  const status = pythonScripts.scriptStatuses.value[scriptId]
-  if (!status?.startedAt) return '--'
-  const elapsed = Date.now() - status.startedAt
+  const script = backendScripts.scripts.value[scriptId]
+  if (!script?.startedAt) return '--'
+  const elapsed = Date.now() - script.startedAt
   return formatDuration(elapsed)
 }
 
 onMounted(() => {
   playground.refreshSessionStatus()
+  // Request script list from backend
+  backendScripts.requestScriptList()
 })
 </script>
 
@@ -95,20 +117,18 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Pyodide Status Panel -->
-      <div class="status-panel pyodide-status">
+      <!-- Backend Script Runtime Panel -->
+      <div class="status-panel backend-status">
         <h3>
           <span class="python-icon">🐍</span>
-          Python Runtime
+          Script Runtime (Backend)
         </h3>
         <div class="status-grid">
           <div class="status-item">
-            <span class="status-label">Pyodide Status</span>
-            <span class="status-value" :class="pythonScripts.pyodideStatus.value">
-              <span class="status-dot" :class="{ active: pythonScripts.pyodideStatus.value === 'ready' }"></span>
-              {{ pythonScripts.pyodideStatus.value === 'ready' ? 'Ready' :
-                 pythonScripts.pyodideStatus.value === 'loading' ? 'Loading...' :
-                 pythonScripts.pyodideStatus.value === 'error' ? 'Error' : 'Not Loaded' }}
+            <span class="status-label">Backend Status</span>
+            <span class="status-value" :class="{ active: mqtt.connected.value }">
+              <span class="status-dot" :class="{ active: mqtt.connected.value }"></span>
+              {{ backendStatus }}
             </span>
           </div>
           <div class="status-item">
@@ -117,7 +137,7 @@ onMounted(() => {
           </div>
           <div class="status-item">
             <span class="status-label">Total Scripts</span>
-            <span class="status-value count">{{ pythonScripts.scriptsList.value.length }}</span>
+            <span class="status-value count">{{ backendScripts.scriptsList.value.length }}</span>
           </div>
         </div>
       </div>
@@ -147,14 +167,14 @@ onMounted(() => {
                 <span class="stat-label">Elapsed:</span>
                 <span class="stat-value">{{ getScriptElapsed(script.id) }}</span>
               </span>
-              <span class="stat" v-if="pythonScripts.scriptStatuses.value[script.id]?.iterations">
+              <span class="stat" v-if="script.iterations > 0">
                 <span class="stat-label">Iterations:</span>
-                <span class="stat-value">{{ pythonScripts.scriptStatuses.value[script.id]?.iterations }}</span>
+                <span class="stat-value">{{ script.iterations }}</span>
               </span>
             </div>
             <button
               class="btn btn-sm btn-danger"
-              @click="pythonScripts.stopScript(script.id)"
+              @click="backendScripts.stopScript(script.id)"
             >
               Stop
             </button>
@@ -166,33 +186,34 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Published Values Panel -->
-      <div class="status-panel published-values">
+      <!-- Script Info Panel -->
+      <div class="status-panel script-info-panel">
         <h3>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
           </svg>
-          Published Values
-          <span class="count-badge" v-if="Object.keys(pythonScripts.publishedValues.value).length > 0">
-            {{ Object.keys(pythonScripts.publishedValues.value).length }}
-          </span>
+          Script Execution
         </h3>
 
-        <div class="values-grid" v-if="Object.keys(pythonScripts.publishedValues.value).length > 0">
-          <div
-            v-for="(pv, name) in pythonScripts.publishedValues.value"
-            :key="name"
-            class="value-item"
-          >
-            <span class="value-name">{{ pv.name }}</span>
-            <span class="value-number">{{ pv.value.toFixed(2) }}</span>
-            <span class="value-units" v-if="pv.units">{{ pv.units }}</span>
+        <div class="info-content">
+          <div class="info-item">
+            <span class="info-icon">&#9888;</span>
+            <span class="info-text">Scripts run on the <strong>backend</strong> (DAQ service), not in the browser.</span>
           </div>
-        </div>
-
-        <div class="empty-state" v-else>
-          <p>No values published yet</p>
-          <p class="hint">Use publish() in Python scripts</p>
+          <div class="info-item">
+            <span class="info-icon">&#9654;</span>
+            <span class="info-text"><strong>Acquisition</strong> scripts auto-start when acquisition begins.</span>
+          </div>
+          <div class="info-item">
+            <span class="info-icon">&#9654;</span>
+            <span class="info-text"><strong>Session</strong> scripts auto-start when a test session begins.</span>
+          </div>
+          <div class="info-item">
+            <span class="info-icon">&#9654;</span>
+            <span class="info-text"><strong>Manual</strong> scripts must be started explicitly.</span>
+          </div>
         </div>
       </div>
 
@@ -221,8 +242,8 @@ onMounted(() => {
             </span>
             <button
               class="btn btn-sm btn-success"
-              @click="pythonScripts.startScript(script.id)"
-              :disabled="pythonScripts.pyodideStatus.value !== 'ready' || !script.enabled"
+              @click="backendScripts.startScript(script.id)"
+              :disabled="!mqtt.connected.value || !script.enabled"
             >
               Run
             </button>
@@ -245,20 +266,22 @@ onMounted(() => {
           Recent Console Output
         </h3>
 
-        <div class="console-lines" v-if="pythonScripts.consoleOutput.value.length > 0">
+        <div class="console-lines" v-if="allScriptOutputs.length > 0">
           <div
-            v-for="(line, idx) in pythonScripts.consoleOutput.value.slice(-20)"
+            v-for="(line, idx) in allScriptOutputs.slice(-20)"
             :key="idx"
             class="console-line"
             :class="line.type"
           >
             <span class="line-time">{{ new Date(line.timestamp).toLocaleTimeString() }}</span>
+            <span class="line-script">[{{ getScriptName(line.scriptId) }}]</span>
             <span class="line-message">{{ line.message }}</span>
           </div>
         </div>
 
         <div class="empty-state" v-else>
           <p>No console output</p>
+          <p class="hint">Output from running scripts appears here</p>
         </div>
       </div>
     </div>
@@ -539,6 +562,12 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
+.line-script {
+  color: #8b5cf6;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
 .line-message {
   color: #ccc;
   word-break: break-all;
@@ -554,6 +583,31 @@ onMounted(() => {
 
 .console-line.info .line-message {
   color: #3b82f6;
+}
+
+/* Info Panel */
+.info-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.info-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.info-icon {
+  flex-shrink: 0;
+  width: 1.2rem;
+  text-align: center;
+}
+
+.info-text strong {
+  color: var(--text-primary);
 }
 
 /* Empty State */

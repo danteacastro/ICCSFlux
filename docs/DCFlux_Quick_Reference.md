@@ -15,9 +15,9 @@
 |-----|---------|
 | Overview | Live dashboard with widgets |
 | Config | Channel setup (Operator+) |
-| Scripts | Automation (Supervisor+) |
+| Scripts | Automation (Engineer+) |
 | Data | Recording management (Operator+) |
-| Safety | Alarms & interlocks (Supervisor+) |
+| Safety | Alarms & interlocks (Engineer+) |
 | Notes | Documentation |
 | Admin | User management (Admin) |
 
@@ -77,7 +77,7 @@
 |------|--------|
 | Viewer | View only |
 | Operator | Run tests, control, record |
-| Supervisor | Edit sequences, safety |
+| Engineer | Edit sequences, safety |
 | Admin | Full access |
 
 ## Keyboard Shortcuts

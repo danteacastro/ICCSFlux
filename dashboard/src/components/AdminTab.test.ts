@@ -663,7 +663,7 @@ describe('AdminTab User Dialogs', () => {
 
     expect(optionTexts.some(t => t.includes('Viewer'))).toBe(true)
     expect(optionTexts.some(t => t.includes('Operator'))).toBe(true)
-    expect(optionTexts.some(t => t.includes('Supervisor'))).toBe(true)
+    expect(optionTexts.some(t => t.includes('Engineer'))).toBe(true)
     expect(optionTexts.some(t => t.includes('Admin'))).toBe(true)
   })
 

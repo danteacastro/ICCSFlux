@@ -1544,12 +1544,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 <template>
   <div class="scripts-tab">
-    <!-- View-only notice for users without edit permission -->
-    <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <!-- View-only notice DISABLED during development -->
+    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Engineer access required to edit</span>
       <button class="login-link" @click="showLoginDialog">Login</button>
-    </div>
+    </div> -->
 
     <!-- Sub-tab Navigation -->
     <div class="sub-tabs">

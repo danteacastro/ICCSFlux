@@ -1854,7 +1854,7 @@ export interface Watchdog {
 export interface AlarmEscalation {
   delayMs: number              // Time after initial alarm
   actions: AlarmAction[]       // Additional actions to take
-  notifyLevel: 'operator' | 'supervisor' | 'manager' | 'emergency'
+  notifyLevel: 'operator' | 'engineer' | 'manager' | 'emergency'
 }
 
 export interface AlarmEnhanced extends Alarm {

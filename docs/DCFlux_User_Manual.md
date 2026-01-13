@@ -132,9 +132,9 @@ DCFlux is an industrial-grade data acquisition and control system designed for l
 |-----|---------|--------------|
 | **Overview** | Main dashboard with widgets | All users |
 | **Config** | Channel and system configuration | Operator+ to edit |
-| **Scripts** | Automation, sequences, formulas | Supervisor+ to edit |
+| **Scripts** | Automation, sequences, formulas | Engineer+ to edit |
 | **Data** | Recording management and export | Operator+ to edit |
-| **Safety** | Alarms and interlocks | Supervisor+ to edit |
+| **Safety** | Alarms and interlocks | Engineer+ to edit |
 | **Notes** | Documentation and notes | All users |
 | **Admin** | User management and audit trail | Admin only |
 
@@ -790,8 +790,8 @@ Browse and manage saved recordings:
 4. Assign role:
    - **Viewer**: Read-only access
    - **Operator**: Run tests, acknowledge alarms
-   - **Supervisor**: Edit sequences and safety config
-   - **Admin**: Full system access
+   - **Engineer**: Configure channels, alarms, safety settings, projects
+   - **Admin**: Full system access including user management
 5. Optional: Set display name
 6. Click **Create**
 
@@ -873,18 +873,18 @@ The Notes tab provides an interactive notebook for:
 ### 11.1 Role Hierarchy
 
 ```
-Admin ────────────────────────────────── Full Access
+Admin ────────────────────────────────── Full Access (User Management)
    │
-Supervisor ───────────────────────────── Edit Safety & Scripts
+Engineer ─────────────────────────────── Configure Channels, Alarms, Safety
    │
-Operator ─────────────────────────────── Run Tests & Acknowledge
+Operator ─────────────────────────────── Run Tests & Acknowledge Alarms
    │
-Viewer ───────────────────────────────── Read Only
+Viewer ───────────────────────────────── Read Only (Monitoring)
 ```
 
 ### 11.2 Permission Matrix
 
-| Capability | Viewer | Operator | Supervisor | Admin |
+| Capability | Viewer | Operator | Engineer | Admin |
 |------------|--------|----------|------------|-------|
 | View dashboards | ✓ | ✓ | ✓ | ✓ |
 | View all tabs | ✓ | ✓ | ✓ | ✓ |

@@ -53,6 +53,9 @@ const CASCADE_WINDOW_MS = 5000  // 5 seconds
 // Track if already initialized
 let initialized = false
 
+// Track current project to detect changes
+let currentProjectId: string | null = null
+
 // ============================================
 // Composable Factory
 // ============================================
@@ -312,6 +315,65 @@ export function useSafety() {
     firstOutAlarmId.value = null
     cascadeStartTime.value = null
     alarmSequence.value = 0
+  }
+
+  /**
+   * Clear ALL safety state - alarms, configs, history, and localStorage
+   * Called when project changes or is closed to ensure no ghost/stale state
+   */
+  function clearAllSafetyState(reason: string = 'project_change') {
+    console.log(`[SAFETY] Clearing ALL safety state, reason: ${reason}`)
+
+    // Clear active alarms (don't add to history since we're clearing history too)
+    activeAlarms.value = []
+
+    // Clear alarm configs (will be rebuilt from new project channels)
+    alarmConfigs.value = {}
+
+    // Clear history
+    alarmHistory.value = []
+
+    // Clear interlocks
+    interlocks.value = []
+
+    // Clear safety actions
+    safetyActions.value = {}
+
+    // Reset auto-execute flag to default
+    autoExecuteSafetyActions.value = true
+
+    // Reset first-out tracking
+    firstOutAlarmId.value = null
+    cascadeStartTime.value = null
+    alarmSequence.value = 0
+
+    // Reset trip state
+    isTripped.value = false
+    lastTripTime.value = null
+    lastTripReason.value = null
+
+    // Reset safe state config
+    safeStateConfig.value = {
+      resetDigitalOutputs: true,
+      resetAnalogOutputs: false,
+      safeDigitalState: false,
+      safeAnalogState: 0.0,
+      specificOutputs: []
+    }
+
+    // Clear localStorage to prevent reload of stale data
+    try {
+      localStorage.removeItem('nisystem-alarm-configs')
+      localStorage.removeItem('nisystem-alarm-configs-v2')
+      localStorage.removeItem('nisystem-alarm-history')
+      localStorage.removeItem('nisystem-interlocks')
+      localStorage.removeItem('nisystem-safety-actions')
+      localStorage.removeItem('nisystem-safe-state-config')
+      localStorage.removeItem('nisystem-auto-execute-safety-actions')
+      console.log('[SAFETY] Cleared all localStorage safety/alarm data')
+    } catch (e) {
+      console.warn('[SAFETY] Failed to clear localStorage:', e)
+    }
   }
 
   /**
@@ -1108,38 +1170,69 @@ export function useSafety() {
   function initialize() {
     if (initialized) return
 
-    // Load saved configs
-    loadAlarmConfigs()
-    loadInterlocks()
-    loadHistory()
+    // Subscribe to project events FIRST (before loading localStorage)
+    // This ensures we handle project changes before loading potentially stale data
+
+    // Subscribe to project/loaded to clear state on project change
+    mqtt.subscribe('nisystem/nodes/+/project/loaded', (payload: any) => {
+      const newProjectName = payload?.project_name || payload?.filename || 'unknown'
+      console.log(`[SAFETY] Project loaded: ${newProjectName}, previous: ${currentProjectId}`)
+
+      // If project changed, clear ALL state
+      if (currentProjectId !== null && currentProjectId !== newProjectName) {
+        console.log('[SAFETY] Project changed, clearing all safety state')
+        clearAllSafetyState('project_changed')
+      }
+
+      currentProjectId = newProjectName
+      // Initialize alarm configs for new project's channels
+      initializeAlarmConfigs()
+    })
+
+    // Subscribe to project/closed to clear state
+    mqtt.subscribe('nisystem/nodes/+/project/closed', () => {
+      console.log('[SAFETY] Project closed, clearing all safety state')
+      clearAllSafetyState('project_closed')
+      currentProjectId = null
+    })
+
+    // Load saved configs - but only if we have a project context
+    // This prevents loading stale data on initial load before project is established
+    const hasChannels = Object.keys(store.channels).length > 0
+    if (hasChannels) {
+      loadAlarmConfigs()
+      loadHistory()
+    }
+    loadInterlocks()  // Interlocks are project-agnostic for now
     loadSafetyActions()
     loadAutoExecuteSetting()
 
     // Watch for channel changes to add new configs and clear orphaned alarms
     watch(() => store.channels, (newChannels, oldChannels) => {
-      initializeAlarmConfigs()
-
       const newCount = Object.keys(newChannels).length
       const oldCount = oldChannels ? Object.keys(oldChannels).length : 0
 
       // If no channels (no project loaded), clear all stale alarms
       if (newCount === 0) {
-        if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0) {
-          console.log('[SAFETY] No channels (no project loaded), clearing stale alarms')
-          clearAllAlarms(false)  // Don't add to history since there's no project context
-          alarmHistory.value = []  // Also clear history
-          // Clear alarm configs for channels that no longer exist
-          alarmConfigs.value = {}
+        if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0 || Object.keys(alarmConfigs.value).length > 0) {
+          console.log('[SAFETY] No channels (no project loaded), clearing all safety state')
+          clearAllSafetyState('no_channels')
         }
-      } else if (oldCount > 0) {
-        // Channels changed - check for orphaned alarms
-        if (newCount === 0) {
-          // All channels removed - clear all alarms
-          console.log('[SAFETY] All channels removed, clearing all alarms')
-          clearAllAlarms(true)
-        } else {
-          // Some channels may have been removed
+      } else {
+        // Has channels - initialize configs for any new channels
+        initializeAlarmConfigs()
+
+        if (oldCount > 0 && newCount > 0) {
+          // Both old and new have channels - check for orphaned alarms
           clearOrphanedAlarms()
+
+          // Also clear alarm configs for channels that no longer exist
+          const validChannels = new Set(Object.keys(newChannels))
+          Object.keys(alarmConfigs.value).forEach(channel => {
+            if (!validChannels.has(channel)) {
+              delete alarmConfigs.value[channel]
+            }
+          })
         }
       }
     }, { immediate: true, deep: true })
@@ -1166,6 +1259,15 @@ export function useSafety() {
     // Backend AlarmManager publishes these when alarms with safety_action trigger
     mqtt.subscribe('nisystem/safety/action', (payload: any) => {
       handleBackendSafetyAction(payload)
+    })
+
+    // Subscribe to alarms/cleared signal from backend
+    // Backend publishes this when project changes, closes, or at startup with no project
+    // This ensures frontend clears stale alarm data and localStorage
+    mqtt.subscribe('nisystem/nodes/+/alarms/cleared', (payload: any) => {
+      const reason = payload?.reason || 'backend_signal'
+      console.log(`[SAFETY] Received alarms/cleared from backend, reason: ${reason}`)
+      clearAllSafetyState(reason)
     })
 
     initialized = true
@@ -1340,6 +1442,7 @@ export function useSafety() {
     acknowledgeAll,
     clearAlarm,
     clearAllAlarms,
+    clearAllSafetyState,
     clearOrphanedAlarms,
     resetAlarm,
     resetAllLatched,

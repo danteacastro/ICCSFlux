@@ -188,8 +188,13 @@ export interface ChannelValue {
   timestamp: number
   alarm?: boolean
   warning?: boolean
-  quality?: 'good' | 'bad' | 'alarm' | 'warning'  // Data quality indicator
+  quality?: 'good' | 'bad' | 'alarm' | 'warning' | 'uncertain'  // Data quality indicator
   disconnected?: boolean  // True when hardware device is not connected
+  // Specific error states for better diagnostics
+  openThermocouple?: boolean  // True when thermocouple is open/broken
+  overflow?: boolean  // True when value exceeds measurement range
+  valueString?: string | null  // Human-readable error: "NaN", "Open TC", "Inf"
+  status?: 'normal' | 'disconnected' | 'open_thermocouple' | 'overflow' | 'low_limit' | 'high_limit' | 'low_warning' | 'high_warning'
   // Multi-node support
   nodeId?: string  // Source node ID (for multi-node deployments)
   // SOE (Sequence of Events) support - microsecond precision
