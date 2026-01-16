@@ -192,7 +192,7 @@ echo   NISystem Started Successfully!
 echo ================================================================================
 echo.
 echo   Dashboard:     http://localhost:5173
-echo   MQTT Broker:   localhost:1884 (TCP), localhost:9002 (WebSocket)
+echo   MQTT Broker:   localhost:1883 (TCP), localhost:9002 (WebSocket)
 echo   Logs:          logs\daq_service.log
 echo.
 echo   Press Ctrl+C to stop all services, or close this window.
@@ -257,9 +257,9 @@ echo.
 echo Requesting status via MQTT...
 echo (This requires mosquitto_pub and mosquitto_sub to be in PATH)
 echo.
-"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1884 -t "nisystem/system/status/request" -m ""
+"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1883 -t "nisystem/system/status/request" -m ""
 timeout /t 1 /nobreak >nul
-"C:\Program Files\mosquitto\mosquitto_sub.exe" -h localhost -p 1884 -t "nisystem/status/system" -C 1
+"C:\Program Files\mosquitto\mosquitto_sub.exe" -h localhost -p 1883 -t "nisystem/status/system" -C 1
 echo.
 pause
 goto MENU

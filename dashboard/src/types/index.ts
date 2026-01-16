@@ -208,6 +208,9 @@ export interface NodeInfo {
   status: 'online' | 'offline' | 'unknown'
   lastSeen: number  // Unix timestamp ms
   simulationMode: boolean
+  configVersion?: string      // Reported by cRIO node in status
+  expectedVersion?: string    // What PC expects from last push
+  configSynced?: boolean      // configVersion === expectedVersion
 }
 
 export interface SystemStatus {
@@ -215,6 +218,7 @@ export interface SystemStatus {
   timestamp: string
   simulation_mode: boolean
   acquiring: boolean
+  acquisition_state?: 'stopped' | 'initializing' | 'running'
   recording: boolean
   recording_filename?: string
   recording_duration?: string // HH:MM:SS format
@@ -855,16 +859,23 @@ export interface InterlockCondition {
 }
 
 export type InterlockControlType =
-  | 'digital_output'   // Block specific digital output
-  | 'schedule_enable'  // Block scheduler from starting
-  | 'recording_start'  // Block recording from starting
-  | 'acquisition_start'// Block acquisition from starting
-  | 'button_action'    // Block specific action button
+  // BLOCKING actions (prevent user from doing something)
+  | 'digital_output'      // Block specific digital output
+  | 'schedule_enable'     // Block scheduler from starting
+  | 'recording_start'     // Block recording from starting
+  | 'acquisition_start'   // Block acquisition from starting
+  | 'button_action'       // Block specific action button
+  // ACTIVE actions (do something when interlock conditions FAIL)
+  | 'set_digital_output'  // Force DO to specific value when conditions fail
+  | 'set_analog_output'   // Force AO to specific value when conditions fail
+  | 'stop_session'        // Stop test session when conditions fail
+  | 'stop_acquisition'    // Stop acquisition when conditions fail
 
 export interface InterlockControl {
   type: InterlockControlType
-  channel?: string     // For digital_output type
+  channel?: string     // For digital_output, set_digital_output, set_analog_output
   buttonId?: string    // For button_action type
+  setValue?: number | boolean  // For set_digital_output (0/1) and set_analog_output (voltage)
 }
 
 export interface Interlock {

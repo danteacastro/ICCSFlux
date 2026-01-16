@@ -2,6 +2,8 @@
 import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
+import { useMqtt } from '../composables/useMqtt'
+import { useBackendScripts } from '../composables/useBackendScripts'
 import { formatUnit } from '../utils/formatUnit'
 import type { WidgetConfig, WidgetStyle, ButtonAction, ButtonActionType, SystemCommandType, ChartPlotStyle } from '../types'
 import { WIDGET_COLORS } from '../types'
@@ -24,6 +26,8 @@ const emit = defineEmits<{
 
 const store = useDashboardStore()
 const scripts = useScripts()
+const mqtt = useMqtt()
+const backendScripts = useBackendScripts()
 
 // Local copy of widget for editing
 const localWidget = ref<Partial<WidgetConfig>>({})
@@ -42,20 +46,91 @@ watch(() => props.widgetId, () => {
     if (localWidget.value.showLabel === undefined) localWidget.value.showLabel = true
     if (localWidget.value.showUnit === undefined) localWidget.value.showUnit = true
     if (localWidget.value.showValue === undefined) localWidget.value.showValue = true
+    // Initialize style object for widgets that use it (title, led, divider, etc.)
+    if (!localWidget.value.style) {
+      localWidget.value.style = {}
+    }
   }
 }, { immediate: true })
 
 // Widget type info
 const widgetType = computed(() => widget.value?.type || 'numeric')
 
+// System state channels (sys.*) - always available from backend
+// These record system state for context when reviewing data
+const SYSTEM_CHANNELS: [string, any][] = [
+  ['sys.acquiring', { name: 'sys.acquiring', channel_type: 'system', units: 'bool', description: 'Acquisition active (1/0)' }],
+  ['sys.session_active', { name: 'sys.session_active', channel_type: 'system', units: 'bool', description: 'Test session active (1/0)' }],
+  ['sys.recording', { name: 'sys.recording', channel_type: 'system', units: 'bool', description: 'Recording active (1/0)' }],
+]
+
+// Extract publish() channel names from Python scripts
+// This allows widgets to be configured with py.* channels before scripts run
+const scriptPublishChannels = computed(() => {
+  const channels = new Set<string>()
+
+  // Parse each script's code for publish('name', ...) calls
+  for (const script of backendScripts.scriptsList.value) {
+    if (!script.code) continue
+
+    // Match publish('name', ...) or publish("name", ...)
+    // Handles: publish('ActiveOutput', value), publish("CycleCount", cycle)
+    const publishRegex = /publish\s*\(\s*['"]([^'"]+)['"]/g
+    let match
+    while ((match = publishRegex.exec(script.code)) !== null) {
+      channels.add(`py.${match[1]}`)
+    }
+  }
+
+  return channels
+})
+
 // Available channels based on widget type
+// Includes: hardware channels, system state channels (sys.*), and script channels (py.*)
 const availableChannels = computed(() => {
   const wt = widgetType.value
-  return Object.entries(store.channels).filter(([_, ch]) => {
+
+  // Start with hardware channels from config
+  const hardwareChannels = Object.entries(store.channels).filter(([_, ch]) => {
     if (wt === 'toggle') return ch.channel_type === 'digital_output'
     if (wt === 'led') return true // LEDs can work with any channel
     return true
   })
+
+  // System channels (always available, skip for toggle widgets)
+  const systemChannels: [string, any][] = wt === 'toggle' ? [] : [...SYSTEM_CHANNELS]
+
+  // Collect script-published channels from two sources:
+  // 1. Parsed from script code (available before scripts run)
+  // 2. Active channelValues (for any py.* not caught by parsing)
+  const scriptChannelNames = new Set<string>(scriptPublishChannels.value)
+
+  // Also include any active py.* channels from channelValues
+  for (const name of Object.keys(mqtt.channelValues.value)) {
+    if (name.startsWith('py.')) {
+      scriptChannelNames.add(name)
+    }
+  }
+
+  // Build script channel entries
+  const scriptChannels: [string, any][] = []
+  for (const name of scriptChannelNames) {
+    // Skip for toggle widgets (py.* are not digital outputs)
+    if (wt === 'toggle') continue
+    // Create a minimal config object for display
+    scriptChannels.push([name, {
+      name,
+      channel_type: 'script',
+      units: '',
+      description: 'Script-published value'
+    }])
+  }
+
+  // Sort script channels alphabetically
+  scriptChannels.sort((a, b) => a[0].localeCompare(b[0]))
+
+  // Combine: hardware channels first, then system channels, then script channels
+  return [...hardwareChannels, ...systemChannels, ...scriptChannels]
 })
 
 // Digital output channels for button action
@@ -557,7 +632,10 @@ const selectedChartChannels = computed(() => {
           <template v-if="widgetType === 'title'">
             <div class="form-group">
               <label>Font Size</label>
-              <select v-model="localWidget.style!.fontSize" @change="updateStyle('fontSize', ($event.target as HTMLSelectElement).value)">
+              <select
+                :value="localWidget.style?.fontSize || 'medium'"
+                @change="updateStyle('fontSize', ($event.target as HTMLSelectElement).value)"
+              >
                 <option value="small">Small</option>
                 <option value="medium">Medium</option>
                 <option value="large">Large</option>
@@ -566,10 +644,13 @@ const selectedChartChannels = computed(() => {
             </div>
             <div class="form-group">
               <label>Text Align</label>
-              <select @change="updateStyle('textAlign', ($event.target as HTMLSelectElement).value)">
-                <option value="left" :selected="localWidget.style?.textAlign === 'left'">Left</option>
-                <option value="center" :selected="localWidget.style?.textAlign === 'center'">Center</option>
-                <option value="right" :selected="localWidget.style?.textAlign === 'right'">Right</option>
+              <select
+                :value="localWidget.style?.textAlign || 'left'"
+                @change="updateStyle('textAlign', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="left">Left</option>
+                <option value="center">Center</option>
+                <option value="right">Right</option>
               </select>
             </div>
             <div class="form-group">

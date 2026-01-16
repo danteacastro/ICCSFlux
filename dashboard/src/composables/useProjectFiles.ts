@@ -255,12 +255,12 @@ export function useProjectFiles() {
 
   // List available projects
   function listProjects() {
-    mqtt.sendNodeCommand('project/list')
+    mqtt.sendLocalCommand('project/list')
   }
 
   // List available configs
   function listConfigs() {
-    mqtt.sendNodeCommand('config/list')
+    mqtt.sendLocalCommand('config/list')
   }
 
   // Load a project (backend will also load associated config)
@@ -282,7 +282,7 @@ export function useProjectFiles() {
         resolve(payload.success)
       })
 
-      mqtt.sendNodeCommand('project/load', { filename })
+      mqtt.sendLocalCommand('project/load', { filename })
     })
   }
 
@@ -312,7 +312,7 @@ export function useProjectFiles() {
         resolve(payload.success)
       })
 
-      mqtt.sendNodeCommand('project/save', { filename, data: projectData })
+      mqtt.sendLocalCommand('project/save', { filename, data: projectData })
     })
   }
 
@@ -335,13 +335,13 @@ export function useProjectFiles() {
         resolve(payload.success)
       })
 
-      mqtt.sendNodeCommand('project/delete', { filename })
+      mqtt.sendLocalCommand('project/delete', { filename })
     })
   }
 
   // Get current project from backend
   function getCurrentProject() {
-    mqtt.sendNodeCommand('project/get-current')
+    mqtt.sendLocalCommand('project/get-current')
   }
 
   // Collect current frontend state into project data
@@ -359,9 +359,17 @@ export function useProjectFiles() {
     const triggers = JSON.parse(localStorage.getItem('nisystem-triggers') || '[]')
 
     // Extended script types (v2.1+)
-    // Get Python scripts directly from composable (source of truth) instead of localStorage
-    const pythonScriptsComposable = usePythonScripts()
-    const pythonScripts = pythonScriptsComposable.exportScripts()
+    // Get Python scripts from BACKEND composable (where the UI saves)
+    // This is the source of truth - the UI uses backendScripts, not pythonScripts
+    const backendScriptsComposable = useBackendScripts()
+    const pythonScripts = backendScriptsComposable.scriptsList.value.map(script => ({
+      id: script.id,
+      name: script.name,
+      code: script.code,
+      description: script.description || '',
+      runMode: script.runMode,
+      enabled: script.enabled
+    }))
     const functionBlocks = JSON.parse(localStorage.getItem('dcflux-function-blocks') || '[]')
     const drawPatterns = JSON.parse(localStorage.getItem('dcflux-draw-patterns') || '{"patterns":[],"history":[]}')
     const watchdogs = JSON.parse(localStorage.getItem('dcflux-watchdogs') || '[]')
@@ -484,6 +492,13 @@ export function useProjectFiles() {
     // CRITICAL: Clear all safety state FIRST to prevent ghost alarms from previous project
     console.log('[PROJECT LOADING] Clearing old safety state before loading new project...')
     safety.clearAllSafetyState('project_loading')
+
+    // CRITICAL: Set all outputs to safe state before loading new configuration
+    // This ensures outputs are safe regardless of what the new project configures
+    console.log('[PROJECT LOADING] Setting all outputs to SAFE STATE...')
+    mqtt.setAllOutputsSafe('project_load')
+    // Brief delay to allow safe state commands to propagate
+    await new Promise(resolve => setTimeout(resolve, 300))
 
     // Apply embedded channels if present (v2.0+ merged config format)
     if (data.channels && Object.keys(data.channels).length > 0) {

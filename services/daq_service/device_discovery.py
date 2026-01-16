@@ -312,6 +312,37 @@ class DeviceDiscovery:
                 self._crio_nodes[node_id].status = 'offline'
                 logger.info(f"cRIO node offline: {node_id}")
 
+    def update_crio_heartbeat(self, node_id: str, heartbeat_data: Dict[str, Any]):
+        """
+        Update cRIO node from heartbeat without overwriting full registration.
+
+        If the node exists with full info (modules), only update heartbeat fields.
+        If the node doesn't exist, create minimal registration.
+        """
+        from datetime import datetime
+        with self._crio_lock:
+            if node_id in self._crio_nodes:
+                # Existing node - only update heartbeat fields, preserve modules
+                node = self._crio_nodes[node_id]
+                node.status = heartbeat_data.get('status', 'online')
+                node.last_seen = datetime.utcnow().isoformat()
+                # Update channel count if provided (but keep modules intact)
+                if 'channels' in heartbeat_data and not node.modules:
+                    node.channels = heartbeat_data.get('channels', 0)
+            else:
+                # New node - create minimal registration from heartbeat
+                self._crio_nodes[node_id] = CRIONode(
+                    node_id=node_id,
+                    ip_address=heartbeat_data.get('ip_address', 'unknown'),
+                    product_type=heartbeat_data.get('product_type', 'cRIO'),
+                    serial_number=heartbeat_data.get('serial_number', ''),
+                    status=heartbeat_data.get('status', 'online'),
+                    last_seen=datetime.utcnow().isoformat(),
+                    channels=heartbeat_data.get('channels', 0),
+                    modules=[]  # Will be populated when full status arrives
+                )
+                logger.info(f"Registered cRIO node: {node_id} ({heartbeat_data.get('status', 'online')})")
+
     def get_crio_nodes(self) -> List[CRIONode]:
         """Get list of known cRIO nodes"""
         with self._crio_lock:

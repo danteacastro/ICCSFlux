@@ -851,6 +851,103 @@ export function useSafety() {
     return interlockStatuses.value.filter(s => s.enabled && !s.satisfied && !s.bypassed)
   })
 
+  // Track which interlock actions have been executed (to avoid repeated execution)
+  const executedInterlockActions = ref<Set<string>>(new Set())
+
+  /**
+   * Execute active control actions for a failed interlock
+   * Called when an interlock transitions from satisfied to failed
+   */
+  function executeInterlockActions(interlockStatus: InterlockStatus) {
+    const interlock = interlocks.value.find(i => i.id === interlockStatus.id)
+    if (!interlock) return
+
+    console.log(`[SAFETY] Executing actions for failed interlock: ${interlock.name}`)
+
+    for (const control of interlock.controls) {
+      // Create unique key for this action
+      const actionKey = `${interlock.id}-${control.type}-${control.channel || ''}`
+
+      // Skip if already executed (prevents repeated execution while interlock stays failed)
+      if (executedInterlockActions.value.has(actionKey)) {
+        continue
+      }
+
+      switch (control.type) {
+        case 'set_digital_output':
+          if (control.channel) {
+            const value = control.setValue ?? 0
+            console.log(`[SAFETY] Setting DO ${control.channel} to ${value}`)
+            mqtt.setOutput(control.channel, value)
+            executedInterlockActions.value.add(actionKey)
+          }
+          break
+
+        case 'set_analog_output':
+          if (control.channel) {
+            const value = control.setValue ?? 0
+            console.log(`[SAFETY] Setting AO ${control.channel} to ${value}`)
+            mqtt.setOutput(control.channel, value)
+            executedInterlockActions.value.add(actionKey)
+          }
+          break
+
+        case 'stop_session':
+          console.log(`[SAFETY] Stopping session`)
+          mqtt.sendCommand('test-session/stop', {})
+          executedInterlockActions.value.add(actionKey)
+          break
+
+        case 'stop_acquisition':
+          console.log(`[SAFETY] Stopping acquisition`)
+          mqtt.sendCommand('acquisition/stop', {})
+          executedInterlockActions.value.add(actionKey)
+          break
+
+        // BLOCKING actions don't need execution - they just prevent user actions
+        case 'digital_output':
+        case 'schedule_enable':
+        case 'recording_start':
+        case 'acquisition_start':
+        case 'button_action':
+          // These are handled by isControlBlocked()
+          break
+      }
+    }
+  }
+
+  /**
+   * Clear executed action tracking when interlock becomes satisfied again
+   */
+  function clearInterlockActionTracking(interlockId: string) {
+    const keysToRemove: string[] = []
+    executedInterlockActions.value.forEach(key => {
+      if (key.startsWith(interlockId + '-')) {
+        keysToRemove.push(key)
+      }
+    })
+    keysToRemove.forEach(key => executedInterlockActions.value.delete(key))
+  }
+
+  // Watch for interlock status changes and execute actions on failure
+  watch(interlockStatuses, (newStatuses, oldStatuses) => {
+    if (!oldStatuses) return
+
+    for (const status of newStatuses) {
+      const oldStatus = oldStatuses.find(s => s.id === status.id)
+
+      // Interlock just failed (was satisfied, now not satisfied)
+      if (oldStatus?.satisfied && !status.satisfied && status.enabled && !status.bypassed) {
+        executeInterlockActions(status)
+      }
+
+      // Interlock just became satisfied again - clear tracking
+      if (!oldStatus?.satisfied && status.satisfied) {
+        clearInterlockActionTracking(status.id)
+      }
+    }
+  }, { deep: true })
+
   // Trip state
   const isTripped = ref(false)
   const lastTripTime = ref<string | null>(null)

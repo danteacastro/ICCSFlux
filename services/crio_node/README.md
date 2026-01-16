@@ -2,14 +2,41 @@
 
 Standalone service that runs on NI cRIO-9056 for NISystem integration.
 
-## Overview
+## Quick Start (One-Time Setup)
 
-This service runs **on the cRIO itself** (not the PC) and:
-1. Connects to NISystem PC's MQTT broker
-2. Receives configuration and saves it locally
-3. Runs DAQ loop with hardware watchdog for safe state
-4. Continues running even if PC disconnects
-5. Executes Python scripts pushed from NISystem
+### 1. Copy files to cRIO
+
+```bash
+scp -r services/crio_node admin@<crio-ip>:/home/admin/
+```
+
+### 2. Run installer on cRIO
+
+```bash
+ssh admin@<crio-ip>
+cd /home/admin/crio_node
+chmod +x install.sh
+./install.sh <YOUR_PC_IP>
+```
+
+Example:
+```bash
+./install.sh 192.168.1.100
+```
+
+That's it! The cRIO will now:
+- Auto-start on boot
+- Auto-detect all 96 channels
+- Auto-read and publish values to MQTT
+- Reconnect automatically if network drops
+
+## What Happens Automatically
+
+1. **Boot** → cRIO node service starts via systemd
+2. **Hardware Detection** → Finds all 6 modules and 96 channels
+3. **Auto-Read** → Starts reading ALL channels immediately (no config needed)
+4. **MQTT Connect** → Connects to NISystem PC's MQTT broker
+5. **Publish Values** → Sends channel values every 100ms
 
 ## Architecture
 
@@ -17,9 +44,9 @@ This service runs **on the cRIO itself** (not the PC) and:
 NISystem PC                              cRIO-9056
 ┌─────────────────┐      MQTT      ┌─────────────────────┐
 │  Dashboard      │◄──────────────►│  cRIO Node Service  │
-│  Backend        │   Config/Data   │  - Local config     │
-│  Project Mgmt   │                 │  - DAQmx watchdog   │
-└─────────────────┘                 │  - Python scripts   │
+│  Backend        │   Config/Data   │  - Auto-detect HW   │
+│  Project Mgmt   │                 │  - Auto-read all    │
+└─────────────────┘                 │  - DAQmx watchdog   │
                                     └─────────────────────┘
                                            │
                                     ┌──────┴──────┐
@@ -29,123 +56,102 @@ NISystem PC                              cRIO-9056
                                     └─────────────┘
 ```
 
-## Installation on cRIO
+## Files
 
-### 1. Enable SSH on cRIO
+| File | Purpose |
+|------|---------|
+| `crio_node.py` | Main service script |
+| `crio_node.service` | Systemd service unit |
+| `crio_node.env` | Configuration (MQTT broker, node ID) |
+| `install.sh` | One-click installer |
+| `requirements.txt` | Python dependencies |
 
-Use NI MAX or NI Web-Based Configuration to enable SSH access.
+## Configuration
 
-### 2. Copy service files
-
-```bash
-scp -r services/crio_node admin@<crio-ip>:/home/admin/nisystem/
-```
-
-### 3. Install dependencies
-
-```bash
-ssh admin@<crio-ip>
-cd /home/admin/nisystem
-pip install -r requirements.txt
-```
-
-### 4. Configure MQTT broker address
-
-Edit `/home/admin/nisystem/crio_config.json` or use command-line:
+After installation, config is at `/home/admin/nisystem/crio_node.env`:
 
 ```bash
-python crio_node.py --broker 192.168.1.100 --port 1884 --node-id crio-001
+# MQTT Broker - NISystem PC
+MQTT_BROKER=192.168.1.100
+
+# MQTT Port
+MQTT_PORT=1883
+
+# Node ID (change if you have multiple cRIOs)
+NODE_ID=crio-001
 ```
 
-### 5. Start as service (systemd)
-
-Create `/etc/systemd/system/nisystem-crio.service`:
-
-```ini
-[Unit]
-Description=NISystem cRIO Node Service
-After=network.target
-
-[Service]
-Type=simple
-User=admin
-WorkingDirectory=/home/admin/nisystem
-ExecStart=/usr/bin/python3 /home/admin/nisystem/crio_node.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
+To change settings:
 ```bash
-sudo systemctl enable nisystem-crio
-sudo systemctl start nisystem-crio
+sudo nano /home/admin/nisystem/crio_node.env
+sudo systemctl restart crio_node.service
+```
+
+## Useful Commands
+
+```bash
+# Check status
+systemctl status crio_node.service
+
+# View live logs
+journalctl -u crio_node.service -f
+
+# Restart service
+sudo systemctl restart crio_node.service
+
+# Stop service
+sudo systemctl stop crio_node.service
+
+# Disable auto-start
+sudo systemctl disable crio_node.service
+```
+
+## Multiple cRIOs
+
+If you have multiple cRIOs, give each a unique node ID:
+
+```bash
+# On cRIO #1
+./install.sh 192.168.1.100 crio-001
+
+# On cRIO #2
+./install.sh 192.168.1.100 crio-002
 ```
 
 ## Safe State (Hardware Watchdog)
 
-The service configures an NI-DAQmx hardware watchdog that:
+The service configures an NI-DAQmx hardware watchdog:
 - Monitors the RT task health
-- If Python stops "petting" the watchdog (crash, hang, etc.)
-- Hardware **automatically** sets configured outputs to LOW
-
-This is **independent of the PC** - purely local hardware mechanism.
-
-### Configuration
-
-In project config, specify which outputs go to safe state:
-```json
-{
-  "safe_state_outputs": ["DO_Heater", "DO_Pump", "DO_Fan"]
-}
-```
-
-If not specified, all DO channels default to LOW on watchdog expiry.
+- If Python crashes/hangs, hardware automatically sets outputs to LOW
+- Independent of PC connection - purely local hardware safety
 
 ## MQTT Topics
-
-The service uses node-prefixed topics for multi-node support:
 
 | Topic | Direction | Description |
 |-------|-----------|-------------|
 | `nisystem/nodes/{node-id}/channels/{name}` | Publish | Channel values |
-| `nisystem/nodes/{node-id}/status/system` | Publish | System status |
-| `nisystem/nodes/{node-id}/heartbeat` | Publish | Heartbeat (2 Hz) |
-| `nisystem/nodes/{node-id}/config/full` | Subscribe | Full config update |
-| `nisystem/nodes/{node-id}/commands/{channel}` | Subscribe | Output commands |
-| `nisystem/nodes/{node-id}/script/add` | Subscribe | Add script |
-| `nisystem/nodes/{node-id}/script/start` | Subscribe | Start script |
+| `nisystem/nodes/{node-id}/status/system` | Publish | Status + hardware info |
+| `nisystem/nodes/{node-id}/heartbeat` | Publish | Heartbeat (every 2s) |
+| `nisystem/discovery/ping` | Subscribe | Trigger status publish |
 
-## Command Line Options
+## Troubleshooting
 
-```
-usage: crio_node.py [-h] [-c CONFIG_DIR] [--broker BROKER] [--port PORT] [--node-id NODE_ID]
-
-cRIO Node Service for NISystem
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -c CONFIG_DIR, --config-dir CONFIG_DIR
-                        Configuration directory (default: /home/admin/nisystem)
-  --broker BROKER       MQTT broker address (overrides config)
-  --port PORT           MQTT broker port (overrides config)
-  --node-id NODE_ID     Node ID (overrides config)
+### Service won't start
+```bash
+journalctl -u crio_node.service -n 50
 ```
 
-## Standalone Mode
+### Can't connect to MQTT
+Check the broker IP in `/home/admin/nisystem/crio_node.env`
 
-If the PC disconnects:
-1. Service logs "Lost contact with PC - continuing in standalone mode"
-2. DAQ continues with last known configuration
-3. Scripts continue executing
-4. Data is buffered (if recording enabled)
-5. When PC reconnects, service resumes normal operation
-
-## Testing Without Hardware
-
-The service falls back to simulation mode if NI-DAQmx is not available:
+### No channels detected
+```bash
+# Check if nidaqmx sees hardware
+python3 -c "import nidaqmx.system; print(list(nidaqmx.system.System.local().devices))"
 ```
-WARNING: nidaqmx not available - running in simulation mode
+
+### Network issues after reboot
+The service waits for network and auto-reconnects. Check:
+```bash
+ping <nisystem-pc-ip>
 ```

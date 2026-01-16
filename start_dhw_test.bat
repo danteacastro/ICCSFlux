@@ -82,7 +82,7 @@ timeout /t 3 /nobreak >nul
 
 REM Send project load command via MQTT
 echo   - Sending project load command via MQTT...
-"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1884 -t "nisystem/project/load" -m "{\"filename\": \"dhw_test_system.json\"}"
+"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1883 -t "nisystem/project/load" -m "{\"filename\": \"dhw_test_system.json\"}"
 timeout /t 3 /nobreak >nul
 echo   - DHW project load command sent
 echo.
@@ -131,16 +131,16 @@ echo.
 echo   Configuration: config\dhw_test_system_nimax_sim.ini
 echo   Project:       config\projects\dhw_test_system.json
 echo   Dashboard:     http://localhost:5173
-echo   MQTT:          localhost:1884 (Note: DHW uses port 1884!)
+echo   MQTT:          localhost:1883 (Note: DHW uses port 1883!)
 echo   Watchdog:      Active (monitors DAQ health)
 echo   Weekly Restart: Sunday 3 AM
 echo.
 echo   Checking system status via MQTT...
 echo.
 
-"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1884 -t "nisystem/system/status/request" -m "" >nul 2>&1
+"C:\Program Files\mosquitto\mosquitto_pub.exe" -h localhost -p 1883 -t "nisystem/system/status/request" -m "" >nul 2>&1
 timeout /t 1 /nobreak >nul
-"C:\Program Files\mosquitto\mosquitto_sub.exe" -h localhost -p 1884 -t "nisystem/status/system" -C 1 2>nul
+"C:\Program Files\mosquitto\mosquitto_sub.exe" -h localhost -p 1883 -t "nisystem/status/system" -C 1 2>nul
 
 echo.
 echo ================================================================================

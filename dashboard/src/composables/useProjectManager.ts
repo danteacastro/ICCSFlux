@@ -447,6 +447,14 @@ export function useProjectManager() {
 
   async function importProject(data: any): Promise<{ success: boolean; message: string }> {
     try {
+      // CRITICAL: Set all outputs to safe state before importing new project
+      if (mqtt.connected.value) {
+        console.log('[PROJECT IMPORT] Setting all outputs to SAFE STATE before import...')
+        mqtt.setAllOutputsSafe('project_import')
+        // Brief delay to allow safe state commands to propagate
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
+
       let project: ProjectFile
 
       if (isProjectFileV2(data)) {
@@ -455,14 +463,14 @@ export function useProjectManager() {
         // For V2 projects with embedded channels, send to backend
         if (mqtt.connected.value && data.channels) {
           // Send the full project for backend to apply channels/system config
-          mqtt.sendNodeCommand('project/import/json', data)
+          mqtt.sendLocalCommand('project/import/json', data)
         }
       } else if (isLegacyBundle(data)) {
         project = migrateLegacyBundle(data)
 
         // For legacy bundles, also send backend config via MQTT
         if (mqtt.connected.value && data.backend) {
-          mqtt.sendNodeCommand('config/load/full', data.backend)
+          mqtt.sendLocalCommand('config/load/full', data.backend)
         }
       } else {
         return { success: false, message: 'Invalid project file format' }

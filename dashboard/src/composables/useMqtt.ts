@@ -34,6 +34,10 @@ const channelValues = ref<Record<string, ChannelValue>>({})
 const systemStatus = ref<SystemStatus | null>(null)
 const channelConfigs = ref<Record<string, ChannelConfig>>({})
 
+// Channel ownership tracking - prevents value collision between nodes
+// Maps channel name -> nodeId that owns/updates this channel
+const channelOwners = new Map<string, string>()
+
 // Discovery state (shared)
 const discoveryResult = ref<any>(null)
 const discoveryChannels = ref<any[]>([])
@@ -94,6 +98,9 @@ const watchdogStatus = ref<{
 // Multi-node support (shared)
 const knownNodes = ref<Map<string, NodeInfo>>(new Map())
 const activeNodeId = ref<string | null>(null)  // Currently focused node (null = all nodes)
+
+// cRIO config version tracking for sync indicator
+const crioConfigVersions = ref<Map<string, { expected: string; reported: string }>>(new Map())
 
 // Callbacks (shared)
 const dataCallbacks: ((data: Record<string, number>) => void)[] = []
@@ -238,6 +245,7 @@ export function useMqtt(prefix: string = 'nisystem') {
         // Parse node-prefixed topics: nisystem/nodes/{node_id}/{category}/...
         // Example: nisystem/nodes/node-001/channels/TC001
         const nodeMatch = topic.match(new RegExp(`^${systemPrefix}/nodes/([^/]+)/(.+)$`))
+
         if (nodeMatch) {
           const [, nodeId, restOfTopic] = nodeMatch
           const category = restOfTopic.split('/')[0]
@@ -245,17 +253,38 @@ export function useMqtt(prefix: string = 'nisystem') {
           // Update node registry when we receive any message from a node
           if (payload.node_id || nodeId) {
             const existingNode = knownNodes.value.get(nodeId)
+            const reportedVersion = payload.config_version || existingNode?.configVersion
+
+            // Track cRIO config versions for sync indicator
+            if (nodeId.startsWith('crio') && reportedVersion) {
+              const existing = crioConfigVersions.value.get(nodeId) || { expected: '', reported: '' }
+              crioConfigVersions.value.set(nodeId, {
+                ...existing,
+                reported: reportedVersion
+              })
+            }
+
+            // Calculate sync status
+            const versionData = crioConfigVersions.value.get(nodeId)
+            const isSynced = !versionData?.expected || versionData.expected === versionData.reported
+
             knownNodes.value.set(nodeId, {
               nodeId,
               nodeName: payload.node_name || existingNode?.nodeName || nodeId,
               status: 'online',
               lastSeen: Date.now(),
-              simulationMode: payload.simulation_mode ?? existingNode?.simulationMode ?? false
+              simulationMode: payload.simulation_mode ?? existingNode?.simulationMode ?? false,
+              configVersion: reportedVersion,
+              expectedVersion: versionData?.expected || existingNode?.expectedVersion,
+              configSynced: isSynced
             })
           }
 
           // Route messages based on category
-          if (restOfTopic.startsWith('channels/')) {
+          if (restOfTopic === 'channels/batch') {
+            // Batched channel values from cRIO: { "chan1": {value, timestamp}, "chan2": {value, timestamp}, ... }
+            handleBatchChannelValues(payload, nodeId)
+          } else if (restOfTopic.startsWith('channels/')) {
             // Individual channel value: nisystem/nodes/{node}/channels/{channel_name}
             const channelName = restOfTopic.split('/').pop() || ''
             handleChannelValue(channelName, payload, nodeId)
@@ -270,6 +299,8 @@ export function useMqtt(prefix: string = 'nisystem') {
             handleDiscoveryResult(payload)
           } else if (restOfTopic === 'discovery/channels') {
             handleDiscoveryChannels(payload)
+          } else if (restOfTopic === 'discovery/crio-found') {
+            handleCrioDiscovered(payload)
           } else if (restOfTopic.startsWith('alarms/')) {
             handleAlarm(topic, payload)
           } else if (restOfTopic === 'config/current') {
@@ -345,6 +376,27 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleChannelValue(channelName: string, payload: any, nodeId?: string) {
+    const effectiveNodeId = nodeId || payload.node_id || 'node-001'
+
+    // Skip cRIO data when main acquisition is not active
+    // cRIO runs in background but dashboard only shows values when acquiring
+    if (effectiveNodeId.startsWith('crio') && !systemStatus.value?.acquiring) {
+      return
+    }
+
+    // Check channel ownership - prevent value collision between nodes
+    // If a channel is owned by a cRIO node, don't let main DAQ overwrite it
+    const owner = channelOwners.get(channelName)
+    if (owner && owner !== effectiveNodeId) {
+      // This channel is owned by a different node, skip update
+      return
+    }
+
+    // Set ownership if not already set
+    if (!owner) {
+      channelOwners.set(channelName, effectiveNodeId)
+    }
+
     const config = channelConfigs.value[channelName]
     const timestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now()
 
@@ -357,12 +409,23 @@ export function useMqtt(prefix: string = 'nisystem') {
     const isOverflow = payload.status === 'overflow'
     const value = isNaN ? NaN : payload.value
 
+    // Only check alarms if explicitly enabled and limits are set
+    // This prevents false alarms on channels without configured limits
+    // Use != null to check both undefined AND null
+    const hasAlarmLimits = config && (
+      config.hihi_limit != null ||
+      config.lolo_limit != null ||
+      config.high_limit != null ||
+      config.low_limit != null
+    )
+    const alarmEnabled = config?.alarm_enabled !== false && hasAlarmLimits
+
     channelValues.value[channelName] = {
       name: channelName,
       value,
       timestamp,
-      alarm: payload.quality === 'alarm' || (config && !isNaN ? isAlarm(value, config) : false),
-      warning: payload.quality === 'warning' || (config && !isNaN ? isWarning(value, config) : false),
+      alarm: payload.quality === 'alarm' || (alarmEnabled && !isNaN ? isAlarm(value, config!) : false),
+      warning: payload.quality === 'warning' || (alarmEnabled && !isNaN ? isWarning(value, config!) : false),
       // Additional quality indicators
       quality: payload.quality || 'good',
       disconnected: isDisconnected,
@@ -372,7 +435,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       valueString: payload.value_string || null,  // Human-readable error: "NaN", "Open TC", "Inf"
       status: payload.status || 'normal',
       // Multi-node: store source node ID
-      nodeId: nodeId || payload.node_id,
+      nodeId: effectiveNodeId,
       // SOE: Store high-precision acquisition timestamp (microseconds since epoch)
       acquisitionTsUs: payload.acquisition_ts_us
     }
@@ -387,14 +450,144 @@ export function useMqtt(prefix: string = 'nisystem') {
     pythonScripts.onScanData()
   }
 
+  function handleBatchChannelValues(payload: Record<string, { value: number, timestamp: number }>, nodeId?: string) {
+    // Handle batched channel values from cRIO nodes
+    // cRIO publishes with physical channel names (e.g., "Mod5/ai0") when no config is pushed
+    // Dashboard needs to map these back to TAG names using channelConfigs
+    const effectiveNodeId = nodeId || 'crio-001'
+
+    // Skip cRIO data when main acquisition is not active
+    // cRIO runs in background but dashboard only shows values when acquiring
+    if (effectiveNodeId.startsWith('crio') && !systemStatus.value?.acquiring) {
+      return
+    }
+
+    const aggregatedData: Record<string, number> = {}
+
+    // Build reverse lookup: physical_channel -> TAG name
+    // The cRIO sends "Mod5/ai0" but configs might have "cRIO1Mod5/ai0" or similar
+    const physicalToTag: Record<string, string> = {}
+    for (const [tagName, config] of Object.entries(channelConfigs.value)) {
+      if (config.physical_channel) {
+        // Exact match
+        physicalToTag[config.physical_channel] = tagName
+        // Also try with just the module part (e.g., "Mod5/ai0" from "cRIO1Mod5/ai0")
+        // Extract module path pattern from the physical_channel
+        // Handles: Mod5/ai0 (analog), Mod4/port0/line0 (digital), Mod3/ctr0 (counter)
+        const match = config.physical_channel.match(/(Mod\d+\/.+)$/i)
+        if (match) {
+          physicalToTag[match[1]] = tagName
+        }
+      }
+    }
+
+    for (const [physicalChannel, data] of Object.entries(payload)) {
+      const timestamp = data.timestamp ? new Date(data.timestamp * 1000).getTime() : Date.now()
+      let value = data.value
+
+      // Look up TAG name from physical channel
+      const tagName = physicalToTag[physicalChannel]
+      const effectiveName = tagName || physicalChannel  // Fall back to physical name if no mapping
+      const config = channelConfigs.value[effectiveName]
+
+      // Set channel ownership - this cRIO owns these channels
+      // This prevents main DAQ from overwriting values
+      channelOwners.set(effectiveName, effectiveNodeId)
+
+      // Apply scaling if configured
+      if (config) {
+        value = applyScaling(value, config)
+      }
+
+      // Only check alarms if explicitly enabled and limits are set
+      // Use != null to check both undefined AND null
+      const hasAlarmLimits = config && (
+        config.hihi_limit != null ||
+        config.lolo_limit != null ||
+        config.high_limit != null ||
+        config.low_limit != null
+      )
+      const alarmEnabled = config?.alarm_enabled !== false && hasAlarmLimits
+
+      channelValues.value[effectiveName] = {
+        name: effectiveName,
+        value,
+        timestamp,
+        alarm: alarmEnabled ? isAlarm(value, config!) : false,
+        warning: alarmEnabled ? isWarning(value, config!) : false,
+        quality: 'good',
+        disconnected: false,
+        nodeId: effectiveNodeId
+      }
+
+      aggregatedData[effectiveName] = value
+    }
+
+    // Call data callbacks with all values at once
+    if (Object.keys(aggregatedData).length > 0) {
+      dataCallbacks.forEach(cb => cb(aggregatedData))
+    }
+
+    // Notify Python scripts
+    pythonScripts.onScanData()
+  }
+
+  /**
+   * Apply scaling transformation to a raw value based on channel config.
+   * Supports: linear scaling (slope/offset), 4-20mA scaling, and map scaling.
+   */
+  function applyScaling(rawValue: number, config: ChannelConfig): number {
+    // Handle NaN/null values
+    if (rawValue === null || rawValue === undefined || Number.isNaN(rawValue)) {
+      return NaN
+    }
+
+    // 4-20mA scaling: Convert current (4-20mA) to engineering units
+    if (config.four_twenty_scaling && config.eng_units_min !== undefined && config.eng_units_max !== undefined) {
+      // Assume rawValue is in mA (4-20 range)
+      const minCurrent = 4.0
+      const maxCurrent = 20.0
+      const normalized = (rawValue - minCurrent) / (maxCurrent - minCurrent)
+      return config.eng_units_min + normalized * (config.eng_units_max - config.eng_units_min)
+    }
+
+    // Map scaling: Linear interpolation between pre-scaled and scaled ranges
+    if (config.scale_type === 'map' &&
+        config.pre_scaled_min !== undefined && config.pre_scaled_max !== undefined &&
+        config.scaled_min !== undefined && config.scaled_max !== undefined) {
+      const preRange = config.pre_scaled_max - config.pre_scaled_min
+      if (preRange !== 0) {
+        const normalized = (rawValue - config.pre_scaled_min) / preRange
+        return config.scaled_min + normalized * (config.scaled_max - config.scaled_min)
+      }
+    }
+
+    // Linear scaling: y = mx + b
+    if (config.scale_slope !== undefined || config.scale_offset !== undefined) {
+      const slope = config.scale_slope ?? 1.0
+      const offset = config.scale_offset ?? 0.0
+      return rawValue * slope + offset
+    }
+
+    // No scaling - return raw value
+    return rawValue
+  }
+
   function handleStatus(status: SystemStatus, nodeId?: string) {
     console.log('[MQTT] Received status update:', { nodeId, acquiring: status.acquiring, recording: status.recording })
     // Add node info to status
     if (nodeId || status.node_id) {
       status.node_id = nodeId || status.node_id
     }
-    systemStatus.value = status
-    statusCallbacks.forEach(cb => cb(status))
+
+    // Only update main systemStatus from the local DAQ service (node-001)
+    // cRIO nodes have their own status which shouldn't affect the main dashboard state
+    const effectiveNodeId = nodeId || status.node_id || 'node-001'
+    if (effectiveNodeId === 'node-001' || !effectiveNodeId.startsWith('crio')) {
+      systemStatus.value = status
+      statusCallbacks.forEach(cb => cb(status))
+    }
+    // For cRIO nodes, knownNodes registry is updated above but systemStatus is not affected
   }
 
   function handleScriptValues(payload: Record<string, any>) {
@@ -564,8 +757,43 @@ export function useMqtt(prefix: string = 'nisystem') {
     console.log('Discovery channels:', discoveryChannels.value.length)
   }
 
+  function handleCrioDiscovered(payload: any) {
+    // A new cRIO node was discovered - automatically refresh discovery
+    console.log('[MQTT] New cRIO node discovered:', payload.node_id, '- auto-refreshing discovery')
+    // Small delay to ensure cRIO is fully registered before re-scanning
+    setTimeout(() => {
+      if (!isScanning.value) {
+        console.log('[MQTT] Auto-triggering discovery scan for new cRIO')
+        startDeviceScan()
+      }
+    }, 500)
+  }
+
   function handleConfigResponse(payload: any) {
     console.log('Config response:', payload)
+
+    // Track expected config version when cRIO ACK is received
+    if (payload.node_id && payload.config_version && payload.success) {
+      const nodeId = payload.node_id
+      const existing = crioConfigVersions.value.get(nodeId) || { expected: '', reported: '' }
+      crioConfigVersions.value.set(nodeId, {
+        ...existing,
+        expected: payload.config_version
+      })
+
+      // Update knownNodes sync status
+      const nodeInfo = knownNodes.value.get(nodeId)
+      if (nodeInfo) {
+        knownNodes.value.set(nodeId, {
+          ...nodeInfo,
+          expectedVersion: payload.config_version,
+          configSynced: nodeInfo.configVersion === payload.config_version
+        })
+      }
+
+      console.log(`[MQTT] cRIO ${nodeId} config confirmed, version: ${payload.config_version}`)
+    }
+
     configUpdateCallbacks.forEach(cb => cb(payload))
   }
 
@@ -814,6 +1042,16 @@ export function useMqtt(prefix: string = 'nisystem') {
       if (!isActive && wasActive) {
         console.log('[Python Scripts] Test session ended - triggering onSessionEnd')
         pythonScripts.onSessionEnd()
+
+        // Clear script-published channels (py.*) when session stops
+        // This prevents stale values from being displayed after scripts stop running
+        const pyChannels = Object.keys(channelValues.value).filter(name => name.startsWith('py.'))
+        if (pyChannels.length > 0) {
+          console.log(`[Python Scripts] Clearing ${pyChannels.length} script-published channels:`, pyChannels)
+          for (const name of pyChannels) {
+            delete channelValues.value[name]
+          }
+        }
       }
     }
   )
@@ -936,12 +1174,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     if (config.alarm_enabled === false) return false
 
     // ISA-18.2 critical limits (HiHi/LoLo)
-    if (config.hihi_limit !== undefined && value >= config.hihi_limit) return true
-    if (config.lolo_limit !== undefined && value <= config.lolo_limit) return true
+    // Use != null to check both undefined AND null
+    if (config.hihi_limit != null && value >= config.hihi_limit) return true
+    if (config.lolo_limit != null && value <= config.lolo_limit) return true
 
     // Legacy limits (backward compatibility)
-    if (config.low_limit !== undefined && value < config.low_limit) return true
-    if (config.high_limit !== undefined && value > config.high_limit) return true
+    if (config.low_limit != null && value < config.low_limit) return true
+    if (config.high_limit != null && value > config.high_limit) return true
     return false
   }
 
@@ -950,12 +1189,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     if (config.alarm_enabled === false) return false
 
     // ISA-18.2 warning limits (Hi/Lo)
-    if (config.hi_limit !== undefined && value >= config.hi_limit) return true
-    if (config.lo_limit !== undefined && value <= config.lo_limit) return true
+    // Use != null to check both undefined AND null
+    if (config.hi_limit != null && value >= config.hi_limit) return true
+    if (config.lo_limit != null && value <= config.lo_limit) return true
 
     // Legacy limits (backward compatibility)
-    if (config.low_warning !== undefined && value < config.low_warning) return true
-    if (config.high_warning !== undefined && value > config.high_warning) return true
+    if (config.low_warning != null && value < config.low_warning) return true
+    if (config.high_warning != null && value > config.high_warning) return true
     return false
   }
 
@@ -979,23 +1219,51 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   /**
-   * Send a command to a specific node (or the active/first known node)
+   * Send a command to the DAQ service or a specific node.
    * Uses node-prefixed topic: nisystem/nodes/{node_id}/{command}
+   *
+   * Default: Goes to the main DAQ service (node-001)
+   * Pass nodeId to target a specific remote node (e.g., cRIO)
    */
-  function sendNodeCommand(command: string, payload?: any, nodeId?: string) {
+  function sendNodeCommand(command: string, payload?: any, nodeId: string = 'node-001') {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
     }
 
-    // Use specified node, or active node, or first known node, or default
-    const targetNodeId = nodeId || activeNodeId.value || knownNodes.value.keys().next().value || 'node-001'
-    const topic = `${systemPrefix}/nodes/${targetNodeId}/${command}`
+    const topic = `${systemPrefix}/nodes/${nodeId}/${command}`
     const message = payload !== undefined ? JSON.stringify(payload) : '{}'
 
     console.log('[MQTT] sendNodeCommand:', topic, message)
     client.value.publish(topic, message)
   }
+
+  /**
+   * Send a command to a remote node (cRIO, etc).
+   * Uses the active node or first known remote node.
+   * For explicit node targeting, use sendNodeCommand with nodeId.
+   */
+  function sendRemoteNodeCommand(command: string, payload?: any) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+
+    const targetNodeId = activeNodeId.value || knownNodes.value.keys().next().value
+    if (!targetNodeId || targetNodeId === 'node-001') {
+      console.warn('No remote node available for command:', command)
+      return
+    }
+
+    const topic = `${systemPrefix}/nodes/${targetNodeId}/${command}`
+    const message = payload !== undefined ? JSON.stringify(payload) : '{}'
+
+    console.log('[MQTT] sendRemoteNodeCommand:', topic, message)
+    client.value.publish(topic, message)
+  }
+
+  // Alias for backwards compatibility
+  const sendLocalCommand = sendNodeCommand
 
   /**
    * Subscribe to a specific topic with a callback
@@ -1043,23 +1311,23 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function enableScheduler() {
-    sendNodeCommand('schedule/enable')
+    sendLocalCommand('schedule/enable')
   }
 
   function disableScheduler() {
-    sendNodeCommand('schedule/disable')
+    sendLocalCommand('schedule/disable')
   }
 
   function loadConfig(configName: string) {
-    sendNodeCommand('config/load', { config: configName })
+    sendLocalCommand('config/load', { config: configName })
   }
 
   function saveConfig(configName: string) {
-    sendNodeCommand('config/save', { config: configName })
+    sendLocalCommand('config/save', { config: configName })
   }
 
   function setOutput(channelName: string, value: number | boolean) {
-    // Output commands go to node-prefixed topic
+    // Output commands go through DAQ service for safety checks (interlocks, session lockout)
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
@@ -1074,6 +1342,31 @@ export function useMqtt(prefix: string = 'nisystem') {
       return
     }
     sendNodeCommand('channel/reset', { channel: channelName })
+  }
+
+  /**
+   * Set all outputs to safe state (DO=0, AO=0)
+   * - Sends safe-state command to local DAQ service (node-001)
+   * - Sends safe-state command to all known remote nodes (cRIO)
+   */
+  function setAllOutputsSafe(reason: string = 'project_load') {
+    if (!client.value || !connected.value) {
+      console.warn('[MQTT] Not connected - cannot set safe state')
+      return
+    }
+
+    console.log(`[MQTT] Setting ALL outputs to safe state - reason: ${reason}`)
+
+    // Send to local DAQ service
+    sendNodeCommand('system/safe-state', { reason }, 'node-001')
+
+    // Send to all known remote nodes (cRIO)
+    for (const nodeId of knownNodes.value.keys()) {
+      if (nodeId !== 'node-001') {
+        console.log(`[MQTT] Sending safe-state to remote node: ${nodeId}`)
+        sendNodeCommand('system/safe-state', { reason }, nodeId)
+      }
+    }
   }
 
   // Discovery functions
@@ -1091,7 +1384,8 @@ export function useMqtt(prefix: string = 'nisystem') {
     isScanning.value = true
     discoveryResult.value = null
     discoveryChannels.value = []
-    sendNodeCommand('discovery/scan', {})
+    // Discovery scan is always handled by local DAQ service
+    sendLocalCommand('discovery/scan', {})
 
     // Set timeout to automatically reset scanning state if no response
     scanTimeoutId = setTimeout(() => {
@@ -1117,7 +1411,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     discoveryCallbacks.push(callback)
   }
 
-  // Config update functions - use sendNodeCommand for node-prefixed topics
+  // Config update functions - always go to local DAQ service
   function updateChannelConfig(channelName: string, config: any) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
@@ -1127,7 +1421,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       channel: channelName,
       config: config
     }
-    sendNodeCommand('config/channel/update', payload)
+    sendLocalCommand('config/channel/update', payload)
     console.log('Channel config update sent:', channelName)
   }
 
@@ -1137,7 +1431,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       return
     }
     const payload = configName ? { config: configName } : {}
-    sendNodeCommand('config/save', payload)
+    sendLocalCommand('config/save', payload)
     console.log('Config save requested')
   }
 
@@ -1154,7 +1448,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       name,
       config
     }
-    sendNodeCommand('config/channel/create', payload)
+    sendLocalCommand('config/channel/create', payload)
     console.log('Channel create sent:', name)
   }
 
@@ -1167,7 +1461,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       name,
       force
     }
-    sendNodeCommand('config/channel/delete', payload)
+    sendLocalCommand('config/channel/delete', payload)
     console.log('Channel delete sent:', name)
   }
 
@@ -1177,7 +1471,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       return
     }
     const payload = { channels }
-    sendNodeCommand('config/channel/bulk-create', payload)
+    sendLocalCommand('config/channel/bulk-create', payload)
     console.log('Bulk create sent:', channels.length, 'channels')
   }
 
@@ -1200,13 +1494,13 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  // Recording management functions - use sendNodeCommand for node-prefixed topics
+  // Recording management functions - always go to local DAQ service
   function updateRecordingConfig(config: Partial<RecordingConfig>) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
     }
-    sendNodeCommand('recording/config', config)
+    sendLocalCommand('recording/config', config)
     console.log('Recording config update sent')
   }
 
@@ -1215,7 +1509,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    sendNodeCommand('recording/config/get', {})
+    sendLocalCommand('recording/config/get', {})
   }
 
   function listRecordedFiles() {
@@ -1223,7 +1517,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    sendNodeCommand('recording/list', {})
+    sendLocalCommand('recording/list', {})
   }
 
   function deleteRecordedFile(filename: string) {
@@ -1231,14 +1525,14 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
-    sendNodeCommand('recording/delete', { filename })
+    sendLocalCommand('recording/delete', { filename })
   }
 
   function sendScriptValues(values: Record<string, number>) {
     if (!client.value || !connected.value) {
       return
     }
-    sendNodeCommand('recording/script-values', { values })
+    sendLocalCommand('recording/script-values', { values })
   }
 
   function onRecordingResponse(callback: (result: any) => void) {
@@ -1272,7 +1566,8 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.warn('[MQTT] Cannot push cRIO config: not connected')
       return
     }
-    sendNodeCommand('crio/push-config', {
+    // cRIO push is orchestrated by the local DAQ service
+    sendLocalCommand('crio/push-config', {
       node_id: nodeId,
       ...config
     })
@@ -1286,7 +1581,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.warn('[MQTT] Cannot list cRIO nodes: not connected')
       return
     }
-    sendNodeCommand('crio/list', {})
+    sendLocalCommand('crio/list', {})
   }
 
   /**
@@ -1351,6 +1646,16 @@ export function useMqtt(prefix: string = 'nisystem') {
   // individual components to disconnect the shared MQTT connection when they unmount.
   // The connection should persist for the lifetime of the app.
 
+  // Computed for cRIO sync status - true means in sync, false means out of sync
+  const crioSyncStatus = computed(() => {
+    const result: Record<string, boolean> = {}
+    for (const [nodeId, versions] of crioConfigVersions.value) {
+      // In sync if: no expected version set yet, OR expected === reported
+      result[nodeId] = !versions.expected || versions.expected === versions.reported
+    }
+    return result
+  })
+
   return {
     // State
     connected,
@@ -1390,9 +1695,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     loadConfig,
     saveConfig,
     setOutput,
+    setAllOutputsSafe,
     resetCounter,
     sendCommand,
     sendNodeCommand,
+    sendLocalCommand,  // Alias for sendNodeCommand (backwards compat)
+    sendRemoteNodeCommand,  // For targeting cRIO/remote nodes
     subscribe,
 
     // Discovery
@@ -1476,6 +1784,10 @@ export function useMqtt(prefix: string = 'nisystem') {
       activeNodeId.value = nodeId
     },
     getNodeList: () => Array.from(knownNodes.value.values()),
+
+    // cRIO sync status
+    crioSyncStatus,
+    crioConfigVersions,
 
     // SOE & Event Correlation
     soe: soeComposable

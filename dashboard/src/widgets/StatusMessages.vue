@@ -24,6 +24,7 @@ const isMinimized = ref(false)
 
 // Track previous state for change detection
 let prevAcquiring = false
+let prevAcquisitionState = 'stopped'
 let prevRecording = false
 let prevConnected = false
 let prevSchedulerEnabled = false
@@ -83,15 +84,23 @@ watch(() => store.status, (status) => {
     prevConnected = connected
   }
 
-  // Acquisition status
-  if (status.acquiring !== prevAcquiring) {
-    if (status.acquiring) {
-      addMessage('success', 'DAQ', 'Acquisition started')
-    } else {
-      addMessage('info', 'DAQ', 'Acquisition stopped')
+  // Acquisition status - track detailed state transitions
+  const acquisitionState = status.acquisition_state || (status.acquiring ? 'running' : 'stopped')
+  if (acquisitionState !== prevAcquisitionState) {
+    if (acquisitionState === 'initializing') {
+      addMessage('info', 'DAQ', 'Initializing acquisition...')
+    } else if (acquisitionState === 'running') {
+      addMessage('success', 'DAQ', 'Acquisition running')
+    } else if (acquisitionState === 'stopped') {
+      // Only show stopped message if we were previously running or initializing
+      if (prevAcquisitionState === 'running' || prevAcquisitionState === 'initializing') {
+        addMessage('info', 'DAQ', 'Acquisition stopped')
+      }
     }
-    prevAcquiring = status.acquiring
+    prevAcquisitionState = acquisitionState
   }
+  // Also track the acquiring boolean for backward compatibility
+  prevAcquiring = status.acquiring
 
   // Recording status
   if (status.recording !== prevRecording) {
@@ -125,16 +134,17 @@ watch(() => store.values, (values) => {
     const currentWarning = !!value.warning
 
     // Check if this channel has alarm config (limits defined)
+    // Use != null to check both undefined AND null
     const config = store.channels[name]
     const hasAlarmConfig = config && (
-      config.low_limit !== undefined ||
-      config.high_limit !== undefined ||
-      config.low_warning !== undefined ||
-      config.high_warning !== undefined ||
-      config.hihi_limit !== undefined ||
-      config.lolo_limit !== undefined ||
-      config.hi_limit !== undefined ||
-      config.lo_limit !== undefined
+      config.low_limit != null ||
+      config.high_limit != null ||
+      config.low_warning != null ||
+      config.high_warning != null ||
+      config.hihi_limit != null ||
+      config.lolo_limit != null ||
+      config.hi_limit != null ||
+      config.lo_limit != null
     )
 
     if (!prev) {
@@ -153,6 +163,13 @@ watch(() => store.values, (values) => {
     // update our baseline without logging (avoid false transition)
     if (!prev.seen && hasAlarmConfig) {
       prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
+      return
+    }
+
+    // Skip all alarm notifications if no limits are configured
+    // This is a safeguard in case value.alarm is incorrectly set
+    if (!hasAlarmConfig) {
+      prevAlarmState.set(name, { alarm: false, warning: false, seen: true })
       return
     }
 

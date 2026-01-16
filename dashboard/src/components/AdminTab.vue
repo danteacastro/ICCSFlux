@@ -1,10 +1,10 @@
 <template>
   <div class="admin-tab">
-    <!-- Access Denied for non-admins -->
-    <div v-if="!isAdmin" class="access-denied">
+    <!-- Access Denied for guests/operators -->
+    <div v-if="!canAccessAdminTab" class="access-denied">
       <div class="denied-icon">🔒</div>
       <h2>Access Restricted</h2>
-      <p>Administrator privileges are required to access this section.</p>
+      <p>Supervisor or Administrator privileges are required to access this section.</p>
       <p class="current-role" v-if="currentUser">
         Your current role: <strong>{{ currentUser.role }}</strong>
       </p>
@@ -299,10 +299,10 @@
             <div class="form-group">
               <label>Role *</label>
               <select v-model="userForm.role" required>
-                <option value="viewer">Viewer - Read-only monitoring access</option>
-                <option value="operator">Operator - Day-to-day operations, alarm acknowledgment</option>
-                <option value="engineer">Engineer - Configure channels, alarms, safety, projects</option>
-                <option value="admin">Admin - Full system access, user management</option>
+                <option value="guest">Guest - Read-only monitoring</option>
+                <option value="operator">Operator - Day-to-day operations, alarms</option>
+                <option value="supervisor">Supervisor - Configuration, projects, audit</option>
+                <option value="admin">Admin - Full access, user management</option>
               </select>
             </div>
             <div v-if="editingUser" class="form-group checkbox-group">
@@ -392,6 +392,7 @@ import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../compo
 const {
   currentUser,
   isAdmin,
+  isSupervisor,
   users,
   isLoadingUsers,
   auditEvents,
@@ -409,13 +410,20 @@ const {
   retrieveArchive
 } = useAuth()
 
-// Section navigation
-const sections = [
-  { id: 'users', icon: '👥', label: 'Users' },
-  { id: 'audit', icon: '📋', label: 'Audit Trail' },
-  { id: 'archives', icon: '📦', label: 'Archives' }
+// Supervisors can view audit/archives, admins can manage users
+const canAccessAdminTab = computed(() => isSupervisor.value)
+const canManageUsers = computed(() => isAdmin.value)
+
+// Section navigation - filtered by permissions
+const allSections = [
+  { id: 'users', icon: '👥', label: 'Users', requiresAdmin: true },
+  { id: 'audit', icon: '📋', label: 'Audit Trail', requiresAdmin: false },
+  { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false }
 ]
-const activeSection = ref('users')
+const sections = computed(() =>
+  allSections.filter(s => !s.requiresAdmin || canManageUsers.value)
+)
+const activeSection = ref(canManageUsers.value ? 'users' : 'audit')
 
 // User management state
 const showCreateUserDialog = ref(false)
@@ -446,8 +454,10 @@ const selectedEvent = ref<AuditEvent | null>(null)
 // ============================================================================
 
 onMounted(() => {
-  if (isAdmin.value) {
-    listUsers()
+  if (canAccessAdminTab.value) {
+    if (canManageUsers.value) {
+      listUsers()
+    }
     queryAuditEvents({ limit: 100 })
     listArchives()
   }
@@ -891,9 +901,9 @@ function formatBytes(bytes: number): string {
 }
 
 .role-admin { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
-.role-engineer { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.role-supervisor { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
 .role-operator { background: rgba(0, 122, 204, 0.2); color: #6cb8ff; }
-.role-viewer { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
+.role-guest { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
 
 .status-badge {
   padding: 2px 8px;

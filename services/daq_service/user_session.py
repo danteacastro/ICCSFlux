@@ -31,10 +31,10 @@ logger = logging.getLogger('UserSession')
 
 
 class UserRole(Enum):
-    """User roles with hierarchical permissions (ISA-95/IEC 62264 aligned)"""
-    VIEWER = "viewer"           # Read-only access, monitoring
+    """User roles with hierarchical permissions"""
+    GUEST = "guest"             # Read-only access, monitoring only
     OPERATOR = "operator"       # Day-to-day operations, acknowledge alarms, control outputs
-    ENGINEER = "engineer"       # Configure channels, alarms, safety settings, projects
+    SUPERVISOR = "supervisor"   # Configure channels, alarms, safety settings, projects
     ADMIN = "admin"             # Full access including user management
 
 
@@ -71,9 +71,9 @@ class Permission(Enum):
     BYPASS_SAFETY_LOCK = "safety.bypass"
 
 
-# Role to permissions mapping
+# Role to permissions mapping (hierarchical)
 ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
-    UserRole.VIEWER: {
+    UserRole.GUEST: {
         Permission.VIEW_DATA,
         Permission.VIEW_ALARMS,
     },
@@ -90,7 +90,7 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
         Permission.STOP_ACQUISITION,
         Permission.CONTROL_OUTPUTS,
     },
-    UserRole.ENGINEER: {
+    UserRole.SUPERVISOR: {
         Permission.VIEW_DATA,
         Permission.VIEW_ALARMS,
         Permission.VIEW_CONFIG,
@@ -109,6 +109,7 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
         Permission.MODIFY_RECORDING,
         Permission.LOAD_PROJECT,
         Permission.SAVE_PROJECT,
+        Permission.EXPORT_AUDIT,
     },
     UserRole.ADMIN: set(Permission),  # All permissions
 }
@@ -137,7 +138,17 @@ class User:
     @staticmethod
     def from_dict(d: dict) -> 'User':
         d = d.copy()
-        d['role'] = UserRole(d.get('role', 'operator'))
+        role_str = d.get('role', 'operator')
+        # Handle legacy role names
+        role_map = {
+            'viewer': 'guest',
+            'engineer': 'supervisor',
+        }
+        role_str = role_map.get(role_str, role_str)
+        try:
+            d['role'] = UserRole(role_str)
+        except ValueError:
+            d['role'] = UserRole.OPERATOR  # Fallback
         return User(**d)
 
 
@@ -229,21 +240,35 @@ class UserSessionManager:
     def _ensure_default_users(self):
         """Create default users if none exist"""
         if not self.users:
-            # Create default admin user
+            # Create default admin
             self.create_user(
                 username="admin",
-                password="iccsadmin",
+                password="admin",
                 role=UserRole.ADMIN,
                 display_name="Administrator"
+            )
+            # Create default supervisor
+            self.create_user(
+                username="supervisor",
+                password="supervisor",
+                role=UserRole.SUPERVISOR,
+                display_name="Supervisor"
             )
             # Create default operator
             self.create_user(
                 username="operator",
                 password="operator",
                 role=UserRole.OPERATOR,
-                display_name="Default Operator"
+                display_name="Operator"
             )
-            logger.info("Created default users (admin/iccsadmin, operator/operator)")
+            # Create default guest
+            self.create_user(
+                username="guest",
+                password="guest",
+                role=UserRole.GUEST,
+                display_name="Guest"
+            )
+            logger.info("Created default users: admin, supervisor, operator, guest")
 
     def _hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""

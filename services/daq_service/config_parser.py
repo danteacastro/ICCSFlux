@@ -208,6 +208,11 @@ class ChannelConfig:
     log: bool = True
     log_interval_ms: int = 1000
 
+    # Data source tracking (for multi-node systems)
+    # source_type: 'local' (read via local HardwareReader), 'crio' (receive via MQTT from cRIO node)
+    source_type: str = "local"
+    source_node_id: str = ""  # Node ID for remote sources (e.g., "crio-001")
+
 
 @dataclass
 class SafetyActionConfig:

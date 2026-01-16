@@ -26,7 +26,7 @@ import paho.mqtt.client as mqtt
 class NISystemTester:
     """Comprehensive test suite for NISystem"""
 
-    def __init__(self, mqtt_broker="localhost", mqtt_port=1884):
+    def __init__(self, mqtt_broker="localhost", mqtt_port=1883):
         self.broker = mqtt_broker
         self.port = mqtt_port
         self.client = None

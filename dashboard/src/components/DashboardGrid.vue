@@ -189,7 +189,11 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
 }
 
 // Handle toggle switch change events for digital outputs
-function handleToggleChange(widgetId: string, value: boolean) {
+function handleToggleChange(widgetId: string, value: boolean | Event) {
+  // Ignore native DOM events from input elements - only handle boolean values
+  // from ToggleSwitch custom emit (native input change events bubble up)
+  if (typeof value !== 'boolean') return
+
   const widget = store.widgets.find(w => w.id === widgetId)
   if (!widget?.channel) return
   mqtt.setOutput(widget.channel, value)
@@ -359,7 +363,7 @@ function handlePidPipeSelect(id: string | null) {
     >
       <GridItem
         v-for="item in layoutItems"
-        :key="item.i"
+        :key="`${item.i}-${getWidget(item.i)?.label || ''}-${getWidget(item.i)?.channel || ''}`"
         :x="item.x"
         :y="item.y"
         :w="item.w"

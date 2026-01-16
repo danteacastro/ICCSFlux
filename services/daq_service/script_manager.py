@@ -78,7 +78,8 @@ class Script:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Script':
-        run_mode = data.get("runMode", "manual")
+        # Accept both camelCase (runMode) and snake_case (run_mode) for compatibility
+        run_mode = data.get("runMode") or data.get("run_mode", "manual")
         if isinstance(run_mode, str):
             try:
                 run_mode = ScriptRunMode(run_mode)
@@ -92,8 +93,8 @@ class Script:
             description=data.get("description", ""),
             enabled=data.get("enabled", True),
             run_mode=run_mode,
-            created_at=data.get("createdAt", ""),
-            modified_at=data.get("modifiedAt", "")
+            created_at=data.get("createdAt") or data.get("created_at", ""),
+            modified_at=data.get("modifiedAt") or data.get("modified_at", "")
         )
 
 
@@ -113,40 +114,50 @@ class ScriptRuntime:
     def start(self):
         """Start script execution in a new thread"""
         if self._thread and self._thread.is_alive():
-            logger.warning(f"Script {self.script.name} already running")
+            logger.warning(f"Script {self.script.name} already running - ignoring start request")
             return False
 
+        # Clean slate for new run
         self._stop_event.clear()
+        self._thread = None  # Clear any old thread reference
+
+        # Reset script state
         self.script.state = ScriptState.RUNNING
         self.script.started_at = time.time()
         self.script.iterations = 0
         self.script.error_message = None
 
+        # Create and start new thread
         self._thread = threading.Thread(
             target=self._run,
             name=f"Script-{self.script.id}",
             daemon=True
         )
         self._thread.start()
-        logger.info(f"Started script: {self.script.name}")
+        logger.info(f"Started script: {self.script.name} (thread={self._thread.name})")
         return True
 
     def stop(self):
-        """Stop script execution"""
-        if not self._thread or not self._thread.is_alive():
-            return
+        """Stop script execution and reset for clean restart"""
+        logger.info(f"Stop requested for script: {self.script.name}")
 
-        self.script.state = ScriptState.STOPPING
+        # Signal stop
         self._stop_event.set()
 
-        # Wait for thread to finish (with timeout)
-        self._thread.join(timeout=5.0)
+        # Wait for thread to finish if running
+        if self._thread and self._thread.is_alive():
+            self.script.state = ScriptState.STOPPING
+            self._thread.join(timeout=5.0)
 
-        if self._thread.is_alive():
-            logger.warning(f"Script {self.script.name} did not stop gracefully")
+            if self._thread.is_alive():
+                logger.warning(f"Script {self.script.name} did not stop gracefully (thread still alive)")
 
+        # Always reset state for clean restart
         self.script.state = ScriptState.IDLE
-        logger.info(f"Stopped script: {self.script.name}")
+        self.script.error_message = None
+        self._thread = None  # Allow new thread on next start
+        self._stop_event.clear()  # Reset stop event for next run
+        logger.info(f"Stopped script: {self.script.name} - ready for restart")
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -289,13 +300,32 @@ class ScriptRuntime:
             self.manager.publish_value(self.script.id, name, value, units)
 
         # Sleep functions that respect stop event
+        # Drift compensation: track target time to prevent cumulative drift
+        _next_target_time = [0.0]  # Use list for closure mutability
+
         def next_scan() -> None:
-            """Wait for next scan cycle (respects stop event)"""
+            """Wait for next scan cycle (respects stop event, drift-compensated)"""
             self.script.iterations += 1
-            # Wait for scan interval or stop
             scan_rate = self.manager.get_scan_rate()
             interval = 1.0 / scan_rate if scan_rate > 0 else 0.1
-            if self._stop_event.wait(interval):
+
+            now = time.monotonic()
+
+            # Initialize target time on first call
+            if _next_target_time[0] == 0.0:
+                _next_target_time[0] = now + interval
+            else:
+                _next_target_time[0] += interval
+
+            # Calculate remaining time to target (compensates for execution time)
+            remaining = _next_target_time[0] - now
+
+            # If we're behind schedule, reset target to avoid catch-up bursts
+            if remaining < 0:
+                _next_target_time[0] = now + interval
+                remaining = interval
+
+            if self._stop_event.wait(remaining):
                 raise StopScript()
 
         def wait_for(seconds: float) -> None:
@@ -436,6 +466,14 @@ class ScriptManager:
         # Track which outputs are controlled by scripts during active session
         # This allows selective lockout of only script-controlled channels
         self._controlled_outputs: Set[str] = set()
+
+        # Startup delay for auto-start scripts (seconds)
+        # Gives time for all nodes (including cRIO) to connect and send data
+        self.acquisition_start_delay: float = 5.0  # seconds
+        self.session_start_delay: float = 2.0  # seconds (session starts after acquisition)
+
+        # Pending startup timer (to cancel if acquisition stops before delay completes)
+        self._pending_start_timer: Optional[threading.Timer] = None
 
         logger.info("ScriptManager initialized")
 
@@ -648,35 +686,105 @@ class ScriptManager:
     # =========================================================================
 
     def on_acquisition_start(self) -> None:
-        """Called when acquisition starts - auto-start acquisition scripts"""
-        for script in self.scripts.values():
-            if script.enabled and script.run_mode == ScriptRunMode.ACQUISITION:
+        """Called when acquisition starts - auto-start acquisition scripts after delay
+
+        The delay allows time for all nodes (including remote cRIO) to connect
+        and start sending data before scripts begin executing.
+        """
+        # Cancel any pending timer from previous acquisition
+        self._cancel_pending_start()
+
+        # Count scripts that will auto-start
+        scripts_to_start = [s for s in self.scripts.values()
+                           if s.enabled and s.run_mode == ScriptRunMode.ACQUISITION]
+
+        if not scripts_to_start:
+            logger.info("Acquisition started - no acquisition scripts to auto-start")
+            return
+
+        logger.info(f"Acquisition started - will auto-start {len(scripts_to_start)} scripts "
+                   f"after {self.acquisition_start_delay}s delay")
+
+        # Schedule delayed start
+        def delayed_start():
+            logger.info(f"Acquisition delay complete - starting {len(scripts_to_start)} scripts")
+            for script in scripts_to_start:
                 if not self.is_script_running(script.id):
-                    logger.info(f"Auto-starting script with acquisition: {script.name}")
+                    logger.info(f"  Auto-starting: {script.name}")
                     self.start_script(script.id)
+            # Note: start_script() emits 'started' event for each script,
+            # which triggers status publishing via _script_event_handler
+
+        self._pending_start_timer = threading.Timer(self.acquisition_start_delay, delayed_start)
+        self._pending_start_timer.daemon = True
+        self._pending_start_timer.start()
+
+    def _cancel_pending_start(self):
+        """Cancel any pending delayed script start"""
+        if self._pending_start_timer and self._pending_start_timer.is_alive():
+            logger.info("Cancelling pending script auto-start")
+            self._pending_start_timer.cancel()
+            self._pending_start_timer = None
 
     def on_acquisition_stop(self) -> None:
-        """Called when acquisition stops - stop acquisition scripts"""
-        for script in self.scripts.values():
-            if script.run_mode == ScriptRunMode.ACQUISITION:
-                if self.is_script_running(script.id):
-                    logger.info(f"Auto-stopping script with acquisition: {script.name}")
-                    self.stop_script(script.id)
+        """Called when acquisition stops - stop ALL running scripts (safety first)
+
+        When acquisition stops, ALL scripts must stop regardless of their run mode.
+        This ensures clean state and prevents scripts from running without data.
+        Also cancels any pending delayed starts.
+        """
+        # Cancel any pending delayed start
+        self._cancel_pending_start()
+
+        running_scripts = self.get_running_scripts()
+        if running_scripts:
+            logger.info(f"Acquisition stopped - stopping ALL {len(running_scripts)} running scripts")
+            for script_id in running_scripts:
+                script = self.scripts.get(script_id)
+                if script:
+                    logger.info(f"  Stopping: {script.name} (mode={script.run_mode.value})")
+                self.stop_script(script_id)
+        else:
+            logger.info("Acquisition stopped - no running scripts to stop")
 
     def on_session_start(self) -> None:
-        """Called when session starts - auto-start session scripts"""
-        for script in self.scripts.values():
-            if script.enabled and script.run_mode == ScriptRunMode.SESSION:
+        """Called when session starts - auto-start session scripts after short delay
+
+        Session starts after acquisition is already running, so a shorter delay is used.
+        """
+        # Count scripts that will auto-start
+        scripts_to_start = [s for s in self.scripts.values()
+                           if s.enabled and s.run_mode == ScriptRunMode.SESSION]
+
+        if not scripts_to_start:
+            logger.info("Session started - no session scripts to auto-start")
+            return
+
+        logger.info(f"Session started - will auto-start {len(scripts_to_start)} scripts "
+                   f"after {self.session_start_delay}s delay")
+
+        # Schedule delayed start (shorter delay since acquisition is already running)
+        def delayed_start():
+            logger.info(f"Session delay complete - starting {len(scripts_to_start)} scripts")
+            for script in scripts_to_start:
                 if not self.is_script_running(script.id):
-                    logger.info(f"Auto-starting script with session: {script.name}")
+                    logger.info(f"  Auto-starting: {script.name}")
                     self.start_script(script.id)
 
+        timer = threading.Timer(self.session_start_delay, delayed_start)
+        timer.daemon = True
+        timer.start()
+
     def on_session_stop(self) -> None:
-        """Called when session stops - stop session scripts"""
+        """Called when session stops - stop session scripts
+
+        Note: Session scripts stop when session ends.
+        Acquisition scripts and manual scripts keep running until acquisition stops.
+        """
         for script in self.scripts.values():
             if script.run_mode == ScriptRunMode.SESSION:
                 if self.is_script_running(script.id):
-                    logger.info(f"Auto-stopping script with session: {script.name}")
+                    logger.info(f"Session stopped - stopping session script: {script.name}")
                     self.stop_script(script.id)
 
     # =========================================================================
@@ -806,5 +914,6 @@ class ScriptManager:
 
     def shutdown(self) -> None:
         """Shutdown the script manager"""
+        self._cancel_pending_start()  # Cancel any pending delayed starts
         self.stop_all_scripts()
         logger.info("ScriptManager shutdown")

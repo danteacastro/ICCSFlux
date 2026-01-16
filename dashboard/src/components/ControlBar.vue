@@ -3,9 +3,11 @@ import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useAuth } from '../composables/useAuth'
 import { useMqtt } from '../composables/useMqtt'
+import { usePlayground } from '../composables/usePlayground'
 
 const auth = useAuth()
 const mqtt = useMqtt()
+const playground = usePlayground()
 
 defineProps<{
   showEditControls?: boolean
@@ -16,8 +18,8 @@ const emit = defineEmits<{
   (e: 'stop'): void
   (e: 'record-start'): void
   (e: 'record-stop'): void
-  (e: 'schedule-enable'): void
-  (e: 'schedule-disable'): void
+  (e: 'session-start'): void
+  (e: 'session-stop'): void
   (e: 'add-widget'): void
 }>()
 
@@ -103,16 +105,16 @@ const recordingTime = computed(() => {
     </div>
 
 
-    <!-- Session toggle - controls automation engine (scheduler, sequences, patterns) -->
+    <!-- Session toggle - controls test session (session scripts, sequences) -->
     <div class="control-group">
-      <div class="session-toggle" :class="{ locked: !canControlSession }">
+      <div class="session-toggle" :class="{ locked: !canControlSession, disabled: !store.isAcquiring }">
         <span class="label">SESSION</span>
         <button
           class="toggle-btn"
-          :class="{ on: store.isSchedulerEnabled, locked: !canControlSession }"
-          @click="canControlSession && (store.isSchedulerEnabled ? emit('schedule-disable') : emit('schedule-enable'))"
-          :disabled="!canControlSession"
-          :title="canControlSession ? 'Toggle Session' : 'Requires Operator or higher'"
+          :class="{ on: playground.isSessionActive.value, locked: !canControlSession, disabled: !store.isAcquiring }"
+          @click="canControlSession && store.isAcquiring && (playground.isSessionActive.value ? emit('session-stop') : emit('session-start'))"
+          :disabled="!canControlSession || !store.isAcquiring"
+          :title="!store.isAcquiring ? 'Start acquisition first' : (canControlSession ? 'Toggle Test Session' : 'Requires Operator or higher')"
         >
           <span class="slider"></span>
         </button>
@@ -349,6 +351,14 @@ const recordingTime = computed(() => {
 
 .toggle-btn.locked:hover {
   opacity: 0.7;
+}
+
+.session-toggle.disabled {
+  opacity: 0.4;
+}
+
+.toggle-btn.disabled {
+  cursor: not-allowed;
 }
 
 

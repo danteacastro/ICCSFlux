@@ -151,7 +151,8 @@ class HardwareReader:
     This matches LabVIEW's recommended DAQmx architecture.
     """
 
-    def __init__(self, config: NISystemConfig, sample_rate: float = SAMPLE_RATE_HZ):
+    def __init__(self, config: NISystemConfig, sample_rate: float = SAMPLE_RATE_HZ,
+                 initial_output_values: Optional[Dict[str, float]] = None):
         if not NIDAQMX_AVAILABLE:
             raise RuntimeError("nidaqmx library not available - cannot use HardwareReader")
 
@@ -161,8 +162,8 @@ class HardwareReader:
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
 
-        # Output state cache (for read-back)
-        self.output_values: Dict[str, float] = {}
+        # Output state cache (for read-back) - preserve values across reinit
+        self.output_values: Dict[str, float] = initial_output_values.copy() if initial_output_values else {}
 
         # CONTINUOUS ACQUISITION: Latest values from background thread
         self.latest_values: Dict[str, float] = {}
@@ -182,6 +183,18 @@ class HardwareReader:
 
         # Start continuous acquisition
         self._start_continuous_acquisition()
+
+    def _is_crio_channel(self, physical_channel: str) -> bool:
+        """
+        Check if a channel is a cRIO channel (remote, not local NI-DAQmx).
+
+        cRIO channels have physical_channel starting directly with "Mod" (e.g., "Mod4/port0/line0")
+        Local channels have a chassis prefix (e.g., "cDAQ-9189-DHWSIMMod1/ai0")
+        """
+        import re
+        # cRIO: starts with "Mod" followed by digit (e.g., "Mod4/port0/line0")
+        # Local: starts with chassis name like "cDAQ-", "cDAQ9189-", etc.
+        return bool(re.match(r'^Mod\d', physical_channel))
 
     def _get_physical_channel_path(self, channel: ChannelConfig) -> str:
         """
@@ -303,6 +316,19 @@ class HardwareReader:
         }
 
         for name, channel in self.config.channels.items():
+            # Skip remote channels (cRIO) - they are not read via local NI-DAQmx
+            # Remote channels receive values via MQTT from the cRIO node service
+            # Check both source_type attribute AND physical_channel format
+            if getattr(channel, 'source_type', 'local') == 'crio':
+                logger.debug(f"Skipping remote cRIO channel: {name} (source_node: {getattr(channel, 'source_node_id', 'unknown')})")
+                continue
+
+            # Also skip channels where physical_channel starts with "Mod" (cRIO format)
+            # Local channels have chassis prefix like "cDAQ-9189-DHWSIMMod1/ai0"
+            if self._is_crio_channel(channel.physical_channel):
+                logger.debug(f"Skipping cRIO channel {name}: physical_channel {channel.physical_channel} is remote")
+                continue
+
             # Determine the module key for grouping
             if '/' in channel.physical_channel:
                 # Direct path - extract module from physical_channel
@@ -992,11 +1018,19 @@ class HardwareReader:
                 )
 
                 self.output_tasks[channel.name] = task
-                self.output_values[channel.name] = 1.0 if channel.default_state else 0.0
 
-                # Set initial state
-                task.write(channel.default_state)
-                logger.info(f"Added digital output channel: {channel.name} -> {phys_chan}")
+                # Preserve existing output state across reinitializations
+                # Only use default_state if this is truly the first initialization
+                if channel.name in self.output_values:
+                    # Restore previous state
+                    preserved_value = bool(self.output_values[channel.name])
+                    task.write(preserved_value)
+                    logger.info(f"Added digital output channel: {channel.name} -> {phys_chan} (preserved state: {preserved_value})")
+                else:
+                    # First time - use default state
+                    self.output_values[channel.name] = 1.0 if channel.default_state else 0.0
+                    task.write(channel.default_state)
+                    logger.info(f"Added digital output channel: {channel.name} -> {phys_chan} (default: {channel.default_state})")
 
             except Exception as e:
                 logger.error(f"Failed to create DO task for {channel.name}: {e}")
@@ -1017,11 +1051,18 @@ class HardwareReader:
                 )
 
                 self.output_tasks[channel.name] = task
-                self.output_values[channel.name] = channel.default_value or 0.0
 
-                # Set initial value
-                task.write(channel.default_value or 0.0)
-                logger.info(f"Added analog output channel: {channel.name} -> {phys_chan}")
+                # Preserve existing output state across reinitializations
+                if channel.name in self.output_values:
+                    # Restore previous state
+                    preserved_value = self.output_values[channel.name]
+                    task.write(preserved_value)
+                    logger.info(f"Added analog output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value})")
+                else:
+                    # First time - use default value
+                    self.output_values[channel.name] = channel.default_value or 0.0
+                    task.write(channel.default_value or 0.0)
+                    logger.info(f"Added analog output channel: {channel.name} -> {phys_chan} (default: {channel.default_value or 0.0})")
 
             except Exception as e:
                 logger.error(f"Failed to create AO task for {channel.name}: {e}")
@@ -1261,8 +1302,11 @@ class HardwareReader:
 
     def write_channel(self, channel_name: str, value: Any) -> bool:
         """
-        Write a value to an output channel.
+        Write a value to an output channel with hardware readback verification.
         Matches HardwareSimulator.write_channel() interface.
+
+        Industrial-grade: After writing, we read back the actual hardware state
+        to verify the write succeeded. This ensures displayed values match reality.
         """
         if channel_name not in self.output_tasks:
             logger.warning(f"Channel {channel_name} is not a writable output")
@@ -1282,7 +1326,19 @@ class HardwareReader:
                     if channel.invert:
                         bool_value = not bool_value
                     task.write(bool_value)
-                    self.output_values[channel_name] = 1.0 if bool_value else 0.0
+
+                    # READBACK: Verify actual hardware state
+                    try:
+                        actual_state = task.read()
+                        # Apply invert for display (show logical state, not physical)
+                        if channel.invert:
+                            actual_state = not actual_state
+                        self.output_values[channel_name] = 1.0 if actual_state else 0.0
+                        logger.debug(f"DO {channel_name}: wrote={bool_value}, readback={actual_state}")
+                    except Exception as rb_err:
+                        # Readback failed - use commanded value as fallback
+                        logger.warning(f"DO readback failed for {channel_name}: {rb_err}")
+                        self.output_values[channel_name] = 1.0 if bool_value else 0.0
 
                 elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
                     float_value = float(value)
@@ -1290,7 +1346,20 @@ class HardwareReader:
                     v_range = channel.voltage_range or 10.0
                     float_value = max(0.0, min(v_range, float_value))
                     task.write(float_value)
-                    self.output_values[channel_name] = float_value
+
+                    # READBACK: Verify actual hardware state
+                    try:
+                        actual_value = task.read()
+                        self.output_values[channel_name] = actual_value
+                        # Check for significant mismatch (tolerance for DAC precision)
+                        if abs(actual_value - float_value) > 0.01:
+                            logger.warning(f"AO mismatch {channel_name}: commanded={float_value:.4f}, actual={actual_value:.4f}")
+                        else:
+                            logger.debug(f"AO {channel_name}: wrote={float_value:.4f}, readback={actual_value:.4f}")
+                    except Exception as rb_err:
+                        # Readback failed - use commanded value as fallback
+                        logger.warning(f"AO readback failed for {channel_name}: {rb_err}")
+                        self.output_values[channel_name] = float_value
 
                 logger.debug(f"Wrote {value} to {channel_name}")
                 return True
@@ -1298,6 +1367,57 @@ class HardwareReader:
             except Exception as e:
                 logger.error(f"Error writing to {channel_name}: {e}")
                 return False
+
+    def refresh_output_states(self) -> Dict[str, float]:
+        """
+        Read back actual hardware state for all output channels.
+
+        Industrial-grade: Periodically refresh output states from hardware
+        to detect external changes, hardware faults, or communication issues.
+        This ensures the dashboard always shows true hardware state.
+
+        Returns:
+            Dict mapping channel name -> actual hardware value
+        """
+        refreshed = {}
+
+        with self.lock:
+            for channel_name, task in self.output_tasks.items():
+                channel = self.config.channels.get(channel_name)
+                if not channel:
+                    continue
+
+                try:
+                    actual_value = task.read()
+
+                    if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                        # Apply invert for logical display
+                        if channel.invert:
+                            actual_value = not actual_value
+                        refreshed[channel_name] = 1.0 if actual_value else 0.0
+
+                    elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
+                        refreshed[channel_name] = float(actual_value)
+
+                    # Check for drift from cached value
+                    cached = self.output_values.get(channel_name)
+                    if cached is not None:
+                        if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                            if (cached > 0.5) != (refreshed[channel_name] > 0.5):
+                                logger.warning(f"DO state drift detected: {channel_name} cached={cached}, actual={refreshed[channel_name]}")
+                        elif abs(cached - refreshed[channel_name]) > 0.1:
+                            logger.warning(f"AO drift detected: {channel_name} cached={cached:.3f}, actual={refreshed[channel_name]:.3f}")
+
+                    # Update cache with actual value
+                    self.output_values[channel_name] = refreshed[channel_name]
+
+                except Exception as e:
+                    logger.error(f"Failed to read back {channel_name}: {e}")
+                    # Keep cached value on error
+                    if channel_name in self.output_values:
+                        refreshed[channel_name] = self.output_values[channel_name]
+
+        return refreshed
 
     def set_temperature_target(self, channel_name: str, target: float):
         """

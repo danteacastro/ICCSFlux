@@ -508,11 +508,17 @@ const conditionTypes: { value: InterlockConditionType; label: string; needsChann
   { value: 'digital_input', label: 'Digital Input', needsChannel: true, needsOperator: false }
 ]
 
-const controlTypes: { value: InterlockControlType; label: string; needsChannel: boolean }[] = [
+const controlTypes: { value: InterlockControlType; label: string; needsChannel: boolean; needsValue?: boolean; channelType?: 'do' | 'ao' }[] = [
+  // BLOCKING actions
   { value: 'schedule_enable', label: 'Block Schedule Enable', needsChannel: false },
   { value: 'recording_start', label: 'Block Recording Start', needsChannel: false },
   { value: 'acquisition_start', label: 'Block Acquisition Start', needsChannel: false },
-  { value: 'digital_output', label: 'Block Digital Output', needsChannel: true }
+  { value: 'digital_output', label: 'Block Digital Output', needsChannel: true, channelType: 'do' },
+  // ACTIVE actions (execute when interlock conditions FAIL)
+  { value: 'set_digital_output', label: 'Set Digital Output To', needsChannel: true, needsValue: true, channelType: 'do' },
+  { value: 'set_analog_output', label: 'Set Analog Output To', needsChannel: true, needsValue: true, channelType: 'ao' },
+  { value: 'stop_session', label: 'Stop Session', needsChannel: false },
+  { value: 'stop_acquisition', label: 'Stop Acquisition', needsChannel: false }
 ]
 
 const operators: { value: InterlockOperator; label: string }[] = [
@@ -543,6 +549,13 @@ const digitalInputChannels = computed(() => {
   return Object.entries(store.channels)
     .filter(([_, cfg]) => cfg.channel_type === 'digital_input')
     .map(([name]) => ({ name }))  // TAG only
+})
+
+// Get analog output channels
+const analogOutputChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, cfg]) => cfg.channel_type === 'analog_output')
+    .map(([name, cfg]) => ({ name, unit: cfg.unit }))
 })
 
 function openNewInterlockModal() {
@@ -1620,17 +1633,49 @@ function getControlDescription(ctrl: InterlockControl): string {
                 </option>
               </select>
 
-              <!-- Channel select for digital_output -->
+              <!-- Channel select for digital_output / set_digital_output -->
               <select
-                v-if="ctrl.type === 'digital_output'"
+                v-if="ctrl.type === 'digital_output' || ctrl.type === 'set_digital_output'"
                 v-model="ctrl.channel"
                 class="control-channel-select"
               >
-                <option value="">Select output...</option>
+                <option value="">Select DO...</option>
                 <option v-for="ch in digitalOutputChannels" :key="ch.name" :value="ch.name">
                   {{ ch.name }}
                 </option>
               </select>
+
+              <!-- Channel select for set_analog_output -->
+              <select
+                v-if="ctrl.type === 'set_analog_output'"
+                v-model="ctrl.channel"
+                class="control-channel-select"
+              >
+                <option value="">Select AO...</option>
+                <option v-for="ch in analogOutputChannels" :key="ch.name" :value="ch.name">
+                  {{ ch.name }}
+                </option>
+              </select>
+
+              <!-- Value select for set_digital_output (ON/OFF) -->
+              <select
+                v-if="ctrl.type === 'set_digital_output'"
+                v-model="ctrl.setValue"
+                class="control-value-select"
+              >
+                <option :value="0">OFF (0)</option>
+                <option :value="1">ON (1)</option>
+              </select>
+
+              <!-- Value input for set_analog_output (voltage) -->
+              <input
+                v-if="ctrl.type === 'set_analog_output'"
+                v-model.number="ctrl.setValue"
+                type="number"
+                step="0.1"
+                placeholder="Value"
+                class="control-value-input"
+              />
 
               <button class="btn btn-sm btn-danger" @click="removeControl(idx)">X</button>
             </div>
@@ -2816,6 +2861,27 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .condition-value-input {
+  width: 80px;
+  padding: 6px 8px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.control-value-select {
+  padding: 6px 8px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.8rem;
+  min-width: 80px;
+}
+
+.control-value-input {
   width: 80px;
   padding: 6px 8px;
   background: #1a1a2e;

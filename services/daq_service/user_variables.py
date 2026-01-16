@@ -205,7 +205,7 @@ class FormulaBlock:
 @dataclass
 class TestSessionConfig:
     """Configuration for test session behavior"""
-    enable_scheduler: bool = True
+    enable_scheduler: bool = False  # Don't enable scheduler by default - confuses users
     start_recording: bool = False  # Don't auto-start recording with session by default
     enable_triggers: bool = True
     reset_variables: List[str] = field(default_factory=list)  # Variable IDs to reset on start
@@ -221,7 +221,7 @@ class TestSessionConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TestSessionConfig':
         return cls(
-            enable_scheduler=data.get('enable_scheduler', True),
+            enable_scheduler=data.get('enable_scheduler', False),
             start_recording=data.get('start_recording', False),  # Default to False
             enable_triggers=data.get('enable_triggers', True),
             reset_variables=data.get('reset_variables', []),

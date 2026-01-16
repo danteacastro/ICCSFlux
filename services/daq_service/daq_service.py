@@ -100,6 +100,7 @@ class DAQService:
         # CRITICAL: Explicitly ensure acquiring starts as False
         # This prevents auto-start of data acquisition on service startup
         self._acquiring.clear()
+        self.acquisition_state = "stopped"  # Tracks: stopped, initializing, running
         logger.info("Acquisition state initialized: acquiring=False (safe startup)")
 
         # Service start time for uptime tracking
@@ -160,6 +161,13 @@ class DAQService:
 
         # Device discovery
         self.device_discovery = DeviceDiscovery()
+
+        # cRIO config push tracking for retry logic (non-blocking)
+        self._pending_crio_pushes: Dict[str, Dict[str, Any]] = {}  # node_id -> {config, attempts, timestamp}
+        self._crio_push_lock = threading.Lock()
+        self._crio_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
+        self._CRIO_CONFIG_TIMEOUT = 5.0  # seconds before retry
+        self._CRIO_CONFIG_MAX_RETRIES = 3
 
         # Recording manager
         self.recording_manager: Optional[RecordingManager] = None
@@ -395,9 +403,9 @@ class DAQService:
                 ch_type_str = ch_data.get("channel_type", "voltage")
                 channel_type = ChannelType(ch_type_str)
 
-                # Parse thermocouple type if present
+                # Parse thermocouple type if present and not None
                 tc_type = None
-                if "thermocouple_type" in ch_data:
+                if ch_data.get("thermocouple_type"):
                     tc_type = ThermocoupleType(ch_data["thermocouple_type"])
 
                 channels[name] = ChannelConfig(
@@ -413,12 +421,12 @@ class DAQService:
                     scale_offset=float(ch_data.get("scale_offset", 0.0)),
                     scale_type=ch_data.get("scale_type", "none"),
                     four_twenty_scaling=ch_data.get("four_twenty_scaling", False),
-                    eng_units_min=float(ch_data["eng_units_min"]) if "eng_units_min" in ch_data else None,
-                    eng_units_max=float(ch_data["eng_units_max"]) if "eng_units_max" in ch_data else None,
-                    pre_scaled_min=float(ch_data["pre_scaled_min"]) if "pre_scaled_min" in ch_data else None,
-                    pre_scaled_max=float(ch_data["pre_scaled_max"]) if "pre_scaled_max" in ch_data else None,
-                    scaled_min=float(ch_data["scaled_min"]) if "scaled_min" in ch_data else None,
-                    scaled_max=float(ch_data["scaled_max"]) if "scaled_max" in ch_data else None,
+                    eng_units_min=float(ch_data["eng_units_min"]) if ch_data.get("eng_units_min") is not None else None,
+                    eng_units_max=float(ch_data["eng_units_max"]) if ch_data.get("eng_units_max") is not None else None,
+                    pre_scaled_min=float(ch_data["pre_scaled_min"]) if ch_data.get("pre_scaled_min") is not None else None,
+                    pre_scaled_max=float(ch_data["pre_scaled_max"]) if ch_data.get("pre_scaled_max") is not None else None,
+                    scaled_min=float(ch_data["scaled_min"]) if ch_data.get("scaled_min") is not None else None,
+                    scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                     voltage_range=float(ch_data.get("voltage_range", 10.0)),
                     current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
                     terminal_config=ch_data.get("terminal_config", "RSE"),
@@ -434,16 +442,16 @@ class DAQService:
                     default_state=ch_data.get("default_state", False),
                     default_value=float(ch_data.get("default_value", 0.0)),
                     # Legacy limits (for backward compatibility)
-                    low_limit=float(ch_data["low_limit"]) if "low_limit" in ch_data else None,
-                    high_limit=float(ch_data["high_limit"]) if "high_limit" in ch_data else None,
-                    low_warning=float(ch_data["low_warning"]) if "low_warning" in ch_data else None,
-                    high_warning=float(ch_data["high_warning"]) if "high_warning" in ch_data else None,
+                    low_limit=float(ch_data["low_limit"]) if ch_data.get("low_limit") is not None else None,
+                    high_limit=float(ch_data["high_limit"]) if ch_data.get("high_limit") is not None else None,
+                    low_warning=float(ch_data["low_warning"]) if ch_data.get("low_warning") is not None else None,
+                    high_warning=float(ch_data["high_warning"]) if ch_data.get("high_warning") is not None else None,
                     # ISA-18.2 Alarm Configuration
                     alarm_enabled=ch_data.get("alarm_enabled", False),
-                    hihi_limit=float(ch_data["hihi_limit"]) if "hihi_limit" in ch_data else None,
-                    hi_limit=float(ch_data["hi_limit"]) if "hi_limit" in ch_data else None,
-                    lo_limit=float(ch_data["lo_limit"]) if "lo_limit" in ch_data else None,
-                    lolo_limit=float(ch_data["lolo_limit"]) if "lolo_limit" in ch_data else None,
+                    hihi_limit=float(ch_data["hihi_limit"]) if ch_data.get("hihi_limit") is not None else None,
+                    hi_limit=float(ch_data["hi_limit"]) if ch_data.get("hi_limit") is not None else None,
+                    lo_limit=float(ch_data["lo_limit"]) if ch_data.get("lo_limit") is not None else None,
+                    lolo_limit=float(ch_data["lolo_limit"]) if ch_data.get("lolo_limit") is not None else None,
                     alarm_priority=ch_data.get("alarm_priority", "medium"),
                     alarm_deadband=float(ch_data.get("alarm_deadband", 1.0)),
                     alarm_delay_sec=float(ch_data.get("alarm_delay_sec", 0.0)),
@@ -532,6 +540,11 @@ class DAQService:
                     logger.info(f"Loaded {watchdog_count} watchdogs from project")
 
             logger.info(f"Applied project config: {len(channels)} channels")
+
+            # Push cRIO channel config to all online cRIO nodes
+            # This ensures cRIO has TAG name -> physical channel mappings
+            self._push_config_to_all_crios()
+
             return True
 
         except Exception as e:
@@ -820,6 +833,7 @@ class DAQService:
             self._publish_system_status()
             if self.script_manager:
                 self.script_manager.on_acquisition_start()
+                self._publish_script_status()  # Update UI with started scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_start()
             if self.watchdog_engine:
@@ -832,6 +846,7 @@ class DAQService:
             self._publish_system_status()
             if self.script_manager:
                 self.script_manager.on_acquisition_stop()
+                self._publish_script_status()  # Update UI with stopped scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_stop()
             if self.watchdog_engine:
@@ -839,30 +854,30 @@ class DAQService:
 
     def _script_start_recording(self, filename: str = None) -> None:
         """Start recording from script"""
-        if self.recording_manager and not self.recording_manager.is_recording:
+        if self.recording_manager and not self.recording_manager.recording:
             self.recording_manager.start_recording(filename)
 
     def _script_stop_recording(self) -> None:
         """Stop recording from script"""
-        if self.recording_manager and self.recording_manager.is_recording:
+        if self.recording_manager and self.recording_manager.recording:
             self.recording_manager.stop_recording()
 
     def _script_is_session_active(self) -> bool:
         """Check if session is active for script"""
         if self.user_variables:
-            return self.user_variables.test_session_active
+            return self.user_variables.session.active
         return self.acquiring
 
     def _script_get_session_elapsed(self) -> float:
         """Get session elapsed time for script"""
-        if self.user_variables and self.user_variables.test_session_active:
+        if self.user_variables and self.user_variables.session.active:
             return self.user_variables.get_elapsed_time()
         return 0.0
 
     def _script_is_recording(self) -> bool:
         """Check if recording is active"""
         if self.recording_manager:
-            return self.recording_manager.is_recording
+            return self.recording_manager.recording
         return False
 
     def _script_get_scan_rate(self) -> float:
@@ -877,7 +892,7 @@ class DAQService:
         self.channel_timestamps[full_name] = time.time()
 
         # Also record in CSV if recording
-        if self.recording_manager and self.recording_manager.is_recording:
+        if self.recording_manager and self.recording_manager.recording:
             self.recording_manager.update_script_values({name: value})
 
         # Publish via MQTT
@@ -1066,6 +1081,9 @@ class DAQService:
         success = self.script_manager.start_script(script_id)
         logger.info(f"Script start requested: {script_id}, success={success}")
 
+        # Publish status immediately so UI updates
+        self._publish_script_status()
+
         base = self.get_topic_base()
         self.mqtt_client.publish(
             f"{base}/script/response",
@@ -1087,6 +1105,9 @@ class DAQService:
 
         success = self.script_manager.stop_script(script_id)
         logger.info(f"Script stop requested: {script_id}, success={success}")
+
+        # Publish status immediately so UI updates
+        self._publish_script_status()
 
         base = self.get_topic_base()
         self.mqtt_client.publish(
@@ -1381,29 +1402,44 @@ class DAQService:
 
     def _on_test_session_start(self):
         """Custom callback when test session starts"""
-        logger.info("Test session started - custom callback")
+        logger.info("[SESSION] Test session started - executing callbacks")
         self._publish_test_session_status()
         # Notify automation engines
         if self.script_manager:
+            session_scripts = [s for s in self.script_manager.scripts.values()
+                             if s.enabled and s.run_mode == ScriptRunMode.SESSION]
+            logger.info(f"[SESSION] Script manager has {len(session_scripts)} enabled session scripts to start")
             self.script_manager.on_session_start()
+            self._publish_script_status()  # Update UI with started scripts
+        else:
+            logger.warning("[SESSION] No script manager available!")
         if self.trigger_engine:
             self.trigger_engine.on_session_start()
         if self.watchdog_engine:
             self.watchdog_engine.on_session_start()
+        logger.info("[SESSION] Test session start callbacks complete")
 
     def _on_test_session_stop(self):
         """Custom callback when test session stops"""
-        logger.info("Test session stopped - custom callback")
+        logger.info("[SESSION] Test session stopped - executing callbacks")
         self._publish_test_session_status()
         # Notify automation engines
         if self.script_manager:
+            running_session_scripts = [s for s in self.script_manager.scripts.values()
+                                       if s.run_mode == ScriptRunMode.SESSION and
+                                       self.script_manager.is_script_running(s.id)]
+            logger.info(f"[SESSION] Stopping {len(running_session_scripts)} running session scripts")
             self.script_manager.on_session_stop()
+            self._publish_script_status()  # Update UI with stopped scripts
             # Clear controlled outputs tracking - outputs are now unlocked for manual control
             self.script_manager.clear_controlled_outputs()
+        else:
+            logger.warning("[SESSION] No script manager available!")
         if self.trigger_engine:
             self.trigger_engine.on_session_stop()
         if self.watchdog_engine:
             self.watchdog_engine.on_session_stop()
+        logger.info("[SESSION] Test session stop callbacks complete")
 
     def _user_var_scheduler_enable(self, enable: bool):
         """Callback for user variable manager to enable/disable scheduler"""
@@ -1439,19 +1475,55 @@ class DAQService:
         self._set_output_value(channel, value)
 
     def _set_output_value(self, channel: str, value: Any):
-        """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences)"""
-        if channel in self.config.channels:
-            ch = self.config.channels[channel]
-            if ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT,
+        """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences, safe-state)"""
+        if channel not in self.config.channels:
+            return
+
+        ch = self.config.channels[channel]
+        if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT,
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
-                # Route to appropriate backend
-                is_modbus = ch.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
-                if is_modbus and self.modbus_reader:
-                    self.modbus_reader.write_channel(channel, value)
-                elif self.simulator:
-                    self.simulator.write_channel(channel, value)
-                elif self.hardware_reader:
-                    self.hardware_reader.write_channel(channel, value)
+            return
+
+        # Check if this is a cRIO channel (same detection as _handle_command)
+        physical_channel = getattr(ch, 'physical_channel', '') or ''
+        source_node = getattr(ch, 'source_node_id', None) or getattr(ch, 'node_id', None)
+        has_local_chassis_prefix = any(
+            prefix in physical_channel for prefix in ['cDAQ', 'PXI', 'USB', 'Dev']
+        )
+        is_in_local_hw = (
+            self.hardware_reader and
+            channel in self.hardware_reader.output_tasks
+        )
+        is_crio_channel = (
+            (source_node and source_node.startswith('crio')) or
+            (physical_channel.startswith('Mod') and not has_local_chassis_prefix and not is_in_local_hw)
+        )
+
+        is_modbus = ch.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+
+        # Route to appropriate backend
+        if is_crio_channel:
+            # Route to cRIO via MQTT
+            mqtt_base = self.config.system.mqtt_base_topic
+            crio_topic = f"{mqtt_base}/nodes/crio-001/commands/output"
+            # Include physical_channel for fallback when config not pushed to cRIO
+            crio_payload = {'channel': channel, 'value': value, 'physical_channel': physical_channel}
+            self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
+            logger.debug(f"[OUTPUT] Routed {channel} ({physical_channel}) to cRIO via MQTT")
+            # DON'T update channel_values here - wait for cRIO to report back
+        elif is_modbus and self.modbus_reader:
+            self.modbus_reader.write_channel(channel, value)
+            with self.values_lock:
+                self.channel_values[channel] = value
+            self._publish_channel_value(channel, value)
+        elif self.simulator:
+            self.simulator.write_channel(channel, value)
+            with self.values_lock:
+                self.channel_values[channel] = value
+            self._publish_channel_value(channel, value)
+        elif self.hardware_reader:
+            result = self.hardware_reader.write_channel(channel, value)
+            if result:
                 with self.values_lock:
                     self.channel_values[channel] = value
                 self._publish_channel_value(channel, value)
@@ -1471,6 +1543,7 @@ class DAQService:
             logger.info("Sequence started acquisition")
             if self.script_manager:
                 self.script_manager.on_acquisition_start()
+                self._publish_script_status()  # Update UI with started scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_start()
             if self.watchdog_engine:
@@ -1483,6 +1556,7 @@ class DAQService:
             logger.info("Sequence stopped acquisition")
             if self.script_manager:
                 self.script_manager.on_acquisition_stop()
+                self._publish_script_status()  # Update UI with stopped scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_stop()
             if self.watchdog_engine:
@@ -1537,6 +1611,7 @@ class DAQService:
             logger.info("Scheduler started acquisition")
             if self.script_manager:
                 self.script_manager.on_acquisition_start()
+                self._publish_script_status()  # Update UI with started scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_start()
             if self.watchdog_engine:
@@ -1549,6 +1624,7 @@ class DAQService:
             logger.info("Scheduler stopped acquisition")
             if self.script_manager:
                 self.script_manager.on_acquisition_stop()
+                self._publish_script_status()  # Update UI with stopped scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_stop()
             if self.watchdog_engine:
@@ -1572,13 +1648,20 @@ class DAQService:
             logger.info("Scheduler stopped recording")
 
     def _setup_mqtt(self):
-        """Setup MQTT connection"""
-        logger.info(f"Connecting to MQTT broker at {self.config.system.mqtt_broker}:{self.config.system.mqtt_port}")
+        """Setup MQTT connection via WebSocket (same as frontend dashboard)"""
+        # Use WebSocket transport on port 9002 to match frontend connection
+        # This ensures messages are routed between frontend and backend
+        mqtt_ws_port = 9002
+        logger.info(f"Connecting to MQTT broker at {self.config.system.mqtt_broker}:{mqtt_ws_port} (WebSocket)")
 
-        # Use unique client ID and paho-mqtt v2 API
+        # Use unique client ID and paho-mqtt v2 API with WebSocket transport
         import uuid
         client_id = f"daq_service_{uuid.uuid4().hex[:8]}"
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+        self.mqtt_client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=client_id,
+            transport='websockets'
+        )
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._on_mqtt_message
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
@@ -1593,7 +1676,7 @@ class DAQService:
         try:
             self.mqtt_client.connect(
                 self.config.system.mqtt_broker,
-                self.config.system.mqtt_port,
+                mqtt_ws_port,
                 keepalive=60
             )
             self.mqtt_client.loop_start()
@@ -1618,11 +1701,17 @@ class DAQService:
             client.subscribe(f"{base}/system/recording/start")
             client.subscribe(f"{base}/system/recording/stop")
             client.subscribe(f"{base}/system/status/request")
+            client.subscribe(f"{base}/system/safe-state")
 
-            # Subscribe to authentication topics
-            client.subscribe(f"{base}/auth/login")
-            client.subscribe(f"{base}/auth/logout")
-            client.subscribe(f"{base}/auth/status/request")
+            # Subscribe to authentication topics (exact match for this node)
+            auth_topics = [
+                f"{base}/auth/login",
+                f"{base}/auth/logout",
+                f"{base}/auth/status/request"
+            ]
+            for topic in auth_topics:
+                result = client.subscribe(topic)
+                logger.info(f"[AUTH] Subscribed to {topic} (result: {result})")
 
             # Subscribe to config management topics
             client.subscribe(f"{base}/config/get")
@@ -1734,6 +1823,12 @@ class DAQService:
             mqtt_base = self.config.system.mqtt_base_topic
             client.subscribe(f"{mqtt_base}/nodes/+/status/system")
             client.subscribe(f"{mqtt_base}/nodes/+/status/offline")
+            # Also subscribe to heartbeats for fallback discovery
+            client.subscribe(f"{mqtt_base}/nodes/+/heartbeat")
+            # Subscribe to cRIO channel values (for remote channel data)
+            client.subscribe(f"{mqtt_base}/nodes/+/channels/#")
+            # Subscribe to cRIO config response (ACK for config pushes)
+            client.subscribe(f"{mqtt_base}/nodes/+/config/response")
 
             # Subscribe to data source management topics (REST API, OPC-UA, etc.)
             client.subscribe(f"{base}/datasource/add")
@@ -1769,6 +1864,11 @@ class DAQService:
             self._publish_test_session_status()
             # Publish formula blocks
             self._publish_formula_blocks_config()
+
+            # Send initial discovery ping to find any connected cRIO nodes
+            # This ensures we discover cRIOs that connected before DAQ started
+            self._send_crio_discovery_ping()
+            logger.info("Sent initial cRIO discovery ping on MQTT connect")
 
         else:
             logger.error(f"MQTT connection failed with code {reason_code}")
@@ -1806,39 +1906,44 @@ class DAQService:
             self._handle_recording_stop()
         elif topic == f"{base}/system/status/request":
             self._publish_system_status()
+        elif topic == f"{base}/system/safe-state":
+            self._handle_safe_state(payload)
 
-        # === AUTHENTICATION ===
-        elif topic == f"{base}/auth/login":
+        # === AUTHENTICATION (accepts from any node via wildcard subscription) ===
+        elif topic.endswith('/auth/login'):
+            logger.info(f"[AUTH] Received auth/login message on {topic}")
             self._handle_auth_login(payload)
-        elif topic == f"{base}/auth/logout":
+        elif topic.endswith('/auth/logout'):
+            logger.info(f"[AUTH] Received auth/logout message on {topic}")
             self._handle_auth_logout(payload)
-        elif topic == f"{base}/auth/status/request":
+        elif topic.endswith('/auth/status/request'):
+            logger.info(f"[AUTH] Received auth/status/request message on {topic}")
             self._publish_auth_status()
 
-        # === USER MANAGEMENT (Admin only) ===
-        elif topic == f"{base}/users/list":
+        # === USER MANAGEMENT (Admin only, accepts from any node) ===
+        elif topic.endswith('/users/list'):
             self._handle_users_list(payload)
-        elif topic == f"{base}/users/create":
+        elif topic.endswith('/users/create'):
             self._handle_users_create(payload)
-        elif topic == f"{base}/users/update":
+        elif topic.endswith('/users/update'):
             self._handle_users_update(payload)
-        elif topic == f"{base}/users/delete":
+        elif topic.endswith('/users/delete'):
             self._handle_users_delete(payload)
-        elif topic == f"{base}/users/sessions":
+        elif topic.endswith('/users/sessions'):
             self._handle_users_sessions(payload)
 
-        # === AUDIT TRAIL ===
-        elif topic == f"{base}/audit/query":
+        # === AUDIT TRAIL (accepts from any node) ===
+        elif topic.endswith('/audit/query'):
             self._handle_audit_query(payload)
-        elif topic == f"{base}/audit/export":
+        elif topic.endswith('/audit/export'):
             self._handle_audit_export(payload)
 
-        # === ARCHIVE MANAGEMENT ===
-        elif topic == f"{base}/archive/list":
+        # === ARCHIVE MANAGEMENT (accepts from any node) ===
+        elif topic.endswith('/archive/list'):
             self._handle_archive_list(payload)
-        elif topic == f"{base}/archive/retrieve":
+        elif topic.endswith('/archive/retrieve'):
             self._handle_archive_retrieve(payload)
-        elif topic == f"{base}/archive/verify":
+        elif topic.endswith('/archive/verify'):
             self._handle_archive_verify(payload)
 
         # === CONFIG MANAGEMENT ===
@@ -2061,6 +2166,22 @@ class DAQService:
         elif "/nodes/" in topic and "/status/" in topic and "node_type" in str(payload):
             self._handle_crio_node_status(topic, payload)
 
+        # === CRIO NODE HEARTBEAT (fallback discovery) ===
+        # Pattern: {mqtt_base}/nodes/{node_id}/heartbeat
+        elif "/nodes/" in topic and "/heartbeat" in topic and "node_type" in str(payload):
+            self._handle_crio_heartbeat(topic, payload)
+
+        # === CRIO NODE CHANNEL VALUES ===
+        # Pattern: {mqtt_base}/nodes/{node_id}/channels/{channel_name}
+        # Receives real-time values from cRIO nodes for remote channels
+        elif "/nodes/" in topic and "/channels/" in topic:
+            self._handle_crio_channel_value(topic, payload)
+
+        # === CRIO CONFIG RESPONSE (ACK from cRIO nodes) ===
+        # Pattern: {mqtt_base}/nodes/{node_id}/config/response
+        elif "/nodes/" in topic and "/config/response" in topic:
+            self._handle_crio_config_response(topic, payload)
+
         # === CHANNEL COMMANDS ===
         elif topic.startswith(f"{base}/commands/"):
             channel_name = topic.split('/')[-1]
@@ -2120,7 +2241,7 @@ class DAQService:
         # 2. Channel is marked lock_during_session=True OR actively controlled by a script
         # 3. Command is NOT from script/automation (internal sources)
         # 4. Force flag is not set
-        if self.user_variables and self.user_variables.test_session_active:
+        if self.user_variables and self.user_variables.session.active:
             # Check if channel is explicitly marked for session lockout (default: False)
             lock_during_session = getattr(channel, 'lock_during_session', False)
 
@@ -2155,12 +2276,62 @@ class DAQService:
         channel = self.config.channels.get(channel_name)
         is_modbus = channel and channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
 
-        if is_modbus and self.modbus_reader:
+        # Detect cRIO channels - check if channel has a source_node_id pointing to a cRIO node
+        # Previously we checked if physical_channel starts with "Mod", but local cDAQ channels
+        # may also have "Mod" prefixed paths if created without full chassis path.
+        # Now we check: (1) explicit source_node_id, or (2) "Mod" prefix WITH no local chassis prefix
+        physical_channel = getattr(channel, 'physical_channel', '') or ''
+        source_node = getattr(channel, 'source_node_id', None) or getattr(channel, 'node_id', None)
+
+        # Channel is cRIO if:
+        # - Explicitly marked with cRIO source_node_id, OR
+        # - Starts with "Mod" AND has no local chassis prefix (cDAQ, PXI, USB, Dev)
+        #   AND the channel is NOT in our local hardware_reader's output_tasks
+        has_local_chassis_prefix = any(
+            prefix in physical_channel for prefix in ['cDAQ', 'PXI', 'USB', 'Dev']
+        )
+        is_in_local_hw = (
+            self.hardware_reader and
+            channel_name in self.hardware_reader.output_tasks
+        )
+        is_crio_channel = (
+            (source_node and source_node.startswith('crio')) or
+            (physical_channel.startswith('Mod') and not has_local_chassis_prefix and not is_in_local_hw)
+        )
+
+        # Debug: Log output routing decision
+        logger.info(f"[OUTPUT] {channel_name}: is_crio={is_crio_channel}, is_modbus={is_modbus}, "
+                   f"hw_reader={self.hardware_reader is not None}, simulator={self.simulator is not None}, "
+                   f"sim_mode={self.config.system.simulation_mode}")
+
+        if is_crio_channel:
+            # Route to cRIO via MQTT - publish to cRIO's command topic
+            # cRIO subscribes to: nisystem/nodes/crio-001/commands/#
+            # Send TAG name since cRIO output_tasks are keyed by TAG name after config push
+            # Include physical_channel for fallback when config not pushed to cRIO
+            mqtt_base = self.config.system.mqtt_base_topic
+            crio_topic = f"{mqtt_base}/nodes/crio-001/commands/output"
+            crio_payload = {
+                'channel': channel_name,  # TAG name
+                'value': value,
+                'physical_channel': physical_channel  # Fallback for when config not pushed
+            }
+            logger.info(f"[OUTPUT] Routing {channel_name} ({physical_channel}) to cRIO via MQTT: {crio_topic}")
+            self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
+        elif is_modbus and self.modbus_reader:
+            logger.info(f"[OUTPUT] Routing {channel_name} to Modbus")
             self.modbus_reader.write_channel(channel_name, value)
+        elif self.hardware_reader and not self.config.system.simulation_mode:
+            # Real hardware - prioritize over simulator when not in simulation mode
+            logger.info(f"[OUTPUT] Routing {channel_name} to HardwareReader (real NI hardware)")
+            result = self.hardware_reader.write_channel(channel_name, value)
+            logger.info(f"[OUTPUT] HardwareReader.write_channel returned: {result}")
         elif self.simulator:
+            # Simulation mode fallback
+            logger.info(f"[OUTPUT] Routing {channel_name} to Simulator (fallback)")
             self.simulator.write_channel(channel_name, value)
-        elif self.hardware_reader:
-            self.hardware_reader.write_channel(channel_name, value)
+        else:
+            logger.error(f"[OUTPUT] No backend available for {channel_name}!")
 
         # Update cache
         with self.values_lock:
@@ -2405,8 +2576,10 @@ class DAQService:
                 self._publish_command_ack("acquire/start", request_id, False, "Already acquiring")
                 return
 
-            # STATE TRANSITION: stopped → starting
-            logger.info("[STATE MACHINE] Transitioning: stopped → starting")
+            # STATE TRANSITION: stopped → initializing
+            logger.info("[STATE MACHINE] Transitioning: stopped → initializing")
+            self.acquisition_state = "initializing"
+            self._publish_system_status()  # Notify frontend immediately
 
             # Only reload from system.ini if no project is loaded
             # If a project is loaded (from file OR imported from JSON), its config is already applied
@@ -2416,20 +2589,39 @@ class DAQService:
                 # Project was imported from JSON (no file path, but has project data)
                 project_name = self.current_project_data.get("name", "Imported Project")
                 logger.info(f"Using imported project config: {project_name} ({len(self.config.channels)} channels)")
+            elif self.config.channels:
+                # No project but channels exist (from bulk create or manual config)
+                # Keep the existing channels - don't reload from system.ini
+                logger.info(f"No project loaded - using existing {len(self.config.channels)} channels")
             else:
-                # No project loaded - reload from system.ini to pick up any changes
-                logger.info("No project loaded - reloading configuration from system.ini...")
+                # No project and no channels - reload from system.ini
+                logger.info("No project or channels - reloading configuration from system.ini...")
                 self._load_config()
             self._publish_channel_config()
 
-            # STATE TRANSITION: starting → acquiring
-            logger.info("[STATE MACHINE] Transitioning: starting → acquiring")
+            # STATE TRANSITION: initializing → running
+            logger.info("[STATE MACHINE] Transitioning: initializing → running")
             self.acquiring = True
+            self.acquisition_state = "running"
             logger.info(f"[STATE MACHINE] Acquisition started successfully (acquiring={self.acquiring})")
+
+            # Industrial-grade: Capture initial output states from hardware
+            # This ensures displayed values match actual hardware state from the start
+            if self.hardware_reader and not self.config.system.simulation_mode:
+                try:
+                    initial_outputs = self.hardware_reader.refresh_output_states()
+                    if initial_outputs:
+                        with self.values_lock:
+                            for ch_name, actual_val in initial_outputs.items():
+                                self.channel_values[ch_name] = actual_val
+                        logger.info(f"[STATE MACHINE] Captured initial output states: {list(initial_outputs.keys())}")
+                except Exception as e:
+                    logger.warning(f"[STATE MACHINE] Failed to capture initial output states: {e}")
 
             # Notify automation engines
             if self.script_manager:
                 self.script_manager.on_acquisition_start()
+                self._publish_script_status()  # Update UI with started scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_start()
             if self.watchdog_engine:
@@ -2451,14 +2643,19 @@ class DAQService:
             self._publish_system_status()
             self._publish_command_ack("acquire/start", request_id, True)
 
+            # Forward acquisition start to all connected cRIO nodes
+            self._forward_acquisition_command_to_crio('start')
+
         except Exception as e:
             logger.error(f"[STATE MACHINE] Error starting acquisition: {e}", exc_info=True)
             # STATE ROLLBACK: Ensure we're in stopped state on error
             self.acquiring = False
+            self.acquisition_state = "stopped"
             # Unlock safety config on failure
             if self.project_manager:
                 self.project_manager.unlock_safety_config()
             logger.error(f"[STATE MACHINE] Rolled back to stopped state (acquiring={self.acquiring})")
+            self._publish_system_status()  # Notify frontend of state rollback
             self._publish_command_ack("acquire/start", request_id, False, str(e))
 
     def _handle_acquire_stop(self, request_id: Optional[str] = None):
@@ -2483,11 +2680,13 @@ class DAQService:
             # STATE TRANSITION: stopping → stopped
             logger.info("[STATE MACHINE] Transitioning: stopping → stopped")
             self.acquiring = False
+            self.acquisition_state = "stopped"
             logger.info(f"[STATE MACHINE] Acquisition stopped successfully (acquiring={self.acquiring})")
 
             # Notify automation engines
             if self.script_manager:
                 self.script_manager.on_acquisition_stop()
+                self._publish_script_status()  # Update UI with stopped scripts
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_stop()
             if self.watchdog_engine:
@@ -2508,9 +2707,48 @@ class DAQService:
             self._publish_system_status()
             self._publish_command_ack("acquire/stop", request_id, True)
 
+            # Forward acquisition stop to all connected cRIO nodes
+            self._forward_acquisition_command_to_crio('stop')
+
         except Exception as e:
             logger.error(f"[STATE MACHINE] Error stopping acquisition: {e}", exc_info=True)
             self._publish_command_ack("acquire/stop", request_id, False, str(e))
+
+    def _handle_safe_state(self, payload: Any):
+        """Set all outputs to safe state (DO=0, AO=0)
+
+        Called when loading/importing a project to ensure outputs are safe
+        before any configuration changes are applied.
+        """
+        reason = payload.get('reason', 'command') if isinstance(payload, dict) else 'command'
+        logger.info(f"[SAFE STATE] Setting all outputs to safe state - reason: {reason}")
+
+        # Reset all digital outputs to OFF (0)
+        for channel_name, config in self.config.channels.items():
+            if config.channel_type == ChannelType.DIGITAL_OUTPUT:
+                try:
+                    self._set_output_value(channel_name, 0)
+                    logger.info(f"[SAFE STATE] DO {channel_name} -> 0 (OFF)")
+                except Exception as e:
+                    logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
+            elif config.channel_type == ChannelType.ANALOG_OUTPUT:
+                try:
+                    # AO safe state: 0V
+                    self._set_output_value(channel_name, 0.0)
+                    logger.info(f"[SAFE STATE] AO {channel_name} -> 0.0")
+                except Exception as e:
+                    logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
+
+        # Publish confirmation
+        self.mqtt_client.publish(
+            f"{self.get_topic_base()}/status/safe-state",
+            json.dumps({
+                'success': True,
+                'reason': reason,
+                'timestamp': datetime.now().isoformat()
+            })
+        )
+        logger.info("[SAFE STATE] All outputs set to safe state")
 
     def _handle_recording_start(self, payload: Any):
         """Start data recording with state validation"""
@@ -2676,6 +2914,10 @@ class DAQService:
         """Heartbeat loop - publishes health status periodically"""
         logger.info(f"Starting heartbeat loop at {1/self._heartbeat_interval:.1f} Hz")
 
+        # Track cRIO discovery ping interval (every 10 seconds = every 5 heartbeats at 2s interval)
+        crio_ping_counter = 0
+        crio_ping_interval = 5  # heartbeats between pings
+
         while not self._shutdown_requested.wait(timeout=self._heartbeat_interval):
             if not self._running.is_set():
                 continue
@@ -2707,6 +2949,12 @@ class DAQService:
                     json.dumps(payload),
                     qos=1
                 )
+
+                # Periodic cRIO discovery ping - ensures we find cRIO nodes even without manual scan
+                crio_ping_counter += 1
+                if crio_ping_counter >= crio_ping_interval:
+                    crio_ping_counter = 0
+                    self._send_crio_discovery_ping()
 
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}")
@@ -2766,6 +3014,7 @@ class DAQService:
             "node_name": self.config.system.node_name,
             "simulation_mode": self.config.system.simulation_mode or not NIDAQMX_AVAILABLE,
             "acquiring": self.acquiring,
+            "acquisition_state": self.acquisition_state,  # stopped, initializing, running
             "recording": rec_status.get('recording', self.recording),
             "recording_filename": rec_status.get('recording_filename', self.recording_filename),
             "recording_duration": recording_duration_str,
@@ -2875,12 +3124,10 @@ class DAQService:
     @property
     def authenticated(self) -> bool:
         """Check if current session is valid"""
-        # DEVELOPMENT: Always return True to bypass auth during development
-        return True
-        # if not self.current_session_id or not self.user_session_manager:
-        #     return False
-        # session = self.user_session_manager.validate_session(self.current_session_id)
-        # return session is not None
+        if not self.current_session_id or not self.user_session_manager:
+            return False
+        session = self.user_session_manager.validate_session(self.current_session_id)
+        return session is not None
 
     @property
     def auth_username(self) -> Optional[str]:
@@ -2898,11 +3145,15 @@ class DAQService:
 
     def _handle_auth_login(self, payload: Any):
         """Handle login request using UserSessionManager"""
+        logger.info(f"[AUTH] Login request received: {payload}")
+
         if not isinstance(payload, dict):
+            logger.warning("[AUTH] Invalid payload - not a dict")
             self._publish_auth_status(error="Invalid login payload")
             return
 
         if not self.user_session_manager:
+            logger.error("[AUTH] User session manager not initialized!")
             self._publish_auth_status(error="User session manager not initialized")
             return
 
@@ -2972,6 +3223,7 @@ class DAQService:
 
     def _publish_auth_status(self, error: Optional[str] = None):
         """Publish authentication status with role information"""
+        logger.info(f"[AUTH] Publishing auth status (error={error})")
         base = self.get_topic_base()
 
         # Get user info if authenticated
@@ -2999,11 +3251,13 @@ class DAQService:
         if error:
             status["error"] = error
 
+        topic = f"{base}/auth/status"
         self.mqtt_client.publish(
-            f"{base}/auth/status",
+            topic,
             json.dumps(status),
             retain=True
         )
+        logger.info(f"[AUTH] Published auth status to {topic}: authenticated={status['authenticated']}, role={status['role']}")
 
     # =========================================================================
     # USER MANAGEMENT HANDLERS (Admin only)
@@ -3651,7 +3905,7 @@ class DAQService:
             self._publish_channel_config()
 
             # Publish status update
-            self._publish_status()
+            self._publish_system_status()
 
             # Optionally restart acquisition
             if restart_acq and was_acquiring:
@@ -3697,7 +3951,7 @@ class DAQService:
                 logger.info(f"Publish rate updated: {old_publish_rate} Hz -> {new_publish_rate} Hz")
 
             # Publish status to reflect new rates
-            self._publish_status()
+            self._publish_system_status()
 
             # Send confirmation response
             base = self.get_topic_base()
@@ -3720,9 +3974,13 @@ class DAQService:
         """Reinitialize hardware reader with current in-memory config.
 
         This does NOT reload config from file - it uses self.config as-is.
+        Preserves output state (DO/AO) across reinitialization.
         """
-        # Clean up existing hardware reader
+        # Preserve output values before closing old hardware reader
+        preserved_output_values = {}
         if self.hardware_reader:
+            preserved_output_values = dict(self.hardware_reader.output_values)
+            logger.info(f"Preserving {len(preserved_output_values)} output values across reinit: {preserved_output_values}")
             try:
                 self.hardware_reader.close()
             except Exception as e:
@@ -3743,7 +4001,9 @@ class DAQService:
         else:
             logger.info("Reinitializing hardware reader with current config")
             try:
-                self.hardware_reader = HardwareReader(self.config)
+                # Restore preserved output values BEFORE creating hardware reader
+                # so _create_digital_output_tasks can use them
+                self.hardware_reader = HardwareReader(self.config, initial_output_values=preserved_output_values)
                 logger.info("Hardware reader reinitialized successfully")
             except Exception as e:
                 logger.error(f"Failed to reinitialize hardware reader: {e}")
@@ -3883,6 +4143,17 @@ class DAQService:
             self.script_manager.runtimes.clear()
             self.script_manager.clear_controlled_outputs()
 
+        # Clear test session state - ensure session is inactive on startup
+        if self.user_variables:
+            logger.info("Clearing test session state")
+            # Force session to inactive state
+            with self.user_variables.lock:
+                self.user_variables.session.active = False
+                self.user_variables.session.started_at = None
+                self.user_variables.session.started_by = None
+            # Publish inactive session status
+            self._publish_test_session_status()
+
         # Clear sequence manager
         if self.sequence_manager:
             logger.info("Clearing sequence manager")
@@ -3965,7 +4236,7 @@ class DAQService:
 
         for f in projects_dir.glob("*.json"):
             try:
-                with open(f, 'r') as fp:
+                with open(f, 'r', encoding='utf-8') as fp:
                     data = json.load(fp)
                 projects.append({
                     "filename": f.name,
@@ -4009,7 +4280,7 @@ class DAQService:
             return False
 
         try:
-            with open(project_path, 'r') as f:
+            with open(project_path, 'r', encoding='utf-8') as f:
                 project_data = json.load(f)
 
             # Validate project structure using project manager if available
@@ -4101,6 +4372,11 @@ class DAQService:
                         "project": project_data
                     })
                 )
+
+            # Auto-push config to all known cRIO nodes after project load
+            # This ensures cRIO has the TAG name -> physical channel mappings
+            self._push_config_to_all_crio_nodes()
+
             return True
 
         except json.JSONDecodeError as e:
@@ -4860,12 +5136,195 @@ class DAQService:
         # Register with device discovery
         status = payload.get('status', 'unknown')
 
+        # Check if this is a NEW cRIO node (not seen before)
+        existing_nodes = {n.node_id for n in self.device_discovery.get_crio_nodes()}
+        is_new_node = node_id not in existing_nodes
+
         if status == 'offline':
             self.device_discovery.mark_crio_offline(node_id)
         else:
             self.device_discovery.register_crio_node(node_id, payload)
 
         logger.debug(f"cRIO node status: {node_id} -> {status}")
+
+        # If a new cRIO node was discovered, notify frontend so it can refresh discovery
+        if is_new_node and status != 'offline':
+            base = self.get_topic_base()
+            self.mqtt_client.publish(
+                f"{base}/discovery/crio-found",
+                json.dumps({
+                    "node_id": node_id,
+                    "status": status,
+                    "product_type": payload.get('product_type', 'cRIO'),
+                    "channels": payload.get('channels', 0),
+                    "timestamp": datetime.now().isoformat()
+                }),
+                qos=1
+            )
+            logger.info(f"Notified frontend: new cRIO node discovered: {node_id}")
+
+        # Auto-push config to cRIO if:
+        # 1. It's a new node that just came online
+        # 2. Config version mismatch (cRIO has stale config)
+        if status != 'offline':
+            should_push = False
+            reason = ""
+
+            # Check 1: New node - always push config
+            if is_new_node:
+                should_push = True
+                reason = "new node discovered"
+
+            # Check 2: Config version mismatch
+            if not should_push:
+                reported_version = payload.get('config_version', '')
+                expected_version = self._crio_config_versions.get(node_id, '')
+                if expected_version and reported_version and reported_version != expected_version:
+                    should_push = True
+                    reason = f"config version mismatch (has: {reported_version}, expected: {expected_version})"
+
+            if should_push:
+                logger.info(f"Auto-pushing config to cRIO {node_id}: {reason}")
+                self._push_crio_channel_config(node_id)
+
+    def _handle_crio_heartbeat(self, topic: str, payload: Dict[str, Any]):
+        """
+        Handle heartbeat from a remote cRIO node.
+
+        Used as fallback discovery when status message was missed.
+        Heartbeats are published every 2 seconds by cRIO nodes, so this
+        ensures we discover nodes even if we miss their initial status.
+
+        Args:
+            topic: MQTT topic (e.g., "nisystem/nodes/crio-001/heartbeat")
+            payload: Heartbeat payload with node_type, node_id, etc.
+        """
+        if not isinstance(payload, dict):
+            return
+
+        # Only process cRIO heartbeats
+        node_type = payload.get('node_type')
+        if node_type != 'crio':
+            return
+
+        # Extract node_id from topic: nisystem/nodes/{node_id}/heartbeat
+        parts = topic.split('/')
+        node_idx = -1
+        for i, p in enumerate(parts):
+            if p == 'nodes' and i + 1 < len(parts):
+                node_idx = i + 1
+                break
+
+        if node_idx < 0:
+            return
+
+        node_id = parts[node_idx]
+
+        # Don't register ourselves
+        if node_id == self.config.system.node_id:
+            return
+
+        # Update heartbeat timestamp without overwriting full registration
+        # If we have full info from status message, preserve it
+        self.device_discovery.update_crio_heartbeat(node_id, {
+            'status': 'online',
+            'channels': payload.get('channels', 0),
+            'pc_connected': payload.get('pc_connected', False),
+            'ip_address': payload.get('ip_address', 'unknown'),
+            'product_type': payload.get('product_type', 'cRIO'),
+            'serial_number': payload.get('serial_number', ''),
+        })
+
+    def _handle_crio_channel_value(self, topic: str, payload: Dict[str, Any]):
+        """
+        Handle channel value from a remote cRIO node.
+
+        Maps cRIO channel values to local channels based on source_type and source_node_id.
+        This enables "magic" mode where cRIO channels appear just like local cDAQ channels.
+
+        Args:
+            topic: MQTT topic (e.g., "nisystem/nodes/crio-001/channels/Mod1/ai0")
+            payload: Channel value payload with 'value' and 'timestamp'
+        """
+        if not isinstance(payload, dict):
+            return
+
+        # Extract node_id and crio_channel from topic
+        # Pattern: {base}/nodes/{node_id}/channels/{crio_channel}
+        parts = topic.split('/')
+        try:
+            nodes_idx = parts.index('nodes')
+            channels_idx = parts.index('channels')
+            node_id = parts[nodes_idx + 1]
+            # Channel name may contain slashes (e.g., "Mod1/ai0")
+            crio_channel = '/'.join(parts[channels_idx + 1:])
+        except (ValueError, IndexError):
+            return
+
+        # Get the value
+        value = payload.get('value')
+        if value is None:
+            return
+
+        # Find matching local channels (source_type='crio', matching node_id and physical_channel)
+        for name, channel in self.config.channels.items():
+            source_type = getattr(channel, 'source_type', 'local')
+            source_node = getattr(channel, 'source_node_id', '')
+
+            if source_type == 'crio' and source_node == node_id:
+                # Check if physical_channel matches (cRIO uses local paths like "Mod1/ai0")
+                if channel.physical_channel == crio_channel:
+                    # Update the channel value
+                    self.channel_values[name] = value
+                    logger.debug(f"cRIO value: {name} ({crio_channel} from {node_id}) = {value}")
+
+    def _handle_crio_config_response(self, topic: str, payload: Dict[str, Any]):
+        """
+        Handle ACK from cRIO after config push.
+
+        When cRIO receives and processes a config push, it publishes a response to
+        {mqtt_base}/nodes/{node_id}/config/response with status and channel count.
+
+        Args:
+            topic: MQTT topic (e.g., "nisystem/nodes/crio-001/config/response")
+            payload: Response payload with 'status', 'channels', 'config_version'
+        """
+        if not isinstance(payload, dict):
+            return
+
+        # Extract node_id from topic: nisystem/nodes/{node_id}/config/response
+        parts = topic.split('/')
+        node_id = None
+        for i, p in enumerate(parts):
+            if p == 'nodes' and i + 1 < len(parts):
+                node_id = parts[i + 1]
+                break
+
+        if not node_id:
+            return
+
+        status = payload.get('status')
+        channels = payload.get('channels', 0)
+        config_version = payload.get('config_version', '')
+
+        with self._crio_push_lock:
+            if node_id in self._pending_crio_pushes:
+                push_info = self._pending_crio_pushes.pop(node_id)
+                attempts = push_info.get('attempts', 1)
+
+                if status == 'ok':
+                    # Store the confirmed config version
+                    if config_version:
+                        self._crio_config_versions[node_id] = config_version
+                    logger.info(f"cRIO {node_id} confirmed config: {channels} channels (attempt {attempts})")
+                    self._publish_crio_response(True, f"Config confirmed by {node_id}: {channels} channels")
+                else:
+                    error_msg = payload.get('error', 'Unknown error')
+                    logger.error(f"cRIO {node_id} rejected config: {error_msg}")
+                    self._publish_crio_response(False, f"Config rejected by {node_id}: {error_msg}")
+            else:
+                # Unexpected ACK (maybe from direct push or duplicate)
+                logger.debug(f"cRIO {node_id} config response (no pending push): {status}")
 
     def _handle_crio_push_config(self, node_id: str, config_data: Dict[str, Any]):
         """
@@ -4889,6 +5348,40 @@ class DAQService:
         )
         logger.info(f"Pushed config to cRIO node: {node_id}")
 
+    def _check_crio_push_timeouts(self):
+        """
+        Check for timed-out cRIO config pushes and retry if needed.
+
+        Called periodically from publish loop (~1Hz). Non-blocking - just iterates
+        pending pushes and compares timestamps.
+        """
+        now = time.time()
+        with self._crio_push_lock:
+            for node_id, push_info in list(self._pending_crio_pushes.items()):
+                elapsed = now - push_info['timestamp']
+                if elapsed > self._CRIO_CONFIG_TIMEOUT:
+                    if push_info['attempts'] < self._CRIO_CONFIG_MAX_RETRIES:
+                        # Retry
+                        push_info['attempts'] += 1
+                        push_info['timestamp'] = now
+                        logger.warning(f"cRIO config push timeout for {node_id} - retrying (attempt {push_info['attempts']}/{self._CRIO_CONFIG_MAX_RETRIES})")
+                        # Re-push (outside lock to avoid blocking)
+                        config_data = push_info['config']
+                        # Schedule retry outside lock
+                        threading.Thread(
+                            target=self._handle_crio_push_config,
+                            args=(node_id, config_data),
+                            daemon=True
+                        ).start()
+                    else:
+                        # Give up after max retries
+                        del self._pending_crio_pushes[node_id]
+                        logger.error(f"cRIO config push to {node_id} failed after {self._CRIO_CONFIG_MAX_RETRIES} attempts - no ACK received")
+                        self._publish_crio_response(
+                            False,
+                            f"Config push to {node_id} failed: no response after {self._CRIO_CONFIG_MAX_RETRIES} retries"
+                        )
+
     def _handle_crio_push_config_request(self, payload: Dict[str, Any]):
         """
         Handle request from frontend to push config to a cRIO node.
@@ -4909,12 +5402,12 @@ class DAQService:
             self._publish_crio_response(False, "Missing node_id")
             return
 
-        # Check if node is known
+        # Check if node is known - but don't fail if not found
+        # The cRIO may be online even if not yet registered (timing issue with retained messages)
         crio_nodes = self.device_discovery.get_crio_nodes()
         node_exists = any(n.node_id == node_id for n in crio_nodes)
         if not node_exists:
-            self._publish_crio_response(False, f"Unknown cRIO node: {node_id}")
-            return
+            logger.warning(f"cRIO node {node_id} not in discovery registry - pushing config anyway")
 
         # Build config to push
         config_data = {
@@ -4923,12 +5416,30 @@ class DAQService:
             'safe_state_outputs': payload.get('safe_state_outputs', []),
             'scan_rate_hz': payload.get('scan_rate_hz', 100),
             'publish_rate_hz': payload.get('publish_rate_hz', 10),
-            'timestamp': datetime.datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat()
         }
 
-        # Push to cRIO node
+        # Generate config version hash for tracking
+        import hashlib
+        channels_str = json.dumps(config_data.get('channels', []), sort_keys=True)
+        config_hash = hashlib.md5(channels_str.encode()).hexdigest()[:8]
+        config_data['config_version'] = config_hash
+
+        # Track this push for ACK/retry logic
+        with self._crio_push_lock:
+            self._pending_crio_pushes[node_id] = {
+                'config': config_data,
+                'attempts': 1,
+                'timestamp': time.time(),
+                'node_id': node_id,
+                'config_version': config_hash
+            }
+            # Store expected version
+            self._crio_config_versions[node_id] = config_hash
+
+        # Push to cRIO node (don't report success yet - wait for ACK)
         self._handle_crio_push_config(node_id, config_data)
-        self._publish_crio_response(True, f"Config pushed to {node_id}")
+        logger.info(f"Config push initiated to {node_id} (version: {config_hash}, awaiting ACK...)")
 
     def _handle_crio_list_request(self):
         """Handle request to list all known cRIO nodes."""
@@ -4980,7 +5491,7 @@ class DAQService:
             json.dumps({
                 'success': success,
                 'message': message,
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat()
             }),
             qos=1
         )
@@ -4999,10 +5510,176 @@ class DAQService:
                 'success': True,
                 'nodes': nodes,
                 'count': len(nodes),
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat()
             }),
             qos=1
         )
+
+    def _forward_acquisition_command_to_crio(self, command: str):
+        """
+        Forward acquisition start/stop commands to all known cRIO nodes.
+        On 'start', also pushes the channel configuration so cRIO knows TAG names.
+
+        Args:
+            command: 'start' or 'stop'
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return
+
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        if not crio_nodes:
+            return
+
+        mqtt_base = self.config.system.mqtt_base_topic
+
+        for node in crio_nodes:
+            if node.status != 'online':
+                continue
+
+            # On start: push channel config first so cRIO knows TAG name -> physical channel mapping
+            if command == 'start':
+                self._push_crio_channel_config(node.node_id)
+
+            topic = f"{mqtt_base}/nodes/{node.node_id}/system/acquire/{command}"
+            self.mqtt_client.publish(
+                topic,
+                json.dumps({
+                    'command': command,
+                    'timestamp': datetime.now().isoformat()
+                }),
+                qos=1
+            )
+            logger.info(f"Forwarded acquisition {command} to cRIO: {node.node_id}")
+
+    def _push_config_to_all_crio_nodes(self):
+        """
+        Push channel configuration to all known online cRIO nodes.
+        Called automatically after project load/import to ensure cRIO
+        has the TAG name -> physical channel mappings.
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return
+
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        if not crio_nodes:
+            logger.debug("No cRIO nodes found - skipping auto-push")
+            return
+
+        pushed_count = 0
+        for node in crio_nodes:
+            if node.status != 'online':
+                logger.debug(f"Skipping offline cRIO node: {node.node_id}")
+                continue
+
+            logger.info(f"Auto-pushing config to cRIO node: {node.node_id}")
+            self._push_crio_channel_config(node.node_id)
+            pushed_count += 1
+
+        if pushed_count > 0:
+            logger.info(f"Auto-pushed config to {pushed_count} cRIO node(s) after project load")
+
+    def _push_crio_channel_config(self, node_id: str):
+        """
+        Push channel configuration to a cRIO node.
+
+        Filters channels that belong to cRIO (physical_channel starts with 'Mod')
+        and sends them with TAG names so cRIO can map TAG -> physical channel.
+
+        Args:
+            node_id: Target cRIO node ID (e.g., 'crio-001')
+        """
+        if not self.mqtt_client or not self.config:
+            return
+
+        # Filter channels that are cRIO channels (physical_channel starts with 'Mod')
+        crio_channels = []
+        for name, channel in self.config.channels.items():
+            physical_ch = getattr(channel, 'physical_channel', '')
+            if physical_ch.startswith('Mod'):
+                # Build channel config dict with TAG name as 'name' field
+                ch_dict = {
+                    'name': name,  # TAG name (e.g., 'tag_72')
+                    'physical_channel': physical_ch,  # e.g., 'Mod4/port0/line0'
+                    'channel_type': channel.channel_type.value if hasattr(channel.channel_type, 'value') else str(channel.channel_type),
+                }
+                # Add optional fields if present
+                if hasattr(channel, 'thermocouple_type') and channel.thermocouple_type:
+                    ch_dict['thermocouple_type'] = channel.thermocouple_type
+                if hasattr(channel, 'default_state'):
+                    ch_dict['default_state'] = channel.default_state
+                if hasattr(channel, 'invert'):
+                    ch_dict['invert'] = channel.invert
+                if hasattr(channel, 'scale_slope') and channel.scale_slope is not None:
+                    ch_dict['scale_slope'] = channel.scale_slope
+                if hasattr(channel, 'scale_offset') and channel.scale_offset is not None:
+                    ch_dict['scale_offset'] = channel.scale_offset
+                if hasattr(channel, 'unit') and channel.unit:
+                    ch_dict['unit'] = channel.unit
+                # Alarm limits
+                if hasattr(channel, 'hihi_limit') and channel.hihi_limit is not None:
+                    ch_dict['hihi_limit'] = channel.hihi_limit
+                if hasattr(channel, 'lolo_limit') and channel.lolo_limit is not None:
+                    ch_dict['lolo_limit'] = channel.lolo_limit
+                if hasattr(channel, 'high_limit') and channel.high_limit is not None:
+                    ch_dict['high_limit'] = channel.high_limit
+                if hasattr(channel, 'low_limit') and channel.low_limit is not None:
+                    ch_dict['low_limit'] = channel.low_limit
+
+                crio_channels.append(ch_dict)
+
+        if not crio_channels:
+            logger.debug(f"No cRIO channels to push to {node_id}")
+            return
+
+        # Generate config version hash for tracking
+        import hashlib
+        channels_str = json.dumps(crio_channels, sort_keys=True)
+        config_hash = hashlib.md5(channels_str.encode()).hexdigest()[:8]
+
+        # Build and publish config
+        mqtt_base = self.config.system.mqtt_base_topic
+        config_data = {
+            'channels': crio_channels,
+            'scripts': [],
+            'safe_state_outputs': [],
+            'timestamp': datetime.now().isoformat(),
+            'config_version': config_hash
+        }
+
+        # Track this push for ACK/retry logic
+        with self._crio_push_lock:
+            self._pending_crio_pushes[node_id] = {
+                'config': config_data,
+                'attempts': 1,
+                'timestamp': time.time(),
+                'node_id': node_id,
+                'config_version': config_hash
+            }
+            # Store expected version
+            self._crio_config_versions[node_id] = config_hash
+
+        topic = f"{mqtt_base}/nodes/{node_id}/config/full"
+        self.mqtt_client.publish(topic, json.dumps(config_data), qos=1)
+        logger.info(f"Pushed {len(crio_channels)} channel configs to cRIO {node_id} (version: {config_hash}, awaiting ACK...)")
+
+    def _push_config_to_all_crios(self):
+        """Push channel config to all online cRIO nodes.
+
+        Called when a project is loaded/imported to ensure cRIO nodes
+        have the TAG name -> physical channel mapping.
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return
+
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        if not crio_nodes:
+            logger.debug("No cRIO nodes registered for config push")
+            return
+
+        for node in crio_nodes:
+            node_id = node.node_id if hasattr(node, 'node_id') else node.get('node_id')
+            if node_id:
+                self._push_crio_channel_config(node_id)
 
     # =========================================================================
     # USER VARIABLES / PLAYGROUND HANDLERS
@@ -5196,6 +5873,7 @@ class DAQService:
 
     def _handle_test_session_start(self, payload: Dict[str, Any]):
         """Start a test session with safety interlock validation"""
+        logger.info("[SESSION] Received test session START request")
         started_by = payload.get('started_by', 'user') if isinstance(payload, dict) else 'user'
 
         # Get alarm counts for safety interlock validation
@@ -5235,6 +5913,7 @@ class DAQService:
 
     def _handle_test_session_stop(self):
         """Stop the test session"""
+        logger.info("[SESSION] Received test session STOP request")
         result = self.user_variables.stop_session()
 
         if result.get('success'):
@@ -5802,11 +6481,6 @@ class DAQService:
 
     def _handle_channel_bulk_create(self, payload: Any):
         """Create multiple channels at once (from discovery)"""
-        if not self.authenticated:
-            logger.warning("Bulk channel create rejected - not authenticated")
-            self._publish_config_response(False, "Not authenticated")
-            return
-
         if self.acquiring:
             logger.warning("Bulk channel create rejected - acquisition running")
             self._publish_config_response(False, "Stop acquisition before creating channels")
@@ -5836,13 +6510,61 @@ class DAQService:
 
             try:
                 # Use same logic as single create
-                channel_type_str = ch_config.get('channel_type', 'voltage')
+                # cRIO sends both channel_type (hardware) and category (measurement type)
+                # Priority: category > channel_type for determining DAQ enum
+                hw_type = ch_config.get('channel_type', 'voltage')
+                category = ch_config.get('category', '')
+                logger.info(f"Bulk create {channel_name}: hw_type={hw_type}, category={category}")
+
+                # Determine channel type from category first (more specific)
+                if category == 'thermocouple':
+                    channel_type_str = 'thermocouple'
+                elif category == 'current':
+                    channel_type_str = 'current'
+                elif category == 'rtd':
+                    channel_type_str = 'rtd'
+                elif category == 'strain':
+                    channel_type_str = 'strain'
+                elif category == 'counter':
+                    channel_type_str = 'counter'
+                elif category in ('voltage', 'current_output'):
+                    # current_output uses analog_output (no separate enum)
+                    if hw_type == 'analog_output':
+                        channel_type_str = 'analog_output'
+                    else:
+                        channel_type_str = 'voltage'
+                elif category == 'digital':
+                    # Use hw_type to distinguish input vs output
+                    if hw_type == 'digital_output':
+                        channel_type_str = 'digital_output'
+                    else:
+                        channel_type_str = 'digital_input'
+                else:
+                    # Fallback: map hardware types to enum values
+                    type_mapping = {
+                        'digital': 'digital_input',
+                        'analog': 'voltage',
+                        'analog_input': 'voltage',
+                        'analog_output': 'analog_output',
+                        'counter_input': 'counter',
+                    }
+                    channel_type_str = type_mapping.get(hw_type, hw_type)
+
                 channel_type = ChannelType(channel_type_str)
 
                 tc_type = None
                 if 'thermocouple_type' in ch_config:
                     from config_parser import ThermocoupleType
                     tc_type = ThermocoupleType(ch_config['thermocouple_type'])
+
+                # Determine source type - cRIO channels are remote
+                source_type = ch_config.get('source_type', 'local')
+                if source_type == 'crio':
+                    source_type = 'crio'  # Normalize
+                    source_node_id = ch_config.get('node_id', '')
+                else:
+                    source_type = 'local'
+                    source_node_id = ''
 
                 channel = ChannelConfig(
                     name=channel_name,
@@ -5854,7 +6576,9 @@ class DAQService:
                     visible=ch_config.get('visible', True),
                     group=ch_config.get('group', ''),
                     thermocouple_type=tc_type,
-                    log=ch_config.get('log', True)
+                    log=ch_config.get('log', True),
+                    source_type=source_type,
+                    source_node_id=source_node_id
                 )
 
                 self.config.channels[channel_name] = channel
@@ -5873,11 +6597,16 @@ class DAQService:
                 created.append(channel_name)
 
             except Exception as e:
+                logger.error(f"Bulk create failed for {channel_name}: {e}")
                 failed.append({"name": channel_name, "error": str(e)})
 
         # Update dependency tracker once at the end
         if self.dependency_tracker and created:
             self.dependency_tracker.refresh(self.config)
+
+        # Reinitialize hardware reader with new channels
+        if created:
+            self._reinit_hardware_reader()
 
         logger.info(f"Bulk create: {len(created)} created, {len(failed)} failed")
         self._publish_channel_config()
@@ -5897,13 +6626,75 @@ class DAQService:
     # DEVICE DISCOVERY HANDLERS
     # =========================================================================
 
+    def _send_crio_discovery_ping(self):
+        """Send a discovery ping to all cRIO nodes.
+
+        Called periodically from heartbeat loop and during discovery scan.
+        cRIO nodes respond by publishing their status, which registers them.
+        """
+        if not self.mqtt_client:
+            return
+
+        mqtt_base = self.config.system.mqtt_base_topic
+        self.mqtt_client.publish(
+            f"{mqtt_base}/discovery/ping",
+            json.dumps({"request": "status", "timestamp": datetime.now().isoformat()}),
+            qos=1
+        )
+        logger.debug("Sent cRIO discovery ping")
+
     def _handle_discovery_scan(self):
-        """Handle device discovery scan request"""
+        """Handle device discovery scan request.
+
+        Pings remote cRIO nodes and waits for responses before returning results.
+        Scans local hardware first, then waits for cRIO responses.
+        """
         logger.info("Starting device discovery scan...")
         base = self.get_topic_base()
 
         try:
+            import time
+
+            # Step 1: Record current cRIO count before ping
+            crio_count_before = len(self.device_discovery.get_crio_nodes())
+
+            # Step 2: Send discovery ping FIRST so cRIOs start responding
+            self._send_crio_discovery_ping()
+            logger.info(f"Sent discovery ping (known cRIOs before: {crio_count_before})")
+
+            # Step 3: Scan local hardware while cRIOs are responding
+            # This runs in parallel with cRIO response time
             result = self.device_discovery.scan()
+            logger.info(f"Local hardware scan complete: {result.message}")
+
+            # Step 4: Now wait for cRIO responses
+            # cRIOs can take 5-6 seconds to respond over network
+            # Check every 500ms, max wait 6 seconds total
+            max_wait = 6.0
+            wait_interval = 0.5
+            waited = 0.0
+            crio_found = False
+
+            while waited < max_wait:
+                time.sleep(wait_interval)
+                waited += wait_interval
+
+                # Check if new cRIOs have registered
+                crio_count_now = len(self.device_discovery.get_crio_nodes())
+                if crio_count_now > crio_count_before:
+                    logger.info(f"cRIO detected during wait ({crio_count_before} -> {crio_count_now}) after {waited:.1f}s")
+                    crio_found = True
+                    # Give a bit more time in case more are coming
+                    time.sleep(0.5)
+                    break
+
+            if not crio_found and crio_count_before == 0:
+                logger.info(f"No cRIO responses after {waited:.1f}s wait")
+
+            # Step 5: Re-scan to include any newly registered cRIOs
+            if crio_found or len(self.device_discovery.get_crio_nodes()) > crio_count_before:
+                result = self.device_discovery.scan()
+                logger.info(f"Re-scanned with cRIO nodes: {result.message}")
 
             # Publish discovery result
             self.mqtt_client.publish(
@@ -6146,14 +6937,14 @@ class DAQService:
         self.scheduler.enable()
         self._publish_schedule_response(True, "Schedule enabled")
         self._publish_schedule_status()
-        self._publish_status()  # Update system status with scheduler_enabled=true
+        self._publish_system_status()  # Update system status with scheduler_enabled=true
 
     def _handle_schedule_disable(self):
         """Disable the schedule"""
         self.scheduler.disable()
         self._publish_schedule_response(True, "Schedule disabled")
         self._publish_schedule_status()
-        self._publish_status()  # Update system status with scheduler_enabled=false
+        self._publish_system_status()  # Update system status with scheduler_enabled=false
 
     def _publish_schedule_status(self):
         """Publish current schedule status"""
@@ -6835,6 +7626,24 @@ class DAQService:
 
         logger.info("Published channel configuration")
 
+    def _publish_simple_value(self, channel_name: str, value: float, units: str = ''):
+        """Publish a simple value without requiring channel config.
+
+        Used for system channels (sys.*) and other synthetic values
+        that don't have hardware channel configuration.
+        """
+        try:
+            base = self.get_topic_base()
+            payload = {
+                "value": value,
+                "timestamp": datetime.now().isoformat(),
+                "units": units,
+                "quality": "good"
+            }
+            self.mqtt_client.publish(f"{base}/channels/{channel_name}", json.dumps(payload))
+        except Exception as e:
+            logger.error(f"Error publishing {channel_name}: {e}")
+
     def _publish_channel_value(self, channel_name: str, value: Any):
         """Publish a single channel value with scaling info for validation"""
         import math
@@ -7114,9 +7923,47 @@ class DAQService:
 
         try:
             # Determine which backend handles this channel
+            source_type = getattr(channel, 'source_type', 'local')
+            source_node_id = getattr(channel, 'source_node_id', '')
             is_modbus = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
 
-            if is_modbus and self.modbus_reader:
+            # Auto-detect cRIO channels: if physical_channel starts with "Mod" (no chassis prefix)
+            # it's ALWAYS a cRIO channel - local cDAQ channels have chassis prefix like "cDAQ1Mod1/ai0"
+            physical_ch = getattr(channel, 'physical_channel', '')
+            if source_type != 'crio' and physical_ch.startswith('Mod'):
+                # This is a cRIO channel - route to cRIO regardless of online status
+                # (MQTT will queue the message if cRIO isn't connected yet)
+                source_type = 'crio'
+                # Try to find a registered cRIO, otherwise use default
+                crio_nodes = self.device_discovery.get_crio_nodes() if self.device_discovery else []
+                if crio_nodes:
+                    source_node_id = crio_nodes[0].get('node_id', 'crio-001')
+                else:
+                    source_node_id = 'crio-001'  # Default cRIO node ID
+                logger.debug(f"Auto-detected cRIO channel {channel_name} -> {source_node_id}")
+
+            if source_type == 'crio':
+                # Forward command to cRIO node via MQTT
+                if source_node_id and self.mqtt_client:
+                    base = self.get_topic_base()
+                    # Extract base topic (e.g., "nisystem" from "nisystem/daq")
+                    mqtt_base = base.split('/')[0] if '/' in base else base
+                    # Send to cRIO's command topic with TAG name in payload
+                    # (cRIO stores output_tasks by TAG name, not physical channel)
+                    # Include physical_channel for fallback when config not pushed to cRIO
+                    crio_topic = f"{mqtt_base}/nodes/{source_node_id}/commands/output"
+                    cmd_payload = {
+                        "channel": channel_name,  # Use TAG name
+                        "value": value,
+                        "physical_channel": physical_ch  # Fallback for when config not pushed
+                    }
+                    self.mqtt_client.publish(crio_topic, json.dumps(cmd_payload), qos=1)
+                    logger.info(f"Forwarded output command to cRIO: {source_node_id} {channel_name} ({physical_ch}) = {value}")
+                else:
+                    logger.error(f"Cannot forward to cRIO - missing node_id or MQTT client")
+                    self._publish_output_response(False, channel=channel_name, error="cRIO node not available")
+                    return
+            elif is_modbus and self.modbus_reader:
                 self.modbus_reader.write_channel(channel_name, value)
             elif self.simulator:
                 self.simulator.write_channel(channel_name, value)
@@ -7417,6 +8264,18 @@ class DAQService:
                     for name, value in values.items():
                         self._publish_channel_value(name, value)
 
+                    # Add system state channels (sys.*) for recording context
+                    # These help understand why py.* values might be NaN when reviewing data
+                    session_active = getattr(self, 'test_session_active', False)
+                    values['sys.acquiring'] = 1.0 if self.acquiring else 0.0
+                    values['sys.session_active'] = 1.0 if session_active else 0.0
+                    values['sys.recording'] = 1.0 if (self.recording_manager and self.recording_manager.recording) else 0.0
+
+                    # Publish system state channels via MQTT (use simple publish - no channel config)
+                    self._publish_simple_value('sys.acquiring', values['sys.acquiring'], 'bool')
+                    self._publish_simple_value('sys.session_active', values['sys.session_active'], 'bool')
+                    self._publish_simple_value('sys.recording', values['sys.recording'], 'bool')
+
                     # Write to recording manager if recording
                     if self.recording_manager and self.recording_manager.recording:
                         # Build channel configs dict for units
@@ -7427,6 +8286,10 @@ class DAQService:
                             }
                             for name, ch in self.config.channels.items()
                         }
+                        # Add sys.* channel configs for recording
+                        channel_configs['sys.acquiring'] = {'units': 'bool', 'description': 'Acquisition active'}
+                        channel_configs['sys.session_active'] = {'units': 'bool', 'description': 'Test session active'}
+                        channel_configs['sys.recording'] = {'units': 'bool', 'description': 'Recording active'}
                         self.recording_manager.write_sample(values, channel_configs)
 
                     publish_count += 1
@@ -7443,6 +8306,22 @@ class DAQService:
                 if self.user_variables:
                     self._publish_user_variables_values()
                     self._publish_formula_blocks_values()
+                # Check for cRIO config push timeouts (non-blocking)
+                self._check_crio_push_timeouts()
+
+                # Industrial-grade: Periodic hardware output verification
+                # Refresh actual output states from hardware to detect drift/faults
+                if self.hardware_reader and self.acquiring and not self.config.system.simulation_mode:
+                    try:
+                        refreshed = self.hardware_reader.refresh_output_states()
+                        if refreshed:
+                            # Update channel_values with verified hardware states
+                            with self.values_lock:
+                                for ch_name, actual_val in refreshed.items():
+                                    self.channel_values[ch_name] = actual_val
+                    except Exception as e:
+                        logger.warning(f"Output state refresh failed: {e}")
+
                 status_publish_counter = 0
 
             # Track loop timing

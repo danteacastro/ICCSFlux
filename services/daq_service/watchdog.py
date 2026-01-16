@@ -106,10 +106,16 @@ class DAQWatchdog:
             self.mqtt_client.disconnect()
 
     def _setup_mqtt(self):
-        """Setup MQTT connection"""
+        """Setup MQTT connection via WebSocket (same as frontend dashboard)"""
         import uuid
+        # Use WebSocket transport on port 9002 to match frontend connection
+        mqtt_ws_port = 9002
         client_id = f"daq_watchdog_{uuid.uuid4().hex[:8]}"
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+        self.mqtt_client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=client_id,
+            transport='websockets'
+        )
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._on_mqtt_message
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
@@ -130,7 +136,7 @@ class DAQWatchdog:
         try:
             self.mqtt_client.connect(
                 self.config.mqtt_broker,
-                self.config.mqtt_port,
+                mqtt_ws_port,
                 keepalive=30
             )
             self.mqtt_client.loop_start()

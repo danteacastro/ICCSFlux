@@ -71,16 +71,49 @@ const availableChannels = computed(() => {
   return [...hwChannels, ...scriptChannels]
 })
 
-// Grouped channels for display
-const groupedChannels = computed(() => {
-  const groups: Record<string, typeof availableChannels.value> = {}
-  availableChannels.value.forEach(ch => {
-    const group = ch.group
-    if (!groups[group]) groups[group] = []
-    groups[group].push(ch)
-  })
-  return groups
+// Natural sort comparator for alphanumeric strings
+// Handles: tag_1, tag_2, tag_10 (not tag_1, tag_10, tag_2)
+function naturalSort(a: string, b: string): number {
+  const regex = /(\d+)|(\D+)/g
+  const aParts = a.match(regex) || []
+  const bParts = b.match(regex) || []
+
+  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+    const aPart = aParts[i] || ''
+    const bPart = bParts[i] || ''
+
+    const aNum = parseInt(aPart, 10)
+    const bNum = parseInt(bPart, 10)
+
+    if (!isNaN(aNum) && !isNaN(bNum)) {
+      // Both are numbers - compare numerically
+      if (aNum !== bNum) return aNum - bNum
+    } else {
+      // At least one is text - compare alphabetically
+      const cmp = aPart.localeCompare(bPart)
+      if (cmp !== 0) return cmp
+    }
+  }
+  return 0
+}
+
+// Sorted channels: DAQ tags first (natural sort), then Python script tags
+// DAQ: tag_1, tag_2, ... tag_10, tag_11, ... uag_1, uag_2
+// Python: py.Efficiency, py.FlowRate, etc.
+const sortedChannels = computed(() => {
+  const daqChannels = availableChannels.value.filter(ch => !ch.name.startsWith('py.'))
+  const pythonChannels = availableChannels.value.filter(ch => ch.name.startsWith('py.'))
+
+  return [
+    ...daqChannels.sort((a, b) => naturalSort(a.name, b.name)),
+    ...pythonChannels.sort((a, b) => naturalSort(a.name, b.name))
+  ]
 })
+
+// Check if we have both DAQ and Python channels (for separator display)
+const hasPythonChannels = computed(() =>
+  availableChannels.value.some(ch => ch.name.startsWith('py.'))
+)
 
 // Toggle channel selection
 function toggleChannel(channelName: string) {
@@ -457,13 +490,23 @@ const scheduleDayLabels = [
         </div>
 
         <div class="channel-list">
-          <div v-for="(channels, group) in groupedChannels" :key="group" class="channel-group">
-            <div class="group-header">{{ group }}</div>
+          <!-- Flat sorted list - DAQ tags first, then Python script tags -->
+          <template v-for="(ch, index) in sortedChannels" :key="ch.name">
+            <!-- Show separator before first Python channel -->
             <div
-              v-for="ch in channels"
-              :key="ch.name"
+              v-if="ch.name.startsWith('py.') && (index === 0 || !sortedChannels[index - 1].name.startsWith('py.'))"
+              class="channel-group-separator"
+            >
+              <span>Python Script Outputs</span>
+            </div>
+
+            <div
               class="channel-item"
-              :class="{ selected: selectAllChannels || selectedChannels.includes(ch.name), disabled: configLocked }"
+              :class="{
+                selected: selectAllChannels || selectedChannels.includes(ch.name),
+                disabled: configLocked,
+                'python-channel': ch.name.startsWith('py.')
+              }"
               @click="!configLocked && toggleChannel(ch.name)"
             >
               <input
@@ -478,7 +521,7 @@ const scheduleDayLabels = [
                 <span class="channel-meta">{{ ch.type }} {{ ch.unit ? `(${ch.unit})` : '' }}</span>
               </div>
             </div>
-          </div>
+          </template>
 
           <div v-if="availableChannels.length === 0" class="no-channels">
             <p>No tags configured</p>
@@ -1534,6 +1577,36 @@ const scheduleDayLabels = [
 
 .channel-item input[type="checkbox"] {
   accent-color: #3b82f6;
+}
+
+.channel-item.python-channel {
+  border-color: #7c3aed;
+}
+
+.channel-item.python-channel.selected {
+  border-color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.channel-group-separator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px 6px;
+  margin-top: 8px;
+  color: #7c3aed;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.channel-group-separator::before,
+.channel-group-separator::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #7c3aed40, transparent);
 }
 
 .channel-info {

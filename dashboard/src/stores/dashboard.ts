@@ -257,14 +257,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function checkAlarm(value: number, config: ChannelConfig): boolean {
-    if (config.low_limit !== undefined && value < config.low_limit) return true
-    if (config.high_limit !== undefined && value > config.high_limit) return true
+    // Use != null to check both undefined AND null
+    if (config.low_limit != null && value < config.low_limit) return true
+    if (config.high_limit != null && value > config.high_limit) return true
     return false
   }
 
   function checkWarning(value: number, config: ChannelConfig): boolean {
-    if (config.low_warning !== undefined && value < config.low_warning) return true
-    if (config.high_warning !== undefined && value > config.high_warning) return true
+    // Use != null to check both undefined AND null
+    if (config.low_warning != null && value < config.low_warning) return true
+    if (config.high_warning != null && value > config.high_warning) return true
     return false
   }
 

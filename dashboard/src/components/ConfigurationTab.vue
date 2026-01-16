@@ -21,10 +21,155 @@ import { useProjectManager } from '../composables/useProjectManager'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useTheme } from '../composables/useTheme'
 import { useSafety } from '../composables/useSafety'
+import { useTagDependencies } from '../composables/useTagDependencies'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
 
 const store = useDashboardStore()
+const tagDeps = useTagDependencies()
+
+// =============================================================================
+// NI Module Type Mapping
+// =============================================================================
+// Strict mapping of NI module product types to channel types.
+// This is the authoritative source for determining channel types - we don't rely
+// on backend data alone. The module's product_type determines the type.
+//
+// For combo modules (e.g., NI 9207 with both voltage and current inputs),
+// use the channel's physical name (ai vs ci) to determine type.
+// =============================================================================
+
+interface ModuleTypeInfo {
+  channel_type: string       // Primary channel type for this module
+  category: string           // Category for grouping/defaults
+  alt_channel_type?: string  // For combo modules: alternative type based on channel name
+  alt_category?: string      // For combo modules: alternative category
+  alt_prefix?: string        // For combo modules: channel prefix that uses alt type (e.g., "ci" for current)
+}
+
+const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
+  // ===== DIGITAL INPUT MODULES =====
+  'NI 9421': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, 24V sinking
+  'NI 9422': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, 24-60V sinking
+  'NI 9423': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, TTL
+  'NI 9425': { channel_type: 'digital_input', category: 'digital' },   // 32-ch DI, 24V sourcing (Spring)
+  'NI 9426': { channel_type: 'digital_input', category: 'digital' },   // 32-ch DI, 24V sinking
+  'NI 9435': { channel_type: 'digital_input', category: 'digital' },   // 4-ch universal DI
+
+  // ===== DIGITAL OUTPUT MODULES =====
+  'NI 9472': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 24V sourcing
+  'NI 9474': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 5-30V sourcing
+  'NI 9475': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 60V sinking
+  'NI 9476': { channel_type: 'digital_output', category: 'digital' },  // 32-ch DO, 24V sourcing
+  'NI 9477': { channel_type: 'digital_output', category: 'digital' },  // 32-ch DO, 60V sinking
+  'NI 9478': { channel_type: 'digital_output', category: 'digital' },  // 16-ch DO, 24V sourcing
+
+  // ===== BIDIRECTIONAL DIGITAL I/O MODULES =====
+  // For these, channel direction is determined by configuration, default to input
+  'NI 9401': { channel_type: 'digital_input', category: 'digital' },   // 8-ch bidirectional DIO
+  'NI 9402': { channel_type: 'digital_input', category: 'digital' },   // 4-ch bidirectional DIO
+  'NI 9403': { channel_type: 'digital_input', category: 'digital' },   // 32-ch bidirectional TTL
+
+  // ===== ANALOG INPUT - VOLTAGE =====
+  'NI 9201': { channel_type: 'analog_input', category: 'voltage' },    // 8-ch ±10V
+  'NI 9202': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch ±10V
+  'NI 9205': { channel_type: 'analog_input', category: 'voltage' },    // 32-ch ±10V
+  'NI 9206': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch simultaneous ±10V
+  'NI 9215': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch simultaneous ±10V
+  'NI 9220': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch ±10V
+  'NI 9221': { channel_type: 'analog_input', category: 'voltage' },    // 8-ch ±60V
+  'NI 9222': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch simultaneous ±10V
+  'NI 9223': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch high-speed ±10V
+  'NI 9229': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch ±60V isolated
+  'NI 9239': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch ±10V universal
+
+  // ===== ANALOG INPUT - CURRENT =====
+  'NI 9203': { channel_type: 'analog_input', category: 'current' },    // 8-ch ±20mA
+  'NI 9208': { channel_type: 'analog_input', category: 'current' },    // 16-ch ±20mA
+
+  // ===== ANALOG INPUT - THERMOCOUPLE =====
+  'NI 9210': { channel_type: 'analog_input', category: 'thermocouple' }, // 4-ch TC
+  'NI 9211': { channel_type: 'analog_input', category: 'thermocouple' }, // 4-ch TC
+  'NI 9212': { channel_type: 'analog_input', category: 'thermocouple' }, // 8-ch TC
+  'NI 9213': { channel_type: 'analog_input', category: 'thermocouple' }, // 16-ch TC
+  'NI 9214': { channel_type: 'analog_input', category: 'thermocouple' }, // 16-ch isothermal TC
+
+  // ===== ANALOG INPUT - RTD =====
+  'NI 9216': { channel_type: 'analog_input', category: 'rtd' },        // 8-ch RTD
+  'NI 9217': { channel_type: 'analog_input', category: 'rtd' },        // 4-ch RTD
+  'NI 9226': { channel_type: 'analog_input', category: 'rtd' },        // 8-ch RTD
+
+  // ===== ANALOG INPUT - STRAIN/BRIDGE =====
+  'NI 9235': { channel_type: 'analog_input', category: 'strain' },     // 8-ch quarter-bridge
+  'NI 9236': { channel_type: 'analog_input', category: 'strain' },     // 8-ch quarter-bridge
+  'NI 9237': { channel_type: 'analog_input', category: 'bridge' },     // 4-ch bridge
+
+  // ===== ANALOG INPUT - UNIVERSAL/MULTI =====
+  'NI 9219': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch universal AI
+
+  // ===== ANALOG OUTPUT - VOLTAGE =====
+  'NI 9260': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch ±10V
+  'NI 9262': { channel_type: 'analog_output', category: 'voltage' },   // 2-ch ±100V
+  'NI 9263': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch ±10V
+  'NI 9264': { channel_type: 'analog_output', category: 'voltage' },   // 16-ch ±10V
+  'NI 9269': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch isolated ±10V
+
+  // ===== ANALOG OUTPUT - CURRENT =====
+  'NI 9265': { channel_type: 'analog_output', category: 'current_output' }, // 4-ch 0-20mA
+  'NI 9266': { channel_type: 'analog_output', category: 'current_output' }, // 8-ch 0-20mA
+
+  // ===== RELAY MODULES =====
+  // Relay modules are digital outputs - NI-DAQmx treats them as DO channels
+  'NI 9481': { channel_type: 'digital_output', category: 'relay' },    // 4-ch SPST relay
+  'NI 9482': { channel_type: 'digital_output', category: 'relay' },    // 4-ch SPDT relay
+  'NI 9485': { channel_type: 'digital_output', category: 'relay' },    // 8-ch SSR
+
+  // ===== COMBO MODULES =====
+  // NI 9207: 8 voltage + 8 current inputs (ai0-ai7 = voltage, ci0-ci7 = current)
+  'NI 9207': {
+    channel_type: 'analog_input',
+    category: 'voltage',
+    alt_channel_type: 'analog_input',
+    alt_category: 'current',
+    alt_prefix: 'ci'
+  },
+}
+
+/**
+ * Get channel type info from NI module product type.
+ * This is the AUTHORITATIVE source for determining channel types.
+ *
+ * @param productType - Module product type (e.g., "NI 9472", "NI 9472 (Spring)")
+ * @param channelName - Physical channel name (e.g., "Mod4/port0/line0", "Mod1/ai0", "Mod1/ci0")
+ * @returns { channel_type, category } or null if module not recognized
+ */
+function getModuleChannelType(productType: string, channelName?: string): { channel_type: string, category: string } | null {
+  // Extract base model number (e.g., "NI 9472" from "NI 9472 (Spring)")
+  const match = productType.match(/^(NI\s*\d{4})/i)
+  if (!match) return null
+
+  const baseModel = match[1].replace(/\s+/g, ' ')  // Normalize spacing
+  const moduleInfo = NI_MODULE_TYPES[baseModel]
+
+  if (!moduleInfo) return null
+
+  // Check if this is a combo module with alternate type
+  if (moduleInfo.alt_prefix && channelName) {
+    // Extract channel prefix (e.g., "ci" from "Mod1/ci0")
+    const channelMatch = channelName.match(/\/([a-z]+)\d+$/i)
+    if (channelMatch && channelMatch[1].toLowerCase() === moduleInfo.alt_prefix.toLowerCase()) {
+      return {
+        channel_type: moduleInfo.alt_channel_type || moduleInfo.channel_type,
+        category: moduleInfo.alt_category || moduleInfo.category
+      }
+    }
+  }
+
+  return {
+    channel_type: moduleInfo.channel_type,
+    category: moduleInfo.category
+  }
+}
 
 // MQTT connection - get from parent or create new
 const mqtt = useMqtt()
@@ -50,6 +195,15 @@ const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
 // Edit mode - only allow editing when explicitly enabled, has permission, and not acquiring
 const editMode = ref(false)
 const canEdit = computed(() => editMode.value && hasEditPermission.value && !store.isAcquiring)
+
+// cRIO sync indicator - true if ANY cRIO is out of sync
+const hasCrioOutOfSync = computed(() => {
+  const syncStatus = mqtt.crioSyncStatus.value
+  for (const nodeId in syncStatus) {
+    if (!syncStatus[nodeId]) return true
+  }
+  return false
+})
 
 // Toggle edit mode with permission check
 function toggleEditMode() {
@@ -419,11 +573,20 @@ function getDefaultUnit(channelType: ChannelType): string {
   return units[channelType] || ''
 }
 
-// Delete channel
+// Delete channel with dependency checking
 function deleteChannel(channelName: string, event: Event) {
   event.stopPropagation()
 
-  if (!confirm(`Delete channel "${channelName}"? This cannot be undone.`)) {
+  // Check for dependencies before deleting
+  const refs = tagDeps.getTagReferences(channelName)
+  let confirmMessage = `Delete channel "${channelName}"? This cannot be undone.`
+
+  if (refs.length > 0) {
+    const refSummary = refs.map(r => `  - ${r.type}: ${r.name} (${r.location})`).join('\n')
+    confirmMessage = `WARNING: "${channelName}" is referenced in ${refs.length} place(s):\n\n${refSummary}\n\nDeleting this tag will break these references!\n\nDelete anyway?`
+  }
+
+  if (!confirm(confirmMessage)) {
     return
   }
 
@@ -515,6 +678,7 @@ const discoveryChannels = computed(() => mqtt.discoveryChannels.value)
 const discoveryResult = computed(() => mqtt.discoveryResult.value)
 const showDiscoveryPanel = ref(false)
 const selectedDiscoveryChannels = ref<string[]>([])
+const devicePrefix = ref('')  // Prefix to prepend to physical channels (e.g., "RIO0" for cRIO)
 
 // Tree view expansion state
 const expandedChassis = ref<Set<string>>(new Set())
@@ -909,15 +1073,36 @@ function addSelectedChannels() {
     const tagName = `tag_${tagNum}`
     tagNum++
 
-    const channelType = ch.category || ch.channel_type || 'voltage'
-    const limits = getDefaultLimits(channelType)
-    const group = getDefaultGroupName(channelType, ch.module_name)
-    const units = getDefaultUnit(channelType as ChannelType)
+    // STRICT module-based type lookup (authoritative source)
+    // Use NI_MODULE_TYPES mapping to determine channel type from module product type
+    // This is more reliable than trusting backend-reported channel_type
+    let hwType: string  // Hardware type: analog_input, analog_output, digital_input, digital_output
+    let category: string  // Measurement category: thermocouple, voltage, current_output, etc.
+    const moduleTypeInfo = getModuleChannelType(ch.module_name || '', ch.name)
+
+    if (moduleTypeInfo) {
+      // Module recognized - use strict type mapping
+      hwType = moduleTypeInfo.channel_type  // 'analog_input', 'analog_output', 'digital_input', 'digital_output'
+      category = moduleTypeInfo.category  // 'thermocouple', 'voltage', 'current_output', 'digital', etc.
+    } else {
+      // Module not in mapping - fall back to backend-reported values
+      // This handles unknown modules or non-NI hardware
+      console.warn(`Unknown module type: ${ch.module_name} - using backend-reported type`)
+      hwType = ch.channel_type || 'analog_input'
+      category = ch.category || 'voltage'
+    }
+
+    // For display purposes (limits, groups, units), use category for analog, hw_type for digital
+    const displayType = category === 'digital' ? hwType : category
+    const limits = getDefaultLimits(displayType)
+    const group = getDefaultGroupName(displayType, ch.module_name)
+    const units = getDefaultUnit(displayType as ChannelType)
 
     channelsToCreate.push({
       name: tagName,  // TAG is the only identifier (tag_0, tag_1, etc.)
       physical_channel: ch.name,  // Physical channel like "cDAQ1Mod1/ai0"
-      channel_type: channelType,
+      channel_type: hwType,  // Hardware type for backend (analog_output, digital_input, etc.)
+      category: category,  // Measurement category (current_output, thermocouple, voltage, digital)
       description: `${ch.module_name} - ${ch.description || ch.name}`,
       module: ch.module_device,
       group: group,
@@ -1051,6 +1236,9 @@ function applyConfigChanges() {
 
   // Also push to any cRIO nodes if present
   autoPushToCrioNodes()
+
+  // Save current widget layout to localStorage so it persists across page reloads
+  store.saveLayoutToStorage()
 
   showFeedback('info', 'Applying configuration to hardware...')
   configDirty.value = false
@@ -1308,6 +1496,20 @@ function getAlarmStatus(channelName: string): 'normal' | 'warning' | 'alarm' | '
   if (config) {
     // If alarm_enabled is explicitly false, don't show alarm colors
     if (config.alarm_enabled === false) return 'normal'
+
+    // Check if any alarm limits are actually configured
+    // Without limits, there's nothing to alarm on
+    // Use != null to check both undefined AND null
+    const hasAlarmLimits = (
+      config.hihi_limit != null ||
+      config.lolo_limit != null ||
+      config.high_limit != null ||
+      config.low_limit != null
+    )
+    if (!hasAlarmLimits) return 'normal'
+  } else {
+    // No config at all means no alarm limits configured
+    return 'normal'
   }
 
   if (value.alarm) return 'alarm'
@@ -1509,10 +1711,16 @@ function openChannelConfig(channelName: string) {
   moduleConfig.alarm_deadband = config.alarm_deadband ?? 1.0
   moduleConfig.alarm_delay_sec = config.alarm_delay_sec ?? 0
 
+  // Ensure color has a valid default (required for type="color" input)
+  const configWithDefaults = {
+    ...config,
+    color: config.color || '#60a5fa'  // Default blue if not set
+  }
+
   editingConfig.value = {
     name: channelName,
     newName: channelName,
-    config: { ...config },
+    config: configWithDefaults,
     moduleConfig
   }
 }
@@ -1604,6 +1812,25 @@ function saveChannelConfig() {
   // Include new_name if renaming the channel
   const isRenaming = editingConfig.value.newName !== editingConfig.value.name
   if (isRenaming) {
+    // Validate rename and check dependencies
+    const validation = tagDeps.validateTagRename(editingConfig.value.name, editingConfig.value.newName)
+
+    if (!validation.valid) {
+      showFeedback('error', validation.warnings.join(', '))
+      return
+    }
+
+    // Warn about affected references
+    if (validation.affectedReferences.length > 0) {
+      const refSummary = validation.affectedReferences
+        .map(r => `  - ${r.type}: ${r.name}`)
+        .join('\n')
+      const proceed = confirm(
+        `Renaming "${editingConfig.value.name}" to "${editingConfig.value.newName}" will affect ${validation.affectedReferences.length} reference(s):\n\n${refSummary}\n\nNote: Python scripts must be updated manually.\n\nProceed with rename?`
+      )
+      if (!proceed) return
+    }
+
     config.new_name = editingConfig.value.newName
     // Propagate rename to all localStorage references
     propagateChannelRename(editingConfig.value.name, editingConfig.value.newName)
@@ -1891,11 +2118,31 @@ function loadFromFile() {
 
 // Listen for config update responses
 mqtt.onConfigUpdate((response) => {
-  if (response.success) {
+  console.log('[ConfigTab] Config update response:', response)
+  // Only show feedback for actual success/failure responses, not data responses
+  // Data responses like { configs: [...] } don't have success field
+  if (response.success === true) {
     showFeedback('success', response.message || 'Configuration updated')
-  } else {
-    showFeedback('error', response.error || 'Configuration update failed')
+  } else if (response.success === false || response.error) {
+    // Log full response for debugging - this will appear in browser console
+    console.error('[ConfigTab] Configuration update FAILED:', {
+      success: response.success,
+      message: response.message,
+      error: response.error,
+      fullResponse: response
+    })
+    // If there's a failed array with details, log each failure reason
+    if (response.failed && Array.isArray(response.failed) && response.failed.length > 0) {
+      console.error('[ConfigTab] Failed channels:')
+      response.failed.forEach((f: { name?: string; error?: string }) => {
+        console.error(`  - ${f.name || 'unknown'}: ${f.error || 'no reason'}`)
+      })
+    }
+    // Backend sends 'message' field, not 'error' - use either
+    const errorMsg = response.message || response.error || 'Configuration update failed (no details)'
+    showFeedback('error', errorMsg)
   }
+  // If neither success nor error, it's a data response - no feedback needed
 
   // Handle config list response
   if (response.configs) {
@@ -2224,18 +2471,20 @@ watch(() => Object.keys(store.channels), () => {
 
         <div class="toolbar-divider"></div>
 
-        <!-- Group 5: Apply (blue - sends to hardware) -->
+        <!-- Group 5: Push (blue - sends to hardware) -->
         <button
           class="action-btn accent"
+          :class="{ 'out-of-sync': hasCrioOutOfSync }"
           @click="applyConfigChanges"
           :disabled="!mqtt.connected.value"
-          title="Apply channel config to hardware (reinitialize DAQ tasks)"
+          :title="hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware'"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
             <polyline points="22 4 12 14.01 9 11.01"/>
           </svg>
-          Apply
+          Push
+          <span v-if="hasCrioOutOfSync" class="sync-badge">!</span>
         </button>
       </div>
       <div class="right-info">
@@ -3856,7 +4105,7 @@ watch(() => Object.keys(store.channels), () => {
 
                   <!-- Modules within Chassis -->
                   <div v-if="expandedChassis.has(chassis.name)" class="tree-children">
-                    <div v-for="module in chassis.modules" :key="module.name" class="tree-module">
+                    <div v-for="module in [...chassis.modules].sort((a, b) => a.slot - b.slot)" :key="module.name" class="tree-module">
                       <div class="tree-header module-header" @click="toggleModule(module.name)">
                         <svg class="tree-arrow" :class="{ expanded: expandedModules.has(module.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                           <path d="M8 5l8 7-8 7V5z"/>
@@ -3955,13 +4204,6 @@ watch(() => Object.keys(store.channels), () => {
                     <span class="tree-type">{{ node.product_type }}</span>
                     <span class="crio-status" :class="node.status">{{ node.status }}</span>
                     <span class="tree-count">{{ node.modules?.length || 0 }} modules</span>
-                  </div>
-
-                  <!-- cRIO Info Bar -->
-                  <div v-if="expandedCrioNodes.has(node.node_id)" class="crio-info-bar">
-                    <span class="crio-ip">{{ node.ip_address }}</span>
-                    <span class="crio-serial" v-if="node.serial_number">S/N: {{ node.serial_number }}</span>
-                    <span class="crio-last-seen">Last seen: {{ node.last_seen }}</span>
                     <button
                       class="btn-push-config"
                       @click.stop="pushConfigToCrio(node)"
@@ -3971,13 +4213,20 @@ watch(() => Object.keys(store.channels), () => {
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 5v14M5 12l7 7 7-7"/>
                       </svg>
-                      Push Config
+                      Push
                     </button>
+                  </div>
+
+                  <!-- cRIO Info Bar -->
+                  <div v-if="expandedCrioNodes.has(node.node_id)" class="crio-info-bar">
+                    <span class="crio-ip">{{ node.ip_address }}</span>
+                    <span class="crio-serial" v-if="node.serial_number">S/N: {{ node.serial_number }}</span>
+                    <span class="crio-last-seen">Last seen: {{ node.last_seen }}</span>
                   </div>
 
                   <!-- Modules within cRIO -->
                   <div v-if="expandedCrioNodes.has(node.node_id)" class="tree-children">
-                    <div v-for="module in node.modules" :key="module.name" class="tree-module">
+                    <div v-for="module in [...node.modules].sort((a, b) => a.slot - b.slot)" :key="module.name" class="tree-module">
                       <div class="tree-header module-header" @click="toggleModule(module.name)">
                         <svg class="tree-arrow" :class="{ expanded: expandedModules.has(module.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                           <path d="M8 5l8 7-8 7V5z"/>
@@ -5466,6 +5715,35 @@ input[type="checkbox"] {
 .action-btn.accent:hover:not(:disabled) {
   background: #1d4ed8;
   border-color: #60a5fa;
+}
+
+/* Out-of-sync indicator for Push button when cRIO config doesn't match */
+.action-btn.out-of-sync {
+  border-color: #f59e0b;
+  animation: pulse-warning 2s infinite;
+}
+
+.action-btn.out-of-sync:hover:not(:disabled) {
+  border-color: #fbbf24;
+}
+
+.sync-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #f59e0b;
+  color: #000;
+  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  font-weight: bold;
+  margin-left: 4px;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
 }
 
 /* Warning buttons (orange) - safety/attention: Safety */

@@ -4,6 +4,11 @@ import { useDashboardStore } from '../stores/dashboard'
 import type { WidgetStyle } from '../types'
 import { WIDGET_COLORS } from '../types'
 
+// Prevent Vue from auto-inheriting attrs (we have multiple root nodes: div + Teleport)
+defineOptions({
+  inheritAttrs: false
+})
+
 const props = defineProps<{
   widgetId: string
   channel: string
@@ -15,6 +20,16 @@ const props = defineProps<{
   showLabel?: boolean      // Show/hide label (default true)
   showStatus?: boolean     // Show/hide status text (default true in normal, false in compact)
   ledSize?: 'small' | 'medium' | 'large'
+  // Props passed by grid but not used - declare to prevent warnings
+  showUnit?: boolean
+  text?: string
+  showValue?: boolean
+}>()
+
+// Declare emits to prevent warnings
+defineEmits<{
+  (e: 'configure'): void
+  (e: 'change', value: any): void
 }>()
 
 const store = useDashboardStore()

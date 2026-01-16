@@ -55,14 +55,12 @@ export interface ArchiveEntry {
 // SINGLETON STATE - Shared across all useAuth() calls
 // ============================================================================
 
-// Default operator user - available without login
-// NOTE: Set to 'admin' role to disable all permission restrictions during development
-const DEFAULT_OPERATOR: AuthUser = {
-  username: 'operator',
-  role: 'admin',  // Full access without login
-  displayName: 'Operator',
-  permissions: ['acquisition.start', 'acquisition.stop', 'recording.start', 'recording.stop',
-                'config.channels.modify', 'config.safety.modify', 'config.scripts.modify']
+// Default guest user - available without login (read-only)
+const DEFAULT_GUEST: AuthUser = {
+  username: 'guest',
+  role: 'guest',
+  displayName: 'Guest',
+  permissions: ['view.data', 'view.alarms']
 }
 
 const AUTH_STORAGE_KEY = 'nisystem-auth-session'
@@ -73,8 +71,8 @@ function loadPersistedSession(): AuthUser | null {
     const saved = localStorage.getItem(AUTH_STORAGE_KEY)
     if (saved) {
       const session = JSON.parse(saved)
-      // Only restore elevated sessions (engineer/admin)
-      if (session.role === 'engineer' || session.role === 'admin') {
+      // Restore any authenticated session (not guest)
+      if (session.role && session.role !== 'guest') {
         console.log('[AUTH] Restored persisted session:', session.username, session.role)
         return session
       }
@@ -87,7 +85,7 @@ function loadPersistedSession(): AuthUser | null {
 
 function saveSession(user: AuthUser | null) {
   try {
-    if (user && (user.role === 'engineer' || user.role === 'admin')) {
+    if (user && user.role !== 'guest') {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user))
       console.log('[AUTH] Persisted session:', user.username, user.role)
     } else {
@@ -98,10 +96,10 @@ function saveSession(user: AuthUser | null) {
   }
 }
 
-// Initialize with persisted session or default operator
+// Initialize with persisted session or default guest
 const persistedSession = loadPersistedSession()
 const authenticated = ref(persistedSession !== null)
-const currentUser = ref<AuthUser | null>(persistedSession || DEFAULT_OPERATOR)
+const currentUser = ref<AuthUser | null>(persistedSession || DEFAULT_GUEST)
 const authError = ref<string | null>(null)
 const isLoggingIn = ref(false)
 
@@ -132,9 +130,11 @@ const hasPermission = (permission: string): boolean => {
   return currentUser.value.permissions.includes(permission)
 }
 
+// Role hierarchy: admin > supervisor > operator > guest
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
-const isEngineer = computed(() => ['admin', 'engineer'].includes(currentUser.value?.role || ''))
-const isOperator = computed(() => ['admin', 'engineer', 'operator'].includes(currentUser.value?.role || ''))
+const isSupervisor = computed(() => ['admin', 'supervisor'].includes(currentUser.value?.role || ''))
+const isOperator = computed(() => ['admin', 'supervisor', 'operator'].includes(currentUser.value?.role || ''))
+const isGuest = computed(() => currentUser.value?.role === 'guest')
 
 // ============================================================================
 // COMPOSABLE
@@ -177,7 +177,7 @@ export function useAuth() {
     // This restores session state if user was previously logged in
     setTimeout(() => {
       if (mqtt.connected.value) {
-        mqtt.sendNodeCommand('auth/status/request', {})
+        mqtt.sendLocalCommand('auth/status/request', {})
         console.log('[AUTH] Requested auth status on boot')
       }
     }, 500)  // Small delay to ensure subscriptions are ready
@@ -191,16 +191,16 @@ export function useAuth() {
     if (data.authenticated && data.username) {
       const user: AuthUser = {
         username: data.username,
-        role: data.role || 'viewer',
+        role: data.role || 'guest',
         displayName: data.displayName,
         permissions: data.permissions || []
       }
       currentUser.value = user
-      // Persist elevated sessions (engineer/admin)
+      // Persist authenticated sessions
       saveSession(user)
     } else {
-      // Login failed or logout - reset to default operator
-      currentUser.value = DEFAULT_OPERATOR
+      // Login failed or logout - reset to guest
+      currentUser.value = DEFAULT_GUEST
       saveSession(null)
     }
 
@@ -254,7 +254,8 @@ export function useAuth() {
     isLoggingIn.value = true
     authError.value = null
 
-    mqtt.sendNodeCommand('auth/login', {
+    // Auth is always handled by the local DAQ service (node-001), not remote cRIO nodes
+    mqtt.sendLocalCommand('auth/login', {
       username,
       password,
       source_ip: 'dashboard'
@@ -279,16 +280,16 @@ export function useAuth() {
   function logout() {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('auth/logout', {})
+    mqtt.sendLocalCommand('auth/logout', {})
     authenticated.value = false
-    currentUser.value = DEFAULT_OPERATOR
+    currentUser.value = DEFAULT_GUEST
     saveSession(null)  // Clear persisted session
   }
 
   function requestAuthStatus() {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('auth/status/request', {})
+    mqtt.sendLocalCommand('auth/status/request', {})
   }
 
   // ============================================================================
@@ -299,25 +300,25 @@ export function useAuth() {
     if (!mqtt.connected.value) return
 
     isLoadingUsers.value = true
-    mqtt.sendNodeCommand('users/list', {})
+    mqtt.sendLocalCommand('users/list', {})
   }
 
   function createUser(user: { username: string; password: string; role: string; display_name?: string; email?: string }) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('users/create', user)
+    mqtt.sendNodeCommand('users/create', user, 'node-001')
   }
 
   function updateUser(username: string, updates: { password?: string; role?: string; display_name?: string; email?: string; enabled?: boolean }) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('users/update', { username, ...updates })
+    mqtt.sendNodeCommand('users/update', { username, ...updates }, 'node-001')
   }
 
   function deleteUser(username: string) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('users/delete', { username })
+    mqtt.sendNodeCommand('users/delete', { username }, 'node-001')
   }
 
   // ============================================================================
@@ -334,7 +335,7 @@ export function useAuth() {
     if (!mqtt.connected.value) return
 
     isLoadingAudit.value = true
-    mqtt.sendNodeCommand('audit/query', options)
+    mqtt.sendNodeCommand('audit/query', options, 'node-001')
   }
 
   function exportAuditEvents(options: {
@@ -344,7 +345,7 @@ export function useAuth() {
   } = {}) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('audit/export', options)
+    mqtt.sendNodeCommand('audit/export', options, 'node-001')
   }
 
   // ============================================================================
@@ -360,19 +361,19 @@ export function useAuth() {
     if (!mqtt.connected.value) return
 
     isLoadingArchives.value = true
-    mqtt.sendNodeCommand('archive/list', options)
+    mqtt.sendNodeCommand('archive/list', options, 'node-001')
   }
 
   function verifyArchive(archiveId: string) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('archive/verify', { archive_id: archiveId })
+    mqtt.sendNodeCommand('archive/verify', { archive_id: archiveId }, 'node-001')
   }
 
   function retrieveArchive(archiveId: string) {
     if (!mqtt.connected.value) return
 
-    mqtt.sendNodeCommand('archive/retrieve', { archive_id: archiveId })
+    mqtt.sendNodeCommand('archive/retrieve', { archive_id: archiveId }, 'node-001')
   }
 
   // ============================================================================
@@ -415,10 +416,11 @@ export function useAuth() {
     archives: readonly(archives),
     isLoadingArchives: readonly(isLoadingArchives),
 
-    // Computed permissions
+    // Computed role checks (hierarchical)
     isAdmin,
-    isEngineer,
+    isSupervisor,
     isOperator,
+    isGuest,
     hasPermission,
 
     // Auth actions

@@ -25,7 +25,7 @@ from single_instance import SingleInstance
 # Configuration
 APP_NAME = "NISystem"
 MQTT_BROKER = "localhost"
-MQTT_PORT = 1884  # WebSocket-enabled port (matches mosquitto_ws.conf)
+MQTT_PORT = 1883  # Standard MQTT port
 MQTT_WS_PORT = 9002  # WebSocket port for browser connections
 HEALTH_TIMEOUT_SEC = 10.0
 HEARTBEAT_INTERVAL_SEC = 2.0

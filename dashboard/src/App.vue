@@ -5,6 +5,7 @@ import { useMqtt } from './composables/useMqtt'
 import { useScripts } from './composables/useScripts'
 import { useProjectFiles } from './composables/useProjectFiles'
 import { useAuth } from './composables/useAuth'
+import { usePlayground } from './composables/usePlayground'
 import DashboardGrid from './components/DashboardGrid.vue'
 import ControlBar from './components/ControlBar.vue'
 import PidToolbar from './components/PidToolbar.vue'
@@ -26,6 +27,7 @@ const store = useDashboardStore()
 const scripts = useScripts()
 const projectFiles = useProjectFiles()
 const auth = useAuth()
+const playground = usePlayground()
 
 // Login dialog state
 const showLoginDialog = ref(false)
@@ -147,9 +149,20 @@ const mqtt = useMqtt('nisystem')
 // Startup dialog state
 const showStartupDialog = ref(false)
 const hasLastProject = ref(false)
+const STARTUP_DIALOG_KEY = 'nisystem-startup-dialog-shown'
+
+// Check if startup dialog was already shown this session
+function wasStartupDialogShown(): boolean {
+  return sessionStorage.getItem(STARTUP_DIALOG_KEY) === 'true'
+}
+
+function markStartupDialogShown() {
+  sessionStorage.setItem(STARTUP_DIALOG_KEY, 'true')
+}
 
 async function loadLastProject() {
   showStartupDialog.value = false
+  markStartupDialogShown()
   console.log('[APP] User chose to load last project')
 
   // Send command to backend to load the last used project from settings
@@ -170,6 +183,7 @@ async function loadLastProject() {
 
 async function startFresh() {
   showStartupDialog.value = false
+  markStartupDialogShown()
   console.log('[APP] User chose to start fresh - clearing all state')
   // Clear everything: frontend state, backend channels, localStorage, layout
   await projectFiles.newProject()
@@ -178,6 +192,7 @@ async function startFresh() {
 
 function continueWithFreshSystem() {
   showStartupDialog.value = false
+  markStartupDialogShown()
   console.log('[APP] User acknowledged fresh system state')
 }
 
@@ -245,7 +260,7 @@ onMounted(() => {
   // Backend now starts with NO channels/project - user chooses what to load
   const checkMqttReady = setInterval(() => {
     // Check if MQTT is connected and backend has published initial state
-    if (mqtt.client.value && mqtt.isConnected.value) {
+    if (mqtt.connected.value) {
       console.log('[APP] MQTT connected, initializing frontend...')
 
       // Set any channels that exist (may be empty if backend just started)
@@ -266,8 +281,14 @@ onMounted(() => {
       console.log('[APP] ✅ Boot complete - requesting current project from backend...')
       projectFiles.getCurrentProject()
 
-      // Wait for backend to respond, then ALWAYS show dialog with appropriate state info
+      // Wait for backend to respond, then show dialog if not already shown this session
       setTimeout(() => {
+        // Only show dialog once per browser session (not on page refresh)
+        if (wasStartupDialogShown()) {
+          console.log('[APP] Startup dialog already shown this session, skipping')
+          return
+        }
+
         if (projectFiles.currentProjectData.value) {
           console.log('[APP] Backend has project loaded - showing dialog with load/fresh options')
           hasLastProject.value = true
@@ -275,7 +296,6 @@ onMounted(() => {
           console.log('[APP] Backend has no project - showing dialog with fresh system message')
           hasLastProject.value = false
         }
-        // ALWAYS show dialog to inform user of system state
         showStartupDialog.value = true
       }, 1000)
     }
@@ -295,6 +315,13 @@ onMounted(() => {
     // Channel config will be refreshed via the config/channels topic
   })
 
+  // Keep store in sync with MQTT channel configs
+  // This ensures newly created/deleted channels are reflected in the UI
+  watch(() => mqtt.channelConfigs.value, (newConfigs) => {
+    store.setChannels(newConfigs)
+    console.log('[APP] Channel configs updated:', Object.keys(newConfigs).length)
+  }, { deep: true })
+
   // Listen for backend startup cleared event
   // This triggers when the DAQ service restarts and clears all state
   mqtt.subscribe('nisystem/nodes/+/system/startup-cleared', (payload: any) => {
@@ -303,8 +330,14 @@ onMounted(() => {
     // Request current project to determine system state
     projectFiles.getCurrentProject()
 
-    // Wait a bit for any project to be loaded, then ALWAYS show dialog
+    // Wait a bit for any project to be loaded, then show dialog if not already shown
     setTimeout(() => {
+      // Only show dialog once per browser session (not on page refresh)
+      if (wasStartupDialogShown()) {
+        console.log('[APP] Startup dialog already shown this session, skipping (backend restart)')
+        return
+      }
+
       if (projectFiles.currentProjectData.value) {
         console.log('[APP] Project available after startup - showing dialog with load/fresh options')
         hasLastProject.value = true
@@ -312,7 +345,6 @@ onMounted(() => {
         console.log('[APP] No project after startup - showing dialog with fresh system message')
         hasLastProject.value = false
       }
-      // ALWAYS show dialog to inform user of system state
       showStartupDialog.value = true
     }, 500)
   })
@@ -346,12 +378,13 @@ function handleRecordStop() {
   mqtt.stopRecording()
 }
 
-function handleScheduleEnable() {
-  mqtt.enableScheduler()
+function handleSessionStart() {
+  const username = auth.currentUser.value?.username || 'user'
+  playground.startTestSession(username)
 }
 
-function handleScheduleDisable() {
-  mqtt.disableScheduler()
+function handleSessionStop() {
+  playground.stopTestSession()
 }
 
 function handleRetryConnection() {
@@ -470,8 +503,8 @@ function handleRetryConnection() {
           @stop="handleStop"
           @record-start="handleRecordStart"
           @record-stop="handleRecordStop"
-          @schedule-enable="handleScheduleEnable"
-          @schedule-disable="handleScheduleDisable"
+          @session-start="handleSessionStart"
+          @session-stop="handleSessionStop"
           @add-widget="openAddPanel"
         />
 
@@ -747,7 +780,7 @@ function handleRetryConnection() {
 .app-main {
   min-height: 0;  /* Allow flex shrinking for nested scroll containers */
   flex: 1;
-  overflow: hidden;  /* Let child components handle their own scrolling */
+  overflow-y: auto;  /* Enable scrolling for widgets below viewport */
 }
 
 .tab-placeholder {

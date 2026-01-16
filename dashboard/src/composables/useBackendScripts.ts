@@ -220,7 +220,7 @@ export function useBackendScripts() {
     // Use provided ID or generate new one
     const id = script.id || `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
 
-    mqtt.sendNodeCommand('script/add', {
+    mqtt.sendLocalCommand('script/add', {
       id,
       name: script.name,
       code: script.code,
@@ -247,11 +247,11 @@ export function useBackendScripts() {
     if (updates.runMode !== undefined) payload.run_mode = updates.runMode
     if (updates.enabled !== undefined) payload.enabled = updates.enabled
 
-    mqtt.sendNodeCommand('script/update', payload)
+    mqtt.sendLocalCommand('script/update', payload)
   }
 
   function removeScript(id: string) {
-    mqtt.sendNodeCommand('script/remove', { id })
+    mqtt.sendLocalCommand('script/remove', { id })
 
     // Clear local output
     delete scriptOutputs.value[id]
@@ -262,11 +262,11 @@ export function useBackendScripts() {
   // ===========================================================================
 
   function startScript(id: string) {
-    mqtt.sendNodeCommand('script/start', { id })
+    mqtt.sendLocalCommand('script/start', { id })
   }
 
   function stopScript(id: string) {
-    mqtt.sendNodeCommand('script/stop', { id })
+    mqtt.sendLocalCommand('script/stop', { id })
   }
 
   function stopAllScripts() {
@@ -280,7 +280,7 @@ export function useBackendScripts() {
   function clearAllScripts() {
     // Send clear-all command to backend - this ensures ALL scripts are cleared
     // even if frontend state is stale or empty (e.g., after page refresh)
-    mqtt.sendNodeCommand('script/clear-all', {})
+    mqtt.sendLocalCommand('script/clear-all', {})
 
     // Clear local state immediately
     scripts.value = {}
@@ -293,7 +293,7 @@ export function useBackendScripts() {
 
   function requestScriptList() {
     if (!mqtt.connected.value) return
-    mqtt.sendNodeCommand('script/list', {})
+    mqtt.sendLocalCommand('script/list', {})
   }
 
   function getScript(id: string): BackendScript | undefined {

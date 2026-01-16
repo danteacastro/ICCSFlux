@@ -40,19 +40,101 @@ const unit = computed(() => {
   return formatUnit(channelConfig.value?.unit)
 })
 
-// Get min/max from props or channel config
+// Determine if this is a valid channel type for setpoint control
+const isValidSetpointChannel = computed(() => {
+  const type = channelConfig.value?.channel_type
+  // Setpoint makes sense for: analog outputs, Python values
+  // Digital outputs should use a toggle switch instead
+  return type === 'analog_output' || props.channel.startsWith('py.')
+})
+
+const isDigitalOutput = computed(() => {
+  return channelConfig.value?.channel_type === 'digital_output'
+})
+
+const isInputChannel = computed(() => {
+  const type = channelConfig.value?.channel_type
+  return type && !type.includes('output') && !props.channel.startsWith('py.')
+})
+
+// Get min/max from props or channel config based on output type
 const minVal = computed(() => {
   if (props.minValue !== undefined) return props.minValue
-  return channelConfig.value?.low_limit ?? 0
+
+  const config = channelConfig.value
+  if (!config) return 0
+
+  // For digital outputs, min is always 0
+  if (config.channel_type === 'digital_output') return 0
+
+  // For analog outputs, check ao_range or voltage_range
+  if (config.channel_type === 'analog_output') {
+    // ao_range can be: '5V', '10V', 'pm10V' (plus/minus), '0-20mA', '4-20mA'
+    const aoRange = config.ao_range?.toLowerCase() || ''
+    if (aoRange.includes('pm') || aoRange.includes('+-') || aoRange.includes('±')) {
+      // Bipolar output (e.g., pm10V = -10 to +10)
+      const voltage = config.voltage_range ?? 10
+      return -voltage
+    }
+    if (aoRange.includes('4-20')) {
+      return 4 // 4-20mA starts at 4
+    }
+    // Unipolar - starts at 0
+    return 0
+  }
+
+  // Fallback to alarm limits (legacy behavior)
+  return config.low_limit ?? 0
 })
 
 const maxVal = computed(() => {
   if (props.maxValue !== undefined) return props.maxValue
-  return channelConfig.value?.high_limit ?? 100
+
+  const config = channelConfig.value
+  if (!config) return 100
+
+  // For digital outputs, max is always 1
+  if (config.channel_type === 'digital_output') return 1
+
+  // For analog outputs, check ao_range or voltage_range
+  if (config.channel_type === 'analog_output') {
+    const aoRange = config.ao_range?.toLowerCase() || ''
+    if (aoRange.includes('20ma') || aoRange.includes('20 ma')) {
+      return 20 // 0-20mA or 4-20mA ends at 20
+    }
+    // Use voltage_range if available
+    return config.voltage_range ?? 10
+  }
+
+  // Fallback to alarm limits (legacy behavior)
+  return config.high_limit ?? 100
 })
 
-const stepVal = computed(() => props.step ?? 1)
-const decimalsVal = computed(() => props.decimals ?? 1)
+// Step size: props > config > smart default based on range
+const stepVal = computed(() => {
+  if (props.step !== undefined) return props.step
+  if (channelConfig.value?.step !== undefined) return channelConfig.value.step
+
+  // Smart default: calculate from range
+  const range = maxVal.value - minVal.value
+  if (range <= 1) return 0.1      // 0-1V or digital: 0.1 step
+  if (range <= 10) return 0.1     // 0-10V: 0.1 step
+  if (range <= 20) return 0.5     // 4-20mA: 0.5 step
+  if (range <= 100) return 1      // 0-100: 1 step
+  return range / 100              // Large ranges: 1% step
+})
+
+// Decimals: props > smart default based on step
+const decimalsVal = computed(() => {
+  if (props.decimals !== undefined) return props.decimals
+
+  // Calculate decimals from step size
+  const step = stepVal.value
+  if (step >= 1) return 0
+  if (step >= 0.1) return 1
+  if (step >= 0.01) return 2
+  return 3
+})
 
 // Current value from channel
 const currentValue = computed(() => {
@@ -75,8 +157,17 @@ watch(currentValue, (val) => {
 const isDisabled = computed(() => {
   if (isBlocked.value) return true
   if (!store.isConnected) return true
-  if (!channelConfig.value) return true
+  if (!channelConfig.value && !props.channel.startsWith('py.')) return true
+  // Disable for input channels - can't set inputs
+  if (isInputChannel.value) return true
   return false
+})
+
+// Warning message for misconfigured widgets
+const warningMessage = computed(() => {
+  if (isInputChannel.value) return 'Input channel - use display widget'
+  if (isDigitalOutput.value) return 'Digital output - use toggle widget'
+  return null
 })
 
 function startEdit() {
@@ -132,10 +223,13 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="setpoint-widget" :class="{ disabled: isDisabled, blocked: isBlocked }">
+  <div class="setpoint-widget" :class="{ disabled: isDisabled, blocked: isBlocked, warning: warningMessage }">
     <div class="label">{{ displayLabel }}</div>
 
-    <div class="setpoint-controls">
+    <!-- Warning for misconfigured widget -->
+    <div v-if="warningMessage" class="warning-message">{{ warningMessage }}</div>
+
+    <div v-else class="setpoint-controls">
       <button class="step-btn" @click="decrement" :disabled="isDisabled">−</button>
 
       <div class="value-container" @click="startEdit">
@@ -161,7 +255,7 @@ function onKeydown(e: KeyboardEvent) {
       <button class="step-btn" @click="increment" :disabled="isDisabled">+</button>
     </div>
 
-    <div class="range-info">
+    <div v-if="!warningMessage" class="range-info">
       {{ minVal }} - {{ maxVal }} {{ unit }}
     </div>
 
@@ -299,5 +393,19 @@ function onKeydown(e: KeyboardEvent) {
   background: #78350f;
   padding: 2px 4px;
   border-radius: 2px;
+}
+
+/* Warning state - wrong channel type */
+.warning {
+  border-color: #854d0e;
+  background: rgba(120, 53, 15, 0.2);
+}
+
+.warning-message {
+  font-size: 0.55rem;
+  color: #fbbf24;
+  text-align: center;
+  padding: 4px;
+  line-height: 1.3;
 }
 </style>
