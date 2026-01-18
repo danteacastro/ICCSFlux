@@ -2650,19 +2650,8 @@ watch(() => Object.keys(store.channels), () => {
     <!-- Search and Actions Bar -->
     <div class="actions-bar">
       <div class="left-actions">
-        <!-- Group 1: Channel Operations -->
-        <button
-          class="action-btn primary"
-          @click="openAddChannelModal"
-          :disabled="activeTypeTab === 'all'"
-          :title="activeTypeTab === 'all' ? 'Select a channel type tab first (TC, V-IN, DO, etc.)' : 'Add a new channel'"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          Add
-        </button>
-        <button class="action-btn" @click="scanDevices" :disabled="isScanning" title="Auto-discover hardware devices">
+        <!-- Auto Discovery button -->
+        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning" title="Auto-discover hardware devices">
           <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             <path d="M8 11h6M11 8v6"/>
@@ -3488,14 +3477,26 @@ watch(() => Object.keys(store.channels), () => {
                 </div>
               </td>
             </tr>
-            <!-- Add Channel Row -->
-            <tr class="add-channel-row" @click="openAddChannelModal">
+            <!-- Add Channel Row (hidden on ALL tab) -->
+            <tr
+              v-if="activeTypeTab !== 'all'"
+              class="add-channel-row"
+              @click="openAddChannelModal"
+            >
               <td :colspan="tableColumns.length + 2">
                 <div class="add-channel-cell">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                   </svg>
                   <span>Add Channel...</span>
+                </div>
+              </td>
+            </tr>
+            <!-- Hint row on ALL tab -->
+            <tr v-else class="add-channel-hint-row">
+              <td :colspan="tableColumns.length + 2">
+                <div class="add-channel-hint">
+                  Select a channel type tab (TC, V-IN, DO, etc.) to add channels
                 </div>
               </td>
             </tr>
@@ -6147,6 +6148,19 @@ watch(() => Object.keys(store.channels), () => {
 
 .add-channel-row:hover .add-channel-cell svg {
   opacity: 1;
+}
+
+/* Add Channel Hint Row (ALL tab) */
+.add-channel-hint-row td {
+  border-bottom: none;
+}
+
+.add-channel-hint {
+  padding: 10px 0;
+  color: #555;
+  font-size: 0.8rem;
+  font-style: italic;
+  text-align: center;
 }
 
 /* Simulation Mode Banner */
