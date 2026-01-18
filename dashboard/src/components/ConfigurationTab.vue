@@ -2651,7 +2651,12 @@ watch(() => Object.keys(store.channels), () => {
     <div class="actions-bar">
       <div class="left-actions">
         <!-- Group 1: Channel Operations -->
-        <button class="action-btn primary" @click="openAddChannelModal" title="Add a new channel manually">
+        <button
+          class="action-btn primary"
+          @click="openAddChannelModal"
+          :disabled="activeTypeTab === 'all'"
+          :title="activeTypeTab === 'all' ? 'Select a channel type tab first (TC, V-IN, DO, etc.)' : 'Add a new channel'"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
