@@ -82,7 +82,7 @@ export function useTagDependencies() {
     const references: TagReference[] = []
 
     // 1. Check Python scripts from backend scripts composable
-    const scripts = backendScripts.scripts.value || []
+    const scripts = Object.values(backendScripts.scripts.value || {})
     for (const script of scripts) {
       if (!script.code) continue
 
@@ -90,7 +90,7 @@ export function useTagDependencies() {
       if (scriptTags.includes(tagName)) {
         // Find the line(s) where this tag is referenced
         const lines = script.code.split('\n')
-        lines.forEach((line, idx) => {
+        lines.forEach((line: string, idx: number) => {
           if (line.includes(tagName)) {
             references.push({
               type: 'script',
@@ -203,7 +203,7 @@ export function useTagDependencies() {
     const channelNames = new Set(Object.keys(store.channels || {}))
 
     // Check Python scripts for references to non-existent tags
-    const scripts = backendScripts.scripts.value || []
+    const scripts = Object.values(backendScripts.scripts.value || {})
     for (const script of scripts) {
       if (!script.code) continue
 
@@ -211,7 +211,7 @@ export function useTagDependencies() {
       for (const tag of scriptTags) {
         if (!channelNames.has(tag)) {
           const lines = script.code.split('\n')
-          lines.forEach((line, idx) => {
+          lines.forEach((line: string, idx: number) => {
             if (line.includes(tag)) {
               orphans.push({
                 type: 'script',

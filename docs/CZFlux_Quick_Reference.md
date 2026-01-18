@@ -1,4 +1,4 @@
-# DCFlux Quick Reference Card
+# CZFlux Quick Reference Card
 
 ## Control Bar
 
@@ -15,11 +15,11 @@
 |-----|---------|
 | Overview | Live dashboard with widgets |
 | Config | Channel setup (Operator+) |
-| Scripts | Automation (Engineer+) |
+| Scripts | Automation (Supervisor+) |
 | Data | Recording management (Operator+) |
-| Safety | Alarms & interlocks (Engineer+) |
+| Safety | Alarms & interlocks (Supervisor+) |
 | Notes | Documentation |
-| Admin | User management (Admin) |
+| Admin | User management (Supervisor+) |
 
 ## Common Tasks
 
@@ -75,10 +75,10 @@
 
 | Role | Can Do |
 |------|--------|
-| Viewer | View only |
-| Operator | Run tests, control, record |
-| Engineer | Edit sequences, safety |
-| Admin | Full access |
+| Guest | View only (monitoring) |
+| Operator | Run tests, control outputs, record |
+| Supervisor | Edit sequences, safety config |
+| Admin | Full access + user management |
 
 ## Keyboard Shortcuts
 
@@ -90,8 +90,45 @@
 | F5 | Refresh |
 | F11 | Fullscreen |
 
+## Physical Channel Formats
+
+| Hardware | Format | Example |
+|----------|--------|---------|
+| cDAQ | `cDAQ{#}Mod{#}/{type}{#}` | `cDAQ1Mod1/ai0` |
+| cRIO | `Mod{#}/{type}{#}` | `Mod1/ai0` |
+| Opto22 | `{ioType}/{module}/ch{#}` | `analogInputs/0/ch0` |
+
+## Remote Node Commands
+
+### cRIO Node (SSH to cRIO)
+
+| Command | Description |
+|---------|-------------|
+| `systemctl status crio_node` | Check service status |
+| `journalctl -u crio_node -f` | View live logs |
+| `systemctl restart crio_node` | Restart service |
+| `./install.sh <PC_IP>` | Install/reinstall |
+
+### Opto22 Node (SSH to groov EPIC)
+
+| Command | Description |
+|---------|-------------|
+| `systemctl status opto22_node` | Check service status |
+| `journalctl -u opto22_node -f` | View live logs |
+| `systemctl restart opto22_node` | Restart service |
+| `./install.sh <PC_IP>` | Install/reinstall |
+
+## Node Status Indicators
+
+| Color | Meaning |
+|-------|---------|
+| Green ● | Online (heartbeat OK) |
+| Yellow ● | Warning (data may be stale) |
+| Red ● | Offline (no heartbeat) |
+
 ## Need Help?
 
-- Full manual: `docs/DCFlux_User_Manual.md`
-- Login: Default admin is `admin` / `iccsadmin`
+- Full manual: `docs/CZFlux_User_Manual.md`
+- Remote nodes: `docs/CZFlux_Remote_Nodes_Guide.md`
+- Login: Contact your system administrator for credentials
 - Support: Contact your system administrator

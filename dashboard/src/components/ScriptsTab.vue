@@ -51,15 +51,11 @@ const subTabs: { id: ScriptsSubTabExtended; label: string; icon: string }[] = [
   { id: 'variables', label: 'Variables', icon: 'var' },
   { id: 'python', label: 'Python', icon: 'python' },
   { id: 'formulas', label: 'Formulas', icon: 'fx' },
-  { id: 'functionBlocks', label: 'Blocks', icon: 'blocks' },
   { id: 'sequences', label: 'Sequences', icon: 'list' },
-  { id: 'drawPatterns', label: 'Draw Patterns', icon: 'valve' },
-  { id: 'schedule', label: 'Schedule', icon: 'clock' },
-  { id: 'alarms', label: 'Alarms', icon: 'bell' },
-  { id: 'transformations', label: 'Transforms', icon: 'chart' },
-  { id: 'triggers', label: 'Triggers', icon: 'zap' },
-  { id: 'watchdogs', label: 'Watchdog', icon: 'eye' },
-  { id: 'templates', label: 'Templates', icon: 'book' }
+  { id: 'schedule', label: 'Schedule', icon: 'clock' }
+  // Removed: functionBlocks (merged into Formulas), drawPatterns (use Python),
+  // alarms (in Safety tab), transformations (merged into Formulas),
+  // triggers (covered by Interlocks), watchdogs (move to Config), templates (in Python)
 ]
 
 function getTabIcon(icon: string): string {
@@ -542,7 +538,7 @@ const channelVariables = computed(() => {
   return Object.entries(store.channels).map(([name, config]) => ({
     name,
     displayName: name,  // TAG is the only identifier
-    variable: `ch.${name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
+    variable: name.replace(/[^a-zA-Z0-9_]/g, '_'),  // Direct channel name (Python style)
     type: config.channel_type,
     unit: config.unit
   }))
@@ -1660,9 +1656,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             </div>
             <div class="form-group">
               <label>Formula</label>
-              <textarea v-model="formulaForm.formula" placeholder="e.g., (ch.TC_Zone1 + ch.TC_Zone2) / 2" rows="3"></textarea>
+              <textarea v-model="formulaForm.formula" placeholder="e.g., (TC_Zone1 + TC_Zone2) / 2" rows="3"></textarea>
               <div class="formula-help">
-                Use <code>ch.CHANNEL_NAME</code> for channel values. Math: abs, sqrt, pow, log, sin, cos, min, max, PI
+                Use channel names directly (e.g., <code>TC101 * 1.8 + 32</code>). Math: abs, sqrt, pow, log, sin, cos, min, max, pi
               </div>
             </div>
             <div class="form-group">
@@ -2227,7 +2223,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'wait'">
               <div class="form-group">
                 <label>Condition (formula returning true/false)</label>
-                <input type="text" v-model="(stepForm as any).condition" placeholder="ch.TC_Zone1 > 450" />
+                <input type="text" v-model="(stepForm as any).condition" placeholder="TC_Zone1 > 450" />
               </div>
               <div class="form-row">
                 <div class="form-group">
@@ -2361,11 +2357,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <input
                   type="text"
                   v-model="(stepForm as any).value"
-                  placeholder="ch.Flow_Meter_1 * 0.5 + 10"
+                  placeholder="Flow_Meter_1 * 0.5 + 10"
                 />
                 <small class="hint">
-                  Use ch.ChannelName for channel values, seq.varName for other variables,
-                  loop_ID for loop counters. Math: abs, sqrt, pow, sin, cos, min, max, PI, E
+                  Use channel names directly, seq.varName for other variables,
+                  loop_ID for loop counters. Math: abs, sqrt, pow, sin, cos, min, max, pi
                 </small>
               </div>
               <div class="info-box">
@@ -2382,10 +2378,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <input
                   type="text"
                   v-model="(stepForm as any).condition"
-                  placeholder="ch.Temperature > 100 || ch.Pressure < 50"
+                  placeholder="Temperature > 100 || Pressure < 50"
                 />
                 <small class="hint">
-                  Use ch.ChannelName for values. Operators: >, <, >=, <=, ==, !=, &&, ||
+                  Use channel names directly. Operators: >, <, >=, <=, ==, !=, &&, ||
                 </small>
               </div>
               <div class="info-box">

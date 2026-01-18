@@ -15,6 +15,14 @@ export type ChannelType =
   | 'modbus_register'
   | 'modbus_coil'
 
+/**
+ * Project mode determines system architecture:
+ * - cdaq: PC is the "PLC" - reads hardware, evaluates alarms, executes safety
+ * - crio: cRIO is the PLC, PC is HMI only (like Allen Bradley + FactoryTalk)
+ * - opto22: Opto22 groov EPIC/RIO is the PLC, PC is HMI only
+ */
+export type ProjectMode = 'cdaq' | 'crio' | 'opto22'
+
 export type WidgetType =
   | 'numeric'
   | 'gauge'
@@ -132,12 +140,16 @@ export interface ChannelConfig {
   modbus_word_order?: 'big' | 'little' // For 32/64-bit values (word swap)
   modbus_scale?: number                // Scale factor: value = raw * scale + offset
   modbus_offset?: number               // Offset: value = raw * scale + offset
+  modbus_slave_id?: number             // Explicit slave/unit ID (overrides module config)
+  // Batch reading: read multiple registers, extract value at specific index
+  modbus_register_count?: number       // Total registers to read (for batch reading)
+  modbus_register_index?: number       // Index within batch to extract value from
 
   // Digital I/O
   logic_level?: '5V' | '24V'
 
   // Ranges
-  voltage_range?: number
+  voltage_range?: number | string  // Can be number or string like "±10V"
   current_range_ma?: number
   ao_range?: string  // Analog output range (e.g., '5V', '10V', 'pm10V')
 
@@ -179,6 +191,14 @@ export interface ChannelConfig {
   // Logging
   log?: boolean
   log_interval_ms?: number
+
+  // Multi-node support
+  source_type?: 'local' | 'crio' | 'cdaq' | 'opto22'  // Source of channel data
+  node_id?: string                 // Remote node ID for cRIO channels, chassis name for cDAQ
+  chassis_name?: string            // Chassis name (e.g., "cDAQ-9189", "cRIO-9056")
+
+  // UI settings
+  step?: number  // Step increment for setpoint widgets
 }
 
 export interface ChannelValue {
@@ -239,6 +259,8 @@ export interface SystemStatus {
   // Multi-node support
   node_id?: string   // Unique node identifier
   node_name?: string // Human-readable node name
+  // Project mode (cdaq = PC is PLC, crio = cRIO is PLC)
+  project_mode?: ProjectMode
 }
 
 // Recording configuration matching Python backend
@@ -602,6 +624,8 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   scheduler_status: { w: 2, h: 2, minW: 2, minH: 2 },
   svg_symbol: { w: 2, h: 2, minW: 1, minH: 1 },
   value_table: { w: 3, h: 4, minW: 2, minH: 2 },
+  crio_status: { w: 2, h: 2, minW: 2, minH: 2 },
+  latch_switch: { w: 1, h: 1, minW: 1, minH: 1 },
   script_monitor: { w: 3, h: 4, minW: 2, minH: 2 }
 }
 
@@ -743,8 +767,14 @@ export interface AlarmConfig {
   // Safety action (ISA-18.2 high-severity response)
   safety_action?: string     // SafetyAction ID to execute when alarm triggers
 
-  // Digital input alarm configuration
+  // Digital input alarm configuration (nested structure)
   digital_alarm?: DigitalAlarmConfig
+
+  // Digital alarm flat properties (convenience aliases for forms)
+  digital_alarm_enabled?: boolean
+  digital_expected_state?: boolean
+  digital_invert?: boolean
+  digital_debounce_ms?: number
 }
 
 export interface ActiveAlarm {
@@ -768,6 +798,9 @@ export interface ActiveAlarm {
   // First-out tracking
   sequence_number?: number  // Global sequence for first-out
   is_first_out?: boolean    // First alarm in a cascade
+
+  // Multi-node support
+  nodeId?: string           // Source node ID for multi-node systems
 
   // Shelving
   shelved_at?: string
@@ -830,20 +863,35 @@ export interface SystemHealth {
 }
 
 // ============================================
-// Interlock Types
+// Interlock Types (IEC 61511 / ISA-84 Compliant)
 // ============================================
 
 export type InterlockConditionType =
   | 'channel_value'    // Compare channel value to threshold
   | 'digital_input'    // Check digital input state
+  | 'alarm_active'     // Specific alarm is active
+  | 'alarm_state'      // Alarm is in specific state (active, acknowledged, shelved)
   | 'no_active_alarms' // No alarms of specified severity
   | 'no_latched_alarms'// All latched alarms must be cleared
   | 'mqtt_connected'   // MQTT broker connected
   | 'daq_connected'    // DAQ hardware online
   | 'acquiring'        // System is acquiring data
   | 'not_recording'    // Not currently recording
+  | 'expression'       // Custom expression (channel math)
+  | 'variable_value'   // User variable comparison
 
 export type InterlockOperator = '<' | '<=' | '>' | '>=' | '=' | '!='
+
+// Logic for combining conditions within a group
+export type ConditionLogic = 'AND' | 'OR'
+
+// Voting logic types (IEC 61508)
+export type VotingLogic =
+  | '1oo1'  // 1 out of 1 (simple)
+  | '1oo2'  // 1 out of 2 (any one)
+  | '2oo2'  // 2 out of 2 (both required)
+  | '2oo3'  // 2 out of 3 (majority)
+  | '1oo3'  // 1 out of 3 (any one of three)
 
 export interface InterlockCondition {
   id: string
@@ -854,16 +902,41 @@ export interface InterlockCondition {
   value?: number | boolean
   // For digital_input: invert the input before comparison (NC vs NO)
   invert?: boolean
+  // For alarm_active / alarm_state:
+  alarmId?: string
+  alarmState?: 'active' | 'acknowledged' | 'shelved' | 'returned'
+  // For expression:
+  expression?: string
+  // For variable_value:
+  variableId?: string
+  // Timer/Delay: condition must be TRUE for this duration before triggering (seconds)
+  delay_s?: number
+  // Timer state tracking (runtime, not persisted)
+  _delayStartTime?: number
+  _delayMet?: boolean
   // Human-readable description (auto-generated if not provided)
   description?: string
+}
+
+// Condition group for nested logic (A AND (B OR C))
+export interface InterlockConditionGroup {
+  id: string
+  logic: ConditionLogic  // How to combine items in this group
+  conditions: (InterlockCondition | InterlockConditionGroup)[]
+  // Voting logic (optional, overrides simple AND/OR)
+  voting?: VotingLogic
+  votingChannels?: string[]  // For voting: list of channels to vote on
 }
 
 export type InterlockControlType =
   // BLOCKING actions (prevent user from doing something)
   | 'digital_output'      // Block specific digital output
+  | 'analog_output'       // Block specific analog output / setpoint
   | 'schedule_enable'     // Block scheduler from starting
   | 'recording_start'     // Block recording from starting
   | 'acquisition_start'   // Block acquisition from starting
+  | 'session_start'       // Block starting test sessions
+  | 'script_start'        // Block starting backend scripts
   | 'button_action'       // Block specific action button
   // ACTIVE actions (do something when interlock conditions FAIL)
   | 'set_digital_output'  // Force DO to specific value when conditions fail
@@ -883,16 +956,31 @@ export interface Interlock {
   name: string
   enabled: boolean
   description?: string
-  // ALL conditions must be TRUE for interlock to be satisfied (AND logic)
+  // Root condition group (supports nested AND/OR logic)
+  conditionGroup?: InterlockConditionGroup
+  // Legacy: flat conditions with AND logic (for backwards compatibility)
   conditions: InterlockCondition[]
+  // Logic for flat conditions (default: AND)
+  conditionLogic?: ConditionLogic
   // What this interlock gates/controls
   controls: InterlockControl[]
   // Can operator bypass this interlock?
   bypassAllowed: boolean
+  // Max bypass duration in seconds (0 = unlimited)
+  maxBypassDuration?: number
   // Is currently bypassed?
   bypassed: boolean
   bypassedAt?: string
   bypassedBy?: string
+  bypassReason?: string
+  // SIL Rating (IEC 61508) - informational
+  silRating?: 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4'
+  // Proof test interval in days (IEC 61511)
+  proofTestInterval?: number
+  lastProofTest?: string
+  // Demand tracking
+  demandCount?: number
+  lastDemandTime?: string
 }
 
 export interface InterlockStatus {
@@ -905,8 +993,46 @@ export interface InterlockStatus {
     condition: InterlockCondition
     currentValue?: any
     reason: string
+    delayRemaining?: number  // Seconds until delay met (if delay_s set)
   }[]
   controls: InterlockControl[]
+  // Timer status
+  conditionsWithDelay: {
+    conditionId: string
+    delayTotal: number
+    delayElapsed: number
+    delayMet: boolean
+  }[]
+}
+
+// Interlock History Event Types
+export type InterlockEventType =
+  | 'created'
+  | 'modified'
+  | 'enabled'
+  | 'disabled'
+  | 'bypassed'
+  | 'bypass_removed'
+  | 'bypass_expired'
+  | 'tripped'         // Interlock activated (conditions failed)
+  | 'cleared'         // Interlock cleared (conditions restored)
+  | 'demand'          // Interlock was demanded (conditions failed while controlling)
+  | 'proof_test'      // Proof test performed
+
+export interface InterlockHistoryEntry {
+  id: string
+  timestamp: string
+  interlockId: string
+  interlockName: string
+  event: InterlockEventType
+  user?: string
+  reason?: string
+  details?: {
+    failedConditions?: string[]
+    bypassDuration?: number
+    previousState?: boolean
+    newState?: boolean
+  }
 }
 
 // ============================================
@@ -923,6 +1049,10 @@ export type UserVariableType =
   | 'average'       // Running average
   | 'min'           // Minimum value seen
   | 'max'           // Maximum value seen
+  | 'stddev'        // Running standard deviation (Welford's algorithm)
+  | 'rms'           // Root mean square (for AC, vibration)
+  | 'median'        // Running median (reservoir sampling)
+  | 'peak_to_peak'  // Difference between max and min
   | 'rolling'       // Sliding window accumulator (e.g., last 24 hours)
   | 'expression'    // Formula-based calculation
   | 'rate'          // Rate of change (derivative)

@@ -1,17 +1,19 @@
-# Python Scripting in NISystem
+# Python Scripting in CZFlux
 
-Run custom Python scripts directly in your browser to process cDAQ data, control outputs, calculate derived values, and automate sequences.
+Run custom Python scripts directly in your browser to process data from cDAQ, cRIO, and Opto22 hardware, control outputs, calculate derived values, and automate sequences.
 
 ## Overview
 
-NISystem includes **Pyodide** - a complete Python interpreter running in WebAssembly. This means you can write real Python code that:
+CZFlux includes **Pyodide** - a complete Python interpreter running in WebAssembly. This means you can write real Python code that:
 
-- Reads live channel data from your cDAQ
-- Controls digital and analog outputs
+- Reads live channel data from **any hardware source** (cDAQ, cRIO, Opto22)
+- Controls digital and analog outputs across all connected nodes
 - Publishes computed values that appear as new tags
 - Runs synchronized loops with your scan cycle
 - Performs unit conversions and calculations
 - Automates sequences and schedules
+
+> **Multi-Hardware Support**: Scripts access all channels uniformly through the `tags` object, regardless of whether they come from local cDAQ hardware, remote cRIO nodes, or Opto22 groov devices. The hardware source is transparent to your scripts.
 
 ---
 
@@ -178,19 +180,29 @@ Python's standard library is fully available:
 
 ## Reading Channel Data
 
-Access any cDAQ channel using the `tags` object.
+Access any channel using the `tags` object. Channels from all hardware sources (cDAQ, cRIO, Opto22) are available through the same interface.
 
 ### Attribute Access
 ```python
-temp = tags.TC001
-pressure = tags.PT001
-flow = tags.FT001
+temp = tags.TC001          # Local cDAQ thermocouple
+pressure = tags.PT001      # cRIO pressure sensor
+flow = tags.FT001          # Opto22 flow meter
 ```
 
 ### Dictionary Access
 ```python
 temp = tags['TC001']
 pressure = tags['PT-001']  # Use for names with dashes
+```
+
+### Hardware-Agnostic Access
+Scripts don't need to know which hardware a channel comes from:
+```python
+# These all work the same regardless of source
+inlet_temp = tags.Inlet_Temp      # Could be cDAQ, cRIO, or Opto22
+outlet_temp = tags.Outlet_Temp    # Hardware source is transparent
+delta_t = outlet_temp - inlet_temp
+publish('DeltaT', delta_t, units='°F')
 ```
 
 ### Get All Channel Names
@@ -223,7 +235,7 @@ print(tags.keys())  # ['TC001', 'PT001', 'py.Efficiency', ...]
 
 Get the backend acquisition timestamp for accurate timing:
 ```python
-# Get timestamp (Unix milliseconds from cDAQ backend)
+# Get timestamp (Unix milliseconds from backend)
 ts = tags.timestamp('TC001')
 print(f"TC001 acquired at {ts} ms")
 
@@ -237,7 +249,7 @@ if age > 5.0:
     print("Warning: TC001 data is stale!")
 ```
 
-The timestamps come from the cDAQ backend, not the browser, so they're accurate to the actual acquisition time. This is useful for:
+The timestamps come from the backend (or remote node), not the browser, so they're accurate to the actual acquisition time. This is useful for:
 - Calculating precise rates of change
 - Detecting stale data
 - Correlating events across channels
@@ -317,7 +329,7 @@ Published values are available as tags with the `py.` prefix:
 - Use in widgets, calculated parameters, or other scripts
 
 ### Recording Published Values
-Published values integrate with the NISystem recording system:
+Published values integrate with the CZFlux recording system:
 
 1. Go to **Recording** tab
 2. Published values appear in the channel list as `py.YourName`
@@ -336,7 +348,7 @@ Scripts run while the acquisition session is active. You can also control the se
 ```python
 while session.active:
     # Your processing code here
-    await next_scan()  # Wait for next cDAQ scan
+    await next_scan()  # Wait for next scan cycle
 ```
 
 ### Session Properties
@@ -414,7 +426,7 @@ while session.active:
 
 ### Wait Functions
 
-**Wait for Next Scan** - Synchronizes with the cDAQ scan cycle:
+**Wait for Next Scan** - Synchronizes with the data acquisition scan cycle:
 ```python
 await next_scan()
 ```
@@ -919,6 +931,78 @@ print("Sequence complete!")
 outputs.set('TempSetpoint', 70)  # Return to safe value
 ```
 
+### Multi-Node Data Aggregation
+```python
+# Aggregate data from multiple remote nodes (cRIO + Opto22)
+# All channels accessible through the same tags interface
+
+while session.active:
+    # Read from different hardware sources
+    crio_temp = tags.CRIO_TC001       # cRIO thermocouple
+    opto_temp = tags.OPTO_TempIn      # Opto22 analog input
+    local_temp = tags.TC001           # Local cDAQ
+
+    # Calculate average across all nodes
+    avg_temp = (crio_temp + opto_temp + local_temp) / 3
+    publish('SystemAvgTemp', avg_temp, units='°F')
+
+    # Monitor spread between nodes (quality check)
+    temps = [crio_temp, opto_temp, local_temp]
+    spread = max(temps) - min(temps)
+    publish('TempSpread', spread, units='°F')
+
+    if spread > 10:
+        print(f"Warning: Large temperature spread ({spread:.1f}°F)")
+
+    await next_scan()
+```
+
+### Cross-Node Control
+```python
+# Control outputs on different hardware nodes
+# Works the same regardless of hardware type
+
+while session.active:
+    master_temp = tags.MasterTC  # Primary sensor (any node)
+
+    # Control outputs on different nodes
+    if master_temp > 180:
+        outputs.set('CRIO_Alarm', True)      # cRIO digital output
+        outputs.set('OPTO_CoolValve', True)  # Opto22 relay
+        outputs.set('LocalFan', True)        # cDAQ digital output
+    else:
+        outputs.set('CRIO_Alarm', False)
+        outputs.set('OPTO_CoolValve', False)
+        outputs.set('LocalFan', False)
+
+    await next_scan()
+```
+
+### Remote Node Health Monitoring
+```python
+# Monitor data freshness from remote nodes
+STALE_THRESHOLD = 5.0  # seconds
+
+while session.active:
+    # Check data age for remote node channels
+    crio_age = tags.age('CRIO_TC001')
+    opto_age = tags.age('OPTO_TempIn')
+
+    # Publish node health status
+    crio_healthy = 1 if crio_age < STALE_THRESHOLD else 0
+    opto_healthy = 1 if opto_age < STALE_THRESHOLD else 0
+
+    publish('CRIO_NodeHealth', crio_healthy)
+    publish('OPTO_NodeHealth', opto_healthy)
+
+    if crio_age >= STALE_THRESHOLD:
+        print(f"Warning: cRIO data stale ({crio_age:.1f}s)")
+    if opto_age >= STALE_THRESHOLD:
+        print(f"Warning: Opto22 data stale ({opto_age:.1f}s)")
+
+    await next_scan()
+```
+
 ---
 
 ## Using Published Values
@@ -1161,6 +1245,7 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 - **No file I/O**: Cannot read/write files directly (use MQTT for data export)
 - **Single thread**: Long calculations may affect UI responsiveness
 - **Memory**: Large data arrays may consume browser memory
+- **Network latency**: Remote node data (cRIO, Opto22) has minimal additional latency (~5-10ms on wired Ethernet), typically negligible compared to scan intervals
 
 ---
 
@@ -1169,12 +1254,12 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 ### Objects
 | Object | Description |
 |--------|-------------|
-| `tags` | Read channel values: `tags.TC001` or `tags['TC001']` |
+| `tags` | Read channel values from any hardware (cDAQ, cRIO, Opto22): `tags.TC001` or `tags['TC001']` |
 | `tags.timestamp(name)` | Get backend acquisition timestamp (Unix ms) |
 | `tags.get_with_timestamp(name)` | Get `(value, timestamp)` tuple |
-| `tags.age(name)` | Get data age in seconds |
+| `tags.age(name)` | Get data age in seconds (useful for remote node health monitoring) |
 | `session` | Session state and control (see below) |
-| `outputs` | Control outputs: `outputs.set('name', value)` |
+| `outputs` | Control outputs on any node: `outputs.set('name', value)` |
 
 ### Session Object
 | Property/Method | Description |
@@ -1191,7 +1276,7 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | Function | Description |
 |----------|-------------|
 | `publish(name, value, units='', description='')` | Create a computed tag |
-| `await next_scan()` | Wait for next cDAQ scan |
+| `await next_scan()` | Wait for next scan cycle |
 | `await wait_for(seconds)` | Wait for duration |
 | `await wait_until(condition, timeout=0)` | Wait for condition |
 

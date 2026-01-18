@@ -41,6 +41,72 @@ class ThermocoupleType(Enum):
     B = "B"
 
 
+class HardwareSource(Enum):
+    """
+    Hardware source type for channels.
+
+    This enum clearly identifies WHERE data comes from:
+    - LOCAL_DAQ: NI-DAQmx hardware connected to THIS PC (cDAQ, PXI, USB devices)
+    - CRIO: Remote cRIO controller (data arrives via MQTT, processed on cRIO)
+    - MODBUS_TCP: Modbus TCP device (read directly by this PC)
+    - MODBUS_RTU: Modbus RTU device (read directly by this PC via serial)
+    - VIRTUAL: Computed/derived channel (no physical hardware)
+
+    Safety implications:
+    - LOCAL_DAQ: Safety logic runs on PC - if PC crashes, no protection
+    - CRIO: Safety logic can run on cRIO - continues if PC disconnects
+    - MODBUS: Safety logic runs on PC - dependent on PC and network
+    """
+    LOCAL_DAQ = "local_daq"    # cDAQ, PXI, USB - read by PC via NI-DAQmx
+    CRIO = "crio"              # Remote cRIO - data via MQTT, safety on cRIO
+    MODBUS_TCP = "modbus_tcp"  # Modbus TCP device - read by PC
+    MODBUS_RTU = "modbus_rtu"  # Modbus RTU device - read by PC via serial
+    VIRTUAL = "virtual"        # Computed channel - no hardware
+
+    @classmethod
+    def from_channel_config(cls, channel: 'ChannelConfig') -> 'HardwareSource':
+        """Determine hardware source from channel configuration."""
+        # Check explicit source_type first
+        if channel.source_type == "crio":
+            return cls.CRIO
+
+        # Check for Modbus channels
+        if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+            # Determine TCP vs RTU from physical_channel format
+            # RTU format: "rtu://COM3:1:40001" or has modbus_rtu_ prefix
+            phys = channel.physical_channel.lower()
+            if phys.startswith("rtu://") or "com" in phys:
+                return cls.MODBUS_RTU
+            return cls.MODBUS_TCP
+
+        # Check for virtual/computed channels
+        if channel.physical_channel.startswith("virtual://"):
+            return cls.VIRTUAL
+
+        # Default: local DAQ (cDAQ, PXI, USB, Dev)
+        return cls.LOCAL_DAQ
+
+
+class ProjectMode(Enum):
+    """
+    Defines the system architecture mode.
+
+    CDAQ: PC is the "PLC" - reads hardware directly, evaluates alarms,
+          executes safety actions, runs scripts. Traditional single-PC architecture.
+
+    CRIO: cRIO is the PLC, PC is HMI only. cRIO reads hardware, evaluates alarms,
+          executes safety, runs scripts autonomously. PC displays values, sends
+          commands (forwarded to cRIO), logs data, handles user auth.
+          Like Allen Bradley PLC with FactoryTalk HMI.
+
+    OPTO22: Opto22 groov EPIC/RIO is the PLC, PC is HMI only. Same architecture
+            as CRIO mode but using Opto22 hardware instead of NI cRIO.
+    """
+    CDAQ = "cdaq"     # PC does everything (legacy/simple mode)
+    CRIO = "crio"     # cRIO is PLC, PC is HMI (robust/industrial mode)
+    OPTO22 = "opto22" # Opto22 is PLC, PC is HMI (like CRIO but different hardware)
+
+
 @dataclass
 class SystemConfig:
     mqtt_broker: str = "localhost"
@@ -56,6 +122,8 @@ class SystemConfig:
     node_name: str = "Default Node"  # Human-readable node name
     # Default project to load on startup
     default_project: str = ""      # Absolute path to default project JSON
+    # Project mode: determines cDAQ (PC is PLC) vs cRIO (cRIO is PLC, PC is HMI)
+    project_mode: ProjectMode = ProjectMode.CDAQ
 
 
 @dataclass
@@ -178,6 +246,10 @@ class ChannelConfig:
     modbus_word_order: str = "big"         # For 32/64-bit: big or little (word swap)
     modbus_scale: float = 1.0              # Scale factor: value = raw * scale + offset
     modbus_offset: float = 0.0             # Offset: value = raw * scale + offset
+    modbus_slave_id: Optional[int] = None  # Explicit slave ID (overrides module slot)
+    # Batch reading: read multiple registers at once, extract value at specific index
+    modbus_register_count: Optional[int] = None  # Registers to read (None = auto from data_type)
+    modbus_register_index: int = 0               # Index within batch to extract value from
 
     # Digital specific
     invert: bool = False
@@ -200,6 +272,12 @@ class ChannelConfig:
     alarm_deadband: float = 1.0              # Hysteresis to prevent chatter
     alarm_delay_sec: float = 0.0             # On-delay before triggering
 
+    # Digital Input Alarm Configuration
+    digital_alarm_enabled: bool = False      # Enable alarm for digital inputs
+    digital_expected_state: str = "HIGH"     # Expected state: HIGH or LOW
+    digital_debounce_ms: int = 100           # Debounce time in milliseconds
+    digital_invert: bool = False             # Invert logic for NC sensors
+
     # Safety
     safety_action: Optional[str] = None
     safety_interlock: Optional[str] = None
@@ -212,6 +290,65 @@ class ChannelConfig:
     # source_type: 'local' (read via local HardwareReader), 'crio' (receive via MQTT from cRIO node)
     source_type: str = "local"
     source_node_id: str = ""  # Node ID for remote sources (e.g., "crio-001")
+
+    # === Hardware Source Helper Properties ===
+
+    @property
+    def hardware_source(self) -> HardwareSource:
+        """Get the hardware source type for this channel."""
+        return HardwareSource.from_channel_config(self)
+
+    @property
+    def is_crio(self) -> bool:
+        """True if this channel is on a remote cRIO controller."""
+        return self.hardware_source == HardwareSource.CRIO
+
+    @property
+    def is_local_daq(self) -> bool:
+        """True if this channel is on local NI-DAQmx hardware (cDAQ/PXI/USB)."""
+        return self.hardware_source == HardwareSource.LOCAL_DAQ
+
+    @property
+    def is_modbus(self) -> bool:
+        """True if this channel is a Modbus device."""
+        return self.hardware_source in (HardwareSource.MODBUS_TCP, HardwareSource.MODBUS_RTU)
+
+    @property
+    def is_virtual(self) -> bool:
+        """True if this channel is a computed/virtual channel."""
+        return self.hardware_source == HardwareSource.VIRTUAL
+
+    @property
+    def safety_can_run_locally(self) -> bool:
+        """
+        True if safety logic for this channel can run independent of PC.
+
+        Only cRIO channels have true local safety - hardware watchdog continues
+        even if PC crashes or network disconnects.
+        """
+        return self.is_crio
+
+    @property
+    def hardware_source_display(self) -> str:
+        """Human-readable hardware source for UI display."""
+        source = self.hardware_source
+        if source == HardwareSource.CRIO:
+            node = self.source_node_id or "cRIO"
+            return f"cRIO ({node})"
+        elif source == HardwareSource.LOCAL_DAQ:
+            # Extract chassis name from physical_channel
+            phys = self.physical_channel
+            if "/" in phys:
+                chassis = phys.split("/")[0]
+                return f"Local DAQ ({chassis})"
+            return "Local DAQ"
+        elif source == HardwareSource.MODBUS_TCP:
+            return "Modbus TCP"
+        elif source == HardwareSource.MODBUS_RTU:
+            return "Modbus RTU"
+        elif source == HardwareSource.VIRTUAL:
+            return "Virtual"
+        return "Unknown"
 
 
 @dataclass
@@ -342,6 +479,13 @@ def load_config(config_path: str) -> NISystemConfig:
         system.node_name = sys_section.get('node_name', system.node_name)
         # Default project
         system.default_project = sys_section.get('default_project', system.default_project)
+        # Project mode (cdaq = PC is PLC, crio = cRIO is PLC)
+        mode_str = sys_section.get('project_mode', 'cdaq').lower()
+        try:
+            system.project_mode = ProjectMode(mode_str)
+        except ValueError:
+            logger.warning(f"Unknown project_mode '{mode_str}', defaulting to 'cdaq'")
+            system.project_mode = ProjectMode.CDAQ
 
     # Parse chassis configs
     chassis = {}
@@ -453,6 +597,9 @@ def load_config(config_path: str) -> NISystemConfig:
                 modbus_word_order=sec.get('modbus_word_order', 'big'),
                 modbus_scale=float(sec.get('modbus_scale', 1.0)),
                 modbus_offset=float(sec.get('modbus_offset', 0.0)),
+                modbus_slave_id=int(sec['modbus_slave_id']) if 'modbus_slave_id' in sec else None,
+                modbus_register_count=int(sec['modbus_register_count']) if 'modbus_register_count' in sec else None,
+                modbus_register_index=int(sec.get('modbus_register_index', 0)),
                 invert=parse_bool(sec.get('invert', 'false')),
                 default_state=parse_bool(sec.get('default_state', 'false')),
                 default_value=float(sec.get('default_value', 0.0)),
@@ -463,7 +610,10 @@ def load_config(config_path: str) -> NISystemConfig:
                 safety_action=sec.get('safety_action'),
                 safety_interlock=sec.get('safety_interlock'),
                 log=parse_bool(sec.get('log', 'true')),
-                log_interval_ms=int(sec.get('log_interval_ms', 1000))
+                log_interval_ms=int(sec.get('log_interval_ms', 1000)),
+                # Multi-node / cRIO support
+                source_type=sec.get('source_type', 'local'),
+                source_node_id=sec.get('source_node_id', sec.get('node_id', ''))
             )
 
     # Parse safety actions
@@ -517,6 +667,55 @@ def get_output_channels(config: NISystemConfig) -> List[ChannelConfig]:
         ChannelType.ANALOG_OUTPUT
     ]
     return [ch for ch in config.channels.values() if ch.channel_type in output_types]
+
+
+# =============================================================================
+# Hardware Source Helper Functions
+# =============================================================================
+
+def get_channels_by_hardware_source(config: NISystemConfig, source: HardwareSource) -> List[ChannelConfig]:
+    """Get all channels from a specific hardware source."""
+    return [ch for ch in config.channels.values() if ch.hardware_source == source]
+
+
+def get_crio_channels(config: NISystemConfig) -> List[ChannelConfig]:
+    """Get all channels that are on remote cRIO controllers."""
+    return [ch for ch in config.channels.values() if ch.is_crio]
+
+
+def get_local_daq_channels(config: NISystemConfig) -> List[ChannelConfig]:
+    """Get all channels that are on local NI-DAQmx hardware (cDAQ/PXI/USB)."""
+    return [ch for ch in config.channels.values() if ch.is_local_daq]
+
+
+def get_modbus_channels(config: NISystemConfig) -> List[ChannelConfig]:
+    """Get all Modbus channels (TCP and RTU)."""
+    return [ch for ch in config.channels.values() if ch.is_modbus]
+
+
+def get_safety_critical_channels(config: NISystemConfig) -> List[ChannelConfig]:
+    """
+    Get channels where safety logic can run independently of PC.
+
+    Only cRIO channels qualify - they have hardware watchdog that continues
+    operating even if PC crashes or network disconnects.
+    """
+    return [ch for ch in config.channels.values() if ch.safety_can_run_locally]
+
+
+def get_hardware_source_summary(config: NISystemConfig) -> Dict[str, int]:
+    """
+    Get a summary of channels by hardware source.
+
+    Returns:
+        Dict mapping source name to channel count, e.g.:
+        {'local_daq': 12, 'crio': 8, 'modbus_tcp': 2}
+    """
+    summary: Dict[str, int] = {}
+    for ch in config.channels.values():
+        source = ch.hardware_source.value
+        summary[source] = summary.get(source, 0) + 1
+    return summary
 
 
 def validate_config(config: NISystemConfig, strict: bool = True) -> ValidationResult:

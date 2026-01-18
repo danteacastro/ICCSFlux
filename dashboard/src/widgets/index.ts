@@ -28,6 +28,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   crio_status: defineAsyncComponent(() => import('./CrioStatusWidget.vue')),
   latch_switch: defineAsyncComponent(() => import('./LatchSwitchWidget.vue')),
   script_monitor: defineAsyncComponent(() => import('./ScriptMonitorWidget.vue')),
+  python_console: defineAsyncComponent(() => import('./PythonConsoleWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -222,5 +223,13 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Monitor multiple py.* script values and tags in real-time',
     needsChannel: false,
     defaultSize: { w: 3, h: 4 }
+  },
+  {
+    type: 'python_console',
+    name: 'Python Console',
+    icon: '>_',
+    description: 'Interactive Python REPL for debugging and quick commands',
+    needsChannel: false,
+    defaultSize: { w: 4, h: 3 }
   }
 ]

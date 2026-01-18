@@ -34,6 +34,10 @@ class UserVariable:
     - average: Running average of channel values
     - min: Minimum value seen since last reset
     - max: Maximum value seen since last reset
+    - stddev: Running standard deviation (Welford's algorithm)
+    - rms: Running root mean square (critical for AC measurements, vibration)
+    - median: Running median using reservoir sampling (approximate for large datasets)
+    - peak_to_peak: Difference between max and min values
     - expression: Calculated from formula (like existing CalculatedParam but persistent)
     - rolling: Sliding window accumulator (e.g., last 24 hours) - stores timestamped samples
     """
@@ -79,6 +83,13 @@ class UserVariable:
     _rolling_buffer: List[tuple] = field(default_factory=list, repr=False)  # Runtime: [(timestamp, value), ...]
     _rate_samples: List[tuple] = field(default_factory=list, repr=False)  # For rate integration: [(timestamp, value), ...]
     _last_rate_calc: Optional[float] = field(default=None, repr=False)  # Last time we calculated rate total
+    # Statistical tracking for stddev/rms/median/peak_to_peak
+    _mean_accumulator: float = field(default=0.0, repr=False)  # Running mean for Welford's algorithm
+    _m2_accumulator: float = field(default=0.0, repr=False)  # M2 for Welford's variance algorithm
+    _sum_squares: float = field(default=0.0, repr=False)  # Sum of squared values for RMS
+    _min_value: float = field(default=float('inf'), repr=False)  # Track min for peak-to-peak
+    _max_value: float = field(default=float('-inf'), repr=False)  # Track max for peak-to-peak
+    _median_reservoir: List[float] = field(default_factory=list, repr=False)  # Reservoir for median (limited size)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for persistence (excludes runtime state)"""
@@ -472,9 +483,15 @@ class UserVariableManager:
                 var.timer_start_time = None
 
             # Reset statistics tracking
-            if var.variable_type in ('sum', 'average', 'min', 'max'):
+            if var.variable_type in ('sum', 'average', 'min', 'max', 'stddev', 'rms', 'median', 'peak_to_peak'):
                 var.sample_count = 0
                 var._sum_accumulator = 0.0
+                var._mean_accumulator = 0.0
+                var._m2_accumulator = 0.0
+                var._sum_squares = 0.0
+                var._min_value = float('inf')
+                var._max_value = float('-inf')
+                var._median_reservoir = []
 
             # Reset rolling buffer
             if var.variable_type == 'rolling':
@@ -500,9 +517,15 @@ class UserVariableManager:
                     if var.variable_type == 'timer':
                         var.timer_running = False
                         var.timer_start_time = None
-                    if var.variable_type in ('sum', 'average', 'min', 'max'):
+                    if var.variable_type in ('sum', 'average', 'min', 'max', 'stddev', 'rms', 'median', 'peak_to_peak'):
                         var.sample_count = 0
                         var._sum_accumulator = 0.0
+                        var._mean_accumulator = 0.0
+                        var._m2_accumulator = 0.0
+                        var._sum_squares = 0.0
+                        var._min_value = float('inf')
+                        var._max_value = float('-inf')
+                        var._median_reservoir = []
                     if var.variable_type == 'rolling':
                         var._rolling_buffer = []
                         var.sample_count = 0
@@ -668,21 +691,25 @@ class UserVariableManager:
             var.value = now - var.timer_start_time
 
     def _update_statistics(self, var: UserVariable, current_value: float):
-        """Update statistical variables (sum, average, min, max)"""
+        """Update statistical variables (sum, average, min, max, stddev, rms, median, peak_to_peak)"""
+        import math
+        import random
+
+        scaled = current_value * var.scale_factor
+
         if var.variable_type == 'sum':
             # Running sum
-            var.value += current_value * var.scale_factor
+            var.value += scaled
             var.sample_count += 1
 
         elif var.variable_type == 'average':
             # Running average (incremental formula)
             var.sample_count += 1
-            var._sum_accumulator += current_value * var.scale_factor
+            var._sum_accumulator += scaled
             var.value = var._sum_accumulator / var.sample_count
 
         elif var.variable_type == 'min':
             # Track minimum
-            scaled = current_value * var.scale_factor
             if var.sample_count == 0:
                 var.value = scaled
             else:
@@ -691,12 +718,65 @@ class UserVariableManager:
 
         elif var.variable_type == 'max':
             # Track maximum
-            scaled = current_value * var.scale_factor
             if var.sample_count == 0:
                 var.value = scaled
             else:
                 var.value = max(var.value, scaled)
             var.sample_count += 1
+
+        elif var.variable_type == 'stddev':
+            # Running standard deviation using Welford's online algorithm
+            # More numerically stable than naive (sum of squares - mean^2)
+            var.sample_count += 1
+            delta = scaled - var._mean_accumulator
+            var._mean_accumulator += delta / var.sample_count
+            delta2 = scaled - var._mean_accumulator
+            var._m2_accumulator += delta * delta2
+            # Compute sample standard deviation (n-1 denominator)
+            if var.sample_count > 1:
+                var.value = math.sqrt(var._m2_accumulator / (var.sample_count - 1))
+            else:
+                var.value = 0.0
+
+        elif var.variable_type == 'rms':
+            # Running root mean square
+            # RMS = sqrt(mean of squared values) - critical for AC/vibration
+            var.sample_count += 1
+            var._sum_squares += scaled * scaled
+            var.value = math.sqrt(var._sum_squares / var.sample_count)
+
+        elif var.variable_type == 'median':
+            # Approximate median using reservoir sampling
+            # Maintains a fixed-size reservoir (1000 samples) for memory efficiency
+            RESERVOIR_SIZE = 1000
+            var.sample_count += 1
+
+            if len(var._median_reservoir) < RESERVOIR_SIZE:
+                var._median_reservoir.append(scaled)
+            else:
+                # Reservoir sampling: replace random element with probability RESERVOIR_SIZE/n
+                j = random.randint(0, var.sample_count - 1)
+                if j < RESERVOIR_SIZE:
+                    var._median_reservoir[j] = scaled
+
+            # Calculate median from reservoir
+            sorted_vals = sorted(var._median_reservoir)
+            n = len(sorted_vals)
+            if n % 2 == 1:
+                var.value = sorted_vals[n // 2]
+            else:
+                var.value = (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2.0
+
+        elif var.variable_type == 'peak_to_peak':
+            # Track both min and max, value is the difference
+            var.sample_count += 1
+            if var.sample_count == 1:
+                var._min_value = scaled
+                var._max_value = scaled
+            else:
+                var._min_value = min(var._min_value, scaled)
+                var._max_value = max(var._max_value, scaled)
+            var.value = var._max_value - var._min_value
 
     def _update_rolling(self, var: UserVariable, current_value: float, now_ts: float):
         """
@@ -788,7 +868,7 @@ class UserVariableManager:
                     self._update_timer(var, now_ts)
                     var._last_update = now_ts
 
-                elif var.variable_type in ('sum', 'average', 'min', 'max'):
+                elif var.variable_type in ('sum', 'average', 'min', 'max', 'stddev', 'rms', 'median', 'peak_to_peak'):
                     if var.source_channel and var.source_channel in channel_values:
                         source_value = channel_values[var.source_channel]
                         self._update_statistics(var, source_value)

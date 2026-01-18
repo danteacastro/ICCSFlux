@@ -47,23 +47,10 @@ const lastUpdate = ref<Date | null>(null)
 
 // Get current value for a tag
 function getValue(tag: string): any {
-  // Check script published values first (py.* tags)
-  if (tag.startsWith('py.')) {
-    const scriptValues = store.status?.script_values || {}
-    if (tag in scriptValues) {
-      return scriptValues[tag]
-    }
-  }
-
-  // Check store.values (standard widget format)
+  // Check store.values for all tags (including py.* script-published values)
   if (store.values && tag in store.values) {
     const val = store.values[tag]
     return val?.value ?? val
-  }
-
-  // Check channel values (legacy format)
-  if (store.channelValues && tag in store.channelValues) {
-    return store.channelValues[tag]
   }
 
   // Check local cache

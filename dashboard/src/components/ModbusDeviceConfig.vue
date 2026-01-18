@@ -235,11 +235,19 @@ async function deleteDevice(deviceName: string) {
 
 async function testConnection(deviceName: string) {
   isLoading.value = true
+  showFeedback('success', `Testing connection to ${deviceName}...`)
+
   try {
-    mqtt.sendCommand('chassis/test', { name: deviceName })
-    showFeedback('success', 'Connection test started - check status')
+    // Use sendCommandWithAck to wait for response
+    const result = await mqtt.sendCommandWithAck('chassis/test', { name: deviceName }, 10000)
+
+    if (result.success) {
+      showFeedback('success', result.message || `Connection to ${deviceName} successful`)
+    } else {
+      showFeedback('error', result.message || result.error || `Connection to ${deviceName} failed`)
+    }
   } catch (e: any) {
-    showFeedback('error', e.message || 'Failed to test connection')
+    showFeedback('error', e.message || 'Connection test timed out - check device settings')
   } finally {
     isLoading.value = false
   }

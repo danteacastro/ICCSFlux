@@ -1,4 +1,4 @@
-# DCFlux Administrator Guide
+# CZFlux Administrator Guide
 
 **System Installation, Configuration & Maintenance**
 
@@ -13,10 +13,11 @@
 5. [User Administration](#5-user-administration)
 6. [Backup & Recovery](#6-backup--recovery)
 7. [Multi-Node Deployment](#7-multi-node-deployment)
-8. [Security Hardening](#8-security-hardening)
-9. [Compliance (21 CFR Part 11)](#9-compliance-21-cfr-part-11)
-10. [Performance Tuning](#10-performance-tuning)
-11. [Log Files & Diagnostics](#11-log-files--diagnostics)
+8. [Remote Node Administration](#8-remote-node-administration)
+9. [Security Hardening](#9-security-hardening)
+10. [Compliance (21 CFR Part 11)](#10-compliance-21-cfr-part-11)
+11. [Performance Tuning](#11-performance-tuning)
+12. [Log Files & Diagnostics](#12-log-files--diagnostics)
 
 ---
 
@@ -61,11 +62,11 @@
 ### 2.1 Quick Install
 
 ```batch
-# 1. Extract DCFlux package
-unzip dcflux-v1.0.zip -d C:\DCFlux
+# 1. Extract CZFlux package
+unzip czflux-v1.0.zip -d C:\CZFlux
 
 # 2. Install Python dependencies
-cd C:\DCFlux
+cd C:\CZFlux
 pip install -r requirements.txt
 
 # 3. Install Node dependencies
@@ -83,7 +84,7 @@ start.bat
 ### 2.2 Directory Structure
 
 ```
-C:\DCFlux\
+C:\CZFlux\
 ├── dashboard\           # Vue.js frontend
 │   ├── src\
 │   ├── dist\           # Production build
@@ -137,8 +138,8 @@ C:\DCFlux\
    ```
 
 3. **Create Admin User:**
-   - Default: `admin` / `iccsadmin`
-   - Change password after first login
+   - Default credentials are set during installation
+   - **Change password immediately after first login**
 
 ---
 
@@ -155,7 +156,7 @@ port = 1883
 ws_port = 9002
 username =
 password =
-client_id = dcflux-daq
+client_id = czflux-daq
 
 [acquisition]
 scan_rate = 10          # Hz
@@ -273,20 +274,20 @@ netstat -ano | findstr :5173
 
 ### 4.4 Windows Service Installation
 
-To run DCFlux as a Windows service:
+To run CZFlux as a Windows service:
 
 ```batch
 # Install as service (run as Administrator)
-nssm install DCFlux-DAQ "C:\Python312\python.exe" "C:\DCFlux\services\daq_service\daq_service.py"
-nssm set DCFlux-DAQ AppDirectory "C:\DCFlux\services\daq_service"
-nssm set DCFlux-DAQ AppStdout "C:\DCFlux\data\logs\daq_stdout.log"
-nssm set DCFlux-DAQ AppStderr "C:\DCFlux\data\logs\daq_stderr.log"
+nssm install CZFlux-DAQ "C:\Python312\python.exe" "C:\CZFlux\services\daq_service\daq_service.py"
+nssm set CZFlux-DAQ AppDirectory "C:\CZFlux\services\daq_service"
+nssm set CZFlux-DAQ AppStdout "C:\CZFlux\data\logs\daq_stdout.log"
+nssm set CZFlux-DAQ AppStderr "C:\CZFlux\data\logs\daq_stderr.log"
 
 # Start service
-net start DCFlux-DAQ
+net start CZFlux-DAQ
 
 # Stop service
-net stop DCFlux-DAQ
+net stop CZFlux-DAQ
 ```
 
 ### 4.5 Scheduled Restart
@@ -295,7 +296,7 @@ For long-term stability, schedule weekly restarts:
 
 ```batch
 # Create scheduled task (run as Administrator)
-schtasks /create /tn "DCFlux Weekly Restart" /tr "C:\DCFlux\restart_daq.ps1" /sc weekly /d SUN /st 03:00 /ru SYSTEM
+schtasks /create /tn "CZFlux Weekly Restart" /tr "C:\CZFlux\restart_daq.ps1" /sc weekly /d SUN /st 03:00 /ru SYSTEM
 ```
 
 ---
@@ -304,11 +305,11 @@ schtasks /create /tn "DCFlux Weekly Restart" /tr "C:\DCFlux\restart_daq.ps1" /sc
 
 ### 5.1 Default Users
 
-| Username | Password | Role |
-|----------|----------|------|
-| admin | iccsadmin | Admin |
+| Username | Role |
+|----------|------|
+| admin | Admin |
 
-**Important:** Change the admin password after installation.
+**Important:** Default credentials are provided during installation. Change the admin password immediately.
 
 ### 5.2 Creating Users
 
@@ -370,7 +371,7 @@ lockout_duration = 300      # seconds (5 minutes)
 
 ```batch
 @echo off
-set BACKUP_DIR=D:\Backups\DCFlux\%date:~-4,4%%date:~-10,2%%date:~-7,2%
+set BACKUP_DIR=D:\Backups\CZFlux\%date:~-4,4%%date:~-10,2%%date:~-7,2%
 
 mkdir %BACKUP_DIR%
 xcopy /E /Y config %BACKUP_DIR%\config\
@@ -381,7 +382,7 @@ echo Backup completed to %BACKUP_DIR%
 
 ### 6.3 Recovery Procedure
 
-1. Stop all DCFlux services
+1. Stop all CZFlux services
 2. Restore configuration files
 3. Restore user database
 4. Restart services
@@ -389,8 +390,8 @@ echo Backup completed to %BACKUP_DIR%
 
 ```batch
 # Restore from backup
-xcopy /E /Y D:\Backups\DCFlux\20260104\config C:\DCFlux\config\
-copy D:\Backups\DCFlux\20260104\users.db C:\DCFlux\data\
+xcopy /E /Y D:\Backups\CZFlux\20260104\config C:\CZFlux\config\
+copy D:\Backups\CZFlux\20260104\users.db C:\CZFlux\data\
 ```
 
 ### 6.4 Project Export/Import
@@ -485,31 +486,352 @@ The dashboard can view any node:
 
 ---
 
-## 8. Security Hardening
+## 8. Remote Node Administration
 
-### 8.1 MQTT Authentication
+This chapter covers the deployment and maintenance of remote CZFlux nodes (cRIO and Opto22).
+
+### 8.1 cRIO Node Deployment
+
+#### Hardware Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| Controller | NI cRIO with Linux Real-Time |
+| Python | 3.8+ (included in NI Linux RT) |
+| Network | Ethernet connection to PC |
+| Storage | 256 MB free space |
+
+#### Installation Files
+
+The cRIO node service consists of:
+
+| File | Purpose |
+|------|---------|
+| `crio_node.py` | Main service script |
+| `crio_node.service` | Systemd service unit |
+| `crio_node.env` | Environment configuration |
+| `install.sh` | One-click installer |
+| `requirements.txt` | Python dependencies |
+
+#### Installation Procedure
+
+1. **Copy files to cRIO:**
+   ```bash
+   scp -r services/crio_node admin@<crio-ip>:/home/admin/
+   ```
+
+2. **SSH to cRIO and run installer:**
+   ```bash
+   ssh admin@<crio-ip>
+   cd /home/admin/crio_node
+   chmod +x install.sh
+   ./install.sh <CZFLUX_PC_IP> [NODE_ID]
+   ```
+
+   Example:
+   ```bash
+   ./install.sh 192.168.1.100 crio-001
+   ```
+
+3. **Verify installation:**
+   ```bash
+   systemctl status crio_node.service
+   journalctl -u crio_node.service -f
+   ```
+
+#### Configuration File
+
+Location: `/home/admin/nisystem/crio_node.env`
+
+```bash
+# MQTT Broker - CZFlux PC
+MQTT_BROKER=192.168.1.100
+
+# MQTT Port
+MQTT_PORT=1883
+
+# Node ID (unique per cRIO)
+NODE_ID=crio-001
+```
+
+#### Service Management
+
+| Command | Description |
+|---------|-------------|
+| `systemctl status crio_node` | Check status |
+| `systemctl start crio_node` | Start service |
+| `systemctl stop crio_node` | Stop service |
+| `systemctl restart crio_node` | Restart service |
+| `systemctl enable crio_node` | Enable auto-start |
+| `systemctl disable crio_node` | Disable auto-start |
+| `journalctl -u crio_node -f` | View live logs |
+| `journalctl -u crio_node -n 100` | View last 100 log lines |
+
+#### Log Management
+
+Logs are stored in journald. To prevent flash wear:
+
+```bash
+# Configure log rotation (already done by installer)
+cat /etc/systemd/journald.conf.d/nisystem.conf
+```
+
+Default settings:
+- Maximum 50 MB total log storage
+- Maximum 10 MB per file
+- 7 day retention
+- Compression enabled
+
+### 8.2 Opto22 Node Deployment
+
+#### Hardware Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| Controller | Opto22 groov EPIC or groov RIO |
+| Network | Ethernet connection to PC |
+| User | `dev` account (default) |
+
+#### Installation Files
+
+| File | Purpose |
+|------|---------|
+| `opto22_node.py` | Main service script |
+| `opto22_node.service` | Systemd service unit |
+| `opto22_node.env` | Environment configuration |
+| `install.sh` | One-click installer |
+| `journald-nisystem.conf` | Log rotation config |
+| `requirements.txt` | Python dependencies |
+
+#### Installation Procedure
+
+1. **Copy files to groov EPIC:**
+   ```bash
+   scp -r services/opto22_node dev@<epic-ip>:/home/dev/
+   ```
+
+2. **SSH to groov EPIC and run installer:**
+   ```bash
+   ssh dev@<epic-ip>
+   cd /home/dev/opto22_node
+   chmod +x install.sh
+   ./install.sh <CZFLUX_PC_IP> [NODE_ID] [API_KEY]
+   ```
+
+   Example:
+   ```bash
+   ./install.sh 192.168.1.100 opto22-001
+   ```
+
+3. **Verify installation:**
+   ```bash
+   systemctl status opto22_node.service
+   journalctl -u opto22_node.service -f
+   ```
+
+#### groov API Key Setup
+
+If your groov EPIC requires authentication:
+
+1. Log into groov Manage (`https://<epic-ip>`)
+2. Navigate to **Accounts** → **API Keys**
+3. Create a new API key with I/O access
+4. Add to environment file:
+   ```bash
+   nano /home/dev/nisystem/opto22_node.env
+   # Add: API_KEY=your-api-key-here
+   systemctl restart opto22_node.service
+   ```
+
+#### Configuration File
+
+Location: `/home/dev/nisystem/opto22_node.env`
+
+```bash
+# MQTT Broker - CZFlux PC
+MQTT_BROKER=192.168.1.100
+
+# MQTT Port
+MQTT_PORT=1883
+
+# Node ID (unique per Opto22)
+NODE_ID=opto22-001
+
+# groov API Key (optional)
+API_KEY=
+```
+
+### 8.3 Network Architecture
+
+#### Single Node Setup
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│   CZFlux PC     │◄───────►│  Remote Node    │
+│  MQTT Broker    │  MQTT   │  (cRIO/Opto22)  │
+│  Port 1883      │         │                 │
+└─────────────────┘         └─────────────────┘
+```
+
+#### Multi-Node Setup
+
+```
+                       ┌─────────────────┐
+                       │   CZFlux PC     │
+                       │  MQTT Broker    │
+                       │  192.168.1.100  │
+                       └────────┬────────┘
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          │                     │                     │
+    ┌─────▼─────┐         ┌─────▼─────┐         ┌─────▼─────┐
+    │ cRIO-001  │         │ cRIO-002  │         │opto22-001 │
+    │ Lab A     │         │ Lab B     │         │ Field     │
+    │.101       │         │.102       │         │.103       │
+    └───────────┘         └───────────┘         └───────────┘
+```
+
+#### Firewall Rules
+
+| Port | Protocol | Direction | Purpose |
+|------|----------|-----------|---------|
+| 1883 | TCP | Inbound | MQTT (nodes → PC) |
+| 22 | TCP | Outbound | SSH (PC → nodes) |
+
+```batch
+# Windows Firewall - allow MQTT inbound
+netsh advfirewall firewall add rule name="CZFlux MQTT" dir=in action=allow protocol=TCP localport=1883
+```
+
+### 8.4 Node Health Monitoring
+
+#### Heartbeat System
+
+Remote nodes send heartbeat messages every 2 seconds:
+- Topic: `nisystem/nodes/{node-id}/heartbeat`
+- Payload: `{ "timestamp": ..., "node_id": "...", "status": "online" }`
+
+The PC monitors heartbeats and marks nodes:
+- **Online**: Heartbeat within 10 seconds
+- **Warning**: Heartbeat 10-30 seconds old
+- **Offline**: No heartbeat for 30+ seconds
+
+#### Dashboard Indicators
+
+In the Configuration tab discovery tree:
+- **Green** ● = Online
+- **Yellow** ● = Warning
+- **Red** ● = Offline
+
+#### Command Line Health Check
+
+On cRIO:
+```bash
+# Check service status
+systemctl status crio_node.service
+
+# Check MQTT connectivity
+mosquitto_pub -h <pc-ip> -t "test" -m "ping"
+
+# Check network
+ping <pc-ip>
+```
+
+On Opto22:
+```bash
+# Check service status
+systemctl status opto22_node.service
+
+# Check REST API
+curl -k https://localhost/api/v1/device/info
+
+# Check network
+ping <pc-ip>
+```
+
+### 8.5 Troubleshooting Remote Nodes
+
+#### Service Won't Start
+
+```bash
+# Check detailed error logs
+journalctl -u crio_node.service -n 50 --no-pager
+
+# Common issues:
+# - Python dependencies missing → pip install -r requirements.txt
+# - Wrong MQTT broker IP → edit .env file
+# - Port 1883 blocked → check firewall
+```
+
+#### Can't Connect to MQTT
+
+```bash
+# Test MQTT connectivity
+mosquitto_sub -h <pc-ip> -p 1883 -t "test" -v
+
+# Check if broker is running on PC
+netstat -ano | findstr :1883
+```
+
+#### No I/O Values (cRIO)
+
+1. Verify NI-DAQmx is installed
+2. Check module is detected: `nilsdev`
+3. Verify channel configuration
+
+#### No I/O Values (Opto22)
+
+1. Check REST API is accessible:
+   ```bash
+   curl -k https://localhost/api/v1/device/info
+   ```
+2. Verify API key if authentication is enabled
+3. Check PAC Control strategy is running
+
+#### Network Issues After Reboot
+
+Both services are configured to:
+- Wait for network before starting
+- Auto-reconnect on network loss
+- Retry MQTT connection indefinitely
+
+If issues persist:
+```bash
+# Check network status
+ip addr
+ping <pc-ip>
+
+# Restart service
+systemctl restart crio_node.service
+```
+
+---
+
+## 9. Security Hardening
+
+### 9.1 MQTT Authentication
 
 ```conf
 # mosquitto.conf
 allow_anonymous false
-password_file C:\DCFlux\config\mqtt_passwd
+password_file C:\CZFlux\config\mqtt_passwd
 
 # Generate password file
-mosquitto_passwd -c C:\DCFlux\config\mqtt_passwd dcflux
+mosquitto_passwd -c C:\CZFlux\config\mqtt_passwd czflux
 ```
 
-### 8.2 TLS/SSL Encryption
+### 9.2 TLS/SSL Encryption
 
 ```conf
 # mosquitto.conf
 listener 8883
-cafile C:\DCFlux\certs\ca.crt
-certfile C:\DCFlux\certs\server.crt
-keyfile C:\DCFlux\certs\server.key
+cafile C:\CZFlux\certs\ca.crt
+certfile C:\CZFlux\certs\server.crt
+keyfile C:\CZFlux\certs\server.key
 require_certificate false
 ```
 
-### 8.3 Firewall Configuration
+### 9.3 Firewall Configuration
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
@@ -521,11 +843,11 @@ require_certificate false
 
 ```batch
 # Windows Firewall rules
-netsh advfirewall firewall add rule name="DCFlux MQTT" dir=in action=allow protocol=TCP localport=1883
-netsh advfirewall firewall add rule name="DCFlux Dashboard" dir=in action=allow protocol=TCP localport=5173
+netsh advfirewall firewall add rule name="CZFlux MQTT" dir=in action=allow protocol=TCP localport=1883
+netsh advfirewall firewall add rule name="CZFlux Dashboard" dir=in action=allow protocol=TCP localport=5173
 ```
 
-### 8.4 Network Isolation
+### 9.4 Network Isolation
 
 For production systems:
 - Place DAQ nodes on dedicated VLAN
@@ -535,11 +857,11 @@ For production systems:
 
 ---
 
-## 9. Compliance (21 CFR Part 11)
+## 10. Compliance (21 CFR Part 11)
 
-### 9.1 Requirements Checklist
+### 10.1 Requirements Checklist
 
-| Requirement | DCFlux Implementation |
+| Requirement | CZFlux Implementation |
 |-------------|----------------------|
 | Electronic signatures | User authentication required |
 | Audit trail | Immutable event log |
@@ -550,7 +872,7 @@ For production systems:
 | Operational checks | Sequence validation |
 | Record retention | Archive management |
 
-### 9.2 Audit Trail Configuration
+### 10.2 Audit Trail Configuration
 
 ```ini
 # config/system.ini
@@ -561,7 +883,7 @@ checksum_algorithm = sha256
 include_raw_data = true
 ```
 
-### 9.3 Electronic Records
+### 10.3 Electronic Records
 
 All configuration changes are logged:
 - Who made the change
@@ -569,7 +891,7 @@ All configuration changes are logged:
 - What was changed (before/after)
 - Why (comment required for some changes)
 
-### 9.4 Data Integrity
+### 10.4 Data Integrity
 
 Recording files include:
 - SHA-256 checksum
@@ -577,7 +899,7 @@ Recording files include:
 - Metadata header with timestamps
 - Operator identification
 
-### 9.5 Validation
+### 10.5 Validation
 
 For validated systems:
 1. Document IQ (Installation Qualification)
@@ -587,9 +909,9 @@ For validated systems:
 
 ---
 
-## 10. Performance Tuning
+## 11. Performance Tuning
 
-### 10.1 Scan Rate Optimization
+### 11.1 Scan Rate Optimization
 
 | Channel Count | Recommended Scan Rate |
 |---------------|----------------------|
@@ -598,7 +920,7 @@ For validated systems:
 | 65-128 | 25 Hz |
 | 129-256 | 10 Hz |
 
-### 10.2 Publish Rate
+### 11.2 Publish Rate
 
 Lower publish rate reduces network/browser load:
 
@@ -609,7 +931,7 @@ Lower publish rate reduces network/browser load:
 | Slow processes | 1 Hz |
 | Data logging only | 0.5 Hz |
 
-### 10.3 Memory Management
+### 11.3 Memory Management
 
 ```ini
 # config/system.ini
@@ -619,7 +941,7 @@ chart_history = 3600       # seconds
 gc_interval = 300          # garbage collection
 ```
 
-### 10.4 Dashboard Optimization
+### 11.4 Dashboard Optimization
 
 - Limit widgets per page to 20-30
 - Use decimation for trend charts
@@ -628,9 +950,9 @@ gc_interval = 300          # garbage collection
 
 ---
 
-## 11. Log Files & Diagnostics
+## 12. Log Files & Diagnostics
 
-### 11.1 Log Locations
+### 12.1 Log Locations
 
 | Log | Location |
 |-----|----------|
@@ -639,7 +961,7 @@ gc_interval = 300          # garbage collection
 | Audit Trail | data/audit/audit.db |
 | Recording Status | data/logs/recording.log |
 
-### 11.2 Log Levels
+### 12.2 Log Levels
 
 ```ini
 # config/system.ini
@@ -647,7 +969,7 @@ gc_interval = 300          # garbage collection
 level = INFO    # DEBUG, INFO, WARNING, ERROR, CRITICAL
 ```
 
-### 11.3 Diagnostic Commands
+### 12.3 Diagnostic Commands
 
 ```batch
 # Check DAQ service status
@@ -660,7 +982,7 @@ mosquitto_sub -h localhost -t "nisystem/#" -v
 type data\logs\daq_service.log | more
 ```
 
-### 11.4 Common Issues
+### 12.4 Common Issues
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
@@ -670,11 +992,11 @@ type data\logs\daq_service.log | more
 | Slow performance | Too many channels | Reduce scan rate |
 | Login fails | Account locked | Wait or reset |
 
-### 11.5 Health Check Script
+### 12.5 Health Check Script
 
 ```batch
 @echo off
-echo === DCFlux Health Check ===
+echo === CZFlux Health Check ===
 echo.
 echo Checking services...
 tasklist | findstr python && echo [OK] Python running || echo [FAIL] Python not running
@@ -721,5 +1043,5 @@ health_check.bat
 
 ---
 
-**DCFlux Administrator Guide v1.0**
+**CZFlux Administrator Guide v1.0**
 *Last Updated: January 2026*

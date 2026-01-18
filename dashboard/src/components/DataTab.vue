@@ -494,7 +494,7 @@ const scheduleDayLabels = [
           <template v-for="(ch, index) in sortedChannels" :key="ch.name">
             <!-- Show separator before first Python channel -->
             <div
-              v-if="ch.name.startsWith('py.') && (index === 0 || !sortedChannels[index - 1].name.startsWith('py.'))"
+              v-if="ch.name.startsWith('py.') && (index === 0 || !sortedChannels[index - 1]?.name.startsWith('py.'))"
               class="channel-group-separator"
             >
               <span>Python Script Outputs</span>

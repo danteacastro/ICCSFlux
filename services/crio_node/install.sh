@@ -70,6 +70,12 @@ MQTT_PORT=1883
 NODE_ID=$NODE_ID
 EOF
 
+# Configure journald to limit log size (prevents flash wear)
+echo -e "${YELLOW}Configuring log rotation (50MB max)...${NC}"
+mkdir -p /etc/systemd/journald.conf.d
+cp "$SCRIPT_DIR/journald-nisystem.conf" /etc/systemd/journald.conf.d/nisystem.conf
+systemctl restart systemd-journald
+
 # Install systemd service
 echo -e "${YELLOW}Installing systemd service...${NC}"
 cp "$SCRIPT_DIR/crio_node.service" /etc/systemd/system/
@@ -102,4 +108,6 @@ echo "  Stop:           systemctl stop crio_node.service"
 echo ""
 echo "Configuration file: $INSTALL_DIR/crio_node.env"
 echo "Edit this file to change MQTT broker or node ID"
+echo ""
+echo "Log rotation: 50MB max, 7 days retention"
 echo ""

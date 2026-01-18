@@ -15,6 +15,7 @@
 import { ref, computed, watch, readonly } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from './useMqtt'
+import { usePlayground } from './usePlayground'
 import type {
   AlarmConfig,
   AlarmSeverityLevel,
@@ -23,8 +24,13 @@ import type {
   AlarmCounts,
   Interlock,
   InterlockCondition,
+  InterlockConditionGroup,
   InterlockStatus,
   InterlockControlType,
+  InterlockHistoryEntry,
+  InterlockEventType,
+  ConditionLogic,
+  VotingLogic,
   SafetyAction,
   SafetyActionType
 } from '../types'
@@ -37,6 +43,15 @@ const alarmConfigs = ref<Record<string, AlarmConfig>>({})
 const activeAlarms = ref<ActiveAlarm[]>([])
 const alarmHistory = ref<AlarmHistoryEntry[]>([])
 const interlocks = ref<Interlock[]>([])
+
+// Interlock History (IEC 61511 audit trail)
+const interlockHistory = ref<InterlockHistoryEntry[]>([])
+
+// Condition delay tracking (runtime state for timer conditions)
+const conditionDelayState = ref<Record<string, { startTime: number; met: boolean }>>({})
+
+// Previous interlock states for demand tracking
+const previousInterlockStates = ref<Record<string, boolean>>({})
 
 // Safety Actions Registry (ISA-18.2 automatic responses)
 const safetyActions = ref<Record<string, SafetyAction>>({})
@@ -63,6 +78,7 @@ let currentProjectId: string | null = null
 export function useSafety() {
   const store = useDashboardStore()
   const mqtt = useMqtt('nisystem')
+  const playground = usePlayground()
 
   // ============================================
   // Alarm Configuration
@@ -355,10 +371,11 @@ export function useSafety() {
     // Reset safe state config
     safeStateConfig.value = {
       resetDigitalOutputs: true,
-      resetAnalogOutputs: false,
-      safeDigitalState: false,
-      safeAnalogState: 0.0,
-      specificOutputs: []
+      resetAnalogOutputs: true,
+      stopSession: true,
+      digitalOutputChannels: [],
+      analogOutputChannels: [],
+      analogSafeValue: 0
     }
 
     // Clear localStorage to prevent reload of stale data
@@ -596,55 +613,122 @@ export function useSafety() {
   // Interlock Management
   // ============================================
 
-  function addInterlock(interlock: Omit<Interlock, 'id'>) {
+  function addInterlock(interlock: Omit<Interlock, 'id'>, user: string = 'User') {
     const newInterlock: Interlock = {
       ...interlock,
-      id: `interlock-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      id: `interlock-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      demandCount: 0
     }
     interlocks.value.push(newInterlock)
+    recordInterlockEvent(newInterlock, 'created', user)
     saveInterlocks()
+    syncInterlockToBackend(newInterlock)
     return newInterlock.id
   }
 
-  function updateInterlock(id: string, updates: Partial<Interlock>) {
+  function updateInterlock(id: string, updates: Partial<Interlock>, user: string = 'User') {
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
       const existing = interlocks.value[index]
       if (existing) {
+        const wasEnabled = existing.enabled
         interlocks.value[index] = { ...existing, ...updates } as Interlock
+        const updated = interlocks.value[index]
+
+        // Track enable/disable events
+        if (wasEnabled !== updated.enabled) {
+          recordInterlockEvent(updated, updated.enabled ? 'enabled' : 'disabled', user)
+        } else {
+          recordInterlockEvent(updated, 'modified', user)
+        }
+
         saveInterlocks()
+        syncInterlockToBackend(updated)
       }
     }
   }
 
-  function removeInterlock(id: string) {
+  function removeInterlock(id: string, user: string = 'User') {
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
+      const removed = interlocks.value[index]
       interlocks.value.splice(index, 1)
       saveInterlocks()
+
+      // Remove from backend
+      if (mqtt.connected.value) {
+        mqtt.sendCommand(`interlocks/remove`, { id })
+      }
     }
   }
 
-  function bypassInterlock(id: string, bypass: boolean, user: string = 'User') {
+  function bypassInterlock(id: string, bypass: boolean, user: string = 'User', reason?: string) {
     const interlock = interlocks.value.find(i => i.id === id)
     if (interlock && interlock.bypassAllowed) {
+      const wasBypassed = interlock.bypassed
       interlock.bypassed = bypass
       if (bypass) {
         interlock.bypassedAt = new Date().toISOString()
         interlock.bypassedBy = user
+        interlock.bypassReason = reason
+        if (!wasBypassed) {
+          recordInterlockEvent(interlock, 'bypassed', user, reason, {
+            bypassDuration: interlock.maxBypassDuration
+          })
+        }
       } else {
         interlock.bypassedAt = undefined
         interlock.bypassedBy = undefined
+        interlock.bypassReason = undefined
+        if (wasBypassed) {
+          recordInterlockEvent(interlock, 'bypass_removed', user, reason)
+        }
       }
       saveInterlocks()
+      syncInterlockToBackend(interlock)
     }
   }
 
   // ============================================
-  // Interlock Condition Evaluation
+  // Backend Sync (MQTT)
   // ============================================
 
-  function evaluateCondition(condition: InterlockCondition): { satisfied: boolean; currentValue?: unknown; reason: string } {
+  function syncInterlockToBackend(interlock: Interlock) {
+    if (!mqtt.connected.value) return
+
+    // Publish interlock state to backend
+    const payload = {
+      id: interlock.id,
+      name: interlock.name,
+      enabled: interlock.enabled,
+      bypassed: interlock.bypassed,
+      bypassedBy: interlock.bypassedBy,
+      bypassReason: interlock.bypassReason,
+      conditions: interlock.conditions.map(c => ({
+        type: c.type,
+        channel: c.channel,
+        operator: c.operator,
+        value: c.value,
+        delay_s: c.delay_s
+      })),
+      controls: interlock.controls
+    }
+
+    mqtt.sendCommand('interlocks/sync', payload)
+  }
+
+  function syncAllInterlocksToBackend() {
+    interlocks.value.forEach(syncInterlockToBackend)
+  }
+
+  // ============================================
+  // Interlock Condition Evaluation (IEC 61511)
+  // ============================================
+
+  /**
+   * Evaluate a single condition without timer/delay logic
+   */
+  function evaluateConditionRaw(condition: InterlockCondition): { satisfied: boolean; currentValue?: unknown; reason: string } {
     switch (condition.type) {
       case 'mqtt_connected':
         return {
@@ -691,6 +775,82 @@ export function useSafety() {
           satisfied: noLatched,
           currentValue: latchedAlarmCount.value,
           reason: noLatched ? 'No latched alarms' : `${latchedAlarmCount.value} latched alarm(s) require reset`
+        }
+
+      case 'alarm_active':
+        // Check if specific alarm is currently active
+        if (!condition.alarmId) {
+          return { satisfied: false, reason: 'No alarm ID specified' }
+        }
+        const alarmActive = activeAlarms.value.some(a =>
+          a.id === condition.alarmId || a.channel === condition.alarmId
+        )
+        return {
+          satisfied: !alarmActive,  // Satisfied when alarm is NOT active
+          currentValue: alarmActive,
+          reason: alarmActive ? `Alarm ${condition.alarmId} is active` : `Alarm ${condition.alarmId} is clear`
+        }
+
+      case 'alarm_state':
+        // Check if alarm is in specific state
+        if (!condition.alarmId || !condition.alarmState) {
+          return { satisfied: false, reason: 'Invalid alarm state condition' }
+        }
+        const alarm = activeAlarms.value.find(a =>
+          a.id === condition.alarmId || a.channel === condition.alarmId
+        )
+        const inState = alarm?.state === condition.alarmState
+        return {
+          satisfied: inState,
+          currentValue: alarm?.state || 'none',
+          reason: inState
+            ? `Alarm ${condition.alarmId} is ${condition.alarmState}`
+            : `Alarm ${condition.alarmId} is ${alarm?.state || 'not active'} (requires ${condition.alarmState})`
+        }
+
+      case 'variable_value':
+        // Check user variable value
+        if (!condition.variableId || condition.operator === undefined || condition.value === undefined) {
+          return { satisfied: false, reason: 'Invalid variable condition' }
+        }
+        const varValue = playground.variables.value[condition.variableId]?.value
+        if (varValue === undefined) {
+          return { satisfied: false, currentValue: undefined, reason: `Variable ${condition.variableId} not found` }
+        }
+        const varNumValue = condition.value as number
+        let varSatisfied = false
+        switch (condition.operator) {
+          case '<': varSatisfied = varValue < varNumValue; break
+          case '<=': varSatisfied = varValue <= varNumValue; break
+          case '>': varSatisfied = varValue > varNumValue; break
+          case '>=': varSatisfied = varValue >= varNumValue; break
+          case '=': varSatisfied = varValue === varNumValue; break
+          case '!=': varSatisfied = varValue !== varNumValue; break
+        }
+        return {
+          satisfied: varSatisfied,
+          currentValue: varValue,
+          reason: varSatisfied
+            ? `Variable ${condition.variableId} = ${varValue} (OK)`
+            : `Variable ${condition.variableId} = ${varValue} (requires ${condition.operator} ${varNumValue})`
+        }
+
+      case 'expression':
+        // Evaluate simple expression (channel math)
+        if (!condition.expression) {
+          return { satisfied: false, reason: 'No expression specified' }
+        }
+        try {
+          // Simple expression parser for channel values
+          // Supports: channelName, +, -, *, /, >, <, >=, <=, ==, !=, AND, OR
+          const result = evaluateSimpleExpression(condition.expression)
+          return {
+            satisfied: Boolean(result),
+            currentValue: result,
+            reason: result ? `Expression satisfied: ${condition.expression}` : `Expression failed: ${condition.expression}`
+          }
+        } catch (e) {
+          return { satisfied: false, reason: `Expression error: ${e}` }
         }
 
       case 'channel_value':
@@ -743,6 +903,183 @@ export function useSafety() {
     }
   }
 
+  /**
+   * Evaluate simple expression for channel values
+   * Supports: TAG names, numbers, +, -, *, /, >, <, >=, <=, ==, !=, AND, OR, NOT
+   */
+  function evaluateSimpleExpression(expr: string): number | boolean {
+    // Replace channel names with values
+    let processed = expr
+    const channelPattern = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g
+    const matches = expr.match(channelPattern) || []
+
+    for (const match of matches) {
+      // Skip operators and keywords
+      if (['AND', 'OR', 'NOT', 'true', 'false'].includes(match.toUpperCase())) continue
+
+      const value = store.values[match]?.value
+      if (value !== undefined) {
+        processed = processed.replace(new RegExp(`\\b${match}\\b`, 'g'), String(value))
+      }
+    }
+
+    // Replace operators
+    processed = processed.replace(/\bAND\b/gi, '&&')
+    processed = processed.replace(/\bOR\b/gi, '||')
+    processed = processed.replace(/\bNOT\b/gi, '!')
+    processed = processed.replace(/==/g, '===')
+
+    // Safe evaluation (no function calls, only math/logic)
+    if (!/^[0-9\s+\-*/<>=!&|.()]+$/.test(processed)) {
+      throw new Error('Invalid expression characters')
+    }
+
+    // eslint-disable-next-line no-new-func
+    return new Function(`return ${processed}`)()
+  }
+
+  /**
+   * Evaluate condition with timer/delay logic
+   * Returns { satisfied, delayRemaining } where delayRemaining is seconds until delay met
+   */
+  function evaluateCondition(condition: InterlockCondition): {
+    satisfied: boolean
+    currentValue?: unknown
+    reason: string
+    delayRemaining?: number
+  } {
+    const rawResult = evaluateConditionRaw(condition)
+
+    // If no delay configured, return raw result
+    if (!condition.delay_s || condition.delay_s <= 0) {
+      return rawResult
+    }
+
+    const now = Date.now() / 1000
+    const delayKey = condition.id
+    const delayState = conditionDelayState.value[delayKey]
+
+    if (rawResult.satisfied) {
+      // Condition is satisfied - check if delay has elapsed
+      if (!delayState || !delayState.met) {
+        // Start or continue timing
+        const startTime = delayState?.startTime || now
+        const elapsed = now - startTime
+
+        if (elapsed >= condition.delay_s) {
+          // Delay met
+          conditionDelayState.value[delayKey] = { startTime, met: true }
+          return { ...rawResult, satisfied: true }
+        } else {
+          // Still waiting
+          conditionDelayState.value[delayKey] = { startTime, met: false }
+          return {
+            ...rawResult,
+            satisfied: false,
+            delayRemaining: condition.delay_s - elapsed,
+            reason: `${rawResult.reason} (waiting ${(condition.delay_s - elapsed).toFixed(1)}s)`
+          }
+        }
+      }
+      // Delay already met
+      return rawResult
+    } else {
+      // Condition not satisfied - reset delay timer
+      delete conditionDelayState.value[delayKey]
+      return rawResult
+    }
+  }
+
+  /**
+   * Evaluate voting logic (2oo3, 1oo2, etc.)
+   */
+  function evaluateVoting(voting: VotingLogic, channels: string[], operator: string, threshold: number): {
+    satisfied: boolean
+    votes: { channel: string; value: number; vote: boolean }[]
+    reason: string
+  } {
+    const votes = channels.map(channel => {
+      const value = store.values[channel]?.value ?? 0
+      let vote = false
+      switch (operator) {
+        case '<': vote = value < threshold; break
+        case '<=': vote = value <= threshold; break
+        case '>': vote = value > threshold; break
+        case '>=': vote = value >= threshold; break
+        case '=': vote = value === threshold; break
+        case '!=': vote = value !== threshold; break
+        default: vote = value < threshold
+      }
+      return { channel, value, vote }
+    })
+
+    const trueCount = votes.filter(v => v.vote).length
+    const total = votes.length
+
+    let required: number
+    switch (voting) {
+      case '1oo1': required = 1; break
+      case '1oo2': required = 1; break
+      case '2oo2': required = 2; break
+      case '1oo3': required = 1; break
+      case '2oo3': required = 2; break
+      default: required = total
+    }
+
+    const satisfied = trueCount >= required
+    return {
+      satisfied,
+      votes,
+      reason: satisfied
+        ? `Voting ${voting}: ${trueCount}/${total} (requires ${required})`
+        : `Voting ${voting} FAILED: ${trueCount}/${total} (requires ${required})`
+    }
+  }
+
+  /**
+   * Evaluate a condition group with nested AND/OR logic
+   */
+  function evaluateConditionGroup(group: InterlockConditionGroup): {
+    satisfied: boolean
+    failedConditions: InterlockStatus['failedConditions']
+  } {
+    const results: { satisfied: boolean; condition?: InterlockCondition; result?: ReturnType<typeof evaluateCondition> }[] = []
+    const failedConditions: InterlockStatus['failedConditions'] = []
+
+    for (const item of group.conditions) {
+      if ('conditions' in item) {
+        // Nested group
+        const nestedResult = evaluateConditionGroup(item as InterlockConditionGroup)
+        results.push({ satisfied: nestedResult.satisfied })
+        failedConditions.push(...nestedResult.failedConditions)
+      } else {
+        // Single condition
+        const condition = item as InterlockCondition
+        const result = evaluateCondition(condition)
+        results.push({ satisfied: result.satisfied, condition, result })
+        if (!result.satisfied) {
+          failedConditions.push({
+            condition,
+            currentValue: result.currentValue,
+            reason: result.reason,
+            delayRemaining: result.delayRemaining
+          })
+        }
+      }
+    }
+
+    // Apply logic
+    let satisfied: boolean
+    if (group.logic === 'OR') {
+      satisfied = results.some(r => r.satisfied)
+    } else {
+      // AND logic (default)
+      satisfied = results.every(r => r.satisfied)
+    }
+
+    return { satisfied, failedConditions: satisfied ? [] : failedConditions }
+  }
+
   function evaluateInterlock(interlock: Interlock): InterlockStatus {
     if (!interlock.enabled) {
       return {
@@ -752,7 +1089,18 @@ export function useSafety() {
         bypassed: false,
         enabled: false,
         failedConditions: [],
-        controls: interlock.controls
+        controls: interlock.controls,
+        conditionsWithDelay: []
+      }
+    }
+
+    // Check bypass expiration
+    if (interlock.bypassed && interlock.maxBypassDuration && interlock.bypassedAt) {
+      const bypassTime = new Date(interlock.bypassedAt).getTime()
+      const elapsed = (Date.now() - bypassTime) / 1000
+      if (elapsed >= interlock.maxBypassDuration) {
+        // Bypass expired - remove it
+        removeBypass(interlock.id, 'system', 'Bypass time expired')
       }
     }
 
@@ -764,31 +1112,166 @@ export function useSafety() {
         bypassed: true,
         enabled: true,
         failedConditions: [],
-        controls: interlock.controls
+        controls: interlock.controls,
+        conditionsWithDelay: []
       }
     }
 
-    const failedConditions: InterlockStatus['failedConditions'] = []
+    let failedConditions: InterlockStatus['failedConditions'] = []
+    let satisfied: boolean
+    const conditionsWithDelay: InterlockStatus['conditionsWithDelay'] = []
 
-    for (const condition of interlock.conditions) {
-      const result = evaluateCondition(condition)
-      if (!result.satisfied) {
-        failedConditions.push({
-          condition,
-          currentValue: result.currentValue,
-          reason: result.reason
-        })
+    // Use condition group if available (supports nested AND/OR)
+    if (interlock.conditionGroup) {
+      const groupResult = evaluateConditionGroup(interlock.conditionGroup)
+      satisfied = groupResult.satisfied
+      failedConditions = groupResult.failedConditions
+    } else {
+      // Legacy flat conditions with configurable logic
+      const logic = interlock.conditionLogic || 'AND'
+      const results: { satisfied: boolean; condition: InterlockCondition; result: ReturnType<typeof evaluateCondition> }[] = []
+
+      for (const condition of interlock.conditions) {
+        const result = evaluateCondition(condition)
+        results.push({ satisfied: result.satisfied, condition, result })
+
+        // Track delay status
+        if (condition.delay_s && condition.delay_s > 0) {
+          const delayState = conditionDelayState.value[condition.id]
+          conditionsWithDelay.push({
+            conditionId: condition.id,
+            delayTotal: condition.delay_s,
+            delayElapsed: delayState ? (Date.now() / 1000 - delayState.startTime) : 0,
+            delayMet: delayState?.met ?? false
+          })
+        }
+
+        if (!result.satisfied) {
+          failedConditions.push({
+            condition,
+            currentValue: result.currentValue,
+            reason: result.reason,
+            delayRemaining: result.delayRemaining
+          })
+        }
+      }
+
+      // Apply logic
+      if (logic === 'OR') {
+        satisfied = results.some(r => r.satisfied)
+        // For OR logic, only report failed conditions if ALL failed
+        if (satisfied) {
+          failedConditions = []
+        }
+      } else {
+        satisfied = results.every(r => r.satisfied)
       }
     }
+
+    // Track demand (IEC 61511)
+    const wasSatisfied = previousInterlockStates.value[interlock.id] ?? true
+    if (wasSatisfied && !satisfied) {
+      // Interlock just tripped - record demand
+      recordInterlockEvent(interlock, 'demand', 'system', undefined, {
+        failedConditions: failedConditions.map(f => f.reason)
+      })
+      // Increment demand count
+      interlock.demandCount = (interlock.demandCount || 0) + 1
+      interlock.lastDemandTime = new Date().toISOString()
+    } else if (!wasSatisfied && satisfied) {
+      // Interlock cleared
+      recordInterlockEvent(interlock, 'cleared', 'system')
+    }
+    previousInterlockStates.value[interlock.id] = satisfied
 
     return {
       id: interlock.id,
       name: interlock.name,
-      satisfied: failedConditions.length === 0,
+      satisfied,
       bypassed: false,
       enabled: true,
       failedConditions,
-      controls: interlock.controls
+      controls: interlock.controls,
+      conditionsWithDelay
+    }
+  }
+
+  // ============================================
+  // Interlock History & Audit (IEC 61511)
+  // ============================================
+
+  function recordInterlockEvent(
+    interlock: Interlock,
+    event: InterlockEventType,
+    user?: string,
+    reason?: string,
+    details?: InterlockHistoryEntry['details']
+  ) {
+    const entry: InterlockHistoryEntry = {
+      id: `ilh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      interlockId: interlock.id,
+      interlockName: interlock.name,
+      event,
+      user,
+      reason,
+      details
+    }
+    interlockHistory.value.unshift(entry)
+
+    // Keep last 1000 entries
+    if (interlockHistory.value.length > 1000) {
+      interlockHistory.value = interlockHistory.value.slice(0, 1000)
+    }
+
+    // Persist to localStorage
+    saveInterlockHistory()
+
+    console.log(`[Interlock] ${event}: ${interlock.name}${reason ? ` - ${reason}` : ''}`)
+  }
+
+  function saveInterlockHistory() {
+    try {
+      const systemId = store.systemId || 'default'
+      localStorage.setItem(
+        `nisystem-interlock-history-${systemId}`,
+        JSON.stringify(interlockHistory.value.slice(0, 500))  // Persist last 500
+      )
+    } catch (e) {
+      console.error('Failed to save interlock history:', e)
+    }
+  }
+
+  function loadInterlockHistory() {
+    try {
+      const systemId = store.systemId || 'default'
+      const saved = localStorage.getItem(`nisystem-interlock-history-${systemId}`)
+      if (saved) {
+        interlockHistory.value = JSON.parse(saved)
+      }
+    } catch (e) {
+      console.error('Failed to load interlock history:', e)
+    }
+  }
+
+  function removeBypass(interlockId: string, user: string, reason?: string) {
+    const interlock = interlocks.value.find(i => i.id === interlockId)
+    if (interlock && interlock.bypassed) {
+      interlock.bypassed = false
+      interlock.bypassedAt = undefined
+      interlock.bypassedBy = undefined
+      interlock.bypassReason = undefined
+      recordInterlockEvent(interlock, reason?.includes('expired') ? 'bypass_expired' : 'bypass_removed', user, reason)
+      saveInterlocks()
+    }
+  }
+
+  function recordProofTest(interlockId: string, user: string, notes?: string) {
+    const interlock = interlocks.value.find(i => i.id === interlockId)
+    if (interlock) {
+      interlock.lastProofTest = new Date().toISOString()
+      recordInterlockEvent(interlock, 'proof_test', user, notes)
+      saveInterlocks()
     }
   }
 
@@ -805,7 +1288,8 @@ export function useSafety() {
       if (!status.satisfied && !status.bypassed && status.enabled) {
         for (const control of status.controls) {
           if (control.type === controlType) {
-            if (controlType === 'digital_output' && identifier) {
+            // Channel-specific blocking (DO, AO)
+            if ((controlType === 'digital_output' || controlType === 'analog_output') && identifier) {
               if (control.channel === identifier) {
                 blockedBy.push(status)
               }
@@ -813,7 +1297,8 @@ export function useSafety() {
               if (control.buttonId === identifier) {
                 blockedBy.push(status)
               }
-            } else if (controlType !== 'digital_output' && controlType !== 'button_action') {
+            } else if (controlType !== 'digital_output' && controlType !== 'analog_output' && controlType !== 'button_action') {
+              // Global blocking (schedule, recording, acquisition, session, script)
               blockedBy.push(status)
             }
           }
@@ -828,9 +1313,21 @@ export function useSafety() {
   const isScheduleBlocked = computed(() => isControlBlocked('schedule_enable'))
   const isRecordingBlocked = computed(() => isControlBlocked('recording_start'))
   const isAcquisitionBlocked = computed(() => isControlBlocked('acquisition_start'))
+  const isSessionBlocked = computed(() => isControlBlocked('session_start'))
+  const isScriptBlocked = computed(() => isControlBlocked('script_start'))
 
+  // Check if a specific output channel is blocked (works for both DO and AO)
   function isOutputBlocked(channel: string) {
-    return isControlBlocked('digital_output', channel)
+    // Check both digital and analog output blocking for this channel
+    const doBlocked = isControlBlocked('digital_output', channel)
+    const aoBlocked = isControlBlocked('analog_output', channel)
+
+    // Merge the results
+    const allBlockedBy = [...doBlocked.blockedBy, ...aoBlocked.blockedBy]
+    return {
+      blocked: allBlockedBy.length > 0,
+      blockedBy: allBlockedBy
+    }
   }
 
   function isButtonBlocked(buttonId: string) {
@@ -906,9 +1403,12 @@ export function useSafety() {
 
         // BLOCKING actions don't need execution - they just prevent user actions
         case 'digital_output':
+        case 'analog_output':
         case 'schedule_enable':
         case 'recording_start':
         case 'acquisition_start':
+        case 'session_start':
+        case 'script_start':
         case 'button_action':
           // These are handled by isControlBlocked()
           break
@@ -1301,6 +1801,7 @@ export function useSafety() {
       loadHistory()
     }
     loadInterlocks()  // Interlocks are project-agnostic for now
+    loadInterlockHistory()
     loadSafetyActions()
     loadAutoExecuteSetting()
 
@@ -1309,9 +1810,10 @@ export function useSafety() {
       const newCount = Object.keys(newChannels).length
       const oldCount = oldChannels ? Object.keys(oldChannels).length : 0
 
-      // If no channels (no project loaded), clear all stale alarms
+      // If no channels (no project loaded), clear all stale safety state
       if (newCount === 0) {
-        if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0 || Object.keys(alarmConfigs.value).length > 0) {
+        if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0 ||
+            Object.keys(alarmConfigs.value).length > 0 || interlocks.value.length > 0) {
           console.log('[SAFETY] No channels (no project loaded), clearing all safety state')
           clearAllSafetyState('no_channels')
         }
@@ -1319,7 +1821,16 @@ export function useSafety() {
         // Has channels - initialize configs for any new channels
         initializeAlarmConfigs()
 
-        if (oldCount > 0 && newCount > 0) {
+        if (oldCount === 0 && newCount > 0) {
+          // Project just loaded (went from no channels to having channels)
+          // Reload all safety settings from localStorage (useProjectFiles may have updated them)
+          console.log('[SAFETY] Project loaded - reloading safety settings from localStorage')
+          loadAlarmConfigs()
+          loadInterlocks()
+          loadSafetyActions()
+          loadAutoExecuteSetting()
+          loadHistory()
+        } else if (oldCount > 0 && newCount > 0) {
           // Both old and new have channels - check for orphaned alarms
           clearOrphanedAlarms()
 
@@ -1552,21 +2063,32 @@ export function useSafety() {
     // Interlock state
     interlocks: readonly(interlocks),
     interlockStatuses,
+    interlockHistory: readonly(interlockHistory),
 
     // Interlock management
     addInterlock,
     updateInterlock,
     removeInterlock,
     bypassInterlock,
+    removeBypass,
+    recordProofTest,
 
     // Interlock checking
     isControlBlocked,
     isScheduleBlocked,
     isRecordingBlocked,
     isAcquisitionBlocked,
+    isSessionBlocked,
+    isScriptBlocked,
     isOutputBlocked,
     isButtonBlocked,
     evaluateCondition,
+    evaluateConditionGroup,
+    evaluateVoting,
+
+    // Backend sync
+    syncInterlockToBackend,
+    syncAllInterlocksToBackend,
 
     // Interlock trip system
     hasFailedInterlocks,

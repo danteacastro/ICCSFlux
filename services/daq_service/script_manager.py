@@ -1,5 +1,5 @@
 """
-Script Manager for DCFlux
+Script Manager for CZFlux
 
 Executes Python scripts server-side for headless operation.
 Scripts have access to the same API as the browser Pyodide playground:
@@ -52,12 +52,14 @@ class Script:
     run_mode: ScriptRunMode = ScriptRunMode.MANUAL
     created_at: str = ""
     modified_at: str = ""
+    max_runtime_seconds: float = 300.0  # Default 5 minute timeout
 
     # Runtime state (not persisted)
     state: ScriptState = field(default=ScriptState.IDLE, repr=False)
     started_at: Optional[float] = field(default=None, repr=False)
     iterations: int = field(default=0, repr=False)
     error_message: Optional[str] = field(default=None, repr=False)
+    timeout_exceeded: bool = field(default=False, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -112,7 +114,7 @@ class ScriptRuntime:
         self._published_values: Dict[str, Any] = {}
 
     def start(self):
-        """Start script execution in a new thread"""
+        """Start script execution in a new thread with timeout monitoring"""
         if self._thread and self._thread.is_alive():
             logger.warning(f"Script {self.script.name} already running - ignoring start request")
             return False
@@ -126,6 +128,7 @@ class ScriptRuntime:
         self.script.started_at = time.time()
         self.script.iterations = 0
         self.script.error_message = None
+        self.script.timeout_exceeded = False
 
         # Create and start new thread
         self._thread = threading.Thread(
@@ -134,8 +137,43 @@ class ScriptRuntime:
             daemon=True
         )
         self._thread.start()
-        logger.info(f"Started script: {self.script.name} (thread={self._thread.name})")
+
+        # Start timeout monitor thread
+        max_runtime = getattr(self.script, 'max_runtime_seconds', 300.0)
+        if max_runtime > 0:
+            monitor = threading.Thread(
+                target=self._monitor_timeout,
+                args=(max_runtime,),
+                name=f"ScriptMonitor-{self.script.id}",
+                daemon=True
+            )
+            monitor.start()
+
+        logger.info(f"Started script: {self.script.name} (thread={self._thread.name}, max_runtime={max_runtime}s)")
         return True
+
+    def _monitor_timeout(self, timeout_seconds: float):
+        """Monitor script for timeout and force stop if exceeded"""
+        check_interval = 1.0  # Check every second
+        start_time = self.script.started_at or time.time()
+
+        while self._thread and self._thread.is_alive():
+            elapsed = time.time() - start_time
+            if elapsed >= timeout_seconds:
+                logger.warning(f"SCRIPT TIMEOUT: {self.script.name} exceeded {timeout_seconds}s - forcing stop")
+                self.script.timeout_exceeded = True
+                self.script.error_message = f"Script timeout after {timeout_seconds}s"
+                self._stop_event.set()
+
+                # Wait briefly for graceful stop
+                time.sleep(2.0)
+
+                if self._thread and self._thread.is_alive():
+                    logger.error(f"Script {self.script.name} did not respond to stop after timeout")
+                    self.script.state = ScriptState.ERROR
+                return
+
+            time.sleep(check_interval)
 
     def stop(self):
         """Stop script execution and reset for clean restart"""
@@ -374,6 +412,11 @@ class ScriptRuntime:
             'json': __import__('json'),
             're': __import__('re'),
             'statistics': __import__('statistics'),
+
+            # Scientific computing (matches browser Pyodide environment)
+            'numpy': __import__('numpy'),
+            'np': __import__('numpy'),  # Common alias
+            'scipy': __import__('scipy'),
 
             # Built-ins (safe subset)
             'abs': abs,

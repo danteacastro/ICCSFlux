@@ -322,12 +322,16 @@ export function useScripts() {
     }
 
     try {
-      const ch: Record<string, number> = {}
+      // Build namespace with all channel values
+      // Supports both direct syntax (TC101) and legacy ch.TC101 syntax
+      const namespace: Record<string, number> = {}
+      const ch: Record<string, number> = {}  // Legacy ch.NAME support
 
       if (store.values) {
         Object.entries(store.values).forEach(([name, data]) => {
           if (data && typeof data.value === 'number') {
             const safeName = name.replace(/[^a-zA-Z0-9_]/g, '_')
+            namespace[safeName] = data.value
             ch[safeName] = data.value
           }
         })
@@ -337,6 +341,7 @@ export function useScripts() {
       transformations.value.forEach(t => {
         if (t.enabled && t.lastValue !== null) {
           const safeName = t.name.replace(/[^a-zA-Z0-9_]/g, '_')
+          namespace[safeName] = t.lastValue
           ch[safeName] = t.lastValue
         }
       })
@@ -345,6 +350,7 @@ export function useScripts() {
       calculatedParams.value.forEach(p => {
         if (p.enabled && p.lastValue !== null) {
           const safeName = p.name.replace(/[^a-zA-Z0-9_]/g, '_')
+          namespace[safeName] = p.lastValue
           ch[safeName] = p.lastValue
         }
       })
@@ -368,13 +374,18 @@ export function useScripts() {
         min: Math.min,
         max: Math.max,
         PI: Math.PI,
+        pi: Math.PI,  // Python-style lowercase
         E: Math.E,
+        e: Math.E,    // Python-style lowercase
         sign: Math.sign,
         trunc: Math.trunc
       }
 
-      const evalFunc = new Function('ch', ...Object.keys(mathFuncs), `return ${formula}`)
-      const result = evalFunc(ch, ...Object.values(mathFuncs))
+      // Build function with channel names as direct parameters + ch for legacy support
+      const paramNames = Object.keys(namespace)
+      const paramValues = Object.values(namespace)
+      const evalFunc = new Function('ch', ...paramNames, ...Object.keys(mathFuncs), `return ${formula}`)
+      const result = evalFunc(ch, ...paramValues, ...Object.values(mathFuncs))
 
       if (typeof result === 'number' && !isNaN(result) && isFinite(result)) {
         return { value: result, error: null }
@@ -936,13 +947,17 @@ export function useScripts() {
     }
 
     try {
-      const ch: Record<string, number> = {}
+      // Build namespace with all values
+      // Supports both direct syntax (TC101) and legacy ch.TC101 / seq.varName syntax
+      const namespace: Record<string, number> = {}
+      const ch: Record<string, number> = {}  // Legacy ch.NAME support
 
       // Add channel values
       if (store.values) {
         Object.entries(store.values).forEach(([name, data]) => {
           if (data && typeof data.value === 'number') {
             const safeName = name.replace(/[^a-zA-Z0-9_]/g, '_')
+            namespace[safeName] = data.value
             ch[safeName] = data.value
           }
         })
@@ -953,14 +968,17 @@ export function useScripts() {
       if (seq.variables) {
         Object.entries(seq.variables).forEach(([name, value]) => {
           seqVars[name] = value
-          ch[name] = value  // Also available directly
+          namespace[name] = value  // Direct access
+          ch[name] = value  // Also via ch.name (legacy)
         })
       }
 
       // Add loop iteration counters
       if (seq.currentLoopIterations) {
         Object.entries(seq.currentLoopIterations).forEach(([loopId, iteration]) => {
-          ch[`loop_${loopId}`] = iteration
+          const name = `loop_${loopId}`
+          namespace[name] = iteration
+          ch[name] = iteration
         })
       }
 
@@ -968,6 +986,7 @@ export function useScripts() {
       transformations.value.forEach(t => {
         if (t.enabled && t.lastValue !== null) {
           const safeName = t.name.replace(/[^a-zA-Z0-9_]/g, '_')
+          namespace[safeName] = t.lastValue
           ch[safeName] = t.lastValue
         }
       })
@@ -976,6 +995,7 @@ export function useScripts() {
       calculatedParams.value.forEach(p => {
         if (p.enabled && p.lastValue !== null) {
           const safeName = p.name.replace(/[^a-zA-Z0-9_]/g, '_')
+          namespace[safeName] = p.lastValue
           ch[safeName] = p.lastValue
         }
       })
@@ -999,13 +1019,18 @@ export function useScripts() {
         min: Math.min,
         max: Math.max,
         PI: Math.PI,
+        pi: Math.PI,  // Python-style lowercase
         E: Math.E,
+        e: Math.E,    // Python-style lowercase
         sign: Math.sign,
         trunc: Math.trunc
       }
 
-      const evalFunc = new Function('ch', 'seq', ...Object.keys(mathFuncs), `return ${formula}`)
-      const result = evalFunc(ch, seqVars, ...Object.values(mathFuncs))
+      // Build function with all names as direct parameters + ch/seq for legacy support
+      const paramNames = Object.keys(namespace)
+      const paramValues = Object.values(namespace)
+      const evalFunc = new Function('ch', 'seq', ...paramNames, ...Object.keys(mathFuncs), `return ${formula}`)
+      const result = evalFunc(ch, seqVars, ...paramValues, ...Object.values(mathFuncs))
 
       if (typeof result === 'number' && !isNaN(result) && isFinite(result)) {
         return { value: result, error: null }

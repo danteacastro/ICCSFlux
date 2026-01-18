@@ -18,6 +18,10 @@ import logging
 
 logger = logging.getLogger('RecordingManager')
 
+# Maximum pre-trigger buffer size to prevent memory exhaustion
+# Even if user requests more, we cap at this limit
+MAX_PRE_TRIGGER_SAMPLES = 10000
+
 
 def _get_default_data_path() -> str:
     """Get platform-appropriate default data path relative to project root"""
@@ -186,6 +190,13 @@ class RecordingManager:
                 return False
 
             self.config = RecordingConfig.from_dict(config_dict)
+
+            # Warn if pre_trigger_samples exceeds max limit
+            if self.config.pre_trigger_samples > MAX_PRE_TRIGGER_SAMPLES:
+                logger.warning(
+                    f"pre_trigger_samples ({self.config.pre_trigger_samples}) exceeds maximum "
+                    f"({MAX_PRE_TRIGGER_SAMPLES}). Will be capped to prevent memory exhaustion."
+                )
 
             # Reset sequential counter if configured
             if self.config.naming_pattern == 'sequential':
@@ -554,10 +565,11 @@ class RecordingManager:
 
         # Handle pre-trigger buffering
         if self.trigger_armed and not self.trigger_fired:
-            # Buffer sample for pre-trigger
-            if self.config.pre_trigger_samples > 0:
+            # Buffer sample for pre-trigger (enforce MAX limit to prevent memory exhaustion)
+            effective_limit = min(self.config.pre_trigger_samples, MAX_PRE_TRIGGER_SAMPLES)
+            if effective_limit > 0:
                 self.pre_trigger_buffer.append(values.copy())
-                if len(self.pre_trigger_buffer) > self.config.pre_trigger_samples:
+                if len(self.pre_trigger_buffer) > effective_limit:
                     self.pre_trigger_buffer.pop(0)
 
             # Check trigger condition

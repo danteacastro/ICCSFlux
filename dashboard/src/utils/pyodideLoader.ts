@@ -94,7 +94,7 @@ export async function loadPyodide(onProgress?: ProgressCallback): Promise<any> {
       onProgress?.('loading', 'Loading SciPy...', 70)
       await pyodide.loadPackage(['scipy'])
 
-      onProgress?.('loading', 'Setting up DCFlux bridge...', 90)
+      onProgress?.('loading', 'Setting up CZFlux bridge...', 90)
 
       // Set up the NISystem Python module
       await setupNISystemModule(pyodide)
@@ -108,7 +108,7 @@ export async function loadPyodide(onProgress?: ProgressCallback): Promise<any> {
     } catch (error: any) {
       loadStatus = 'error'
       loadError = error.message || 'Failed to load Pyodide'
-      onProgress?.('error', loadError)
+      onProgress?.('error', loadError ?? 'Unknown error')
       pyodidePromise = null
       throw error
     }
@@ -355,7 +355,7 @@ class RollingStats:
         self._samples = []
 
 class Scheduler:
-    """APScheduler-like job scheduler for DCFlux scripts"""
+    """APScheduler-like job scheduler for CZFlux scripts"""
 
     def __init__(self):
         self._jobs = {}  # name -> job dict
@@ -575,7 +575,7 @@ nisystem.EdgeDetector = EdgeDetector
 nisystem.RollingStats = RollingStats
 nisystem.Scheduler = Scheduler
 
-print("DCFlux Python module initialized (NumPy + SciPy + Scheduler loaded)")
+print("CZFlux Python module initialized (NumPy + SciPy + Scheduler loaded)")
 `
 
   await pyodide.runPythonAsync(moduleCode)

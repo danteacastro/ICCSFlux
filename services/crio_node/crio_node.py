@@ -39,10 +39,12 @@ import logging
 import threading
 import subprocess
 import socket
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field, asdict
+from enum import Enum
 import argparse
 
 # MQTT client
@@ -80,6 +82,15 @@ HEARTBEAT_INTERVAL = 2.0  # seconds
 STATUS_PUBLISH_INTERVAL = 30.0  # seconds - periodic status for discovery
 
 
+class AlarmState(Enum):
+    """ISA-18.2 alarm states - evaluated locally on cRIO"""
+    NORMAL = "normal"
+    HI = "hi"           # Warning high
+    HIHI = "hihi"       # Critical high (triggers safety action)
+    LO = "lo"           # Warning low
+    LOLO = "lolo"       # Critical low (triggers safety action)
+
+
 @dataclass
 class ChannelConfig:
     """Channel configuration matching NISystem format"""
@@ -103,10 +114,51 @@ class ChannelConfig:
     scale_offset: float = 0.0
     engineering_units: str = ''
 
-    # Alarm settings
-    alarm_high: Optional[float] = None
-    alarm_low: Optional[float] = None
+    # ISA-18.2 Alarm Configuration (matches PC daq_service)
     alarm_enabled: bool = False
+    hihi_limit: Optional[float] = None       # Critical high (triggers safety action)
+    hi_limit: Optional[float] = None         # Warning high
+    lo_limit: Optional[float] = None         # Warning low
+    lolo_limit: Optional[float] = None       # Critical low (triggers safety action)
+    alarm_priority: str = 'medium'           # low, medium, high, critical
+    alarm_deadband: float = 0.0              # Hysteresis to prevent alarm chatter
+    alarm_delay_sec: float = 0.0             # Delay before alarm triggers
+
+    # Safety settings (for autonomous cRIO operation)
+    safety_action: Optional[str] = None      # Name of safety action to trigger on limit violation
+    safety_interlock: Optional[str] = None   # Boolean expression that must be True for writes
+    expected_state: Optional[bool] = None    # For digital inputs - expected safe state
+
+
+@dataclass
+class SafetyActionConfig:
+    """
+    Safety action configuration for autonomous cRIO operation.
+
+    When triggered, sets specified outputs to safe values.
+    This runs locally on cRIO without PC involvement.
+    """
+    name: str
+    description: str = ""
+    actions: Dict[str, Any] = field(default_factory=dict)  # channel_name -> safe_value
+    trigger_alarm: bool = False
+    alarm_message: str = ""
+
+
+@dataclass
+class SessionState:
+    """
+    Session state for autonomous cRIO operation.
+
+    Tracks test session state locally on cRIO so it continues
+    even if PC disconnects.
+    """
+    active: bool = False
+    start_time: Optional[float] = None
+    name: str = ""
+    operator: str = ""
+    locked_outputs: List[str] = field(default_factory=list)  # Outputs locked during session
+    timeout_minutes: float = 0  # Auto-stop after N minutes (0 = no timeout)
 
 
 @dataclass
@@ -125,6 +177,7 @@ class CRIOConfig:
 
     channels: Dict[str, ChannelConfig] = field(default_factory=dict)
     scripts: List[Dict[str, Any]] = field(default_factory=list)
+    safety_actions: Dict[str, SafetyActionConfig] = field(default_factory=dict)
 
     # Safe state outputs - which DO channels go LOW on watchdog expiry
     safe_state_outputs: List[str] = field(default_factory=list)
@@ -166,11 +219,24 @@ class CRIONodeService:
         # Threads
         self.scan_thread: Optional[threading.Thread] = None
         self.heartbeat_thread: Optional[threading.Thread] = None
+        self.watchdog_monitor_thread: Optional[threading.Thread] = None
         self._heartbeat_sequence = 0
+        self._watchdog_triggered = False  # Prevent repeated safe state triggers
 
         # Script execution
         self.scripts: Dict[str, Dict[str, Any]] = {}
         self.script_threads: Dict[str, threading.Thread] = {}
+
+        # Safety state tracking (for autonomous operation)
+        self.safety_triggered: Dict[str, bool] = {}  # channel_name -> triggered state
+        self.safety_lock = threading.Lock()
+
+        # Alarm state tracking (ISA-18.2 - evaluated locally on cRIO)
+        self.alarm_states: Dict[str, AlarmState] = {}  # channel_name -> current alarm state
+        self.alarm_lock = threading.Lock()
+
+        # Session state (for autonomous operation)
+        self.session = SessionState()
 
         # Status
         self.last_pc_contact = time.time()
@@ -204,6 +270,11 @@ class CRIONodeService:
                 for name, ch_data in data.get('channels', {}).items():
                     channels[name] = ChannelConfig(**ch_data)
 
+                # Parse safety actions
+                safety_actions = {}
+                for name, action_data in data.get('safety_actions', {}).items():
+                    safety_actions[name] = SafetyActionConfig(**action_data)
+
                 self.config = CRIOConfig(
                     node_id=data.get('node_id', 'crio-001'),
                     mqtt_broker=data.get('mqtt_broker', 'localhost'),
@@ -216,9 +287,11 @@ class CRIONodeService:
                     watchdog_timeout=data.get('watchdog_timeout', 2.0),
                     channels=channels,
                     scripts=data.get('scripts', []),
+                    safety_actions=safety_actions,
                     safe_state_outputs=data.get('safe_state_outputs', [])
                 )
-                logger.info(f"Loaded local config: {len(channels)} channels")
+                logger.info(f"Loaded local config: {len(channels)} channels, "
+                           f"{len(safety_actions)} safety actions")
             except Exception as e:
                 logger.error(f"Failed to load local config: {e}")
                 self.config = CRIOConfig()
@@ -227,7 +300,11 @@ class CRIONodeService:
             self.config = CRIOConfig()
 
     def _save_local_config(self):
-        """Save configuration locally (for PC disconnect survival)"""
+        """Save configuration locally (for PC disconnect survival)
+
+        Uses atomic write pattern: write to temp file, then rename.
+        This prevents corruption if power fails mid-write.
+        """
         if not self.config:
             return
 
@@ -247,15 +324,102 @@ class CRIONodeService:
                 'watchdog_timeout': self.config.watchdog_timeout,
                 'channels': {name: asdict(ch) for name, ch in self.config.channels.items()},
                 'scripts': self.config.scripts,
+                'safety_actions': {name: asdict(action) for name, action in self.config.safety_actions.items()},
                 'safe_state_outputs': self.config.safe_state_outputs
             }
 
-            with open(self.config_file, 'w') as f:
+            # Atomic write: write to temp file, then rename
+            # This prevents corruption if power fails during write
+            temp_file = self.config_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
                 json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
+
+            # Atomic rename (on POSIX systems this is atomic)
+            temp_file.replace(self.config_file)
 
             logger.info(f"Saved config locally: {self.config_file}")
         except Exception as e:
             logger.error(f"Failed to save local config: {e}")
+
+    def _calculate_config_hash(self) -> str:
+        """Calculate a hash of the current configuration for version tracking"""
+        if not self.config:
+            return ""
+
+        # Create a deterministic representation of config
+        config_data = {
+            'channels': {name: asdict(ch) for name, ch in sorted(self.config.channels.items())},
+            'safety_actions': {name: asdict(action) for name, action in sorted(self.config.safety_actions.items())},
+            'watchdog_timeout': self.config.watchdog_timeout,
+            'safe_state_outputs': sorted(self.config.safe_state_outputs)
+        }
+
+        config_json = json.dumps(config_data, sort_keys=True)
+        return hashlib.sha256(config_json.encode()).hexdigest()
+
+    def _validate_config(self) -> List[str]:
+        """
+        Validate configuration and return list of warnings/errors.
+
+        This catches common misconfigurations before they cause runtime failures.
+        """
+        errors = []
+
+        if not self.config:
+            return ["No configuration loaded"]
+
+        # Check safety action references
+        for ch_name, ch_config in self.config.channels.items():
+            if ch_config.safety_action:
+                if ch_config.safety_action not in self.config.safety_actions:
+                    errors.append(f"Channel '{ch_name}' references non-existent "
+                                 f"safety action '{ch_config.safety_action}'")
+
+        # Check safety action target channels exist
+        for action_name, action in self.config.safety_actions.items():
+            for target_ch in action.actions.keys():
+                if target_ch not in self.config.channels:
+                    errors.append(f"Safety action '{action_name}' targets "
+                                 f"non-existent channel '{target_ch}'")
+                else:
+                    # Check target is an output
+                    target_config = self.config.channels[target_ch]
+                    if target_config.channel_type not in ('digital_output', 'analog_output'):
+                        errors.append(f"Safety action '{action_name}' targets "
+                                     f"non-output channel '{target_ch}'")
+
+        # Check channels with limits have safety actions
+        for ch_name, ch_config in self.config.channels.items():
+            has_limits = (ch_config.hihi_limit is not None or ch_config.hi_limit is not None or
+                         ch_config.lo_limit is not None or ch_config.lolo_limit is not None)
+            if has_limits:
+                if not ch_config.safety_action:
+                    errors.append(f"Channel '{ch_name}' has limits but no safety action")
+
+        # Check interlock expressions reference existing channels
+        for ch_name, ch_config in self.config.channels.items():
+            if ch_config.safety_interlock:
+                # Extract channel names from expression (simple heuristic)
+                expr = ch_config.safety_interlock
+                for word in expr.replace('(', ' ').replace(')', ' ').split():
+                    # Skip operators and numbers
+                    if word.upper() in ('AND', 'OR', 'NOT', 'TRUE', 'FALSE'):
+                        continue
+                    if word in ('==', '!=', '<', '>', '<=', '>='):
+                        continue
+                    try:
+                        float(word)
+                        continue
+                    except ValueError:
+                        pass
+                    # Assume it's a channel name
+                    if word not in self.config.channels:
+                        errors.append(f"Interlock for '{ch_name}' references "
+                                     f"unknown channel '{word}'")
+
+        return errors
 
     # =========================================================================
     # HARDWARE DETECTION
@@ -752,6 +916,8 @@ class CRIONodeService:
                 (f"{base}/commands/#", 1),    # Output commands
                 (f"{base}/script/#", 1),      # Script management
                 (f"{base}/system/#", 1),      # System commands
+                (f"{base}/safety/#", 1),      # Safety commands (trigger, clear)
+                (f"{base}/session/#", 1),     # Session commands (start, stop)
                 # Global discovery ping - respond when PC scans for devices
                 (f"{mqtt_base}/discovery/ping", 1),
             ]
@@ -774,8 +940,8 @@ class CRIONodeService:
         # Stop the loop - main loop will handle reconnection
         try:
             self.mqtt_client.loop_stop()
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Error stopping MQTT loop on disconnect: {e}")
 
     def _on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
@@ -804,6 +970,10 @@ class CRIONodeService:
                 self._handle_script_message(topic, payload)
             elif topic.startswith(f"{base}/system/"):
                 self._handle_system_message(topic, payload)
+            elif topic.startswith(f"{base}/safety/"):
+                self._handle_safety_message(topic, payload)
+            elif topic.startswith(f"{base}/session/"):
+                self._handle_session_message(topic, payload)
 
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
@@ -814,47 +984,92 @@ class CRIONodeService:
             # Full configuration update
             logger.info("Received full configuration update")
 
-            # Parse channels - handle both array and dict formats
-            channels = {}
-            raw_channels = payload.get('channels', {})
+            try:
+                # Parse channels - handle both array and dict formats
+                channels = {}
+                raw_channels = payload.get('channels', {})
 
-            # If channels is a list (from frontend), convert to dict using 'name' field
-            if isinstance(raw_channels, list):
-                for ch_data in raw_channels:
-                    name = ch_data.get('name')
-                    if name:
+                # If channels is a list (from frontend), convert to dict using 'name' field
+                if isinstance(raw_channels, list):
+                    for ch_data in raw_channels:
+                        name = ch_data.get('name')
+                        if name:
+                            channels[name] = self._parse_channel_config(ch_data)
+                else:
+                    # Already a dict
+                    for name, ch_data in raw_channels.items():
                         channels[name] = self._parse_channel_config(ch_data)
-            else:
-                # Already a dict
-                for name, ch_data in raw_channels.items():
-                    channels[name] = self._parse_channel_config(ch_data)
 
-            # Update config
-            self.config.channels = channels
-            self.config.scripts = payload.get('scripts', [])
-            self.config.safe_state_outputs = payload.get('safe_state_outputs', [])
+                # Parse safety actions
+                safety_actions = {}
+                raw_safety = payload.get('safety_actions', {})
+                for name, action_data in raw_safety.items():
+                    safety_actions[name] = SafetyActionConfig(
+                        name=name,
+                        description=action_data.get('description', ''),
+                        actions=action_data.get('actions', {}),
+                        trigger_alarm=action_data.get('trigger_alarm', False),
+                        alarm_message=action_data.get('alarm_message', '')
+                    )
 
-            # Store config version for sync tracking
-            self.config_version = payload.get('config_version', '')
-            self.config_timestamp = payload.get('timestamp', '')
+                # Update config
+                self.config.channels = channels
+                self.config.scripts = payload.get('scripts', [])
+                self.config.safety_actions = safety_actions
+                self.config.safe_state_outputs = payload.get('safe_state_outputs', [])
+                self.config.watchdog_timeout = payload.get('watchdog_timeout', self.config.watchdog_timeout)
 
-            # Save locally
-            self._save_local_config()
+                # Calculate config hash for version tracking
+                config_hash = self._calculate_config_hash()
+                self.config_version = config_hash
+                self.config_timestamp = datetime.now(timezone.utc).isoformat()
 
-            # Reconfigure hardware
-            self._configure_hardware()
+                # Validate configuration
+                validation_errors = self._validate_config()
+                if validation_errors:
+                    for error in validation_errors:
+                        logger.warning(f"Config validation: {error}")
 
-            # Publish acknowledgment with config version
-            self._publish(
-                self.get_topic('config', 'response'),
-                {
-                    'status': 'ok',
-                    'channels': len(channels),
-                    'config_version': self.config_version,
-                    'config_timestamp': self.config_timestamp
-                }
-            )
-            logger.info(f"Config updated: {len(channels)} channels, version: {self.config_version}")
+                # Save locally
+                self._save_local_config()
+
+                # Reconfigure hardware
+                self._configure_hardware()
+
+                # Clear safety triggered state (config changed)
+                with self.safety_lock:
+                    self.safety_triggered.clear()
+
+                # Publish acknowledgment with config hash
+                self._publish(
+                    self.get_topic('config', 'response'),
+                    {
+                        'status': 'ok',
+                        'channels': len(channels),
+                        'safety_actions': len(safety_actions),
+                        'config_hash': config_hash,
+                        'config_timestamp': self.config_timestamp,
+                        'validation_warnings': validation_errors
+                    }
+                )
+                logger.info(f"Config updated: {len(channels)} channels, "
+                           f"{len(safety_actions)} safety actions, hash: {config_hash[:8]}...")
+
+                # AUTO-START: cRIO is the PLC - start acquisition immediately after config
+                if channels and not self._acquiring.is_set():
+                    logger.info("Config received - auto-starting acquisition (cRIO is PLC)")
+                    self._start_acquisition()
+
+            except Exception as e:
+                logger.error(f"Config update failed: {e}")
+                self._publish(
+                    self.get_topic('config', 'response'),
+                    {
+                        'status': 'error',
+                        'error': str(e),
+                        'timestamp': datetime.now(timezone.utc).isoformat()
+                    }
+                )
 
         elif topic.endswith('/channel/update'):
             # Single channel update
@@ -867,20 +1082,20 @@ class CRIONodeService:
 
     def _parse_channel_config(self, ch_data: Dict[str, Any]) -> ChannelConfig:
         """
-        Parse channel config from dashboard format to cRIO format.
+        Parse channel config from PC (daq_service) format to cRIO format.
 
         Handles:
-        - Field name mapping (dashboard uses 'unit', cRIO uses 'engineering_units')
-        - Case normalization (dashboard 'internal' -> cRIO 'BUILT_IN')
-        - Extra fields from dashboard are ignored
+        - Field name mapping (PC uses 'unit', cRIO uses 'engineering_units')
+        - Case normalization (PC 'internal' -> cRIO 'BUILT_IN')
+        - ISA-18.2 alarm fields (hihi_limit, hi_limit, lo_limit, lolo_limit)
+        - Safety fields (safety_action, safety_interlock, expected_state)
         """
-        # Map dashboard field names to cRIO field names
-        # Note: Alarm limits are handled separately with priority logic below
+        # Map PC field names to cRIO field names
         field_map = {
             'unit': 'engineering_units',
         }
 
-        # CJC source mapping (dashboard uses lowercase, cRIO uses NI-DAQmx constants)
+        # CJC source mapping (PC uses lowercase, cRIO uses NI-DAQmx constants)
         cjc_map = {
             'internal': 'BUILT_IN',
             'constant': 'CONST_VAL',
@@ -897,28 +1112,36 @@ class CRIONodeService:
             'diff': 'DIFF',
         }
 
-        # Build normalized config dict with only fields ChannelConfig accepts
+        # All fields that ChannelConfig accepts (matches the dataclass)
         valid_fields = {
+            # Core fields
             'name', 'physical_channel', 'channel_type',
+            # Type-specific settings
             'thermocouple_type', 'voltage_range', 'current_range_ma',
             'terminal_config', 'cjc_source',
+            # Output settings
             'default_state', 'invert',
+            # Scaling
             'scale_slope', 'scale_offset', 'engineering_units',
-            'alarm_high', 'alarm_low', 'alarm_enabled'
+            # ISA-18.2 Alarm Configuration (full support)
+            'alarm_enabled', 'hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit',
+            'alarm_priority', 'alarm_deadband', 'alarm_delay_sec',
+            # Safety settings
+            'safety_action', 'safety_interlock', 'expected_state',
         }
 
         normalized = {}
 
-        # First pass: copy all standard fields
+        # Copy all valid fields with mapping
         for key, value in ch_data.items():
-            # Map field names (skip alarm fields for now)
-            if key in ('hihi_limit', 'high_limit', 'lolo_limit', 'low_limit'):
-                continue
-
             mapped_key = field_map.get(key, key)
 
             # Skip fields not in ChannelConfig
             if mapped_key not in valid_fields:
+                continue
+
+            # Skip None values for optional fields
+            if value is None:
                 continue
 
             # Normalize specific fields
@@ -929,22 +1152,10 @@ class CRIONodeService:
 
             normalized[mapped_key] = value
 
-        # Second pass: handle alarm limits with priority
-        # hihi_limit takes priority over high_limit for alarm_high
-        # lolo_limit takes priority over low_limit for alarm_low
-        if ch_data.get('hihi_limit') is not None:
-            normalized['alarm_high'] = ch_data['hihi_limit']
-        elif ch_data.get('high_limit') is not None:
-            normalized['alarm_high'] = ch_data['high_limit']
-
-        if ch_data.get('lolo_limit') is not None:
-            normalized['alarm_low'] = ch_data['lolo_limit']
-        elif ch_data.get('low_limit') is not None:
-            normalized['alarm_low'] = ch_data['low_limit']
-
-        # Enable alarms if any limits are set
-        if normalized.get('alarm_high') is not None or normalized.get('alarm_low') is not None:
-            normalized['alarm_enabled'] = ch_data.get('alarm_enabled', True)
+        # Enable alarms if any limits are set (default to True if limits present)
+        has_limits = any(normalized.get(f) is not None for f in ['hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit'])
+        if has_limits and 'alarm_enabled' not in normalized:
+            normalized['alarm_enabled'] = True
 
         # Ensure required fields have defaults
         if 'name' not in normalized:
@@ -1005,6 +1216,25 @@ class CRIONodeService:
             logger.debug(f"Using physical_channel fallback: {channel_name} -> {physical_channel}")
 
         if task_key:
+            # Check session output locking (prevents manual writes during session)
+            if self.session.active and channel_name in self.session.locked_outputs:
+                logger.warning(f"SESSION LOCKS output {channel_name} - manual write blocked")
+                self._publish(f"{self.get_topic_base()}/session/blocked", {
+                    'channel': channel_name,
+                    'requested_value': value,
+                    'reason': 'session_locked',
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                })
+                return  # Reject command
+
+            # Check interlock BEFORE writing (safety first!)
+            ch_config = self.config.channels.get(channel_name) or self.config.channels.get(task_key)
+            if ch_config and ch_config.safety_interlock:
+                if not self._check_interlock(ch_config.safety_interlock):
+                    logger.warning(f"INTERLOCK BLOCKS write to {channel_name}: {ch_config.safety_interlock}")
+                    self._publish_interlock_blocked(channel_name, ch_config.safety_interlock, value)
+                    return  # Reject command
+
             self._write_output(task_key, value)
             logger.info(f"Output command: {channel_name} -> {task_key} = {value}")
         else:
@@ -1044,6 +1274,86 @@ class CRIONodeService:
         elif topic.endswith('/safe-state'):
             self._set_safe_state(payload.get('reason', 'command'))
 
+    def _handle_safety_message(self, topic: str, payload: Dict[str, Any]):
+        """Handle safety-related MQTT commands"""
+        if topic.endswith('/trigger'):
+            # Manual safety action trigger
+            self._handle_safety_trigger(payload)
+        elif topic.endswith('/clear'):
+            # Clear safety triggered state for a channel
+            channel = payload.get('channel')
+            if channel:
+                with self.safety_lock:
+                    if channel in self.safety_triggered:
+                        del self.safety_triggered[channel]
+                        logger.info(f"Cleared safety trigger state for {channel}")
+
+    def _handle_session_message(self, topic: str, payload: Dict[str, Any]):
+        """Handle session commands from NISystem"""
+        if topic.endswith('/start'):
+            self._start_session(payload)
+        elif topic.endswith('/stop'):
+            self._stop_session(payload.get('reason', 'command'))
+        elif topic.endswith('/ping'):
+            # Session keepalive from PC - update last contact
+            self.last_pc_contact = time.time()
+            self._publish_session_status()
+
+    def _start_session(self, payload: Dict[str, Any]):
+        """Start a test session"""
+        if self.session.active:
+            logger.warning("Session already active - ignoring start command")
+            return
+
+        self.session.active = True
+        self.session.start_time = time.time()
+        self.session.name = payload.get('name', '')
+        self.session.operator = payload.get('operator', '')
+        self.session.locked_outputs = payload.get('locked_outputs', [])
+        self.session.timeout_minutes = payload.get('timeout_minutes', 0)
+
+        logger.info(f"SESSION STARTED: {self.session.name} by {self.session.operator}")
+        logger.info(f"  Locked outputs: {self.session.locked_outputs}")
+
+        self._publish_session_status()
+
+    def _stop_session(self, reason: str = 'command'):
+        """Stop the current session"""
+        if not self.session.active:
+            return
+
+        duration = time.time() - (self.session.start_time or time.time())
+        logger.info(f"SESSION STOPPED: {self.session.name} after {duration:.1f}s (reason: {reason})")
+
+        self.session.active = False
+        self.session.locked_outputs = []
+        self.session.start_time = None
+
+        self._publish_session_status()
+
+    def _publish_session_status(self):
+        """Publish session state"""
+        self._publish(f"{self.get_topic_base()}/session/status", {
+            'active': self.session.active,
+            'name': self.session.name,
+            'operator': self.session.operator,
+            'start_time': self.session.start_time,
+            'duration_s': time.time() - self.session.start_time if self.session.start_time else 0,
+            'locked_outputs': self.session.locked_outputs,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+    def _check_session_timeout(self):
+        """Check if session has timed out (PC disconnect protection)"""
+        if not self.session.active:
+            return
+
+        if self.session.timeout_minutes > 0 and self.session.start_time:
+            elapsed = time.time() - self.session.start_time
+            if elapsed > self.session.timeout_minutes * 60:
+                logger.warning(f"Session timeout after {elapsed/60:.1f} minutes")
+                self._stop_session('timeout')
+
     def _set_safe_state(self, reason: str = 'command'):
         """Set all outputs to safe state (DO=0, AO=0)"""
         logger.info(f"Setting outputs to SAFE STATE - reason: {reason}")
@@ -1056,8 +1366,9 @@ class CRIONodeService:
                     self._write_output(channel_name, 0)
                     logger.info(f"  DO {channel_name} -> 0 (OFF)")
                 elif ch_config and ch_config.channel_type == 'analog_output':
-                    # AO safe state: 0V for voltage, 4mA for current
-                    safe_value = 0.004 if ch_config.category == 'current_output' else 0.0
+                    # AO safe state: default to 0.0 (voltage outputs)
+                    # For 4-20mA current outputs, use SafetyAction with explicit safe_value
+                    safe_value = 0.0
                     self._write_output(channel_name, safe_value)
                     logger.info(f"  AO {channel_name} -> {safe_value}")
             except Exception as e:
@@ -1067,6 +1378,401 @@ class CRIONodeService:
         self._publish(f"{self.get_topic_base()}/status/safe-state", {
             'success': True,
             'reason': reason,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+    def _execute_safety_action(self, action_name: str, trigger_source: str):
+        """
+        Execute a named safety action - set specified outputs to safe values.
+
+        This is the core of autonomous cRIO safety - it runs locally without
+        needing PC involvement.
+
+        Args:
+            action_name: Name of the safety action to execute
+            trigger_source: What triggered this action (channel name, watchdog, etc.)
+        """
+        if not self.config or action_name not in self.config.safety_actions:
+            logger.critical(f"SAFETY FAILURE: Unknown safety action '{action_name}' "
+                          f"triggered by {trigger_source}")
+            return
+
+        action = self.config.safety_actions[action_name]
+        logger.warning(f"SAFETY: Executing action '{action_name}' triggered by {trigger_source}")
+
+        executed = []
+        failed = []
+
+        # Execute each channel in the action
+        # Note: source='safety' bypasses session locks - safety MUST always work
+        for channel_name, safe_value in action.actions.items():
+            if channel_name in self.config.channels:
+                try:
+                    success = self._write_output(channel_name, safe_value, source='safety')
+                    if success:
+                        executed.append(f"{channel_name}={safe_value}")
+                        logger.info(f"  SAFETY: {channel_name} -> {safe_value}")
+                    else:
+                        failed.append(f"{channel_name}: write failed")
+                except Exception as e:
+                    failed.append(f"{channel_name}: {e}")
+                    logger.error(f"  SAFETY FAILURE: {channel_name}: {e}")
+            else:
+                failed.append(f"{channel_name}: not found")
+                logger.critical(f"  SAFETY FAILURE: Action references non-existent channel '{channel_name}'")
+
+        # Log results
+        if failed:
+            logger.critical(f"SAFETY ACTION '{action_name}' INCOMPLETE! Failed: {failed}")
+
+        # Publish safety action event
+        self._publish(f"{self.get_topic_base()}/safety/triggered", {
+            'action': action_name,
+            'trigger_source': trigger_source,
+            'executed': executed,
+            'failed': failed,
+            'success': len(failed) == 0,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+        # Publish alarm if configured
+        if action.trigger_alarm and action.alarm_message:
+            self._publish(f"{self.get_topic_base()}/alarms/active", {
+                'channel': trigger_source,
+                'type': 'SAFETY',
+                'message': action.alarm_message,
+                'action': action_name,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+
+    def _handle_safety_trigger(self, payload: Dict[str, Any]):
+        """Handle manual safety trigger command from MQTT"""
+        action_name = payload.get('action')
+        reason = payload.get('reason', 'manual_command')
+
+        if not action_name:
+            logger.warning("Safety trigger received without action name")
+            return
+
+        logger.info(f"Manual safety trigger: {action_name} (reason: {reason})")
+        self._execute_safety_action(action_name, f"manual:{reason}")
+
+    def _check_safety_limits(self, channel_name: str, value: float):
+        """
+        Check ISA-18.2 safety limits for a channel and trigger action if needed.
+
+        Safety actions trigger on CRITICAL limits (HIHI/LOLO), not warning limits (HI/LO).
+        This is the core safety evaluation that runs in the scan loop.
+        It implements one-shot triggering - action fires only on transition
+        from safe to unsafe, preventing repeated execution.
+
+        Args:
+            channel_name: Name of the channel being checked
+            value: Current value of the channel
+        """
+        if not self.config:
+            return
+
+        ch_config = self.config.channels.get(channel_name)
+        if not ch_config or not ch_config.safety_action:
+            return  # No safety action configured for this channel
+
+        triggered = False
+        trigger_reason = ""
+
+        # Check ISA-18.2 critical limits (HIHI/LOLO trigger safety actions)
+        if ch_config.hihi_limit is not None and value >= ch_config.hihi_limit:
+            triggered = True
+            trigger_reason = f"HIHI: {value:.2f} >= {ch_config.hihi_limit}"
+        elif ch_config.lolo_limit is not None and value <= ch_config.lolo_limit:
+            triggered = True
+            trigger_reason = f"LOLO: {value:.2f} <= {ch_config.lolo_limit}"
+
+        # Check digital input expected state
+        if ch_config.channel_type == 'digital_input' and ch_config.expected_state is not None:
+            # Convert value to boolean (0 = False, non-zero = True)
+            actual_state = bool(value)
+            if actual_state != ch_config.expected_state:
+                triggered = True
+                trigger_reason = f"DI unexpected: {actual_state} != expected {ch_config.expected_state}"
+
+        # One-shot execution (only on transition from safe to unsafe)
+        with self.safety_lock:
+            was_triggered = self.safety_triggered.get(channel_name, False)
+
+            if triggered and not was_triggered:
+                # Transition to unsafe - execute safety action
+                self.safety_triggered[channel_name] = True
+                logger.warning(f"SAFETY LIMIT VIOLATION: {channel_name} - {trigger_reason}")
+                self._execute_safety_action(ch_config.safety_action, channel_name)
+
+            elif not triggered and was_triggered:
+                # Transition back to safe - clear triggered state
+                del self.safety_triggered[channel_name]
+                logger.info(f"Safety condition cleared: {channel_name}")
+
+                # Publish clear event
+                self._publish(f"{self.get_topic_base()}/safety/cleared", {
+                    'channel': channel_name,
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                })
+
+    def _check_alarms(self, channel_name: str, value: float):
+        """
+        Evaluate ISA-18.2 alarms for a channel and publish alarm events.
+
+        This runs locally on cRIO for autonomous alarm evaluation.
+        Alarm events are published to PC for display/logging, but
+        evaluation happens here regardless of PC connection.
+
+        Alarm levels (from most severe to least):
+        - HIHI: Critical high (also triggers safety action if configured)
+        - HI: Warning high
+        - LO: Warning low
+        - LOLO: Critical low (also triggers safety action if configured)
+        - NORMAL: Within all limits
+
+        Args:
+            channel_name: Name of the channel being checked
+            value: Current value of the channel
+        """
+        if not self.config:
+            return
+
+        ch_config = self.config.channels.get(channel_name)
+        if not ch_config or not ch_config.alarm_enabled:
+            return
+
+        # Apply deadband for alarm clearing (not triggering)
+        deadband = ch_config.alarm_deadband if ch_config.alarm_deadband else 0.0
+
+        # Determine new alarm state (check in priority order: most severe first)
+        new_state = AlarmState.NORMAL
+
+        if ch_config.hihi_limit is not None and value >= ch_config.hihi_limit:
+            new_state = AlarmState.HIHI
+        elif ch_config.lolo_limit is not None and value <= ch_config.lolo_limit:
+            new_state = AlarmState.LOLO
+        elif ch_config.hi_limit is not None and value >= ch_config.hi_limit:
+            new_state = AlarmState.HI
+        elif ch_config.lo_limit is not None and value <= ch_config.lo_limit:
+            new_state = AlarmState.LO
+
+        # Check for state change
+        with self.alarm_lock:
+            prev_state = self.alarm_states.get(channel_name, AlarmState.NORMAL)
+
+            if new_state != prev_state:
+                # Apply deadband for clearing (returning to normal)
+                if new_state == AlarmState.NORMAL and deadband > 0:
+                    # Check if we're clearly within bounds (with deadband)
+                    if prev_state in (AlarmState.HI, AlarmState.HIHI):
+                        threshold = ch_config.hi_limit or ch_config.hihi_limit
+                        if threshold and value > (threshold - deadband):
+                            return  # Still in deadband zone, don't clear yet
+                    elif prev_state in (AlarmState.LO, AlarmState.LOLO):
+                        threshold = ch_config.lo_limit or ch_config.lolo_limit
+                        if threshold and value < (threshold + deadband):
+                            return  # Still in deadband zone, don't clear yet
+
+                # State change confirmed
+                self.alarm_states[channel_name] = new_state
+                self._publish_alarm_event(channel_name, prev_state, new_state, value)
+
+                # Log alarm
+                if new_state == AlarmState.NORMAL:
+                    logger.info(f"ALARM CLEARED: {channel_name}")
+                else:
+                    severity = "CRITICAL" if new_state in (AlarmState.HIHI, AlarmState.LOLO) else "WARNING"
+                    logger.warning(f"ALARM {severity}: {channel_name} - {new_state.value} at {value:.2f}")
+
+    def _publish_alarm_event(self, channel: str, prev_state: AlarmState, new_state: AlarmState, value: float):
+        """Publish alarm state change event for PC display/logging"""
+        ch_config = self.config.channels.get(channel)
+
+        event = {
+            'channel': channel,
+            'previous_state': prev_state.value,
+            'state': new_state.value,
+            'value': value,
+            'priority': ch_config.alarm_priority if ch_config else 'medium',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'node_id': self.config.node_id
+        }
+
+        # Include limit info for context
+        if ch_config:
+            if new_state == AlarmState.HIHI:
+                event['limit'] = ch_config.hihi_limit
+            elif new_state == AlarmState.HI:
+                event['limit'] = ch_config.hi_limit
+            elif new_state == AlarmState.LO:
+                event['limit'] = ch_config.lo_limit
+            elif new_state == AlarmState.LOLO:
+                event['limit'] = ch_config.lolo_limit
+
+        self._publish(f"{self.get_topic_base()}/alarms/event", event)
+
+    # =========================================================================
+    # INTERLOCK LOGIC
+    # =========================================================================
+
+    def _check_interlock(self, interlock_expr: str) -> bool:
+        """
+        Evaluate a safety interlock expression safely (no eval).
+
+        Interlocks are boolean expressions that must evaluate to True
+        before a write to an output is allowed.
+
+        Example expressions:
+            "temp < 100"
+            "pressure > 10 AND flow_rate > 5"
+            "NOT emergency_stop"
+            "pump_running OR bypass_enabled"
+
+        Returns True if interlock passes (write allowed), False if blocked.
+        On any error, returns False (fail-safe).
+        """
+        if not interlock_expr:
+            return True  # No interlock = always allowed
+
+        try:
+            with self.values_lock:
+                values = dict(self.channel_values)
+
+            return self._safe_eval_interlock(interlock_expr.strip(), values)
+
+        except Exception as e:
+            logger.error(f"Interlock evaluation failed: {e}")
+            return False  # Fail safe - don't allow write
+
+    def _safe_eval_interlock(self, expr: str, values: Dict[str, float]) -> bool:
+        """
+        Recursive descent parser for interlock expressions.
+
+        Supports:
+            - Comparisons: ==, !=, <, >, <=, >=
+            - Logical operators: AND, OR, NOT
+            - Parentheses for grouping
+            - Channel names and numeric literals
+            - Boolean literals: true, false
+        """
+        expr = expr.strip()
+
+        # Handle parentheses
+        if expr.startswith('(') and expr.endswith(')'):
+            # Find matching closing paren
+            depth = 0
+            for i, c in enumerate(expr):
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                if depth == 0 and i == len(expr) - 1:
+                    return self._safe_eval_interlock(expr[1:-1], values)
+                elif depth == 0 and i < len(expr) - 1:
+                    break  # Not a simple (expr) - has stuff after
+
+        # Handle OR (lowest precedence)
+        or_parts = self._split_by_operator(expr, ' OR ')
+        if len(or_parts) > 1:
+            return any(self._safe_eval_interlock(part, values) for part in or_parts)
+
+        # Handle AND
+        and_parts = self._split_by_operator(expr, ' AND ')
+        if len(and_parts) > 1:
+            return all(self._safe_eval_interlock(part, values) for part in and_parts)
+
+        # Handle NOT
+        if expr.upper().startswith('NOT '):
+            return not self._safe_eval_interlock(expr[4:], values)
+
+        # Handle comparisons
+        for op in ['<=', '>=', '!=', '==', '<', '>']:
+            if op in expr:
+                parts = expr.split(op, 1)
+                if len(parts) == 2:
+                    left = self._resolve_value(parts[0].strip(), values)
+                    right = self._resolve_value(parts[1].strip(), values)
+
+                    if op == '==':
+                        return left == right
+                    elif op == '!=':
+                        return left != right
+                    elif op == '<':
+                        return left < right
+                    elif op == '>':
+                        return left > right
+                    elif op == '<=':
+                        return left <= right
+                    elif op == '>=':
+                        return left >= right
+
+        # Bare value (boolean check)
+        value = self._resolve_value(expr, values)
+        return bool(value)
+
+    def _split_by_operator(self, expr: str, op: str) -> List[str]:
+        """Split expression by operator, respecting parentheses"""
+        parts = []
+        depth = 0
+        current = ""
+
+        i = 0
+        while i < len(expr):
+            c = expr[i]
+
+            if c == '(':
+                depth += 1
+                current += c
+            elif c == ')':
+                depth -= 1
+                current += c
+            elif depth == 0 and expr[i:].upper().startswith(op):
+                parts.append(current.strip())
+                current = ""
+                i += len(op) - 1
+            else:
+                current += c
+            i += 1
+
+        if current.strip():
+            parts.append(current.strip())
+
+        return parts if len(parts) > 1 else [expr]
+
+    def _resolve_value(self, token: str, values: Dict[str, float]) -> Any:
+        """Resolve a token to its value (channel, number, or boolean)"""
+        token = token.strip()
+
+        # Boolean literals
+        if token.lower() == 'true':
+            return True
+        if token.lower() == 'false':
+            return False
+
+        # Numeric literals
+        try:
+            if '.' in token:
+                return float(token)
+            return int(token)
+        except ValueError:
+            pass
+
+        # Channel name - get value from dict
+        if token in values:
+            return values[token]
+
+        # Unknown token - log warning and return False (fail-safe)
+        logger.warning(f"Interlock: unknown token '{token}' - treating as False")
+        return False
+
+    def _publish_interlock_blocked(self, channel_name: str, interlock_expr: str, requested_value: Any):
+        """Publish event when a write is blocked by interlock"""
+        self._publish(f"{self.get_topic_base()}/interlock/blocked", {
+            'channel': channel_name,
+            'interlock': interlock_expr,
+            'requested_value': requested_value,
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
 
@@ -1433,6 +2139,71 @@ class CRIONodeService:
         """
         # Software watchdog - just update the last pet time
         self._watchdog_last_pet = time.time()
+        self._watchdog_triggered = False  # Reset trigger flag when petted
+
+    def _check_watchdog_timeout(self) -> bool:
+        """
+        Check if watchdog has expired and trigger safe state.
+        Returns True if watchdog expired and safe state was triggered.
+
+        This is the CRITICAL safety function - if the scan loop hangs,
+        this will force outputs to safe state.
+        """
+        if not self.config or self.config.watchdog_timeout <= 0:
+            return False  # Watchdog disabled
+
+        if self._watchdog_last_pet == 0:
+            return False  # Never started
+
+        elapsed = time.time() - self._watchdog_last_pet
+
+        if elapsed > self.config.watchdog_timeout:
+            if not self._watchdog_triggered:
+                logger.critical(
+                    f"WATCHDOG TIMEOUT: {elapsed:.1f}s > {self.config.watchdog_timeout}s - "
+                    f"TRIGGERING SAFE STATE"
+                )
+                self._watchdog_triggered = True
+                self._set_safe_state("watchdog_timeout")
+
+                # Publish watchdog alarm
+                self._publish(f"{self.get_topic_base()}/safety/watchdog", {
+                    'event': 'timeout',
+                    'elapsed_s': elapsed,
+                    'timeout_s': self.config.watchdog_timeout,
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                })
+                return True
+
+        return False
+
+    def _watchdog_monitor_loop(self):
+        """
+        Independent watchdog monitor thread.
+
+        This runs separately from the scan loop and checks the watchdog timeout.
+        If the scan loop hangs (infinite loop, deadlock, etc.), this thread
+        will detect it and force outputs to safe state.
+
+        This is defense-in-depth - the primary scan loop should never hang,
+        but if it does, this thread ensures safety.
+        """
+        logger.info("Watchdog monitor thread started")
+
+        # Check at 2x the watchdog rate for responsiveness
+        check_interval = max(0.25, (self.config.watchdog_timeout / 4) if self.config else 0.5)
+
+        while self._running.is_set():
+            try:
+                # Only check if acquisition is supposed to be running
+                if self._acquiring.is_set():
+                    self._check_watchdog_timeout()
+            except Exception as e:
+                logger.error(f"Watchdog monitor error: {e}")
+
+            time.sleep(check_interval)
+
+        logger.info("Watchdog monitor thread stopped")
 
     def _close_tasks(self):
         """Close all NI-DAQmx tasks"""
@@ -1440,24 +2211,24 @@ class CRIONodeService:
         for name, task_info in self.input_tasks.items():
             try:
                 task_info['task'].close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing input task {name}: {e}")
         self.input_tasks.clear()
 
         # Close output tasks
         for name, task in self.output_tasks.items():
             try:
                 task.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing output task {name}: {e}")
         self.output_tasks.clear()
 
         # Close watchdog
         if self.watchdog_task:
             try:
                 self.watchdog_task.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing watchdog task: {e}")
             self.watchdog_task = None
 
     # =========================================================================
@@ -1509,8 +2280,8 @@ class CRIONodeService:
         for name, task_info in self.input_tasks.items():
             try:
                 task_info['task'].stop()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Error stopping task {name}: {e}")
 
         # Publish status
         self._publish_status()
@@ -1596,8 +2367,19 @@ class CRIONodeService:
                     self._publish_channel_values()
                     self._last_publish_time = now
 
-                # Check alarms
-                self._check_alarms()
+                # Check alarms and safety limits (autonomous operation)
+                # This evaluates ISA-18.2 alarms and triggers safety actions locally
+                with self.values_lock:
+                    values_snapshot = dict(self.channel_values)
+
+                for ch_name, ch_value in values_snapshot.items():
+                    try:
+                        # Alarm evaluation (HI/LO/HIHI/LOLO) - publishes events to PC
+                        self._check_alarms(ch_name, ch_value)
+                        # Safety limit evaluation - triggers safety actions for HIHI/LOLO
+                        self._check_safety_limits(ch_name, ch_value)
+                    except Exception as e:
+                        logger.error(f"Alarm/safety check error for {ch_name}: {e}")
 
             except Exception as e:
                 logger.error(f"Scan loop error: {e}")
@@ -1610,10 +2392,23 @@ class CRIONodeService:
 
         logger.info("Scan loop stopped")
 
-    def _write_output(self, channel_name: str, value: Any) -> bool:
-        """Write to an output channel (digital or analog)"""
+    def _write_output(self, channel_name: str, value: Any, source: str = 'manual') -> bool:
+        """Write to an output channel (digital or analog)
+
+        Args:
+            channel_name: Name of output channel
+            value: Value to write
+            source: Source of write ('manual', 'script', 'safety', 'session')
+                   - 'safety' bypasses session locks for safety actions
+                   - Other sources respect session locks
+        """
         if channel_name not in self.output_tasks:
             logger.warning(f"Output channel not found: {channel_name}")
+            return False
+
+        # Enforce session locks (except for safety actions which must always work)
+        if source != 'safety' and self.session.active and channel_name in self.session.locked_outputs:
+            logger.warning(f"Write blocked - channel '{channel_name}' is session-locked")
             return False
 
         try:
@@ -1648,8 +2443,13 @@ class CRIONodeService:
     # SCRIPT EXECUTION
     # =========================================================================
 
-    def _start_script(self, script_id: str):
-        """Start executing a Python script"""
+    def _start_script(self, script_id: str, max_runtime_seconds: float = 300.0):
+        """Start executing a Python script with timeout
+
+        Args:
+            script_id: ID of script to start
+            max_runtime_seconds: Maximum runtime before forced stop (default 5 min)
+        """
         if script_id not in self.scripts:
             logger.warning(f"Script not found: {script_id}")
             return
@@ -1659,6 +2459,10 @@ class CRIONodeService:
         if script_id in self.script_threads and self.script_threads[script_id].is_alive():
             logger.warning(f"Script already running: {script_id}")
             return
+
+        # Store start time for timeout tracking
+        script['_start_time'] = time.time()
+        script['_max_runtime'] = max_runtime_seconds
 
         # Start script in thread
         thread = threading.Thread(
@@ -1670,7 +2474,49 @@ class CRIONodeService:
         self.script_threads[script_id] = thread
         thread.start()
 
-        logger.info(f"Started script: {script_id}")
+        # Start timeout monitor thread
+        monitor = threading.Thread(
+            target=self._monitor_script_timeout,
+            args=(script_id, max_runtime_seconds),
+            name=f"ScriptMonitor-{script_id}",
+            daemon=True
+        )
+        monitor.start()
+
+        logger.info(f"Started script: {script_id} (max runtime: {max_runtime_seconds}s)")
+
+    def _monitor_script_timeout(self, script_id: str, timeout_seconds: float):
+        """Monitor script for timeout and force stop if exceeded"""
+        start_time = time.time()
+        check_interval = 1.0  # Check every second
+
+        while script_id in self.script_threads:
+            thread = self.script_threads.get(script_id)
+            if not thread or not thread.is_alive():
+                return  # Script finished normally
+
+            elapsed = time.time() - start_time
+            if elapsed >= timeout_seconds:
+                logger.warning(f"SCRIPT TIMEOUT: {script_id} exceeded {timeout_seconds}s - forcing stop")
+                # Signal script to stop
+                if script_id in self.scripts:
+                    self.scripts[script_id]['_stop_requested'] = True
+                    self.scripts[script_id]['_timeout_exceeded'] = True
+
+                # Wait a bit for graceful stop
+                time.sleep(2.0)
+
+                # If still running, we can't kill the thread but we log and publish error
+                if thread.is_alive():
+                    logger.error(f"Script {script_id} did not respond to stop request after timeout")
+                    self._publish(f"{self.get_topic_base()}/scripts/error", {
+                        'script_id': script_id,
+                        'error': f'Script timeout after {timeout_seconds}s - not responding to stop',
+                        'timestamp': datetime.now(timezone.utc).isoformat()
+                    })
+                return
+
+            time.sleep(check_interval)
         self._publish_script_status()
 
     def _stop_script(self, script_id: str):
@@ -1683,24 +2529,100 @@ class CRIONodeService:
             self._publish_script_status()
 
     def _run_script(self, script_id: str, script: Dict[str, Any]):
-        """Execute a Python script"""
+        """Execute a Python script with enhanced environment"""
         code = script.get('code', '')
 
-        # Create execution environment
+        # Helper function for wait_for (sleep that respects stop event)
+        def wait_for(seconds: float) -> bool:
+            """Sleep for given seconds, respecting stop request. Returns True if stopped."""
+            interval = 0.1  # Check stop flag every 100ms
+            elapsed = 0.0
+            while elapsed < seconds:
+                if script.get('_stop_requested', False):
+                    return True
+                time.sleep(min(interval, seconds - elapsed))
+                elapsed += interval
+            return False
+
+        # Helper function for wait_until (wait for condition)
+        def wait_until(condition_fn, timeout: float = 60.0) -> bool:
+            """Wait until condition returns True. Returns False if timeout."""
+            start = time.time()
+            while time.time() - start < timeout:
+                if script.get('_stop_requested', False):
+                    return False
+                if condition_fn():
+                    return True
+                time.sleep(0.1)
+            return False
+
+        # Create execution environment with expanded API
         env = {
+            # Core script APIs
             'tags': self._create_tags_api(),
             'outputs': self._create_outputs_api(),
             'publish': self._create_publish_api(),
+            'session': self._create_session_api(),
+
+            # Control flow
             'next_scan': lambda: time.sleep(1.0 / self.config.scan_rate_hz),
-            'print': lambda *args: logger.info(f"[Script {script_id}] {' '.join(str(a) for a in args)}"),
+            'wait_for': wait_for,
+            'wait_until': wait_until,
             'should_stop': lambda: script.get('_stop_requested', False),
+
+            # Standard library (safe subset)
+            'time': time,
+            'math': __import__('math'),
+            'datetime': __import__('datetime'),
+            'json': __import__('json'),
+            're': __import__('re'),
+            'statistics': __import__('statistics'),
+
+            # Scientific computing (matches browser Pyodide environment)
+            'numpy': np if NIDAQMX_AVAILABLE else None,
+            'np': np if NIDAQMX_AVAILABLE else None,
+
+            # Built-ins (safe subset)
+            'abs': abs,
+            'all': all,
+            'any': any,
+            'bool': bool,
+            'dict': dict,
+            'enumerate': enumerate,
+            'filter': filter,
+            'float': float,
+            'int': int,
+            'len': len,
+            'list': list,
+            'map': map,
+            'max': max,
+            'min': min,
+            'print': lambda *args: logger.info(f"[Script {script_id}] {' '.join(str(a) for a in args)}"),
+            'range': range,
+            'round': round,
+            'set': set,
+            'sorted': sorted,
+            'str': str,
+            'sum': sum,
+            'tuple': tuple,
+            'zip': zip,
+
+            # Safety functions
+            'trigger_safe_state': lambda reason='script': self._set_safe_state(reason),
+            'execute_safety_action': lambda action, source='script': self._execute_safety_action(action, source),
+            'check_interlock': self._check_interlock,
+
+            # SECURITY: Restrict access to Python builtins
+            # This prevents access to __import__, eval, exec, open, etc.
+            '__builtins__': {},
         }
 
         try:
             # Strip 'await' keywords for sync execution
             code = code.replace('await ', '')
 
-            exec(code, env)
+            # Execute with restricted environment
+            exec(code, env, env)
             logger.info(f"Script completed: {script_id}")
         except Exception as e:
             logger.error(f"Script error ({script_id}): {e}")
@@ -1729,8 +2651,13 @@ class CRIONodeService:
             def __init__(self, parent):
                 self._parent = parent
 
-            def set(self, name: str, value: Any):
-                self._parent._write_output(name, value)
+            def set(self, name: str, value: Any) -> bool:
+                """Set output value. Returns False if session-locked."""
+                return self._parent._write_output(name, value, source='script')
+
+            def is_locked(self, name: str) -> bool:
+                """Check if an output is session-locked"""
+                return self._parent.session.active and name in self._parent.session.locked_outputs
 
         return OutputsAPI(self)
 
@@ -1742,6 +2669,37 @@ class CRIONodeService:
                 {name: value}
             )
         return publish
+
+    def _create_session_api(self):
+        """Create session API for scripts"""
+        class SessionAPI:
+            def __init__(self, parent):
+                self._parent = parent
+
+            @property
+            def active(self) -> bool:
+                return self._parent.session.active
+
+            @property
+            def name(self) -> str:
+                return self._parent.session.name
+
+            @property
+            def operator(self) -> str:
+                return self._parent.session.operator
+
+            @property
+            def duration(self) -> float:
+                """Session duration in seconds"""
+                if self._parent.session.start_time:
+                    return time.time() - self._parent.session.start_time
+                return 0.0
+
+            def is_output_locked(self, channel: str) -> bool:
+                """Check if output is locked by session"""
+                return channel in self._parent.session.locked_outputs
+
+        return SessionAPI(self)
 
     # =========================================================================
     # MQTT PUBLISHING
@@ -1829,31 +2787,6 @@ class CRIONodeService:
                 'channels': len(self.config.channels),
             }
         )
-
-    def _check_alarms(self):
-        """Check alarm conditions"""
-        with self.values_lock:
-            for name, ch_config in self.config.channels.items():
-                if not ch_config.alarm_enabled:
-                    continue
-
-                value = self.channel_values.get(name)
-                if value is None:
-                    continue
-
-                alarm_active = False
-                alarm_type = None
-
-                if ch_config.alarm_high is not None and value > ch_config.alarm_high:
-                    alarm_active = True
-                    alarm_type = 'HIGH'
-                elif ch_config.alarm_low is not None and value < ch_config.alarm_low:
-                    alarm_active = True
-                    alarm_type = 'LOW'
-
-                # Publish alarm state change
-                current_alarm = f"{name}_{alarm_type}" if alarm_active else None
-                # (Simplified - full implementation would track state changes)
 
     # =========================================================================
     # HEARTBEAT
@@ -1990,6 +2923,14 @@ class CRIONodeService:
         )
         self.heartbeat_thread.start()
 
+        # Start watchdog monitor (independent safety thread)
+        self.watchdog_monitor_thread = threading.Thread(
+            target=self._watchdog_monitor_loop,
+            name="WatchdogMonitor",
+            daemon=True
+        )
+        self.watchdog_monitor_thread.start()
+
         # Auto-start acquisition if we have channels
         if self.config.channels:
             self._start_acquisition()
@@ -2018,6 +2959,9 @@ class CRIONodeService:
                         logger.warning("Lost contact with PC - continuing in standalone mode")
                         self.pc_connected = False
 
+                # Check session timeout (for autonomous operation)
+                self._check_session_timeout()
+
                 # Periodic status publish for discovery (every STATUS_PUBLISH_INTERVAL)
                 # This ensures NISystem can discover us even if it starts after we do
                 if time.time() - self._last_status_time > STATUS_PUBLISH_INTERVAL:
@@ -2039,6 +2983,19 @@ class CRIONodeService:
 
         self._running.clear()
         self._stop_acquisition()
+
+        # Wait for background threads to stop
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            logger.debug("Waiting for heartbeat thread to stop...")
+            self.heartbeat_thread.join(timeout=3.0)
+            if self.heartbeat_thread.is_alive():
+                logger.warning("Heartbeat thread did not stop in time")
+
+        if self.watchdog_monitor_thread and self.watchdog_monitor_thread.is_alive():
+            logger.debug("Waiting for watchdog monitor thread to stop...")
+            self.watchdog_monitor_thread.join(timeout=3.0)
+            if self.watchdog_monitor_thread.is_alive():
+                logger.warning("Watchdog monitor thread did not stop in time")
 
         # Publish offline status
         self._publish(

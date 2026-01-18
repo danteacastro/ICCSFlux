@@ -385,28 +385,26 @@ function onCanvasKeyDown(event: KeyboardEvent) {
 function generatePipePath(pipe: PidPipe): string {
   if (pipe.points.length < 2) return ''
 
-  const first = pipe.points[0]
+  const first = pipe.points[0]!
   let path = `M ${first.x} ${first.y}`
 
   if (pipe.pathType === 'bezier' && pipe.points.length >= 3) {
     // Smooth bezier curve through points
     for (let i = 1; i < pipe.points.length - 1; i++) {
-      const p0 = pipe.points[i - 1]
-      const p1 = pipe.points[i]
-      const p2 = pipe.points[i + 1]
-      const cx = (p0.x + p1.x) / 2
-      const cy = (p0.y + p1.y) / 2
+      const p0 = pipe.points[i - 1]!
+      const p1 = pipe.points[i]!
+      const p2 = pipe.points[i + 1]!
       const cx2 = (p1.x + p2.x) / 2
       const cy2 = (p1.y + p2.y) / 2
       path += ` Q ${p1.x} ${p1.y} ${cx2} ${cy2}`
     }
-    const last = pipe.points[pipe.points.length - 1]
+    const last = pipe.points[pipe.points.length - 1]!
     path += ` L ${last.x} ${last.y}`
   } else if (pipe.pathType === 'orthogonal') {
     // Right-angle routing
     for (let i = 1; i < pipe.points.length; i++) {
-      const prev = pipe.points[i - 1]
-      const curr = pipe.points[i]
+      const prev = pipe.points[i - 1]!
+      const curr = pipe.points[i]!
       if (prev.x !== curr.x && prev.y !== curr.y) {
         path += ` L ${curr.x} ${prev.y}`
       }
@@ -415,7 +413,7 @@ function generatePipePath(pipe: PidPipe): string {
   } else {
     // Polyline (straight segments)
     for (let i = 1; i < pipe.points.length; i++) {
-      const p = pipe.points[i]
+      const p = pipe.points[i]!
       path += ` L ${p.x} ${p.y}`
     }
   }
@@ -434,10 +432,10 @@ const currentDrawingPath = computed(() => {
 
   if (points.length < 2) return ''
 
-  const first = points[0]
+  const first = points[0]!
   let path = `M ${first.x} ${first.y}`
   for (let i = 1; i < points.length; i++) {
-    path += ` L ${points[i].x} ${points[i].y}`
+    path += ` L ${points[i]!.x} ${points[i]!.y}`
   }
   return path
 })
@@ -469,8 +467,8 @@ function onPipeMouseDown(event: MouseEvent, pipe: PidPipe) {
   let minDist = Infinity
 
   for (let i = 0; i < pipe.points.length - 1; i++) {
-    const p1 = pipe.points[i]
-    const p2 = pipe.points[i + 1]
+    const p1 = pipe.points[i]!
+    const p2 = pipe.points[i + 1]!
     const dist = distanceToSegment(coords.x, coords.y, p1.x, p1.y, p2.x, p2.y)
     if (dist < minDist) {
       minDist = dist
@@ -479,8 +477,8 @@ function onPipeMouseDown(event: MouseEvent, pipe: PidPipe) {
   }
 
   // Determine segment orientation (horizontal if dx > dy, vertical otherwise)
-  const p1 = pipe.points[closestSegment]
-  const p2 = pipe.points[closestSegment + 1]
+  const p1 = pipe.points[closestSegment]!
+  const p2 = pipe.points[closestSegment + 1]!
   const dx = Math.abs(p2.x - p1.x)
   const dy = Math.abs(p2.y - p1.y)
   const orientation = dx > dy ? 'horizontal' : 'vertical'
@@ -619,8 +617,8 @@ function onPipeDoubleClick(event: MouseEvent, pipe: PidPipe) {
   let minDist = Infinity
 
   for (let i = 0; i < pipe.points.length - 1; i++) {
-    const p1 = pipe.points[i]
-    const p2 = pipe.points[i + 1]
+    const p1 = pipe.points[i]!
+    const p2 = pipe.points[i + 1]!
     const dist = distanceToSegment(coords.x, coords.y, p1.x, p1.y, p2.x, p2.y)
     if (dist < minDist) {
       minDist = dist

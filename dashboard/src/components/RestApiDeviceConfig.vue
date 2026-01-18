@@ -447,7 +447,7 @@ function formatLatency(ms: number): string {
           <span class="info-tag">REST</span>
           <span class="info-value">{{ device.base_url || '(not configured)' }}</span>
           <span v-if="connectionStatus[device.name]?.latency_ms" class="info-latency">
-            {{ formatLatency(connectionStatus[device.name].latency_ms) }}
+            {{ formatLatency(connectionStatus[device.name]?.latency_ms ?? 0) }}
           </span>
         </div>
 

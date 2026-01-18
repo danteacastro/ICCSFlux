@@ -318,6 +318,10 @@ export function usePlayground() {
       average: [],
       min: [],
       max: [],
+      stddev: [],
+      rms: [],
+      median: [],
+      peak_to_peak: [],
       rolling: [],
       expression: [],
       rate: [],
@@ -435,6 +439,34 @@ export function usePlayground() {
       label: 'Maximum',
       description: 'Maximum value seen since reset',
       icon: '⬆️',
+      requiresSource: true,
+      supportsFormula: false
+    },
+    stddev: {
+      label: 'Std Deviation',
+      description: 'Running standard deviation (Welford\'s algorithm)',
+      icon: 'σ',
+      requiresSource: true,
+      supportsFormula: false
+    },
+    rms: {
+      label: 'RMS',
+      description: 'Root mean square (for AC signals, vibration analysis)',
+      icon: '∿',
+      requiresSource: true,
+      supportsFormula: false
+    },
+    median: {
+      label: 'Median',
+      description: 'Running median (reservoir sampling, approximate for large datasets)',
+      icon: '⊳',
+      requiresSource: true,
+      supportsFormula: false
+    },
+    peak_to_peak: {
+      label: 'Peak-to-Peak',
+      description: 'Difference between maximum and minimum values',
+      icon: '↕️',
       requiresSource: true,
       supportsFormula: false
     },

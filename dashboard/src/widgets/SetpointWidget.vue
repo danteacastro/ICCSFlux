@@ -102,8 +102,10 @@ const maxVal = computed(() => {
     if (aoRange.includes('20ma') || aoRange.includes('20 ma')) {
       return 20 // 0-20mA or 4-20mA ends at 20
     }
-    // Use voltage_range if available
-    return config.voltage_range ?? 10
+    // Use voltage_range if available (ensure number)
+    const range = config.voltage_range
+    if (typeof range === 'number') return range
+    return 10
   }
 
   // Fallback to alarm limits (legacy behavior)
@@ -113,10 +115,11 @@ const maxVal = computed(() => {
 // Step size: props > config > smart default based on range
 const stepVal = computed(() => {
   if (props.step !== undefined) return props.step
-  if (channelConfig.value?.step !== undefined) return channelConfig.value.step
+  const configStep = channelConfig.value?.step
+  if (typeof configStep === 'number') return configStep
 
   // Smart default: calculate from range
-  const range = maxVal.value - minVal.value
+  const range = Number(maxVal.value) - Number(minVal.value)
   if (range <= 1) return 0.1      // 0-1V or digital: 0.1 step
   if (range <= 10) return 0.1     // 0-10V: 0.1 step
   if (range <= 20) return 0.5     // 4-20mA: 0.5 step
@@ -191,7 +194,7 @@ function applyValue() {
   }
 
   // Clamp to limits
-  const clampedVal = Math.max(minVal.value, Math.min(maxVal.value, val))
+  const clampedVal = Math.max(Number(minVal.value), Math.min(Number(maxVal.value), val))
 
   // Send to MQTT
   mqtt.setOutput(props.channel, clampedVal)
@@ -202,14 +205,14 @@ function applyValue() {
 function increment() {
   if (isDisabled.value) return
   const val = (currentValue.value ?? 0) + stepVal.value
-  const clampedVal = Math.min(maxVal.value, val)
+  const clampedVal = Math.min(Number(maxVal.value), val)
   mqtt.setOutput(props.channel, clampedVal)
 }
 
 function decrement() {
   if (isDisabled.value) return
   const val = (currentValue.value ?? 0) - stepVal.value
-  const clampedVal = Math.max(minVal.value, val)
+  const clampedVal = Math.max(Number(minVal.value), val)
   mqtt.setOutput(props.channel, clampedVal)
 }
 

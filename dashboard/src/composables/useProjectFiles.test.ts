@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import type { ProjectData } from './useProjectFiles'
 
 // Mock dependencies
 const mockSendNodeCommand = vi.fn()
@@ -84,7 +85,7 @@ describe('useProjectFiles', () => {
   describe('Script Loading - ID Preservation', () => {
     it('should pass script ID to backend when loading project', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -146,7 +147,7 @@ describe('useProjectFiles', () => {
 
     it('should clear backend scripts before loading new ones', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -181,7 +182,7 @@ describe('useProjectFiles', () => {
 
     it('should debounce script loading to prevent duplicates', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -217,7 +218,7 @@ describe('useProjectFiles', () => {
 
     it('should handle run_mode field (snake_case from backend)', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -316,7 +317,7 @@ describe('useProjectFiles', () => {
   describe('Layout Application', () => {
     it('should apply layout with multi-page support', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -358,7 +359,7 @@ describe('useProjectFiles', () => {
 
     it('should handle legacy single-page layout', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -397,7 +398,7 @@ describe('useProjectFiles', () => {
   describe('Safety Settings', () => {
     it('should save alarm configs to localStorage', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {
@@ -447,7 +448,7 @@ describe('useProjectFiles', () => {
   describe('Recording Settings', () => {
     it('should save recording config and selected channels', async () => {
       vi.resetModules()
-      const { useProjectFiles, type ProjectData } = await import('./useProjectFiles')
+      const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const projectData: ProjectData = {

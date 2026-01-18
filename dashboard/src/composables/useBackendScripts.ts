@@ -180,11 +180,11 @@ export function useBackendScripts() {
       scriptOutputs.value[data.script_id] = []
     }
 
-    scriptOutputs.value[data.script_id].push(output)
+    scriptOutputs.value[data.script_id]!.push(output)
 
     // Limit output history
-    if (scriptOutputs.value[data.script_id].length > 1000) {
-      scriptOutputs.value[data.script_id] = scriptOutputs.value[data.script_id].slice(-500)
+    if (scriptOutputs.value[data.script_id]!.length > 1000) {
+      scriptOutputs.value[data.script_id] = scriptOutputs.value[data.script_id]!.slice(-500)
     }
   }
 
@@ -271,7 +271,7 @@ export function useBackendScripts() {
 
   function stopAllScripts() {
     for (const id of Object.keys(scripts.value)) {
-      if (scripts.value[id].state === 'running') {
+      if (scripts.value[id]?.state === 'running') {
         stopScript(id)
       }
     }

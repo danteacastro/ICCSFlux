@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a professional PDF from PYTHON_SCRIPTING.md
+Generate a professional PDF from CZFlux_Python_Scripting_Guide.md
 
 Requires: pip install reportlab pygments markdown
 """
@@ -406,7 +406,7 @@ def add_header_footer(canvas, doc):
 
     canvas.setFillColor(BLUE)
     canvas.setFont('Helvetica-Bold', 10)
-    canvas.drawString(inch, letter[1] - 26, "DCFlux Python Scripting Guide")
+    canvas.drawString(inch, letter[1] - 26, "CZFlux Python Scripting Guide")
 
     # Footer
     canvas.setFillColor(HexColor('#f8fafc'))
@@ -462,7 +462,7 @@ def generate_pdf(md_path, pdf_path):
 if __name__ == '__main__':
     # Paths
     script_dir = Path(__file__).parent
-    md_path = script_dir / 'PYTHON_SCRIPTING.md'
-    pdf_path = script_dir / 'DCFlux_Python_Scripting_Guide.pdf'
+    md_path = script_dir / 'CZFlux_Python_Scripting_Guide.md'
+    pdf_path = script_dir / 'CZFlux_Python_Scripting_Guide.pdf'
 
     generate_pdf(md_path, pdf_path)

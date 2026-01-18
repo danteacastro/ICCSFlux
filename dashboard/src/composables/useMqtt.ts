@@ -247,7 +247,7 @@ export function useMqtt(prefix: string = 'nisystem') {
         const nodeMatch = topic.match(new RegExp(`^${systemPrefix}/nodes/([^/]+)/(.+)$`))
 
         if (nodeMatch) {
-          const [, nodeId, restOfTopic] = nodeMatch
+          const [, nodeId, restOfTopic] = nodeMatch as [string, string, string]
           const category = restOfTopic.split('/')[0]
 
           // Update node registry when we receive any message from a node
@@ -475,7 +475,7 @@ export function useMqtt(prefix: string = 'nisystem') {
         // Extract module path pattern from the physical_channel
         // Handles: Mod5/ai0 (analog), Mod4/port0/line0 (digital), Mod3/ctr0 (counter)
         const match = config.physical_channel.match(/(Mod\d+\/.+)$/i)
-        if (match) {
+        if (match && match[1]) {
           physicalToTag[match[1]] = tagName
         }
       }
@@ -684,6 +684,12 @@ export function useMqtt(prefix: string = 'nisystem') {
           // Logging
           log: ch.log,
           log_interval_ms: ch.log_interval_ms,
+          // Multi-node / cRIO support
+          // Backend sends: source_node_id, is_crio, hardware_source, hardware_source_display
+          // Frontend type expects: node_id, source_type, chassis_name
+          source_type: ch.is_crio ? 'crio' : (ch.is_local_daq ? 'cdaq' : (ch.source_type || 'local')),
+          node_id: ch.source_node_id || ch.node_id,
+          chassis_name: ch.hardware_source_display || ch.chassis_name || '',
         }
       })
     }
@@ -764,7 +770,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     setTimeout(() => {
       if (!isScanning.value) {
         console.log('[MQTT] Auto-triggering discovery scan for new cRIO')
-        startDeviceScan()
+        scanDevices()
       }
     }, 500)
   }
@@ -948,11 +954,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     },
     getSessionActive: () => {
       // Session is active if system status shows acquiring
-      return systemStatus.value?.state === 'acquiring' || systemStatus.value?.state === 'running'
+      return systemStatus.value?.acquiring || systemStatus.value?.acquisition_state === 'running'
     },
     getSessionElapsed: () => {
       // Return elapsed time if available from system status
-      return systemStatus.value?.elapsed ?? 0
+      return systemStatus.value?.recording_duration_seconds ?? 0
     },
     sendScriptValues: (values: Record<string, number>) => {
       sendScriptValues(values)
@@ -1009,10 +1015,8 @@ export function useMqtt(prefix: string = 'nisystem') {
 
   // Watch for acquisition state changes to trigger Python scripts
   watch(
-    () => systemStatus.value?.state,
-    (newState, oldState) => {
-      const isAcquiring = newState === 'acquiring' || newState === 'running'
-      const wasAcquiring = oldState === 'acquiring' || oldState === 'running'
+    () => systemStatus.value?.acquiring,
+    (isAcquiring, wasAcquiring) => {
 
       // Acquisition started
       if (isAcquiring && !wasAcquiring) {
@@ -1656,6 +1660,24 @@ export function useMqtt(prefix: string = 'nisystem') {
     return result
   })
 
+  // Get channel owner info for collision detection
+  function getChannelOwner(channelName: string): string | null {
+    return channelOwners.get(channelName) || null
+  }
+
+  // Check if a channel name would collide with another node
+  function checkChannelCollision(channelName: string, excludeNode?: string): { collides: boolean, owner?: string } {
+    const owner = channelOwners.get(channelName)
+    if (!owner) {
+      return { collides: false }
+    }
+    // If owner matches excludeNode, no collision (it's the same node)
+    if (excludeNode && owner === excludeNode) {
+      return { collides: false }
+    }
+    return { collides: true, owner }
+  }
+
   return {
     // State
     connected,
@@ -1788,6 +1810,10 @@ export function useMqtt(prefix: string = 'nisystem') {
     // cRIO sync status
     crioSyncStatus,
     crioConfigVersions,
+
+    // Channel collision detection (multi-node)
+    getChannelOwner,
+    checkChannelCollision,
 
     // SOE & Event Correlation
     soe: soeComposable

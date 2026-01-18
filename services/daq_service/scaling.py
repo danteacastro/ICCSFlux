@@ -133,6 +133,11 @@ def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:
     Returns:
         The scaled engineering value
     """
+    # Modbus channels handle their own scaling (modbus_scale/modbus_offset) in ModbusReader
+    # Don't apply additional scaling here to avoid double-scaling
+    if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+        return raw_value
+
     # For counter channels - convert pulses/frequency to engineering units
     if channel.channel_type == ChannelType.COUNTER:
         return scale_counter(raw_value, channel.pulses_per_unit, channel.counter_mode)

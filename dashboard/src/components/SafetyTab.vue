@@ -3,6 +3,10 @@ import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
+import { usePlayground } from '../composables/usePlayground'
+import AlarmConfigModal from './AlarmConfigModal.vue'
+import SafetyActionsPanel from './SafetyActionsPanel.vue'
+import CorrelationRuleModal from './CorrelationRuleModal.vue'
 import type {
   AlarmConfig,
   ActiveAlarm,
@@ -21,6 +25,7 @@ import type {
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
 const safety = useSafety()
+const playground = usePlayground()
 const soe = mqtt.soe  // SOE & Correlation composable
 
 // Permission-based edit control (injected from App.vue)
@@ -40,10 +45,25 @@ watch(() => safety.alarmConfigs.value, (configs) => {
   alarmConfigs.value = JSON.parse(JSON.stringify(configs))
 }, { immediate: true, deep: true })
 
-// Sync back to safety composable on changes
+// Sync back to safety composable on changes (with validation)
 watch(alarmConfigs, (configs) => {
   Object.entries(configs).forEach(([channel, config]) => {
-    safety.updateAlarmConfig(channel, config)
+    // Validate threshold order before saving
+    const la = config.low_alarm
+    const lw = config.low_warning
+    const hw = config.high_warning
+    const ha = config.high_alarm
+
+    // Check order (only for set values)
+    let valid = true
+    if (la != null && lw != null && la >= lw) valid = false
+    if (lw != null && hw != null && lw >= hw) valid = false
+    if (hw != null && ha != null && hw >= ha) valid = false
+
+    // Only save if valid (prevents invalid configurations from being applied)
+    if (valid) {
+      safety.updateAlarmConfig(channel, config)
+    }
   })
 }, { deep: true })
 
@@ -307,6 +327,175 @@ function confirmShelve() {
 }
 
 // ============================================
+// Alarm Config Modal State
+// ============================================
+
+const showAlarmConfigModal = ref(false)
+const alarmConfigChannel = ref<string | null>(null)
+
+function openAlarmConfigModal(channel: string) {
+  alarmConfigChannel.value = channel
+  showAlarmConfigModal.value = true
+}
+
+function closeAlarmConfigModal() {
+  showAlarmConfigModal.value = false
+  alarmConfigChannel.value = null
+}
+
+function validateAlarmThresholds(config: AlarmConfig): string | null {
+  // Validate that alarm thresholds are in correct order
+  // Expected order: low_alarm < low_warning < high_warning < high_alarm
+  const la = config.low_alarm
+  const lw = config.low_warning
+  const hw = config.high_warning
+  const ha = config.high_alarm
+
+  // Only validate if values are set (null/undefined values are allowed)
+  const errors: string[] = []
+
+  if (la !== null && la !== undefined && lw !== null && lw !== undefined && la >= lw) {
+    errors.push('Low Alarm must be less than Low Warning')
+  }
+  if (lw !== null && lw !== undefined && hw !== null && hw !== undefined && lw >= hw) {
+    errors.push('Low Warning must be less than High Warning')
+  }
+  if (hw !== null && hw !== undefined && ha !== null && ha !== undefined && hw >= ha) {
+    errors.push('High Warning must be less than High Alarm')
+  }
+
+  return errors.length > 0 ? errors.join('. ') : null
+}
+
+function saveAlarmConfig(config: AlarmConfig) {
+  // Validate threshold order before saving
+  const validationError = validateAlarmThresholds(config)
+  if (validationError) {
+    alert(`Invalid alarm configuration: ${validationError}`)
+    return
+  }
+  safety.updateAlarmConfig(config.channel, config)
+}
+
+// ============================================
+// Alarm History CSV Export
+// ============================================
+
+function exportAlarmHistoryCsv() {
+  const headers = ['Timestamp', 'Channel', 'Event', 'Severity', 'Value', 'Threshold', 'Duration (s)', 'User', 'Message']
+  const rows = filteredHistory.value.map(entry => [
+    entry.triggered_at || '',
+    entry.channel || '',
+    entry.event_type || '',
+    entry.severity || '',
+    entry.value?.toString() || '',
+    entry.threshold?.toString() || '',
+    entry.duration_seconds?.toString() || '',
+    entry.user || entry.acknowledged_by || '',
+    (entry.message || '').replace(/"/g, '""')
+  ])
+
+  const csv = [
+    headers.join(','),
+    ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+  ].join('\n')
+
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `alarm_history_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ============================================
+// Correlation Rule Modal State
+// ============================================
+
+const showCorrelationRuleModal = ref(false)
+const editingCorrelationRule = ref<CorrelationRule | null>(null)
+
+function openNewCorrelationRuleModal() {
+  editingCorrelationRule.value = null
+  showCorrelationRuleModal.value = true
+}
+
+function openEditCorrelationRuleModal(rule: CorrelationRule) {
+  editingCorrelationRule.value = rule
+  showCorrelationRuleModal.value = true
+}
+
+function closeCorrelationRuleModal() {
+  showCorrelationRuleModal.value = false
+  editingCorrelationRule.value = null
+}
+
+function saveCorrelationRule(ruleData: Omit<CorrelationRule, 'id'>) {
+  if (editingCorrelationRule.value) {
+    // Update existing rule - would need to add update method to soe
+    soe.removeCorrelationRule(editingCorrelationRule.value.id)
+  }
+  // Generate an id for the new rule
+  const ruleWithId: CorrelationRule = {
+    ...ruleData,
+    id: `corr_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+  }
+  soe.addCorrelationRule(ruleWithId)
+}
+
+// ============================================
+// Multi-Node Alarm Filtering
+// ============================================
+
+const selectedNodeFilter = ref<string>('all')
+
+// Get available nodes from MQTT
+const availableNodes = computed(() => {
+  const nodes: { id: string; name: string }[] = [
+    { id: 'all', name: 'All Nodes' },
+    { id: 'pc', name: 'PC (local)' }
+  ]
+
+  // Add discovered cRIO nodes from MQTT
+  const knownNodesList = mqtt.getNodeList()
+  for (const nodeInfo of knownNodesList) {
+    if (nodeInfo.nodeId !== 'pc' && nodeInfo.nodeId !== 'node-001') {
+      nodes.push({
+        id: nodeInfo.nodeId,
+        name: nodeInfo.nodeName || nodeInfo.nodeId
+      })
+    }
+  }
+
+  return nodes
+})
+
+// Filtered active alarms by node
+const filteredActiveAlarms = computed(() => {
+  if (selectedNodeFilter.value === 'all') {
+    return activeAlarms.value
+  }
+  return activeAlarms.value.filter(alarm => {
+    const nodeId = alarm.nodeId || 'pc'
+    return nodeId === selectedNodeFilter.value
+  })
+})
+
+// Filtered alarm configs by node
+const filteredChannelList = computed(() => {
+  if (selectedNodeFilter.value === 'all') {
+    return channelList.value
+  }
+  return channelList.value.filter(ch => {
+    // Check if channel value has nodeId, or infer from channel name prefix
+    const channelValue = store.values[ch.name]
+    const nodeId = channelValue?.nodeId || 'pc'
+    return nodeId === selectedNodeFilter.value
+  })
+})
+
+// ============================================
 // UI State
 // ============================================
 
@@ -348,11 +537,11 @@ const systemHealth = computed(() => {
   const firstValue = Object.values(store.values)[0]
   return {
     mqtt_connected: mqtt.connected.value,
-    daq_connected: store.status?.status === 'online',
+    daq_connected: mqtt.systemStatus.value?.status === 'online' || store.status?.status === 'online',
     last_data_received: firstValue?.timestamp
       ? new Date(firstValue.timestamp).toISOString()
       : undefined,
-    data_timeout: false // TODO: implement timeout detection
+    data_timeout: mqtt.dataIsStale.value
   }
 })
 
@@ -386,6 +575,24 @@ function formatTime(isoString: string): string {
 
 function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString()
+}
+
+// Format interlock event type for display
+function formatInterlockEvent(event: string): string {
+  const eventLabels: Record<string, string> = {
+    'created': 'Created',
+    'modified': 'Modified',
+    'enabled': 'Enabled',
+    'disabled': 'Disabled',
+    'bypassed': 'Bypassed',
+    'bypass_removed': 'Bypass Removed',
+    'bypass_expired': 'Bypass Expired',
+    'tripped': 'TRIPPED',
+    'cleared': 'Cleared',
+    'demand': 'Demand',
+    'proof_test': 'Proof Test'
+  }
+  return eventLabels[event] || event
 }
 
 // Get current value for a channel
@@ -451,7 +658,7 @@ function formatIsoTime(iso: string): string {
       minute: '2-digit',
       second: '2-digit',
       fractionalSecondDigits: 3
-    })
+    } as Intl.DateTimeFormatOptions)
   } catch {
     return iso
   }
@@ -492,12 +699,16 @@ const newInterlock = ref({
   name: '',
   description: '',
   bypassAllowed: true,
+  maxBypassDuration: 0,  // 0 = unlimited
+  conditionLogic: 'AND' as 'AND' | 'OR',
+  silRating: undefined as 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4' | undefined,
+  proofTestInterval: undefined as number | undefined,
   conditions: [] as InterlockCondition[],
   controls: [] as InterlockControl[]
 })
 
-// Condition types for dropdown
-const conditionTypes: { value: InterlockConditionType; label: string; needsChannel: boolean; needsOperator: boolean }[] = [
+// Condition types for dropdown (IEC 61511 compliant)
+const conditionTypes: { value: InterlockConditionType; label: string; needsChannel: boolean; needsOperator: boolean; needsAlarm?: boolean; needsVariable?: boolean; needsExpression?: boolean }[] = [
   { value: 'mqtt_connected', label: 'MQTT Connected', needsChannel: false, needsOperator: false },
   { value: 'daq_connected', label: 'DAQ Online', needsChannel: false, needsOperator: false },
   { value: 'acquiring', label: 'System Acquiring', needsChannel: false, needsOperator: false },
@@ -505,15 +716,39 @@ const conditionTypes: { value: InterlockConditionType; label: string; needsChann
   { value: 'no_active_alarms', label: 'No Active Alarms', needsChannel: false, needsOperator: false },
   { value: 'no_latched_alarms', label: 'No Latched Alarms', needsChannel: false, needsOperator: false },
   { value: 'channel_value', label: 'Channel Value', needsChannel: true, needsOperator: true },
-  { value: 'digital_input', label: 'Digital Input', needsChannel: true, needsOperator: false }
+  { value: 'digital_input', label: 'Digital Input', needsChannel: true, needsOperator: false },
+  { value: 'alarm_active', label: 'Alarm NOT Active', needsChannel: false, needsOperator: false, needsAlarm: true },
+  { value: 'alarm_state', label: 'Alarm State', needsChannel: false, needsOperator: false, needsAlarm: true },
+  { value: 'variable_value', label: 'Variable Value', needsChannel: false, needsOperator: true, needsVariable: true },
+  { value: 'expression', label: 'Expression', needsChannel: false, needsOperator: false, needsExpression: true }
+]
+
+// Alarm state options for alarm_state condition
+const alarmStateOptions = [
+  { value: 'active', label: 'Active' },
+  { value: 'acknowledged', label: 'Acknowledged' },
+  { value: 'shelved', label: 'Shelved' },
+  { value: 'returned', label: 'Returned (Latched)' }
+]
+
+// SIL rating options (IEC 61508)
+const silRatingOptions = [
+  { value: undefined, label: 'Not Rated' },
+  { value: 'SIL1', label: 'SIL 1' },
+  { value: 'SIL2', label: 'SIL 2' },
+  { value: 'SIL3', label: 'SIL 3' },
+  { value: 'SIL4', label: 'SIL 4' }
 ]
 
 const controlTypes: { value: InterlockControlType; label: string; needsChannel: boolean; needsValue?: boolean; channelType?: 'do' | 'ao' }[] = [
   // BLOCKING actions
+  { value: 'digital_output', label: 'Block Digital Output', needsChannel: true, channelType: 'do' },
+  { value: 'analog_output', label: 'Block Analog Output', needsChannel: true, channelType: 'ao' },
   { value: 'schedule_enable', label: 'Block Schedule Enable', needsChannel: false },
   { value: 'recording_start', label: 'Block Recording Start', needsChannel: false },
   { value: 'acquisition_start', label: 'Block Acquisition Start', needsChannel: false },
-  { value: 'digital_output', label: 'Block Digital Output', needsChannel: true, channelType: 'do' },
+  { value: 'session_start', label: 'Block Session Start', needsChannel: false },
+  { value: 'script_start', label: 'Block Script Start', needsChannel: false },
   // ACTIVE actions (execute when interlock conditions FAIL)
   { value: 'set_digital_output', label: 'Set Digital Output To', needsChannel: true, needsValue: true, channelType: 'do' },
   { value: 'set_analog_output', label: 'Set Analog Output To', needsChannel: true, needsValue: true, channelType: 'ao' },
@@ -564,6 +799,10 @@ function openNewInterlockModal() {
     name: '',
     description: '',
     bypassAllowed: true,
+    maxBypassDuration: 0,
+    conditionLogic: 'AND',
+    silRating: undefined,
+    proofTestInterval: undefined,
     conditions: [],
     controls: []
   }
@@ -580,6 +819,10 @@ function openEditInterlockModal(interlockId: string) {
     name: interlock.name,
     description: interlock.description || '',
     bypassAllowed: interlock.bypassAllowed,
+    maxBypassDuration: interlock.maxBypassDuration || 0,
+    conditionLogic: interlock.conditionLogic || 'AND',
+    silRating: interlock.silRating,
+    proofTestInterval: interlock.proofTestInterval,
     conditions: interlock.conditions.map(c => ({ ...c })),
     controls: interlock.controls.map(c => ({ ...c }))
   }
@@ -589,7 +832,8 @@ function openEditInterlockModal(interlockId: string) {
 function addCondition() {
   newInterlock.value.conditions.push({
     id: `cond-${Date.now()}`,
-    type: 'mqtt_connected'
+    type: 'mqtt_connected',
+    delay_s: 0  // Timer delay in seconds (0 = immediate)
   })
 }
 
@@ -618,6 +862,10 @@ function saveInterlock() {
       name: newInterlock.value.name,
       description: newInterlock.value.description,
       bypassAllowed: newInterlock.value.bypassAllowed,
+      maxBypassDuration: newInterlock.value.maxBypassDuration || undefined,
+      conditionLogic: newInterlock.value.conditionLogic,
+      silRating: newInterlock.value.silRating,
+      proofTestInterval: newInterlock.value.proofTestInterval,
       conditions: newInterlock.value.conditions,
       controls: newInterlock.value.controls
     })
@@ -628,6 +876,10 @@ function saveInterlock() {
       description: newInterlock.value.description,
       enabled: true,
       bypassAllowed: newInterlock.value.bypassAllowed,
+      maxBypassDuration: newInterlock.value.maxBypassDuration || undefined,
+      conditionLogic: newInterlock.value.conditionLogic,
+      silRating: newInterlock.value.silRating,
+      proofTestInterval: newInterlock.value.proofTestInterval,
       bypassed: false,
       conditions: newInterlock.value.conditions,
       controls: newInterlock.value.controls
@@ -662,15 +914,38 @@ function getConditionDescription(cond: InterlockCondition): string {
   const typeInfo = conditionTypes.find(t => t.value === cond.type)
   if (!typeInfo) return 'Unknown condition'
 
+  // Add delay suffix if applicable
+  const delaySuffix = cond.delay_s && cond.delay_s > 0 ? ` (${cond.delay_s}s delay)` : ''
+
   if (cond.type === 'channel_value' && cond.channel) {
-    return `${cond.channel} ${cond.operator} ${cond.value}`
+    return `${cond.channel} ${cond.operator} ${cond.value}${delaySuffix}`
   }
 
   if (cond.type === 'digital_input' && cond.channel) {
-    return `${cond.channel} = ${cond.value ? 'ON' : 'OFF'}`
+    return `${cond.channel} = ${cond.value ? 'ON' : 'OFF'}${delaySuffix}`
   }
 
-  return typeInfo.label
+  if (cond.type === 'alarm_active' && cond.alarmId) {
+    return `${cond.alarmId} NOT Active${delaySuffix}`
+  }
+
+  if (cond.type === 'alarm_state' && cond.alarmId) {
+    const stateLabel = alarmStateOptions.find(o => o.value === cond.alarmState)?.label || cond.alarmState
+    return `${cond.alarmId} in ${stateLabel}${delaySuffix}`
+  }
+
+  if (cond.type === 'variable_value' && cond.variableId) {
+    return `${cond.variableId} ${cond.operator} ${cond.value}${delaySuffix}`
+  }
+
+  if (cond.type === 'expression' && cond.expression) {
+    const shortExpr = cond.expression.length > 25
+      ? cond.expression.substring(0, 22) + '...'
+      : cond.expression
+    return `Expr: ${shortExpr}`
+  }
+
+  return typeInfo.label + delaySuffix
 }
 
 // Get human-readable control description
@@ -738,6 +1013,15 @@ function getControlDescription(ctrl: InterlockControl): string {
       </div>
 
       <div class="header-right">
+        <!-- Node Filter (for multi-node setups) -->
+        <div v-if="availableNodes.length > 2" class="node-filter">
+          <select v-model="selectedNodeFilter" class="node-select">
+            <option v-for="node in availableNodes" :key="node.id" :value="node.id">
+              {{ node.name }}
+            </option>
+          </select>
+        </div>
+
         <!-- Latch Status (prominent when latches active) -->
         <div v-if="safety.hasLatchedAlarms.value" class="latch-status active" @click="resetAllLatched">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -796,14 +1080,14 @@ function getControlDescription(ctrl: InterlockControl): string {
           <h3>Active Alarms</h3>
           <div class="panel-header-actions">
             <button
-              v-if="activeAlarms.length > 0"
+              v-if="filteredActiveAlarms.length > 0"
               class="btn btn-sm btn-secondary"
               @click="acknowledgeAll"
             >
               Acknowledge All
             </button>
             <button
-              v-if="activeAlarms.length > 0"
+              v-if="filteredActiveAlarms.length > 0"
               class="btn btn-sm btn-danger"
               @click="clearAllAlarms"
               title="Clear all alarms (use when project changes or to reset alarm state)"
@@ -813,7 +1097,7 @@ function getControlDescription(ctrl: InterlockControl): string {
           </div>
         </div>
 
-        <div v-if="activeAlarms.length === 0" class="no-alarms">
+        <div v-if="filteredActiveAlarms.length === 0" class="no-alarms">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
           </svg>
@@ -822,7 +1106,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
         <div v-else class="alarm-list">
           <div
-            v-for="alarm in activeAlarms"
+            v-for="alarm in filteredActiveAlarms"
             :key="alarm.id"
             :id="`alarm-${alarm.id}`"
             class="alarm-item"
@@ -940,11 +1224,12 @@ function getControlDescription(ctrl: InterlockControl): string {
                 <th>Behavior</th>
                 <th>Deadband</th>
                 <th>Delay</th>
+                <th>Edit</th>
               </tr>
             </thead>
             <tbody>
               <tr
-                v-for="ch in channelList"
+                v-for="ch in filteredChannelList"
                 :key="ch.name"
                 :class="{ selected: selectedChannel === ch.name }"
                 @click="selectedChannel = ch.name"
@@ -1032,6 +1317,18 @@ function getControlDescription(ctrl: InterlockControl): string {
                     @click.stop
                   />
                 </td>
+                <td>
+                  <button
+                    class="btn btn-xs btn-edit"
+                    @click.stop="openAlarmConfigModal(ch.name)"
+                    title="Edit full alarm configuration"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -1093,6 +1390,19 @@ function getControlDescription(ctrl: InterlockControl): string {
                 <option value="today">Today</option>
                 <option value="week">This Week</option>
               </select>
+              <button
+                class="btn btn-sm btn-secondary export-btn"
+                @click="exportAlarmHistoryCsv"
+                :disabled="filteredHistory.length === 0"
+                title="Export to CSV"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                CSV
+              </button>
             </div>
           </div>
 
@@ -1294,6 +1604,38 @@ function getControlDescription(ctrl: InterlockControl): string {
             <p>All interlocks satisfied</p>
           </div>
         </div>
+
+        <!-- Safety Actions Panel -->
+        <SafetyActionsPanel />
+
+        <!-- Interlock History Panel -->
+        <div class="interlock-history-panel">
+          <div class="panel-header">
+            <h3>Interlock History</h3>
+            <span class="count-badge">{{ safety.interlockHistory.value.length }}</span>
+          </div>
+
+          <div v-if="safety.interlockHistory.value.length === 0" class="no-history">
+            <p>No interlock events recorded</p>
+          </div>
+
+          <div v-else class="interlock-history-list">
+            <div
+              v-for="entry in safety.interlockHistory.value.slice(0, 20)"
+              :key="entry.id"
+              class="interlock-history-item"
+              :class="entry.event"
+            >
+              <div class="history-time">{{ formatDateTime(entry.timestamp) }}</div>
+              <div class="history-event">
+                <span class="event-badge" :class="entry.event">{{ formatInterlockEvent(entry.event) }}</span>
+                <span class="interlock-name">{{ entry.interlockName }}</span>
+              </div>
+              <div v-if="entry.reason" class="history-reason">{{ entry.reason }}</div>
+              <div v-if="entry.user" class="history-user">by {{ entry.user }}</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1354,7 +1696,7 @@ function getControlDescription(ctrl: InterlockControl): string {
       <div class="rules-panel">
         <div class="panel-header">
           <h3>Correlation Rules</h3>
-          <button class="btn btn-sm btn-primary" @click="showNewRuleModal = true">
+          <button class="btn btn-sm btn-primary" @click="openNewCorrelationRuleModal">
             + Add Rule
           </button>
         </div>
@@ -1536,17 +1878,45 @@ function getControlDescription(ctrl: InterlockControl): string {
             <input type="text" v-model="newInterlock.description" placeholder="What does this interlock protect?" />
           </div>
 
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" v-model="newInterlock.bypassAllowed" />
-              Allow operator bypass
-            </label>
+          <div class="form-row-group">
+            <div class="form-group half">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="newInterlock.bypassAllowed" />
+                Allow operator bypass
+              </label>
+            </div>
+            <div class="form-group half" v-if="newInterlock.bypassAllowed">
+              <label>Max Bypass Duration (seconds)</label>
+              <input type="number" v-model.number="newInterlock.maxBypassDuration" min="0" placeholder="0 = unlimited" />
+            </div>
+          </div>
+
+          <!-- IEC 61508 SIL Rating -->
+          <div class="form-row-group">
+            <div class="form-group half">
+              <label>SIL Rating (IEC 61508)</label>
+              <select v-model="newInterlock.silRating">
+                <option v-for="opt in silRatingOptions" :key="opt.label" :value="opt.value">{{ opt.label }}</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label>Proof Test Interval (days)</label>
+              <input type="number" v-model.number="newInterlock.proofTestInterval" min="0" placeholder="Optional" />
+            </div>
           </div>
 
           <!-- Conditions -->
           <div class="conditions-section">
             <div class="section-header">
-              <h4>Conditions (ALL must be true)</h4>
+              <h4>Conditions</h4>
+              <div class="logic-toggle">
+                <label>
+                  <input type="radio" v-model="newInterlock.conditionLogic" value="AND" /> ALL (AND)
+                </label>
+                <label>
+                  <input type="radio" v-model="newInterlock.conditionLogic" value="OR" /> ANY (OR)
+                </label>
+              </div>
               <button class="btn btn-sm btn-secondary" @click="addCondition">+ Add</button>
             </div>
 
@@ -1610,6 +1980,64 @@ function getControlDescription(ctrl: InterlockControl): string {
                 <option :value="false">OFF</option>
                 <option :value="true">ON</option>
               </select>
+
+              <!-- Alarm selection for alarm_active / alarm_state -->
+              <select
+                v-if="cond.type === 'alarm_active' || cond.type === 'alarm_state'"
+                v-model="cond.alarmId"
+                class="condition-channel-select"
+              >
+                <option value="">Select alarm...</option>
+                <option v-for="ch in Object.keys(store.channels)" :key="ch" :value="ch">
+                  {{ ch }}
+                </option>
+              </select>
+
+              <!-- State selection for alarm_state -->
+              <select
+                v-if="cond.type === 'alarm_state'"
+                v-model="cond.alarmState"
+                class="condition-bool-select"
+              >
+                <option v-for="opt in alarmStateOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+
+              <!-- Variable selection for variable_value -->
+              <select
+                v-if="cond.type === 'variable_value'"
+                v-model="cond.variableId"
+                class="condition-channel-select"
+              >
+                <option value="">Select variable...</option>
+                <option v-for="(v, id) in playground.variables.value" :key="id" :value="id">
+                  {{ v.name || id }}
+                </option>
+              </select>
+
+              <!-- Expression input -->
+              <input
+                v-if="cond.type === 'expression'"
+                type="text"
+                v-model="cond.expression"
+                class="condition-expression-input"
+                placeholder="e.g., temp1 > 100 AND temp2 < 50"
+              />
+
+              <!-- Timer delay (for all condition types) -->
+              <div class="delay-input" v-if="cond.type !== 'expression'">
+                <label title="Condition must be TRUE for this duration before triggering">Delay:</label>
+                <input
+                  type="number"
+                  v-model.number="cond.delay_s"
+                  min="0"
+                  step="0.1"
+                  class="delay-value"
+                  placeholder="0"
+                />
+                <span class="unit">s</span>
+              </div>
 
               <button class="btn btn-sm btn-danger" @click="removeCondition(idx)">X</button>
             </div>
@@ -1748,6 +2176,22 @@ function getControlDescription(ctrl: InterlockControl): string {
         </div>
       </div>
     </Teleport>
+
+    <!-- Alarm Configuration Modal -->
+    <AlarmConfigModal
+      :visible="showAlarmConfigModal"
+      :channel="alarmConfigChannel"
+      @close="closeAlarmConfigModal"
+      @save="saveAlarmConfig"
+    />
+
+    <!-- Correlation Rule Modal -->
+    <CorrelationRuleModal
+      :visible="showCorrelationRuleModal"
+      :rule="editingCorrelationRule"
+      @close="closeCorrelationRuleModal"
+      @save="saveCorrelationRule"
+    />
   </div>
 </template>
 
@@ -2048,6 +2492,36 @@ function getControlDescription(ctrl: InterlockControl): string {
 .btn-sm {
   padding: 4px 8px;
   font-size: 0.7rem;
+}
+
+.btn-xs {
+  padding: 3px 6px;
+  font-size: 0.65rem;
+}
+
+.btn-edit {
+  background: #3b82f6;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 3px;
+}
+
+.btn-edit:hover {
+  background: #2563eb;
+}
+
+.export-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-secondary {
@@ -2439,6 +2913,26 @@ function getControlDescription(ctrl: InterlockControl): string {
   gap: 16px;
 }
 
+.node-filter {
+  display: flex;
+  align-items: center;
+}
+
+.node-select {
+  background: #1a1a2e;
+  border: 1px solid #3a3a5a;
+  border-radius: 4px;
+  padding: 6px 10px;
+  color: #ddd;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.node-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
 .section-tabs {
   display: flex;
   gap: 4px;
@@ -2741,6 +3235,148 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 /* ============================================
+   Interlock History Panel
+   ============================================ */
+
+.interlock-history-panel {
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  margin-top: 12px;
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+
+.interlock-history-panel .panel-header {
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.interlock-history-list {
+  padding: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.interlock-history-item {
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  border-left: 3px solid #666;
+}
+
+.interlock-history-item.tripped {
+  border-left-color: #ef4444;
+  background: linear-gradient(90deg, #3f1515 0%, #1a1a2e 30%);
+}
+
+.interlock-history-item.bypassed {
+  border-left-color: #fbbf24;
+  background: linear-gradient(90deg, #3f3515 0%, #1a1a2e 30%);
+}
+
+.interlock-history-item.cleared,
+.interlock-history-item.enabled {
+  border-left-color: #22c55e;
+}
+
+.interlock-history-item.disabled {
+  border-left-color: #888;
+}
+
+.interlock-history-item.proof_test {
+  border-left-color: #3b82f6;
+}
+
+.interlock-history-item .history-time {
+  font-size: 0.7rem;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.interlock-history-item .history-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.interlock-history-item .event-badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.event-badge.tripped {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.event-badge.bypassed {
+  background: #78350f;
+  color: #fcd34d;
+}
+
+.event-badge.bypass_removed,
+.event-badge.bypass_expired {
+  background: #3f3f46;
+  color: #a1a1aa;
+}
+
+.event-badge.cleared,
+.event-badge.enabled {
+  background: #14532d;
+  color: #86efac;
+}
+
+.event-badge.disabled {
+  background: #3f3f46;
+  color: #a1a1aa;
+}
+
+.event-badge.created,
+.event-badge.modified {
+  background: #1e3a5f;
+  color: #93c5fd;
+}
+
+.event-badge.demand {
+  background: #581c87;
+  color: #d8b4fe;
+}
+
+.event-badge.proof_test {
+  background: #1e40af;
+  color: #93c5fd;
+}
+
+.interlock-history-item .interlock-name {
+  color: #fff;
+}
+
+.interlock-history-item .history-reason {
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 4px;
+}
+
+.interlock-history-item .history-user {
+  font-size: 0.7rem;
+  color: #666;
+  margin-top: 2px;
+}
+
+.interlock-history-panel .no-history {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+/* ============================================
    Interlock Modal
    ============================================ */
 
@@ -2890,6 +3526,93 @@ function getControlDescription(ctrl: InterlockControl): string {
   color: #fff;
   font-size: 0.8rem;
   text-align: right;
+}
+
+/* Expression input for custom condition logic */
+.condition-expression-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 6px 8px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.condition-expression-input::placeholder {
+  color: #666;
+  font-style: italic;
+}
+
+/* Timer delay input styling */
+.delay-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #1a1a28;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.delay-input label {
+  color: #888;
+  white-space: nowrap;
+}
+
+.delay-input .delay-value {
+  width: 50px;
+  padding: 4px 6px;
+  background: #0a0a14;
+  border: 1px solid #3a3a5a;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.delay-input .delay-value:focus {
+  border-color: #3b82f6;
+  outline: none;
+}
+
+.delay-input .unit {
+  color: #666;
+  font-size: 0.75rem;
+}
+
+/* Logic toggle (AND/OR) styling */
+.logic-toggle {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.logic-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #ccc;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.logic-toggle input[type="radio"] {
+  accent-color: #3b82f6;
+}
+
+/* SIL rating and proof test styles */
+.form-group.half {
+  flex: 1;
+  min-width: 120px;
+}
+
+.form-group select,
+.form-group input[type="number"] {
+  width: 100%;
 }
 
 .empty-hint {

@@ -95,6 +95,9 @@ class ModbusChannelConfig:
     scale: float = 1.0
     offset: float = 0.0
     is_output: bool = False
+    # Batch reading support
+    register_count: Optional[int] = None  # Registers to read (None = auto from data_type)
+    register_index: int = 0               # Index within batch to extract value from
 
 
 class ModbusConnection:
@@ -441,8 +444,18 @@ class ModbusReader:
             }
             data_type = data_type_map.get(data_type_str.lower(), ModbusDataType.FLOAT32)
 
-            # Get slave ID from module slot (common convention) or default to 1
-            slave_id = getattr(module, 'slave_id', module.slot) if hasattr(module, 'slave_id') else 1
+            # Get slave ID: explicit channel config > module slot > default 1
+            explicit_slave_id = getattr(channel, 'modbus_slave_id', None)
+            if explicit_slave_id is not None:
+                slave_id = explicit_slave_id
+            elif hasattr(module, 'slave_id'):
+                slave_id = getattr(module, 'slave_id', module.slot)
+            else:
+                slave_id = 1
+
+            # Batch reading config
+            register_count = getattr(channel, 'modbus_register_count', None)
+            register_index = getattr(channel, 'modbus_register_index', 0)
 
             # Create channel config
             modbus_config = ModbusChannelConfig(
@@ -456,7 +469,9 @@ class ModbusReader:
                 word_order=getattr(channel, 'modbus_word_order', 'big'),
                 scale=getattr(channel, 'modbus_scale', 1.0),
                 offset=getattr(channel, 'modbus_offset', 0.0),
-                is_output=channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL
+                is_output=channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL,
+                register_count=register_count,
+                register_index=register_index
             )
 
             self.channel_configs[name] = modbus_config
@@ -499,18 +514,103 @@ class ModbusReader:
         """
         Read all Modbus channels and return raw values.
         This matches the HardwareReader.read_all() interface.
+
+        Supports batch reading: channels with the same device/slave/register_type
+        and register_count are read together in a single Modbus transaction.
         """
         with self.lock:
+            # Group channels for batch reading
+            # Key: (device_name, slave_id, register_type, address, register_count)
+            batch_groups: Dict[tuple, List[ModbusChannelConfig]] = {}
+            individual_channels: List[ModbusChannelConfig] = []
+
             for name, config in self.channel_configs.items():
+                if config.register_count is not None and config.register_count > 0:
+                    # Batch mode: group by device/slave/type/address/count
+                    key = (config.device_name, config.slave_id, config.register_type,
+                           config.address, config.register_count)
+                    if key not in batch_groups:
+                        batch_groups[key] = []
+                    batch_groups[key].append(config)
+                else:
+                    # Individual mode
+                    individual_channels.append(config)
+
+            # Read batch groups
+            for key, channels in batch_groups.items():
+                device_name, slave_id, reg_type, address, count = key
+                connection = self.connections.get(device_name)
+                if not connection:
+                    continue
+
+                # Read the batch
+                registers = self._read_register_batch(connection, reg_type, address, count, slave_id)
+                if registers is None:
+                    continue
+
+                # Extract each channel's value from the batch
+                for config in channels:
+                    value = self._extract_value_from_batch(registers, config)
+                    if value is not None:
+                        self.channel_values[config.channel_name] = value
+
+            # Read individual channels
+            for config in individual_channels:
                 connection = self.connections.get(config.device_name)
                 if not connection:
                     continue
 
                 value = self._read_channel_value(connection, config)
                 if value is not None:
-                    self.channel_values[name] = value
+                    self.channel_values[config.channel_name] = value
 
             return self.channel_values.copy()
+
+    def _read_register_batch(self, connection: ModbusConnection,
+                              reg_type: ModbusRegisterType,
+                              address: int, count: int, slave_id: int) -> Optional[List[int]]:
+        """Read a batch of registers in a single Modbus transaction."""
+        try:
+            if reg_type == ModbusRegisterType.INPUT:
+                return connection.read_input_registers(address, count, slave_id)
+            elif reg_type == ModbusRegisterType.HOLDING:
+                return connection.read_holding_registers(address, count, slave_id)
+            else:
+                logger.warning(f"Batch read not supported for {reg_type.value}")
+                return None
+        except Exception as e:
+            logger.error(f"Error reading register batch at {address}: {e}")
+            return None
+
+    def _extract_value_from_batch(self, registers: List[int],
+                                   config: ModbusChannelConfig) -> Optional[float]:
+        """Extract a single channel's value from a batch of registers."""
+        try:
+            # Get the number of registers needed for this data type
+            regs_needed = REGISTERS_PER_TYPE.get(config.data_type, 1)
+
+            # Extract the registers for this channel
+            start_idx = config.register_index
+            end_idx = start_idx + regs_needed
+
+            if end_idx > len(registers):
+                logger.error(f"Register index {start_idx}+{regs_needed} exceeds batch size "
+                           f"{len(registers)} for {config.channel_name}")
+                return None
+
+            channel_regs = registers[start_idx:end_idx]
+
+            # Decode the value
+            raw_value = self._decode_registers(channel_regs, config.data_type,
+                                               config.byte_order, config.word_order)
+
+            # Apply scaling: value = raw * scale + offset
+            scaled_value = raw_value * config.scale + config.offset
+            return scaled_value
+
+        except Exception as e:
+            logger.error(f"Error extracting value for {config.channel_name}: {e}")
+            return None
 
     def _read_channel_value(self, connection: ModbusConnection,
                             config: ModbusChannelConfig) -> Optional[float]:

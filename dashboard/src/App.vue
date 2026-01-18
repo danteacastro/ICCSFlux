@@ -29,6 +29,9 @@ const projectFiles = useProjectFiles()
 const auth = useAuth()
 const playground = usePlayground()
 
+// Track if project has been loaded from backend (module-level for access in loadLastProject)
+let projectLoadHandled = false
+
 // Login dialog state
 const showLoginDialog = ref(false)
 
@@ -37,12 +40,15 @@ const activeTab = ref('overview')
 
 // Permission-based EDIT control (viewing is allowed for everyone)
 // These are provided to child components via provide/inject
-// NOTE: All permissions hardcoded to TRUE to disable auth during development
-const canEditConfig = computed(() => true)
-const canEditScripts = computed(() => true)
-const canEditData = computed(() => true)
-const canEditSafety = computed(() => true)
-const canEditAdmin = computed(() => true)
+// Using role-based checks that align with backend permission model:
+// - Operator+: Can modify channel configs
+// - Supervisor+: Can modify scripts, safety, recording settings
+// - Admin: Can manage users
+const canEditConfig = computed(() => auth.hasPermission('config.channels.modify') || auth.isOperator.value)
+const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isSupervisor.value)
+const canEditData = computed(() => auth.hasPermission('config.recording.modify') || auth.isOperator.value)
+const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isSupervisor.value)
+const canEditAdmin = computed(() => auth.hasPermission('users.manage') || auth.isSupervisor.value)
 
 // Provide edit permissions to child components
 provide('canEditConfig', canEditConfig)
@@ -51,6 +57,7 @@ provide('canEditData', canEditData)
 provide('canEditSafety', canEditSafety)
 provide('canEditAdmin', canEditAdmin)
 provide('showLoginDialog', () => { showLoginDialog.value = true })
+provide('projectLoading', projectLoading)
 
 // URL-based page selection (for multi-window support)
 function getPageFromUrl(): string | null {
@@ -149,6 +156,7 @@ const mqtt = useMqtt('nisystem')
 // Startup dialog state
 const showStartupDialog = ref(false)
 const hasLastProject = ref(false)
+const projectLoading = ref(false)  // True while loading project from backend
 const STARTUP_DIALOG_KEY = 'nisystem-startup-dialog-shown'
 
 // Check if startup dialog was already shown this session
@@ -163,22 +171,40 @@ function markStartupDialogShown() {
 async function loadLastProject() {
   showStartupDialog.value = false
   markStartupDialogShown()
+  projectLoading.value = true
   console.log('[APP] User chose to load last project')
 
   // Send command to backend to load the last used project from settings
   mqtt.sendNodeCommand('project/load-last')
 
-  // Wait 2 seconds for backend response, then fall back to localStorage
-  setTimeout(() => {
-    if (!projectLoadHandled && !projectFiles.currentProjectData.value) {
-      console.log('[APP] No project from backend, trying localStorage...')
+  // Wait for backend response with timeout
+  // projectFiles.onProjectLoaded will set projectLoadHandled = true and clear loading
+  const startTime = Date.now()
+  const maxWaitMs = 5000  // 5 second timeout
+
+  const checkLoaded = setInterval(() => {
+    const elapsed = Date.now() - startTime
+
+    if (projectLoadHandled || projectFiles.currentProjectData.value) {
+      // Project loaded successfully
+      clearInterval(checkLoaded)
+      projectLoading.value = false
+      console.log('[APP] ✅ Project loaded from backend')
+      return
+    }
+
+    if (elapsed >= maxWaitMs) {
+      // Timeout - fall back to localStorage
+      clearInterval(checkLoaded)
+      projectLoading.value = false
+      console.log('[APP] Backend timeout, trying localStorage...')
       if (store.loadLayoutFromStorage()) {
         console.log('[APP] ✅ Loaded layout from localStorage')
       } else {
         console.log('[APP] No saved layout found')
       }
     }
-  }, 2000)
+  }, 100)
 }
 
 async function startFresh() {
@@ -236,13 +262,11 @@ onMounted(() => {
     localStorage.setItem(MIGRATION_KEY, Date.now().toString())
   }
 
-  // Track if project has been loaded from backend
-  let projectLoadHandled = false
-
   // When a project is loaded from backend, apply it
   projectFiles.onProjectLoaded((data) => {
     console.log('[APP] Project loaded from backend:', data.name)
     projectLoadHandled = true
+    projectLoading.value = false  // Clear loading state
     scripts.loadAll()
     scripts.startEvaluation()
 

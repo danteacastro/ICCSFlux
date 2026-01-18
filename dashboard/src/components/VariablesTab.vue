@@ -281,56 +281,17 @@ onMounted(() => {
         <h2>Variables</h2>
         <p class="subtitle">User variables, accumulators, counters, and formula calculations</p>
       </div>
-      <button class="btn btn-primary" @click="openAddModal">
-        + Add Variable
-      </button>
+      <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" @click="openConfigModal" title="Configure session behavior">
+          ⚙️ Session Config
+        </button>
+        <button class="btn btn-primary" @click="openAddModal">
+          + Add Variable
+        </button>
+      </div>
     </div>
 
     <div class="content-scroll">
-      <!-- Test Session Panel -->
-      <div class="session-panel" :class="{ active: playground.isSessionActive.value }">
-        <div class="session-header">
-          <h3>Test Session</h3>
-          <span class="session-status">
-            <span class="status-dot" :class="{ active: playground.isSessionActive.value }"></span>
-            {{ playground.isSessionActive.value ? 'Running' : 'Idle' }}
-          </span>
-        </div>
-
-        <div class="session-info" v-if="playground.isSessionActive.value">
-          <div class="elapsed-time">{{ playground.sessionElapsed.value }}</div>
-          <div class="session-meta">
-            Started: {{ playground.testSession.value.startedAt?.split('T')[1]?.split('.')[0] || '--' }}
-            by {{ playground.testSession.value.startedBy || 'user' }}
-          </div>
-        </div>
-
-        <div class="session-controls">
-          <button
-            class="btn btn-success"
-            @click="playground.startTestSession()"
-            :disabled="playground.isSessionActive.value || !store.isAcquiring"
-            :title="!store.isAcquiring ? 'Start acquisition first' : ''"
-          >
-            Start Session
-          </button>
-          <button
-            class="btn btn-danger"
-            @click="playground.stopTestSession()"
-            :disabled="!playground.isSessionActive.value"
-          >
-            Stop Session
-          </button>
-          <button class="btn btn-secondary" @click="openConfigModal">
-            Configure
-          </button>
-        </div>
-
-        <div class="session-hint" v-if="!store.isAcquiring">
-          Start acquisition before starting a test session
-        </div>
-      </div>
-
       <!-- Variables Table -->
       <div class="variables-section">
         <div class="section-header">
@@ -804,6 +765,12 @@ onMounted(() => {
   color: var(--text-primary);
 }
 
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .subtitle {
   margin: 0;
   color: var(--text-secondary);
@@ -814,87 +781,6 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   padding-right: 0.5rem;
-}
-
-/* Session Panel */
-.session-panel {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.session-panel.active {
-  border-color: var(--color-success);
-  box-shadow: 0 0 10px rgba(34, 197, 94, 0.2);
-}
-
-.session-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-}
-
-.session-header h3 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.session-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 500;
-}
-
-.status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--color-muted);
-}
-
-.status-dot.active {
-  background: var(--color-success);
-  animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-.session-info {
-  text-align: center;
-  margin: 1rem 0;
-}
-
-.elapsed-time {
-  font-size: 2rem;
-  font-weight: 600;
-  font-family: monospace;
-  color: var(--color-success);
-}
-
-.session-meta {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.session-controls {
-  display: flex;
-  gap: 0.75rem;
-  justify-content: center;
-}
-
-.session-hint {
-  text-align: center;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  margin-top: 0.75rem;
-  font-style: italic;
 }
 
 /* Variables Section */

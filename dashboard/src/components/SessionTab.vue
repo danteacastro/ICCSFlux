@@ -18,12 +18,6 @@ const idleScripts = computed(() => {
   return backendScripts.scriptsList.value.filter(s => s.state !== 'running')
 })
 
-// Backend connection status
-const backendStatus = computed(() => {
-  if (!mqtt.connected.value) return 'Disconnected'
-  return 'Connected'
-})
-
 // All script outputs combined and sorted by timestamp
 const allScriptOutputs = computed(() => {
   const outputs: Array<{ scriptId: string; type: string; message: string; timestamp: number }> = []
@@ -117,31 +111,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Backend Script Runtime Panel -->
-      <div class="status-panel backend-status">
-        <h3>
-          <span class="python-icon">🐍</span>
-          Script Runtime (Backend)
-        </h3>
-        <div class="status-grid">
-          <div class="status-item">
-            <span class="status-label">Backend Status</span>
-            <span class="status-value" :class="{ active: mqtt.connected.value }">
-              <span class="status-dot" :class="{ active: mqtt.connected.value }"></span>
-              {{ backendStatus }}
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="status-label">Active Scripts</span>
-            <span class="status-value count">{{ runningScripts.length }}</span>
-          </div>
-          <div class="status-item">
-            <span class="status-label">Total Scripts</span>
-            <span class="status-value count">{{ backendScripts.scriptsList.value.length }}</span>
-          </div>
-        </div>
-      </div>
-
       <!-- Running Scripts Panel -->
       <div class="status-panel running-scripts">
         <h3>
@@ -186,38 +155,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Script Info Panel -->
-      <div class="status-panel script-info-panel">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-          Script Execution
-        </h3>
-
-        <div class="info-content">
-          <div class="info-item">
-            <span class="info-icon">&#9888;</span>
-            <span class="info-text">Scripts run on the <strong>backend</strong> (DAQ service), not in the browser.</span>
-          </div>
-          <div class="info-item">
-            <span class="info-icon">&#9654;</span>
-            <span class="info-text"><strong>Acquisition</strong> scripts auto-start when acquisition begins.</span>
-          </div>
-          <div class="info-item">
-            <span class="info-icon">&#9654;</span>
-            <span class="info-text"><strong>Session</strong> scripts auto-start when a test session begins.</span>
-          </div>
-          <div class="info-item">
-            <span class="info-icon">&#9654;</span>
-            <span class="info-text"><strong>Manual</strong> scripts must be started explicitly.</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Idle Scripts Panel -->
+      <!-- Available Scripts Panel -->
       <div class="status-panel idle-scripts">
         <h3>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -256,32 +194,33 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Console Output Panel -->
-      <div class="status-panel console-output">
+    </div>
+
+    <!-- Console Output - Full Width -->
+    <div class="console-panel">
+      <div class="console-header">
         <h3>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4,17 10,11 4,5"/>
             <line x1="12" y1="19" x2="20" y2="19"/>
           </svg>
-          Recent Console Output
+          Console Output
         </h3>
+      </div>
 
-        <div class="console-lines" v-if="allScriptOutputs.length > 0">
-          <div
-            v-for="(line, idx) in allScriptOutputs.slice(-20)"
-            :key="idx"
-            class="console-line"
-            :class="line.type"
-          >
-            <span class="line-time">{{ new Date(line.timestamp).toLocaleTimeString() }}</span>
-            <span class="line-script">[{{ getScriptName(line.scriptId) }}]</span>
-            <span class="line-message">{{ line.message }}</span>
-          </div>
+      <div class="console-output">
+        <div
+          v-for="(line, idx) in allScriptOutputs.slice(-50)"
+          :key="idx"
+          class="console-line"
+          :class="line.type"
+        >
+          <span class="line-time">{{ new Date(line.timestamp).toLocaleTimeString() }}</span>
+          <span class="line-source">[{{ getScriptName(line.scriptId) }}]</span>
+          <span class="line-message">{{ line.message }}</span>
         </div>
-
-        <div class="empty-state" v-else>
-          <p>No console output</p>
-          <p class="hint">Output from running scripts appears here</p>
+        <div v-if="allScriptOutputs.length === 0" class="console-placeholder">
+          Output from running scripts appears here
         </div>
       </div>
     </div>
@@ -341,10 +280,6 @@ onMounted(() => {
   padding: 0.15rem 0.5rem;
   border-radius: 10px;
   font-weight: 600;
-}
-
-.python-icon {
-  font-size: 1.1rem;
 }
 
 /* Status Grid */
@@ -525,44 +460,66 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 
-/* Console Output */
+/* Console Panel - Full Width */
+.console-panel {
+  margin-top: 1.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.console-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
 .console-output {
-  grid-column: span 2;
-}
-
-@media (max-width: 800px) {
-  .console-output {
-    grid-column: span 1;
-  }
-}
-
-.console-lines {
-  max-height: 200px;
+  flex: 1;
+  min-height: 150px;
+  max-height: 300px;
   overflow-y: auto;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   background: #0a0a14;
-  border-radius: 4px;
-  padding: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0 0 8px 8px;
+}
+
+.console-placeholder {
+  color: #666;
+  font-style: italic;
+  padding: 1rem;
+  text-align: center;
 }
 
 .console-line {
   display: flex;
   gap: 0.75rem;
-  padding: 0.15rem 0;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
-}
-
-.console-line:last-child {
-  border-bottom: none;
+  padding: 0.2rem 0;
+  line-height: 1.4;
 }
 
 .line-time {
-  color: #666;
+  color: #555;
   flex-shrink: 0;
+  font-size: 0.8rem;
 }
 
-.line-script {
+.line-source {
   color: #8b5cf6;
   font-weight: 500;
   flex-shrink: 0;
@@ -583,31 +540,6 @@ onMounted(() => {
 
 .console-line.info .line-message {
   color: #3b82f6;
-}
-
-/* Info Panel */
-.info-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.info-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.info-icon {
-  flex-shrink: 0;
-  width: 1.2rem;
-  text-align: center;
-}
-
-.info-text strong {
-  color: var(--text-primary);
 }
 
 /* Empty State */

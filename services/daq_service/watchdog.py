@@ -209,6 +209,31 @@ class DAQWatchdog:
             logger.warning("DAQ service recovered after failsafe trigger")
             self._publish_watchdog_event("daq_recovered", "DAQ service is back online")
 
+        # Check thread health from heartbeat payload
+        thread_health = payload.get("thread_health", {})
+        if thread_health:
+            reader_healthy = thread_health.get("reader_healthy", True)
+            reader_died = thread_health.get("reader_died", False)
+
+            if reader_died or not reader_healthy:
+                logger.critical(f"DAQ HARDWARE READER UNHEALTHY: reader_healthy={reader_healthy}, reader_died={reader_died}")
+                self._publish_watchdog_event("reader_unhealthy", f"Hardware reader is unhealthy: {thread_health}")
+
+                # Trigger failsafe if reader died
+                if reader_died and not self.failsafe_triggered:
+                    self._trigger_failsafe(0, reason="Hardware reader thread died")
+
+        # Check if acquisition unexpectedly stopped
+        acquiring = payload.get("acquiring", None)
+        expected_acquiring = getattr(self, '_expected_acquiring', None)
+
+        if expected_acquiring is True and acquiring is False:
+            logger.warning("Acquisition unexpectedly stopped - service may be frozen")
+            self._publish_watchdog_event("acquisition_stopped", "Acquisition unexpectedly stopped")
+
+        # Track expected state for next heartbeat
+        self._expected_acquiring = acquiring
+
     def _handle_status(self, payload: dict):
         """Handle status updates from DAQ service"""
         status = payload.get("status", "unknown")
@@ -251,31 +276,35 @@ class DAQWatchdog:
                 self.failsafe_triggered = False
                 self.failsafe_trigger_time = None
 
-    def _trigger_failsafe(self, time_since_heartbeat: float):
-        """Trigger fail-safe actions"""
+    def _trigger_failsafe(self, time_since_heartbeat: float, reason: str = None):
+        """Trigger fail-safe actions
+
+        Args:
+            time_since_heartbeat: Seconds since last heartbeat (0 if not heartbeat-related)
+            reason: Optional reason for failsafe (overrides default heartbeat message)
+        """
         self.failsafe_triggered = True
         self.failsafe_trigger_time = datetime.now()
         self.daq_online = False
 
-        logger.critical(
-            f"WATCHDOG FAILSAFE TRIGGERED! No heartbeat for {time_since_heartbeat:.1f}s "
-            f"(timeout: {self.config.heartbeat_timeout_sec}s)"
-        )
+        if reason:
+            message = f"WATCHDOG FAILSAFE TRIGGERED! {reason}"
+        else:
+            message = (f"WATCHDOG FAILSAFE TRIGGERED! No heartbeat for {time_since_heartbeat:.1f}s "
+                      f"(timeout: {self.config.heartbeat_timeout_sec}s)")
+
+        logger.critical(message)
 
         # Publish alarm
-        self._publish_alarm(
-            "watchdog_failsafe",
-            f"DAQ service unresponsive for {time_since_heartbeat:.1f}s - FAILSAFE ACTIVATED"
-        )
+        alarm_msg = reason or f"DAQ service unresponsive for {time_since_heartbeat:.1f}s - FAILSAFE ACTIVATED"
+        self._publish_alarm("watchdog_failsafe", alarm_msg)
 
         # Set fail-safe outputs
         self._set_failsafe_outputs()
 
         # Publish event
-        self._publish_watchdog_event(
-            "failsafe_triggered",
-            f"No heartbeat for {time_since_heartbeat:.1f}s"
-        )
+        event_msg = reason or f"No heartbeat for {time_since_heartbeat:.1f}s"
+        self._publish_watchdog_event("failsafe_triggered", event_msg)
 
         # Optionally restart service
         if self.config.restart_service:

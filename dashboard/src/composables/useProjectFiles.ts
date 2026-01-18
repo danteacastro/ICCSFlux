@@ -61,6 +61,12 @@ export interface ProjectChannelConfig {
   resistance_config?: string
   // Digital output settings
   invert?: boolean
+
+  // Multi-node / cRIO support
+  source_type?: 'local' | 'crio' | 'cdaq'  // Data source type
+  node_id?: string                 // Remote node ID for cRIO channels, chassis name for cDAQ
+  source_node_id?: string          // Alias for node_id (backend compatibility)
+  chassis_name?: string            // Chassis name (e.g., "cDAQ-9189", "cRIO-9056")
 }
 
 // System config as stored in the project JSON file

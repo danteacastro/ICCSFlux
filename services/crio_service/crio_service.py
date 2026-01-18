@@ -45,6 +45,7 @@ import argparse
 import configparser
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
@@ -822,6 +823,10 @@ class CRIOService:
             'start_time': None
         }
 
+        # TAG name -> physical channel mapping (pushed from main DAQ service)
+        self.tag_to_physical: Dict[str, dict] = {}
+        self.config_version: str = ''
+
     def _setup_logging(self):
         """Configure logging."""
         log_level = getattr(logging, self.config.system.log_level.upper(), logging.INFO)
@@ -834,13 +839,17 @@ class CRIOService:
             except Exception:
                 log_dir = Path('.')  # Fall back to current directory
 
-        # Configure logging
+        # Configure logging with rotation (10MB max, keep 3 backups)
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.StreamHandler(),
-                logging.FileHandler(log_dir / 'crio_service.log')
+                RotatingFileHandler(
+                    log_dir / 'crio_service.log',
+                    maxBytes=10*1024*1024,  # 10 MB
+                    backupCount=3
+                )
             ]
         )
 
@@ -891,12 +900,15 @@ class CRIOService:
             base = self.config.system.mqtt_base_topic
 
             # Subscribe to topics
+            crio_id = self.config.system.crio_id
             subscriptions = [
                 (f"{base}/crio/commands/#", 1),
                 (f"{base}/crio/do/set", 1),
                 (f"{base}/crio/reset", 1),
                 (f"{base}/crio/status/request", 1),
                 (self.config.system.pc_heartbeat_topic, 1),
+                # Config push from main DAQ service (for project import/load)
+                (f"{base}/nodes/{crio_id}/config/full", 1),
             ]
 
             for topic, qos in subscriptions:
@@ -956,6 +968,10 @@ class CRIOService:
                 command = topic.split('/')[-1]
                 self._handle_command(command, data)
 
+            # Config push from main DAQ service (project import/load)
+            elif topic == f"{base}/nodes/{self.config.system.crio_id}/config/full":
+                self._handle_config_push(data)
+
         except Exception as e:
             self.logger.error(f"Error processing MQTT message: {e}")
 
@@ -1012,6 +1028,70 @@ class CRIOService:
         else:
             self._publish_ack(request_id, False, f"Unknown command: {command}")
 
+    def _handle_config_push(self, data: dict):
+        """Handle config push from main DAQ service.
+
+        This is called when a project is imported/loaded and the DAQ service
+        pushes the TAG name -> physical channel mappings to this cRIO.
+
+        Args:
+            data: Config data containing:
+                - channels: List of channel configs with name, physical_channel, channel_type
+                - scripts: Python scripts (not yet implemented)
+                - safe_state_outputs: DO channels for safe state
+                - config_version: Hash for version tracking
+        """
+        base = self.config.system.mqtt_base_topic
+        crio_id = self.config.system.crio_id
+
+        try:
+            channels = data.get('channels', [])
+            config_version = data.get('config_version', '')
+
+            # Store TAG name -> physical channel mapping
+            # This allows us to receive commands by TAG name and map to physical channels
+            self.tag_to_physical = {}
+            for ch in channels:
+                tag_name = ch.get('name', '')
+                physical_ch = ch.get('physical_channel', '')
+                if tag_name and physical_ch:
+                    self.tag_to_physical[tag_name] = {
+                        'physical_channel': physical_ch,
+                        'channel_type': ch.get('channel_type', ''),
+                        'default_state': ch.get('default_state', False),
+                        'invert': ch.get('invert', False),
+                    }
+
+            self.logger.info(f"Received config push: {len(channels)} channels (version: {config_version})")
+
+            # Store config version for reporting in status
+            self.config_version = config_version
+
+            # Send ACK response to DAQ service
+            self._mqtt_publish(
+                f"{base}/nodes/{crio_id}/config/response",
+                {
+                    'status': 'ok',
+                    'channels': len(channels),
+                    'config_version': config_version,
+                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                }
+            )
+
+            # Re-publish status with updated config version
+            self._publish_status()
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply config push: {e}")
+            self._mqtt_publish(
+                f"{base}/nodes/{crio_id}/config/response",
+                {
+                    'status': 'error',
+                    'error': str(e),
+                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                }
+            )
+
     def _on_safety_event(self, action: str, event: dict):
         """Callback when a safety event occurs."""
         base = self.config.system.mqtt_base_topic
@@ -1055,6 +1135,8 @@ class CRIOService:
             'pc_watchdog_ok': not self.pc_watchdog_tripped,
             'uptime_sec': time.time() - self.stats['start_time'] if self.stats['start_time'] else 0,
             'scan_count': self.stats['scan_count'],
+            'config_version': self.config_version,  # For sync verification with main DAQ
+            'channels': len(self.tag_to_physical),  # Number of configured TAG mappings
             'timestamp': datetime.now().isoformat()
         })
 

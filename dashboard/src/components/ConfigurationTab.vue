@@ -22,11 +22,13 @@ import { useProjectFiles } from '../composables/useProjectFiles'
 import { useTheme } from '../composables/useTheme'
 import { useSafety } from '../composables/useSafety'
 import { useTagDependencies } from '../composables/useTagDependencies'
+import { useBackendScripts } from '../composables/useBackendScripts'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
 
 const store = useDashboardStore()
 const tagDeps = useTagDependencies()
+const backendScripts = useBackendScripts()
 
 // =============================================================================
 // NI Module Type Mapping
@@ -148,7 +150,7 @@ function getModuleChannelType(productType: string, channelName?: string): { chan
   const match = productType.match(/^(NI\s*\d{4})/i)
   if (!match) return null
 
-  const baseModel = match[1].replace(/\s+/g, ' ')  // Normalize spacing
+  const baseModel = match[1]!.replace(/\s+/g, ' ')  // Normalize spacing
   const moduleInfo = NI_MODULE_TYPES[baseModel]
 
   if (!moduleInfo) return null
@@ -157,7 +159,7 @@ function getModuleChannelType(productType: string, channelName?: string): { chan
   if (moduleInfo.alt_prefix && channelName) {
     // Extract channel prefix (e.g., "ci" from "Mod1/ci0")
     const channelMatch = channelName.match(/\/([a-z]+)\d+$/i)
-    if (channelMatch && channelMatch[1].toLowerCase() === moduleInfo.alt_prefix.toLowerCase()) {
+    if (channelMatch && channelMatch[1]!.toLowerCase() === moduleInfo.alt_prefix.toLowerCase()) {
       return {
         channel_type: moduleInfo.alt_channel_type || moduleInfo.channel_type,
         category: moduleInfo.alt_category || moduleInfo.category
@@ -307,14 +309,50 @@ const newChannelForm = ref({
   // display_name removed - use name (TAG) everywhere
   unit: '',
   group: '',
-  description: ''  // For tooltips/documentation only
+  description: '',  // For tooltips/documentation only
+  source_type: 'cdaq' as 'cdaq' | 'crio' | 'opto22',
+  node_id: ''  // For cRIO/Opto22: which remote node
 })
+
+// Get physical channel placeholder based on source type
+function getPhysicalChannelHint(sourceType: string): string {
+  switch (sourceType) {
+    case 'cdaq':
+      return 'e.g., cDAQ1Mod1/ai0'
+    case 'crio':
+      return 'e.g., Mod1/ai0'
+    case 'opto22':
+      return 'e.g., analogInputs/0/ch0'
+    default:
+      return 'Physical channel address'
+  }
+}
+
+// Get available nodes for selected source type
+function getAvailableNodes(sourceType: string): Array<{id: string, name: string, status: string}> {
+  if (sourceType === 'crio' && discoveryResult.value?.crio_nodes) {
+    return discoveryResult.value.crio_nodes.map((n: any) => ({
+      id: n.node_id,
+      name: `${n.node_id} (${n.product_type})`,
+      status: n.status
+    }))
+  }
+  if (sourceType === 'opto22' && discoveryResult.value?.opto22_nodes) {
+    return discoveryResult.value.opto22_nodes.map((n: any) => ({
+      id: n.node_id,
+      name: `${n.node_id} (${n.product_type})`,
+      status: n.status
+    }))
+  }
+  return []
+}
 
 // System Settings State
 const showSystemSettings = ref(false)
 const systemSettingsForm = ref({
   scan_rate_hz: 100,
-  publish_rate_hz: 10
+  publish_rate_hz: 10,
+  project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22'
 })
 
 // Project Manager State
@@ -506,6 +544,9 @@ function updateChannelField(channelName: string, field: string, value: any) {
 
 // Add new channel
 function openAddChannelModal() {
+  // Default source_type based on project_mode
+  const projectMode = store.status?.project_mode || 'cdaq'
+
   newChannelForm.value = {
     name: '',
     physical_channel: '',
@@ -513,8 +554,19 @@ function openAddChannelModal() {
     // display_name removed - use name (TAG) everywhere
     unit: '',
     group: '',
-    description: ''
+    description: '',
+    source_type: projectMode as 'cdaq' | 'crio' | 'opto22',
+    node_id: ''
   }
+
+  // Auto-select first available node for remote modes
+  if (projectMode === 'crio' || projectMode === 'opto22') {
+    const nodes = getAvailableNodes(projectMode)
+    if (nodes.length > 0) {
+      newChannelForm.value.node_id = nodes[0].id
+    }
+  }
+
   showAddChannelModal.value = true
 }
 
@@ -531,12 +583,19 @@ function addNewChannel() {
     return
   }
 
+  // Check for collision with other nodes (multi-node systems)
+  const collision = mqtt.checkChannelCollision(tagName)
+  if (collision.collides) {
+    showFeedback('error', `Tag "${tagName}" is already owned by node "${collision.owner}". Tags must be unique across all nodes.`)
+    return
+  }
+
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
 
-  const config = {
+  const config: Record<string, any> = {
     name: tagName,  // TAG is the only identifier
     physical_channel: newChannelForm.value.physical_channel || tagName,
     channel_type: newChannelForm.value.channel_type,
@@ -544,7 +603,14 @@ function addNewChannel() {
     unit: newChannelForm.value.unit || getDefaultUnit(newChannelForm.value.channel_type),
     group: newChannelForm.value.group || 'Default',
     description: newChannelForm.value.description,
-    enabled: true
+    enabled: true,
+    // Source tracking
+    source_type: newChannelForm.value.source_type
+  }
+
+  // Add node_id for remote sources
+  if (newChannelForm.value.source_type !== 'cdaq') {
+    config.node_id = newChannelForm.value.node_id || ''
   }
 
   mqtt.updateChannelConfig(tagName, config)
@@ -625,7 +691,8 @@ function resetCounter(channelName: string) {
 function openSystemSettings() {
   systemSettingsForm.value = {
     scan_rate_hz: store.status?.scan_rate_hz || 100,
-    publish_rate_hz: store.status?.publish_rate_hz || 10
+    publish_rate_hz: store.status?.publish_rate_hz || 10,
+    project_mode: (store.status?.project_mode as 'cdaq' | 'crio' | 'opto22') || 'cdaq'
   }
   showSystemSettings.value = true
 }
@@ -638,7 +705,8 @@ function saveSystemSettings() {
 
   mqtt.sendNodeCommand('config/system/update', {
     scan_rate_hz: systemSettingsForm.value.scan_rate_hz,
-    publish_rate_hz: systemSettingsForm.value.publish_rate_hz
+    publish_rate_hz: systemSettingsForm.value.publish_rate_hz,
+    project_mode: systemSettingsForm.value.project_mode
   })
   showFeedback('info', 'Updating system settings...')
   showSystemSettings.value = false
@@ -648,11 +716,11 @@ function saveSystemSettings() {
 function autoGenerateWidgets() {
   const channelCount = Object.keys(store.channels).filter(name => {
     const ch = store.channels[name]
-    return ch.visible !== false
+    return ch && ch.visible !== false
   }).length
 
   if (channelCount === 0) {
-    showFeedback('warning', 'No channels available to generate widgets')
+    showFeedback('info', 'No channels available to generate widgets')
     return
   }
 
@@ -684,6 +752,7 @@ const devicePrefix = ref('')  // Prefix to prepend to physical channels (e.g., "
 const expandedChassis = ref<Set<string>>(new Set())
 const expandedModules = ref<Set<string>>(new Set())
 const expandedCrioNodes = ref<Set<string>>(new Set())
+const expandedOpto22Nodes = ref<Set<string>>(new Set())
 
 // Toggle chassis expansion
 function toggleChassis(chassisName: string) {
@@ -718,7 +787,18 @@ function toggleCrioNode(nodeId: string) {
   expandedCrioNodes.value = new Set(expandedCrioNodes.value)
 }
 
-// Expand all chassis, modules, and cRIO nodes
+// Toggle Opto22 node expansion
+function toggleOpto22Node(nodeId: string) {
+  if (expandedOpto22Nodes.value.has(nodeId)) {
+    expandedOpto22Nodes.value.delete(nodeId)
+  } else {
+    expandedOpto22Nodes.value.add(nodeId)
+  }
+  // Force reactivity
+  expandedOpto22Nodes.value = new Set(expandedOpto22Nodes.value)
+}
+
+// Expand all chassis, modules, cRIO nodes, and Opto22 nodes
 function expandAllDiscovery() {
   if (discoveryResult.value?.chassis) {
     discoveryResult.value.chassis.forEach((chassis: any) => {
@@ -741,6 +821,17 @@ function expandAllDiscovery() {
     expandedCrioNodes.value = new Set(expandedCrioNodes.value)
     expandedModules.value = new Set(expandedModules.value)
   }
+  // Also expand Opto22 nodes
+  if (discoveryResult.value?.opto22_nodes) {
+    discoveryResult.value.opto22_nodes.forEach((node: any) => {
+      expandedOpto22Nodes.value.add(node.node_id)
+      node.modules?.forEach((mod: any) => {
+        expandedModules.value.add(mod.name)
+      })
+    })
+    expandedOpto22Nodes.value = new Set(expandedOpto22Nodes.value)
+    expandedModules.value = new Set(expandedModules.value)
+  }
 }
 
 // Collapse all
@@ -748,6 +839,7 @@ function collapseAllDiscovery() {
   expandedChassis.value = new Set()
   expandedModules.value = new Set()
   expandedCrioNodes.value = new Set()
+  expandedOpto22Nodes.value = new Set()
 }
 
 // Select all channels in a module
@@ -817,9 +909,11 @@ mqtt.onDiscovery((result) => {
     const totalChannels = result.total_channels || 0
     const chassisCount = result.chassis?.length || 0
     const crioCount = result.crio_nodes?.length || 0
+    const opto22Count = result.opto22_nodes?.length || 0
     const parts = []
     if (chassisCount > 0) parts.push(`${chassisCount} cDAQ`)
     if (crioCount > 0) parts.push(`${crioCount} cRIO`)
+    if (opto22Count > 0) parts.push(`${opto22Count} Opto22`)
     const deviceText = parts.length > 0 ? parts.join(', ') : 'No devices'
     showFeedback('success', `Found ${deviceText}, ${totalChannels} channels`)
     // Auto-expand all on successful discovery
@@ -854,7 +948,7 @@ function pushConfigToCrio(node: any) {
   const channelConfigs = Object.values(store.channels || {})
 
   // Get scripts from store (if available)
-  const scripts = store.pythonScripts || []
+  const scripts = backendScripts.scriptsList.value || []
 
   // Get safe state outputs (all DO channels)
   const safeStateOutputs = channelConfigs
@@ -873,50 +967,107 @@ function pushConfigToCrio(node: any) {
   showFeedback('info', `Pushing config to ${node.node_id}...`)
 }
 
-// Auto-push config to all connected cRIO nodes
-// Called after successful save if there are cRIO channels in the project
-function autoPushToCrioNodes() {
-  if (!mqtt.connected.value) return
-
-  // Find all unique cRIO node IDs from channels with source_type === 'crio'
-  const crioNodeIds = new Set<string>()
-  for (const [_name, config] of Object.entries(store.channels)) {
-    const ch = config as any
-    if (ch.source_type === 'crio' && ch.node_id) {
-      crioNodeIds.add(ch.node_id)
-    }
+// Push current project config to an Opto22 node
+function pushConfigToOpto22(node: any) {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
   }
 
-  if (crioNodeIds.size === 0) return  // No cRIO channels
+  if (node.status !== 'online') {
+    showFeedback('error', `Opto22 ${node.node_id} is offline`)
+    return
+  }
 
   // Get current channel configs from store
   const channelConfigs = Object.values(store.channels || {})
-  const scripts = store.pythonScripts || []
+
+  // Get scripts from store (if available)
+  const scripts = backendScripts.scriptsList.value || []
+
+  // Get safe state outputs (all DO channels)
   const safeStateOutputs = channelConfigs
     .filter((ch: any) => ch.channel_type === 'digital_output')
     .map((ch: any) => ch.name)
 
+  // Push config to Opto22 (uses same mechanism as cRIO)
+  mqtt.pushCrioConfig(node.node_id, {
+    channels: channelConfigs,
+    scripts: scripts,
+    safe_state_outputs: safeStateOutputs,
+    scan_rate_hz: store.status?.scan_rate_hz || 100,
+    publish_rate_hz: store.status?.publish_rate_hz || 10
+  })
+
+  showFeedback('info', `Pushing config to ${node.node_id}...`)
+}
+
+// Auto-push config to all connected remote nodes (cRIO and Opto22)
+// Called after successful save if there are remote channels in the project
+function autoPushToRemoteNodes() {
+  if (!mqtt.connected.value) return
+
+  // Find all unique node IDs from channels with source_type === 'crio' or 'opto22'
+  const crioNodeIds = new Set<string>()
+  const opto22NodeIds = new Set<string>()
+  for (const [_name, config] of Object.entries(store.channels)) {
+    const ch = config as any
+    if (ch.source_type === 'crio' && ch.node_id) {
+      crioNodeIds.add(ch.node_id)
+    } else if (ch.source_type === 'opto22' && ch.node_id) {
+      opto22NodeIds.add(ch.node_id)
+    }
+  }
+
+  const totalNodes = crioNodeIds.size + opto22NodeIds.size
+  if (totalNodes === 0) return  // No remote channels
+
+  // Get current channel configs from store
+  const channelConfigs = Object.values(store.channels || {})
+  const scripts = backendScripts.scriptsList.value || []
+  const safeStateOutputs = channelConfigs
+    .filter((ch: any) => ch.channel_type === 'digital_output')
+    .map((ch: any) => ch.name)
+
+  const configPayload = {
+    channels: channelConfigs,
+    scripts: scripts,
+    safe_state_outputs: safeStateOutputs,
+    scan_rate_hz: store.status?.scan_rate_hz || 100,
+    publish_rate_hz: store.status?.publish_rate_hz || 10
+  }
+
+  let pushedCount = 0
+
   // Push to each cRIO node
   for (const nodeId of crioNodeIds) {
-    // Check if node is online from discovery results
     const crioNode = discoveryResult.value?.crio_nodes?.find((n: any) => n.node_id === nodeId)
     if (crioNode && crioNode.status !== 'online') {
       console.log(`Skipping push to ${nodeId} - node is offline`)
       continue
     }
-
-    mqtt.pushCrioConfig(nodeId, {
-      channels: channelConfigs,
-      scripts: scripts,
-      safe_state_outputs: safeStateOutputs,
-      scan_rate_hz: store.status?.scan_rate_hz || 100,
-      publish_rate_hz: store.status?.publish_rate_hz || 10
-    })
+    mqtt.pushCrioConfig(nodeId, configPayload)
     console.log(`Auto-pushed config to cRIO: ${nodeId}`)
+    pushedCount++
   }
 
-  if (crioNodeIds.size > 0) {
-    showFeedback('info', `Config pushed to ${crioNodeIds.size} cRIO node(s)`)
+  // Push to each Opto22 node
+  for (const nodeId of opto22NodeIds) {
+    const opto22Node = discoveryResult.value?.opto22_nodes?.find((n: any) => n.node_id === nodeId)
+    if (opto22Node && opto22Node.status !== 'online') {
+      console.log(`Skipping push to ${nodeId} - node is offline`)
+      continue
+    }
+    mqtt.pushCrioConfig(nodeId, configPayload)  // Same push mechanism
+    console.log(`Auto-pushed config to Opto22: ${nodeId}`)
+    pushedCount++
+  }
+
+  if (pushedCount > 0) {
+    const parts = []
+    if (crioNodeIds.size > 0) parts.push(`${crioNodeIds.size} cRIO`)
+    if (opto22NodeIds.size > 0) parts.push(`${opto22NodeIds.size} Opto22`)
+    showFeedback('info', `Config pushed to ${parts.join(' + ')} node(s)`)
   }
 }
 
@@ -927,9 +1078,9 @@ function generateSmartChannelName(physicalChannel: string, channelType: string, 
   const match = physicalChannel.match(/Mod(\d+)\/([a-z]+)(\d+)/i)
   if (!match) return physicalChannel.replace(/[^a-zA-Z0-9_]/g, '_')
 
-  const moduleNum = match[1]
-  const chanType = match[2].toLowerCase()
-  const chanNum = parseInt(match[3])
+  const moduleNum = match[1]!
+  const chanType = match[2]!.toLowerCase()
+  const chanNum = parseInt(match[3]!)
 
   // Generate prefix based on measurement type
   const prefixes: Record<string, string> = {
@@ -1049,7 +1200,29 @@ function addSelectedChannels() {
               module_device: module.name,
               chassis_name: node.node_id,
               node_id: node.node_id,  // Track source cRIO node
-              is_crio: true
+              is_crio: true,
+              is_opto22: false
+            })
+          }
+        }
+      }
+    }
+  }
+
+  // Include Opto22 node channels
+  if (discoveryResult.value?.opto22_nodes) {
+    for (const node of discoveryResult.value.opto22_nodes) {
+      for (const module of node.modules || []) {
+        for (const channel of module.channels || []) {
+          if (selectedDiscoveryChannels.value.includes(channel.name)) {
+            selectedChannels.push({
+              ...channel,
+              module_name: module.product_type,
+              module_device: module.name,
+              chassis_name: node.node_id,
+              node_id: node.node_id,  // Track source Opto22 node
+              is_crio: false,
+              is_opto22: true
             })
           }
         }
@@ -1115,8 +1288,12 @@ function addSelectedChannels() {
       log_interval_ms: 1000,
       enabled: true,
       // Source tracking (for multi-node systems)
-      node_id: ch.node_id || 'node-001',  // Default to local node if not specified
-      source_type: ch.is_crio ? 'crio' : 'cdaq'  // Track data source type
+      // For cRIO/Opto22: use node_id (e.g., "crio-001", "opto22-001")
+      // For cDAQ: use chassis_name (e.g., "cDAQ-9189") for identification
+      node_id: ch.is_crio || ch.is_opto22 ? ch.node_id : (ch.chassis_name || 'local'),
+      source_type: ch.is_crio ? 'crio' : (ch.is_opto22 ? 'opto22' : 'cdaq'),
+      // Chassis info for display
+      chassis_name: ch.chassis_name || ''
     })
 
     channelEnabled.value[tagName] = true
@@ -1173,6 +1350,17 @@ function selectAllDiscoveryChannels() {
     }
   }
 
+  // Include Opto22 node channels
+  if (discoveryResult.value?.opto22_nodes) {
+    for (const node of discoveryResult.value.opto22_nodes) {
+      for (const module of node.modules || []) {
+        for (const channel of module.channels || []) {
+          allChannels.push(channel.name)
+        }
+      }
+    }
+  }
+
   selectedDiscoveryChannels.value = allChannels
 }
 
@@ -1198,6 +1386,14 @@ function getTotalDiscoveryChannels(): number {
   // Include cRIO node channels
   if (discoveryResult.value?.crio_nodes) {
     for (const node of discoveryResult.value.crio_nodes) {
+      for (const module of node.modules || []) {
+        count += module.channels?.length || 0
+      }
+    }
+  }
+  // Include Opto22 node channels
+  if (discoveryResult.value?.opto22_nodes) {
+    for (const node of discoveryResult.value.opto22_nodes) {
       for (const module of node.modules || []) {
         count += module.channels?.length || 0
       }
@@ -1235,7 +1431,7 @@ function applyConfigChanges() {
   })
 
   // Also push to any cRIO nodes if present
-  autoPushToCrioNodes()
+  autoPushToRemoteNodes()
 
   // Save current widget layout to localStorage so it persists across page reloads
   store.saveLayoutToStorage()
@@ -1382,8 +1578,8 @@ function getRawMin(channelName: string): string {
 
   // For voltage/current, use the range
   if (config.channel_type === 'voltage') {
-    const range = config.voltage_range || '±10V'
-    if (range.includes('±')) return `-${range.replace('±', '').replace('V', '')} V`
+    const range = config.voltage_range ?? '±10V'
+    if (typeof range === 'string' && range.includes('±')) return `-${range.replace('±', '').replace('V', '')} V`
     return '0 V'
   }
   if (config.channel_type === 'current') {
@@ -1408,8 +1604,9 @@ function getRawMax(channelName: string): string {
 
   // For voltage, use the range
   if (config.channel_type === 'voltage') {
-    const range = config.voltage_range || '±10V'
-    return range.replace('±', '').replace('V', '') + ' V'
+    const range = config.voltage_range ?? '±10V'
+    if (typeof range === 'string') return range.replace('±', '').replace('V', '') + ' V'
+    return `${range} V`
   }
   if (config.channel_type === 'current') {
     return '20 mA'
@@ -1808,6 +2005,13 @@ function saveChannelConfig() {
   if (channelType === 'digital_output') {
     config.default_state = mc.initial_state
   }
+  // Digital input alarm settings
+  if (channelType === 'digital_input') {
+    config.digital_alarm_enabled = mc.alarm_enabled ?? false
+    config.digital_expected_state = mc.di_alarm_expected_state ? 'HIGH' : 'LOW'
+    config.digital_debounce_ms = mc.di_alarm_debounce_ms ?? 100
+    config.digital_invert = mc.di_alarm_invert ?? false
+  }
 
   // Include new_name if renaming the channel
   const isRenaming = editingConfig.value.newName !== editingConfig.value.name
@@ -1993,7 +2197,7 @@ async function saveToFile() {
         showFeedback('success', `Saved to project: ${currentProject}`)
         configDirty.value = false
         // Auto-push to any cRIO nodes if present
-        autoPushToCrioNodes()
+        autoPushToRemoteNodes()
       } else {
         showFeedback('error', 'Failed to save project')
       }
@@ -2030,7 +2234,7 @@ async function createAndSaveProject() {
       showCreateProjectDialog.value = false
       newProjectName.value = ''
       // Auto-push to any cRIO nodes if present
-      autoPushToCrioNodes()
+      autoPushToRemoteNodes()
     } else {
       showFeedback('error', 'Failed to create project')
     }
@@ -2069,18 +2273,14 @@ function reloadConfig() {
 //   showSaveAsDialog.value = true
 // }
 
-// Save with new filename
+// Save with new filename (legacy - now uses project system)
 function saveAsFile() {
   if (!saveAsFilename.value.trim()) {
     showFeedback('error', 'Please enter a filename')
     return
   }
-  let filename = saveAsFilename.value.trim()
-  // Ensure .ini extension
-  if (!filename.endsWith('.ini')) {
-    filename += '.ini'
-  }
-  saveToFile(filename)
+  // Use the project system for saving
+  saveToFile()
   showSaveAsDialog.value = false
   saveAsFilename.value = ''
 }
@@ -2565,6 +2765,7 @@ watch(() => Object.keys(store.channels), () => {
               <td class="col-tag">
                 <span class="tag-display">{{ name }}</span>
                 <span v-if="config.source_type === 'crio'" class="source-badge crio" title="Remote cRIO node">cRIO</span>
+                <span v-else-if="config.source_type === 'opto22'" class="source-badge opto22" title="Remote Opto22 node">Opto22</span>
               </td>
               <!-- CHANNEL - cDAQ physical location -->
               <td class="col-channel editable-cell" @click.stop>
@@ -2662,7 +2863,7 @@ watch(() => Object.keys(store.channels), () => {
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? (config.voltage_range ? -Math.abs(config.voltage_range) : -10)"
+                    :value="config.pre_scaled_min ?? (typeof config.voltage_range === 'number' ? -Math.abs(config.voltage_range) : -10)"
                     @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
                     class="inline-input narrow"
                     :disabled="!canEdit"
@@ -3914,12 +4115,18 @@ watch(() => Object.keys(store.channels), () => {
             <template v-if="editingConfig.config.channel_type === 'modbus_register'">
               <div class="config-section">
                 <h4>Modbus Settings</h4>
-                <div class="form-row">
-                  <label>Register Type</label>
-                  <select v-model="editingConfig.config.modbus_register_type">
-                    <option value="holding">Holding Register (R/W)</option>
-                    <option value="input">Input Register (R)</option>
-                  </select>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Register Type</label>
+                    <select v-model="editingConfig.config.modbus_register_type">
+                      <option value="holding">Holding Register (R/W)</option>
+                      <option value="input">Input Register (R)</option>
+                    </select>
+                  </div>
+                  <div class="form-row half">
+                    <label>Slave/Unit ID</label>
+                    <input type="number" v-model="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
+                  </div>
                 </div>
                 <div class="form-row">
                   <label>Register Address</label>
@@ -3963,6 +4170,27 @@ watch(() => Object.keys(store.channels), () => {
                   </div>
                 </div>
                 <div class="form-hint">Value = Raw * Scale + Offset</div>
+
+                <!-- Batch Reading (Advanced) -->
+                <h4 style="margin-top: 16px;">Batch Reading (Advanced)</h4>
+                <div class="form-hint" style="margin-bottom: 8px;">
+                  Read multiple registers in one transaction. Use when device requires atomic reads
+                  or for efficiency when multiple channels share contiguous registers.
+                </div>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Register Count</label>
+                    <input type="number" v-model="editingConfig.config.modbus_register_count" min="1" max="125" placeholder="Auto" />
+                  </div>
+                  <div class="form-row half">
+                    <label>Register Index</label>
+                    <input type="number" v-model="editingConfig.config.modbus_register_index" min="0" placeholder="0" />
+                  </div>
+                </div>
+                <div class="form-hint">
+                  Index = position within batch where this channel's value starts (0-based).
+                  Example: Read 13 registers, extract UINT16 at index 4 → registers[4].
+                </div>
               </div>
             </template>
 
@@ -3970,12 +4198,18 @@ watch(() => Object.keys(store.channels), () => {
             <template v-if="editingConfig.config.channel_type === 'modbus_coil'">
               <div class="config-section">
                 <h4>Modbus Coil Settings</h4>
-                <div class="form-row">
-                  <label>Coil Type</label>
-                  <select v-model="editingConfig.config.modbus_register_type">
-                    <option value="coil">Coil (R/W)</option>
-                    <option value="discrete">Discrete Input (R)</option>
-                  </select>
+                <div class="form-row-group">
+                  <div class="form-row half">
+                    <label>Coil Type</label>
+                    <select v-model="editingConfig.config.modbus_register_type">
+                      <option value="coil">Coil (R/W)</option>
+                      <option value="discrete">Discrete Input (R)</option>
+                    </select>
+                  </div>
+                  <div class="form-row half">
+                    <label>Slave/Unit ID</label>
+                    <input type="number" v-model="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
+                  </div>
                 </div>
                 <div class="form-row">
                   <label>Coil Address</label>
@@ -4050,7 +4284,7 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </template>
 
-            <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0 || discoveryResult?.crio_nodes?.length > 0">
+            <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0 || discoveryResult?.crio_nodes?.length > 0 || discoveryResult?.opto22_nodes?.length > 0">
               <div class="discovery-toolbar">
                 <span class="discovery-count">{{ getTotalDiscoveryChannels() }} channels found</span>
                 <div class="discovery-actions">
@@ -4266,6 +4500,88 @@ watch(() => Object.keys(store.channels), () => {
                     </div>
                   </div>
                 </div>
+
+                <!-- Opto22 Nodes (Remote groov EPIC/RIO devices) -->
+                <div v-for="node in discoveryResult.opto22_nodes" :key="node.node_id" class="tree-opto22">
+                  <div class="tree-header opto22-header" @click="toggleOpto22Node(node.node_id)">
+                    <svg class="tree-arrow" :class="{ expanded: expandedOpto22Nodes.has(node.node_id) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5l8 7-8 7V5z"/>
+                    </svg>
+                    <!-- Opto22 icon (groov style - rounded modern PLC) -->
+                    <svg class="tree-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="4" width="18" height="16" rx="3"/>
+                      <circle cx="7" cy="9" r="1.5" fill="currentColor"/>
+                      <circle cx="12" cy="9" r="1.5" fill="currentColor"/>
+                      <circle cx="17" cy="9" r="1.5" fill="currentColor"/>
+                      <line x1="6" y1="15" x2="18" y2="15"/>
+                    </svg>
+                    <span class="tree-name">{{ node.node_id }}</span>
+                    <span class="device-badge opto22">Opto22</span>
+                    <span class="tree-type">{{ node.product_type }}</span>
+                    <span class="opto22-status" :class="node.status">{{ node.status }}</span>
+                    <span class="tree-count">{{ node.modules?.length || 0 }} modules</span>
+                    <button
+                      class="btn-push-config"
+                      @click.stop="pushConfigToOpto22(node)"
+                      :disabled="node.status !== 'online'"
+                      :title="node.status !== 'online' ? 'Node is offline' : 'Push current project config to this Opto22'"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                      </svg>
+                      Push
+                    </button>
+                  </div>
+
+                  <!-- Opto22 Info Bar -->
+                  <div v-if="expandedOpto22Nodes.has(node.node_id)" class="opto22-info-bar">
+                    <span class="opto22-ip">{{ node.ip_address }}</span>
+                    <span class="opto22-serial" v-if="node.serial_number">S/N: {{ node.serial_number }}</span>
+                    <span class="opto22-last-seen">Last seen: {{ node.last_seen }}</span>
+                  </div>
+
+                  <!-- Modules within Opto22 -->
+                  <div v-if="expandedOpto22Nodes.has(node.node_id)" class="tree-children">
+                    <div v-for="module in [...node.modules].sort((a, b) => a.slot - b.slot)" :key="module.name" class="tree-module">
+                      <div class="tree-header module-header" @click="toggleModule(module.name)">
+                        <svg class="tree-arrow" :class="{ expanded: expandedModules.has(module.name) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5l8 7-8 7V5z"/>
+                        </svg>
+                        <input
+                          type="checkbox"
+                          :checked="isModuleFullySelected(module)"
+                          :indeterminate="isModulePartiallySelected(module)"
+                          @click.stop
+                          @change="selectModuleChannels(module, ($event.target as HTMLInputElement).checked)"
+                        />
+                        <span class="tree-name">Slot {{ module.slot }}: {{ module.product_type }}</span>
+                        <span class="tree-desc">{{ module.description }}</span>
+                        <span class="tree-count">{{ module.channels?.length || 0 }} ch</span>
+                      </div>
+
+                      <!-- Channels within Module -->
+                      <div v-if="expandedModules.has(module.name)" class="tree-children channel-list">
+                        <div
+                          v-for="channel in module.channels"
+                          :key="channel.name"
+                          class="tree-channel"
+                          :class="{ selected: selectedDiscoveryChannels.includes(channel.name) }"
+                          @click="toggleDiscoveryChannel(channel.name)"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="selectedDiscoveryChannels.includes(channel.name)"
+                            @click.stop
+                            @change="toggleDiscoveryChannel(channel.name)"
+                          />
+                          <span class="channel-name">{{ channel.name }}</span>
+                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="channel-desc">{{ channel.description }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </template>
 
@@ -4389,6 +4705,39 @@ watch(() => Object.keys(store.channels), () => {
               </select>
             </div>
 
+            <!-- Source Type Selection -->
+            <div class="form-row">
+              <label>Source Type</label>
+              <select v-model="newChannelForm.source_type" class="source-select">
+                <option value="cdaq">cDAQ (Local)</option>
+                <option value="crio">cRIO (Remote)</option>
+                <option value="opto22">Opto22 (Remote)</option>
+              </select>
+              <span class="form-hint">Hardware platform for this channel</span>
+            </div>
+
+            <!-- Node Selector (for remote sources) -->
+            <div class="form-row" v-if="newChannelForm.source_type !== 'cdaq'">
+              <label>Node</label>
+              <select v-model="newChannelForm.node_id" class="node-select">
+                <option value="" disabled>Select a node...</option>
+                <option
+                  v-for="node in getAvailableNodes(newChannelForm.source_type)"
+                  :key="node.id"
+                  :value="node.id"
+                  :class="{ offline: node.status !== 'online' }"
+                >
+                  {{ node.name }} {{ node.status !== 'online' ? '(offline)' : '' }}
+                </option>
+              </select>
+              <span class="form-hint" v-if="getAvailableNodes(newChannelForm.source_type).length === 0">
+                No {{ newChannelForm.source_type === 'crio' ? 'cRIO' : 'Opto22' }} nodes discovered. Run Discovery first.
+              </span>
+              <span class="form-hint" v-else>
+                Select target {{ newChannelForm.source_type === 'crio' ? 'cRIO' : 'Opto22' }} node
+              </span>
+            </div>
+
             <div class="form-row">
               <label>Channel Name <span class="required">*</span></label>
               <input
@@ -4404,9 +4753,13 @@ watch(() => Object.keys(store.channels), () => {
               <input
                 type="text"
                 v-model="newChannelForm.physical_channel"
-                placeholder="e.g., cDAQ1Mod1/ai0"
+                :placeholder="getPhysicalChannelHint(newChannelForm.source_type)"
               />
-              <span class="form-hint">NI-DAQmx hardware address</span>
+              <span class="form-hint">
+                {{ newChannelForm.source_type === 'cdaq' ? 'NI-DAQmx hardware address' :
+                   newChannelForm.source_type === 'crio' ? 'Module/channel path on cRIO' :
+                   'Opto22 I/O path (type/module/channel)' }}
+              </span>
             </div>
 
             <!-- display_name removed - TAG is the only identifier -->
@@ -4469,6 +4822,25 @@ watch(() => Object.keys(store.channels), () => {
 
           <div class="settings-content">
             <div class="settings-section">
+              <h4>System Architecture</h4>
+              <div class="form-row">
+                <label>Project Mode</label>
+                <select v-model="systemSettingsForm.project_mode" class="mode-select">
+                  <option value="cdaq">cDAQ (PC is controller)</option>
+                  <option value="crio">cRIO (cRIO is PLC)</option>
+                  <option value="opto22">Opto22 (groov EPIC is PLC)</option>
+                </select>
+                <span class="form-hint">
+                  {{ systemSettingsForm.project_mode === 'cdaq'
+                    ? 'PC handles all control logic locally'
+                    : systemSettingsForm.project_mode === 'crio'
+                      ? 'cRIO runs autonomously - PC is HMI only'
+                      : 'groov EPIC/RIO runs autonomously - PC is HMI only' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="settings-section">
               <h4>Acquisition Rates</h4>
               <div class="form-row">
                 <label>Scan Rate (Hz)</label>
@@ -4497,6 +4869,14 @@ watch(() => Object.keys(store.channels), () => {
                 <span class="info-label">Current Status:</span>
                 <span class="info-value" :class="{ online: store.status?.status === 'online' }">
                   {{ store.status?.status || 'Unknown' }}
+                </span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Current Mode:</span>
+                <span class="info-value" :class="{ 'mode-crio': store.status?.project_mode === 'crio' || store.status?.project_mode === 'opto22' }">
+                  {{ store.status?.project_mode === 'crio' ? 'cRIO (PLC)'
+                     : store.status?.project_mode === 'opto22' ? 'Opto22 (PLC)'
+                     : 'cDAQ (Local)' }}
                 </span>
               </div>
               <div class="info-row">
@@ -5129,6 +5509,12 @@ watch(() => Object.keys(store.channels), () => {
   background: rgba(34, 197, 94, 0.2);
   color: #22c55e;
   border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.source-badge.opto22 {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.3);
 }
 
 /* Type Badge */
@@ -6224,6 +6610,72 @@ input[type="checkbox"] {
   color: #666;
 }
 
+/* Opto22 node styling - distinct orange/amber theme */
+.tree-opto22 {
+  background: #2e2a1a;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #4a3a2a;
+}
+
+.opto22-header {
+  background: #352f25;
+}
+
+.opto22-header:hover {
+  background: #403520;
+}
+
+.device-badge.opto22 {
+  background: #92400e;
+  color: #fcd34d;
+}
+
+.opto22-status {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.opto22-status.online {
+  background: #166534;
+  color: #86efac;
+}
+
+.opto22-status.offline {
+  background: #991b1b;
+  color: #fca5a5;
+}
+
+.opto22-status.unknown {
+  background: #854d0e;
+  color: #fde047;
+}
+
+.opto22-info-bar {
+  display: flex;
+  gap: 16px;
+  padding: 6px 12px 6px 44px;
+  background: #2a261a;
+  font-size: 0.75rem;
+  color: #888;
+  border-top: 1px solid #4a3a2a;
+}
+
+.opto22-ip {
+  font-family: monospace;
+  color: #fbbf24;
+}
+
+.opto22-serial {
+  color: #888;
+}
+
+.opto22-last-seen {
+  color: #666;
+}
+
 .btn-push-config {
   display: flex;
   align-items: center;
@@ -6714,6 +7166,49 @@ input[type="checkbox"] {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.info-row .info-value.mode-crio {
+  color: #f59e0b;
+  font-weight: 500;
+}
+
+.mode-select {
+  width: 100%;
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e5e5e5;
+  font-size: 0.85rem;
+}
+
+.mode-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+/* Source and Node selectors in Add Channel modal */
+.source-select,
+.node-select {
+  width: 100%;
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e5e5e5;
+  font-size: 0.85rem;
+}
+
+.source-select:focus,
+.node-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.node-select option.offline {
+  color: #888;
+  font-style: italic;
 }
 
 /* Safety Actions Dialog */

@@ -203,6 +203,26 @@ class CRIONode:
 
 
 @dataclass
+class Opto22Node:
+    """Represents a remote Opto22 groov EPIC/RIO node discovered via MQTT"""
+    node_id: str                 # e.g., "opto22-001"
+    ip_address: str              # e.g., "192.168.1.60"
+    product_type: str            # e.g., "groov EPIC"
+    serial_number: str
+    status: str                  # "online", "offline", "unknown"
+    last_seen: str               # ISO timestamp
+    channels: int = 0            # Number of configured channels
+    modules: List[Module] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            **asdict(self),
+            "modules": [mod.to_dict() for mod in self.modules],
+            "node_type": "opto22"
+        }
+
+
+@dataclass
 class DiscoveryResult:
     """Complete discovery result"""
     success: bool
@@ -211,6 +231,7 @@ class DiscoveryResult:
     chassis: List[Chassis] = field(default_factory=list)
     standalone_devices: List[Module] = field(default_factory=list)
     crio_nodes: List[CRIONode] = field(default_factory=list)  # Remote cRIO nodes
+    opto22_nodes: List[Opto22Node] = field(default_factory=list)  # Remote Opto22 nodes
     total_channels: int = 0
     simulation_mode: bool = False
 
@@ -223,7 +244,8 @@ class DiscoveryResult:
             "total_channels": self.total_channels,
             "chassis": [ch.to_dict() for ch in self.chassis],
             "standalone_devices": [dev.to_dict() for dev in self.standalone_devices],
-            "crio_nodes": [node.to_dict() for node in self.crio_nodes]
+            "crio_nodes": [node.to_dict() for node in self.crio_nodes],
+            "opto22_nodes": [node.to_dict() for node in self.opto22_nodes]
         }
 
 
@@ -242,6 +264,9 @@ class DeviceDiscovery:
         # Track cRIO nodes that have registered via MQTT
         self._crio_nodes: Dict[str, CRIONode] = {}
         self._crio_lock = __import__('threading').Lock()
+        # Track Opto22 nodes that have registered via MQTT
+        self._opto22_nodes: Dict[str, Opto22Node] = {}
+        self._opto22_lock = __import__('threading').Lock()
 
     def register_crio_node(self, node_id: str, status_data: Dict[str, Any]):
         """
@@ -348,12 +373,118 @@ class DeviceDiscovery:
         with self._crio_lock:
             return list(self._crio_nodes.values())
 
-    def scan(self, include_crio: bool = True) -> DiscoveryResult:
+    def register_opto22_node(self, node_id: str, status_data: Dict[str, Any]):
         """
-        Scan for all connected NI devices (local and remote cRIO).
+        Register or update an Opto22 node from MQTT status message.
+
+        Called by DAQ service when receiving status from Opto22 nodes.
+
+        Args:
+            node_id: The node ID (e.g., "opto22-001")
+            status_data: Status payload from Opto22 node containing:
+                - ip_address: Node's IP address
+                - product_type: Hardware type (e.g., "groov EPIC")
+                - serial_number: Hardware serial
+                - status: "online" or "offline"
+                - channels: Number of configured channels
+                - modules: Optional list of module info
+        """
+        from datetime import datetime
+
+        with self._opto22_lock:
+            # Parse modules if provided
+            modules = []
+            for mod_data in status_data.get('modules', []):
+                mod = Module(
+                    name=mod_data.get('name', ''),
+                    product_type=mod_data.get('product_type', ''),
+                    serial_number=mod_data.get('serial_number', ''),
+                    slot=mod_data.get('slot', 0),
+                    chassis=node_id,
+                    category=mod_data.get('category', 'unknown'),
+                    description=mod_data.get('description', '')
+                )
+                # Parse channels
+                for ch_data in mod_data.get('channels', []):
+                    mod.channels.append(PhysicalChannel(
+                        name=ch_data.get('name', ''),
+                        device=mod.name,
+                        channel_type=ch_data.get('channel_type', ''),
+                        index=ch_data.get('index', 0),
+                        category=ch_data.get('category', ''),
+                        description=ch_data.get('description', '')
+                    ))
+                modules.append(mod)
+
+            self._opto22_nodes[node_id] = Opto22Node(
+                node_id=node_id,
+                ip_address=status_data.get('ip_address', 'unknown'),
+                product_type=status_data.get('product_type', 'groov EPIC'),
+                serial_number=status_data.get('serial_number', ''),
+                status=status_data.get('status', 'online'),
+                last_seen=datetime.utcnow().isoformat(),
+                channels=status_data.get('channels', 0),
+                modules=modules
+            )
+            logger.info(f"Registered Opto22 node: {node_id} ({status_data.get('status', 'online')})")
+
+    def unregister_opto22_node(self, node_id: str):
+        """Remove an Opto22 node from tracking"""
+        with self._opto22_lock:
+            if node_id in self._opto22_nodes:
+                del self._opto22_nodes[node_id]
+                logger.info(f"Unregistered Opto22 node: {node_id}")
+
+    def mark_opto22_offline(self, node_id: str):
+        """Mark an Opto22 node as offline (but don't remove it)"""
+        with self._opto22_lock:
+            if node_id in self._opto22_nodes:
+                self._opto22_nodes[node_id].status = 'offline'
+                logger.info(f"Opto22 node offline: {node_id}")
+
+    def update_opto22_heartbeat(self, node_id: str, heartbeat_data: Dict[str, Any]):
+        """
+        Update Opto22 node from heartbeat without overwriting full registration.
+
+        If the node exists with full info (modules), only update heartbeat fields.
+        If the node doesn't exist, create minimal registration.
+        """
+        from datetime import datetime
+        with self._opto22_lock:
+            if node_id in self._opto22_nodes:
+                # Existing node - only update heartbeat fields, preserve modules
+                node = self._opto22_nodes[node_id]
+                node.status = heartbeat_data.get('status', 'online')
+                node.last_seen = datetime.utcnow().isoformat()
+                # Update channel count if provided (but keep modules intact)
+                if 'channels' in heartbeat_data and not node.modules:
+                    node.channels = heartbeat_data.get('channels', 0)
+            else:
+                # New node - create minimal registration from heartbeat
+                self._opto22_nodes[node_id] = Opto22Node(
+                    node_id=node_id,
+                    ip_address=heartbeat_data.get('ip_address', 'unknown'),
+                    product_type=heartbeat_data.get('product_type', 'groov EPIC'),
+                    serial_number=heartbeat_data.get('serial_number', ''),
+                    status=heartbeat_data.get('status', 'online'),
+                    last_seen=datetime.utcnow().isoformat(),
+                    channels=heartbeat_data.get('channels', 0),
+                    modules=[]  # Will be populated when full status arrives
+                )
+                logger.info(f"Registered Opto22 node: {node_id} ({heartbeat_data.get('status', 'online')})")
+
+    def get_opto22_nodes(self) -> List[Opto22Node]:
+        """Get list of known Opto22 nodes"""
+        with self._opto22_lock:
+            return list(self._opto22_nodes.values())
+
+    def scan(self, include_crio: bool = True, include_opto22: bool = True) -> DiscoveryResult:
+        """
+        Scan for all connected NI devices and remote nodes (cRIO, Opto22).
 
         Args:
             include_crio: If True, include registered cRIO nodes in results
+            include_opto22: If True, include registered Opto22 nodes in results
 
         Returns:
             DiscoveryResult with all discovered hardware
@@ -387,6 +518,18 @@ class DeviceDiscovery:
 
             if crio_nodes:
                 result.message += f", {len(crio_nodes)} cRIO nodes ({crio_channels} remote channels)"
+
+        # Add Opto22 nodes to result
+        if include_opto22:
+            opto22_nodes = self.get_opto22_nodes()
+            result.opto22_nodes = opto22_nodes
+
+            # Add Opto22 channel count to total
+            opto22_channels = sum(node.channels for node in opto22_nodes)
+            result.total_channels += opto22_channels
+
+            if opto22_nodes:
+                result.message += f", {len(opto22_nodes)} Opto22 nodes ({opto22_channels} remote channels)"
 
         self._last_result = result
         return result

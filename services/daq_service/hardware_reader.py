@@ -174,6 +174,10 @@ class HardwareReader:
         self._reader_thread: Optional[threading.Thread] = None
         self._error_count = 0
         self._max_errors = 10  # Stop after this many consecutive errors
+        self._reader_died = False  # Flag set when reader exits due to errors
+        self._recovery_attempts = 0
+        self._max_recovery_attempts = 3
+        self._error_callback: Optional[callable] = None  # Callback when reader dies
 
         # Lock for thread safety
         self.lock = threading.Lock()
@@ -1262,7 +1266,45 @@ class HardwareReader:
 
                 # Check for too many errors
                 if self._error_count >= self._max_errors:
-                    logger.error(f"Too many consecutive errors ({self._error_count}), stopping reader")
+                    logger.error(f"Too many consecutive errors ({self._error_count}), attempting recovery...")
+                    self._reader_died = True
+
+                    # Notify via callback if registered
+                    if self._error_callback:
+                        try:
+                            self._error_callback("reader_error", {
+                                "error_count": self._error_count,
+                                "recovery_attempt": self._recovery_attempts
+                            })
+                        except Exception as cb_err:
+                            logger.error(f"Error callback failed: {cb_err}")
+
+                    # Attempt auto-recovery
+                    if self._recovery_attempts < self._max_recovery_attempts:
+                        self._recovery_attempts += 1
+                        logger.warning(f"Recovery attempt {self._recovery_attempts}/{self._max_recovery_attempts}")
+                        try:
+                            # Close and recreate tasks
+                            self._close_tasks()
+                            time.sleep(1.0)  # Brief pause before recreating
+                            self._create_tasks()
+                            self._error_count = 0
+                            self._reader_died = False
+                            logger.info("Hardware reader recovery successful")
+                            continue  # Resume reading
+                        except Exception as recovery_err:
+                            logger.error(f"Recovery failed: {recovery_err}")
+
+                    # Max recovery attempts reached - stop for good
+                    logger.critical(f"HARDWARE READER FAILED after {self._max_recovery_attempts} recovery attempts")
+                    if self._error_callback:
+                        try:
+                            self._error_callback("reader_failed", {
+                                "error_count": self._error_count,
+                                "message": "Maximum recovery attempts exceeded"
+                            })
+                        except Exception:
+                            pass
                     break
 
                 # Small sleep to prevent CPU spinning (10Hz effective read rate)
@@ -1273,11 +1315,36 @@ class HardwareReader:
                 self._error_count += 1
                 time.sleep(0.1)
 
+        self._reader_died = True
         logger.info("Background reader thread stopped")
 
     # =========================================================================
     # PUBLIC API
     # =========================================================================
+
+    def set_error_callback(self, callback: callable):
+        """Set callback for reader errors. Callback receives (event_type, details_dict)"""
+        self._error_callback = callback
+
+    def is_healthy(self) -> bool:
+        """Check if the hardware reader is healthy and running"""
+        return (
+            self._running and
+            not self._reader_died and
+            self._reader_thread is not None and
+            self._reader_thread.is_alive()
+        )
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get detailed health status of the hardware reader"""
+        return {
+            'running': self._running,
+            'thread_alive': self._reader_thread.is_alive() if self._reader_thread else False,
+            'reader_died': self._reader_died,
+            'error_count': self._error_count,
+            'recovery_attempts': self._recovery_attempts,
+            'healthy': self.is_healthy()
+        }
 
     def read_channel(self, channel_name: str) -> Optional[float]:
         """Read a single channel value (returns cached value)"""

@@ -105,7 +105,7 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
 export const useDashboardStore = defineStore('dashboard', () => {
   // System state
   const systemId = ref<string>('default')
-  const systemName = ref<string>('DCFlux')
+  const systemName = ref<string>('CZFlux')
   const mqttPrefix = ref<string>('nisystem')
 
   // Channel data
@@ -594,12 +594,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     // Get widget size based on preset
     function getWidgetSize(type: WidgetType): { w: number; h: number } {
-      const sizes = {
+      const sizes: Record<string, Record<string, { w: number; h: number }>> = {
         compact: { numeric: { w: 2, h: 1 }, led: { w: 1, h: 1 }, toggle: { w: 1, h: 1 }, setpoint: { w: 2, h: 1 } },
         normal:  { numeric: { w: 3, h: 1 }, led: { w: 1, h: 1 }, toggle: { w: 1, h: 1 }, setpoint: { w: 2, h: 1 } },
         large:   { numeric: { w: 3, h: 2 }, led: { w: 2, h: 2 }, toggle: { w: 2, h: 2 }, setpoint: { w: 3, h: 2 } }
       }
-      return sizes[opts.widgetSize][type] || { w: 3, h: 1 }
+      return sizes[opts.widgetSize]?.[type] || { w: 3, h: 1 }
     }
 
     // Calculate starting Y position (below existing widgets)
@@ -1013,7 +1013,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
       scheduler_status: { w: 4, h: 4 },
       svg_symbol: { w: 2, h: 2 },
       value_table: { w: 6, h: 8 },
-      script_monitor: { w: 6, h: 8 }
+      script_monitor: { w: 6, h: 8 },
+      crio_status: { w: 4, h: 4 },
+      latch_switch: { w: 2, h: 2 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }

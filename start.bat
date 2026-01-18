@@ -11,8 +11,8 @@ echo   NISystem - Complete Startup
 echo ================================================================================
 echo.
 
-REM Change to NISystem directory (hardcoded for shortcuts to work)
-cd /d "C:\Users\User\Documents\Projects\NISystem"
+REM Change to NISystem directory (uses script location for portability)
+cd /d "%~dp0"
 
 REM Check if Python virtual environment exists
 if not exist "venv\Scripts\python.exe" (
@@ -35,6 +35,17 @@ REM Step 0: Clean up orphaned processes from previous runs
 REM ============================================================================
 echo [0/5] Cleaning up orphaned processes...
 venv\Scripts\python.exe -c "from launcher.service_manager import cleanup_orphaned_processes; cleanup_orphaned_processes()" 2>nul
+
+REM Truncate large log files (prevent disk bloat)
+for %%F in (logs\*.log) do (
+    for %%A in ("%%F") do (
+        REM If file > 50MB (52428800 bytes), truncate it
+        if %%~zA GTR 52428800 (
+            echo   - Truncating large log file: %%F
+            echo. > "%%F"
+        )
+    )
+)
 echo.
 
 REM ============================================================================

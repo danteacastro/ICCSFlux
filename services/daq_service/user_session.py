@@ -243,7 +243,7 @@ class UserSessionManager:
             # Create default admin
             self.create_user(
                 username="admin",
-                password="admin",
+                password="iccsadmin1969",
                 role=UserRole.ADMIN,
                 display_name="Administrator"
             )

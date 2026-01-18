@@ -237,7 +237,7 @@ export function usePythonScripts() {
 
     // Remove published values from this script
     for (const key of Object.keys(publishedValues.value)) {
-      if (publishedValues.value[key].scriptId === id) {
+      if (publishedValues.value[key]?.scriptId === id) {
         delete publishedValues.value[key]
       }
     }
@@ -523,6 +523,7 @@ export function usePythonScripts() {
     executeScript(id, controller.signal).catch(error => {
       addScriptOutput(id, 'error', error.message)
       scriptStatuses.value[id] = {
+        scriptId: id,
         ...scriptStatuses.value[id],
         state: 'error',
         error: error.message
@@ -542,6 +543,7 @@ export function usePythonScripts() {
     if (controller) {
       controller.abort()
       scriptStatuses.value[id] = {
+        scriptId: id,
         ...scriptStatuses.value[id],
         state: 'stopping'
       }
@@ -794,8 +796,9 @@ except Exception as e:
           // Check for py.* published values
           if (name.startsWith('py.')) {
             const pubName = name.slice(3)
-            if (pubName in publishedValues.value) {
-              return publishedValues.value[pubName].value
+            const pv = publishedValues.value[pubName]
+            if (pv) {
+              return pv.value
             }
           }
 
@@ -807,7 +810,7 @@ except Exception as e:
           }
           return 0
         }
-        return values[name]
+        return values[name] ?? 0
       },
 
       // Check if channel exists
@@ -834,14 +837,15 @@ except Exception as e:
 
         // Check hardware channels
         if (name in timestamps) {
-          return timestamps[name]
+          return timestamps[name] ?? 0
         }
 
         // Check published values
         if (name.startsWith('py.')) {
           const pubName = name.slice(3)
-          if (pubName in publishedValues.value) {
-            return publishedValues.value[pubName].timestamp
+          const pv = publishedValues.value[pubName]
+          if (pv) {
+            return pv.timestamp
           }
         }
 
@@ -857,7 +861,7 @@ except Exception as e:
         // Check hardware channels
         if (name in values) {
           return {
-            value: values[name],
+            value: values[name] ?? 0,
             timestamp: timestamps[name] ?? 0
           }
         }
@@ -865,8 +869,8 @@ except Exception as e:
         // Check published values
         if (name.startsWith('py.')) {
           const pubName = name.slice(3)
-          if (pubName in publishedValues.value) {
-            const pv = publishedValues.value[pubName]
+          const pv = publishedValues.value[pubName]
+          if (pv) {
             return { value: pv.value, timestamp: pv.timestamp }
           }
         }

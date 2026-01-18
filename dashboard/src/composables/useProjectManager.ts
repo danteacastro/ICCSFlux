@@ -22,7 +22,10 @@ export interface ProjectFile {
   modifiedAt: string
 
   // Reference to hardware config (INI file in config/ directory)
-  configFile: string  // e.g., "system.ini"
+  configFile?: string  // e.g., "system.ini" (optional for embedded channel projects)
+
+  // Embedded channels (new format - replaces external INI file)
+  channels?: Record<string, any>
 
   // Dashboard layout (multi-page support)
   layout: {
