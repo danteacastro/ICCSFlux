@@ -128,7 +128,14 @@
       "Bash(\"C:\\\\Program Files\\\\mosquitto\\\\mosquitto_sub.exe\" -h localhost -t \"nisystem/nodes/node-001/status/system\" -C 1)",
       "Bash(\"C:\\\\Program Files\\\\mosquitto\\\\mosquitto_sub.exe\" -h localhost -t \"nisystem/nodes/node-001/project/#\" -v -C 3)",
       "Bash(\"C:\\\\Program Files\\\\mosquitto\\\\mosquitto_sub.exe\" -h localhost -t \"nisystem/#\" -v)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: cRIO command reliability + auto-push config + active interlock actions\n\n- Use QoS 1 for cRIO MQTT commands \\(reliable delivery\\)\n- Auto-push config to cRIO nodes on project load/import\n- Fix Event object bug in DashboardGrid toggle handler\n- Add active interlock actions: set_digital_output, set_analog_output,\n  stop_session, stop_acquisition \\(executes when interlock fails\\)\n- Add cRIO systemd service files and install script\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\User\\\\Documents\\\\Projects\\\\NISystem\\\\dashboard && npm run type-check 2>&1\")",
+      "Bash(npx vite:*)",
+      "Bash(wc:*)",
+      "Bash(c:/Users/User/Documents/Projects/NISystem/venv/Scripts/pip.exe install:*)",
+      "Bash(git mv:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nrefactor: Rebrand to CZFlux + role system fixes + remote nodes docs\n\nREBRANDING:\n- Rename all DCFlux references to CZFlux throughout codebase\n- Update page title, system name, and all documentation\n- Rename docs: DCFlux_*.md -> CZFlux_*.md\n\nROLE SYSTEM FIXES:\n- Standardize role names: Guest/Operator/Supervisor/Admin\n- Add backend permission checks to 14 critical MQTT handlers\n- Align frontend permission strings with backend Permission enum\n- Fix documentation role inconsistencies \\(was Viewer/Engineer\\)\n\nDOCUMENTATION:\n- Add comprehensive remote nodes chapter \\(cRIO + Opto22\\)\n- Update Python Scripting Guide with multi-hardware support\n- Add physical channel naming formats for all hardware types\n- Remove hardcoded passwords from all documentation\n- Add CZFlux_Remote_Nodes_Guide.md\n\nNEW FEATURES:\n- Add Opto22 node service \\(services/opto22_node/\\)\n- Add safety actions panel, alarm config modal components\n- Add Python console widget\n\n⚠️ REQUIRES TESTING:\n- Role-based permission enforcement \\(all 14 protected handlers\\)\n- Frontend permission checks with role fallbacks\n- Opto22 node integration\n- Multi-node data acquisition\n- All safety tab functionality\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ],
     "additionalDirectories": [
       "c:\\users\\user\\documents\\projects\\nisystem\\%temp%\\nidaqmx_pkg"
