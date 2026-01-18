@@ -302,6 +302,7 @@ function handleUnsavedChanges(choice: 'save' | 'discard' | 'cancel') {
 
 // Add Channel Modal State
 const showAddChannelModal = ref(false)
+const manualPhysicalChannel = ref('')  // For manual entry when "Enter manually" is selected
 const newChannelForm = ref({
   name: '',
   physical_channel: '',
@@ -345,6 +346,85 @@ function getAvailableNodes(sourceType: string): Array<{id: string, name: string,
     }))
   }
   return []
+}
+
+// Get available physical channels from discovery for Add Channel dropdown
+function getAvailablePhysicalChannels(): Array<{value: string, label: string, type: string}> {
+  const sourceType = newChannelForm.value.source_type
+  const nodeId = newChannelForm.value.node_id
+  const channels: Array<{value: string, label: string, type: string}> = []
+
+  if (sourceType === 'cdaq') {
+    // cDAQ: get channels from chassis/modules
+    if (discoveryResult.value?.chassis) {
+      for (const chassis of discoveryResult.value.chassis) {
+        for (const module of chassis.modules || []) {
+          for (const ch of module.channels || []) {
+            channels.push({
+              value: ch.name,
+              label: `${ch.name} (${ch.type})`,
+              type: ch.type
+            })
+          }
+        }
+      }
+    }
+    // Also check standalone devices
+    if (discoveryResult.value?.standalone_devices) {
+      for (const device of discoveryResult.value.standalone_devices) {
+        for (const ch of device.channels || []) {
+          channels.push({
+            value: ch.name,
+            label: `${ch.name} (${ch.type})`,
+            type: ch.type
+          })
+        }
+      }
+    }
+  } else if (sourceType === 'crio' && nodeId) {
+    // cRIO: get channels from selected node
+    const node = discoveryResult.value?.crio_nodes?.find((n: any) => n.node_id === nodeId)
+    if (node?.modules) {
+      for (const module of node.modules) {
+        for (const ch of module.channels || []) {
+          channels.push({
+            value: ch.name,
+            label: `${ch.name} (${ch.type})`,
+            type: ch.type
+          })
+        }
+      }
+    }
+  } else if (sourceType === 'opto22' && nodeId) {
+    // Opto22: get channels from selected node
+    const node = discoveryResult.value?.opto22_nodes?.find((n: any) => n.node_id === nodeId)
+    if (node?.modules) {
+      for (const module of node.modules) {
+        for (const ch of module.channels || []) {
+          channels.push({
+            value: ch.name,
+            label: `${ch.name} (${ch.type})`,
+            type: ch.type
+          })
+        }
+      }
+    }
+  }
+
+  return channels
+}
+
+// Check if we have discovery data for the current source type
+function hasDiscoveryData(): boolean {
+  const sourceType = newChannelForm.value.source_type
+  if (sourceType === 'cdaq') {
+    return !!(discoveryResult.value?.chassis?.length || discoveryResult.value?.standalone_devices?.length)
+  } else if (sourceType === 'crio') {
+    return !!discoveryResult.value?.crio_nodes?.length
+  } else if (sourceType === 'opto22') {
+    return !!discoveryResult.value?.opto22_nodes?.length
+  }
+  return false
 }
 
 // System Settings State
@@ -547,6 +627,8 @@ function openAddChannelModal() {
   // Default source_type based on project_mode
   const projectMode = store.status?.project_mode || 'cdaq'
 
+  // Reset form
+  manualPhysicalChannel.value = ''
   newChannelForm.value = {
     name: '',
     physical_channel: '',
@@ -562,12 +644,18 @@ function openAddChannelModal() {
   // Auto-select first available node for remote modes
   if (projectMode === 'crio' || projectMode === 'opto22') {
     const nodes = getAvailableNodes(projectMode)
-    if (nodes.length > 0) {
+    if (nodes.length > 0 && nodes[0]) {
       newChannelForm.value.node_id = nodes[0].id
     }
   }
 
   showAddChannelModal.value = true
+
+  // Auto-scan for hardware if no discovery data exists
+  if (!hasDiscoveryData() && !isScanning.value) {
+    showFeedback('info', 'Scanning for available hardware...')
+    mqtt.scanDevices()
+  }
 }
 
 function addNewChannel() {
@@ -595,9 +683,14 @@ function addNewChannel() {
     return
   }
 
+  // Handle manual entry - use manualPhysicalChannel if "__manual__" was selected
+  const physicalChannel = newChannelForm.value.physical_channel === '__manual__'
+    ? manualPhysicalChannel.value
+    : newChannelForm.value.physical_channel
+
   const config: Record<string, any> = {
     name: tagName,  // TAG is the only identifier
-    physical_channel: newChannelForm.value.physical_channel || tagName,
+    physical_channel: physicalChannel || tagName,
     channel_type: newChannelForm.value.channel_type,
     // display_name removed - use name (TAG) everywhere
     unit: newChannelForm.value.unit || getDefaultUnit(newChannelForm.value.channel_type),
@@ -891,7 +984,7 @@ function scanDevices() {
   expandedModules.value = new Set()
   expandedCrioNodes.value = new Set()
 
-  showFeedback('info', 'Scanning for NI devices...')
+  showFeedback('info', 'Discovering hardware devices...')
   mqtt.scanDevices()
   showDiscoveryPanel.value = true
 }
@@ -2541,13 +2634,13 @@ watch(() => Object.keys(store.channels), () => {
           </svg>
           Add
         </button>
-        <button class="action-btn" @click="scanDevices" :disabled="isScanning" title="Scan for NI hardware devices">
+        <button class="action-btn" @click="scanDevices" :disabled="isScanning" title="Auto-discover hardware devices">
           <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M12 6v6l4 2"/>
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+            <path d="M8 11h6M11 8v6"/>
           </svg>
           <span v-else class="spinner"></span>
-          {{ isScanning ? 'Scanning...' : 'Scan' }}
+          {{ isScanning ? 'Discovering...' : 'Auto Discovery' }}
         </button>
 
         <!-- Search -->
@@ -4280,7 +4373,7 @@ watch(() => Object.keys(store.channels), () => {
             <template v-if="isScanning">
               <div class="scanning-state">
                 <div class="spinner large"></div>
-                <p>Scanning for NI devices...</p>
+                <p>Discovering hardware devices...</p>
               </div>
             </template>
 
@@ -4600,7 +4693,7 @@ watch(() => Object.keys(store.channels), () => {
           <div class="discovery-footer">
             <button class="btn btn-secondary" @click="closeDiscoveryPanel">Cancel</button>
             <button class="btn btn-secondary" @click="scanDevices" :disabled="isScanning">
-              Rescan
+              {{ isScanning ? 'Discovering...' : 'Re-discover' }}
             </button>
             <button
               class="btn btn-primary"
@@ -4749,16 +4842,46 @@ watch(() => Object.keys(store.channels), () => {
             </div>
 
             <div class="form-row">
-              <label>Physical Channel</label>
-              <input
-                type="text"
-                v-model="newChannelForm.physical_channel"
-                :placeholder="getPhysicalChannelHint(newChannelForm.source_type)"
-              />
-              <span class="form-hint">
-                {{ newChannelForm.source_type === 'cdaq' ? 'NI-DAQmx hardware address' :
-                   newChannelForm.source_type === 'crio' ? 'Module/channel path on cRIO' :
-                   'Opto22 I/O path (type/module/channel)' }}
+              <label>
+                Physical Channel
+                <span v-if="isScanning" class="scanning-indicator">(scanning...)</span>
+              </label>
+              <!-- Show dropdown if discovery data available -->
+              <template v-if="getAvailablePhysicalChannels().length > 0">
+                <select v-model="newChannelForm.physical_channel" class="physical-channel-select">
+                  <option value="">-- Select from discovered channels --</option>
+                  <option
+                    v-for="ch in getAvailablePhysicalChannels()"
+                    :key="ch.value"
+                    :value="ch.value"
+                  >
+                    {{ ch.label }}
+                  </option>
+                  <option value="__manual__">Enter manually...</option>
+                </select>
+                <!-- Manual entry shown when "Enter manually" selected -->
+                <input
+                  v-if="newChannelForm.physical_channel === '__manual__'"
+                  type="text"
+                  v-model="manualPhysicalChannel"
+                  :placeholder="getPhysicalChannelHint(newChannelForm.source_type)"
+                  class="manual-channel-input"
+                />
+              </template>
+              <!-- Fallback to manual entry if no discovery data -->
+              <template v-else>
+                <input
+                  type="text"
+                  v-model="newChannelForm.physical_channel"
+                  :placeholder="getPhysicalChannelHint(newChannelForm.source_type)"
+                />
+                <span class="form-hint" v-if="!isScanning">
+                  No channels discovered.
+                  <button class="btn-link" @click="mqtt.scanDevices()">Scan for hardware</button>
+                </span>
+              </template>
+              <span class="form-hint" v-if="getAvailablePhysicalChannels().length > 0">
+                {{ getAvailablePhysicalChannels().length }} channels available from discovery
               </span>
             </div>
 
@@ -7099,6 +7222,59 @@ input[type="checkbox"] {
   background: rgba(255, 255, 255, 0.05);
   border-radius: 4px;
   color: #888;
+}
+
+/* Physical Channel Select in Add Channel Modal */
+.scanning-indicator {
+  font-size: 0.75rem;
+  color: #3b82f6;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+.physical-channel-select {
+  width: 100%;
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+
+.physical-channel-select:focus {
+  border-color: #3b82f6;
+  outline: none;
+}
+
+.manual-channel-input {
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+
+.manual-channel-input:focus {
+  border-color: #3b82f6;
+  outline: none;
+}
+
+.form-hint .btn-link {
+  background: none;
+  border: none;
+  color: #3b82f6;
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.form-hint .btn-link:hover {
+  color: #60a5fa;
 }
 
 /* Settings Dialog */

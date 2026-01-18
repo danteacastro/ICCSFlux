@@ -242,9 +242,9 @@ async function testConnection(deviceName: string) {
     const result = await mqtt.sendCommandWithAck('chassis/test', { name: deviceName }, 10000)
 
     if (result.success) {
-      showFeedback('success', result.message || `Connection to ${deviceName} successful`)
+      showFeedback('success', (result as any).message || `Connection to ${deviceName} successful`)
     } else {
-      showFeedback('error', result.message || result.error || `Connection to ${deviceName} failed`)
+      showFeedback('error', (result as any).message || result.error || `Connection to ${deviceName} failed`)
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Connection test timed out - check device settings')

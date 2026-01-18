@@ -57,7 +57,6 @@ provide('canEditData', canEditData)
 provide('canEditSafety', canEditSafety)
 provide('canEditAdmin', canEditAdmin)
 provide('showLoginDialog', () => { showLoginDialog.value = true })
-provide('projectLoading', projectLoading)
 
 // URL-based page selection (for multi-window support)
 function getPageFromUrl(): string | null {
@@ -157,6 +156,7 @@ const mqtt = useMqtt('nisystem')
 const showStartupDialog = ref(false)
 const hasLastProject = ref(false)
 const projectLoading = ref(false)  // True while loading project from backend
+provide('projectLoading', projectLoading)
 const STARTUP_DIALOG_KEY = 'nisystem-startup-dialog-shown'
 
 // Check if startup dialog was already shown this session
