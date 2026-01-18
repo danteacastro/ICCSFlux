@@ -627,12 +627,35 @@ function openAddChannelModal() {
   // Default source_type based on project_mode
   const projectMode = store.status?.project_mode || 'cdaq'
 
+  // Determine channel_type based on active tab
+  // If on a specific type tab, pre-select that type
+  let defaultChannelType: ChannelType = 'thermocouple'
+  if (activeTypeTab.value !== 'all') {
+    // Map tab IDs to channel types (most are 1:1, but handle special cases)
+    const tabToType: Record<string, ChannelType> = {
+      'thermocouple': 'thermocouple',
+      'rtd': 'rtd',
+      'voltage': 'voltage',
+      'current': 'current',
+      'voltage_output': 'analog_output',  // V-OUT uses analog_output type
+      'current_output': 'analog_output',  // mA-OUT uses analog_output type
+      'digital_input': 'digital_input',
+      'digital_output': 'digital_output',
+      'counter': 'counter',
+      'strain': 'strain',
+      'iepe': 'iepe',
+      'modbus': 'modbus_register',  // Default to register for Modbus tab
+      'rest_api': 'voltage'  // REST API doesn't have a specific type, default to voltage
+    }
+    defaultChannelType = tabToType[activeTypeTab.value] || 'thermocouple'
+  }
+
   // Reset form
   manualPhysicalChannel.value = ''
   newChannelForm.value = {
     name: '',
     physical_channel: '',
-    channel_type: 'thermocouple',
+    channel_type: defaultChannelType,
     // display_name removed - use name (TAG) everywhere
     unit: '',
     group: '',
@@ -4779,6 +4802,11 @@ watch(() => Object.keys(store.channels), () => {
           </div>
 
           <div class="add-channel-content">
+            <!-- Show type hint when on a specific tab -->
+            <div v-if="activeTypeTab !== 'all'" class="type-hint-banner">
+              Adding to: <strong>{{ channelTypeTabs.find(t => t.id === activeTypeTab)?.label }}</strong> channels
+            </div>
+
             <div class="form-row">
               <label>Channel Type <span class="required">*</span></label>
               <select v-model="newChannelForm.channel_type">
@@ -4796,6 +4824,9 @@ watch(() => Object.keys(store.channels), () => {
                 <option value="modbus_register">Modbus Register</option>
                 <option value="modbus_coil">Modbus Coil</option>
               </select>
+              <span v-if="activeTypeTab !== 'all'" class="form-hint">
+                Pre-selected based on current view. Change if needed.
+              </span>
             </div>
 
             <!-- Source Type Selection -->
@@ -7275,6 +7306,21 @@ input[type="checkbox"] {
 
 .form-hint .btn-link:hover {
   color: #60a5fa;
+}
+
+/* Type hint banner in Add Channel modal */
+.type-hint-banner {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.type-hint-banner strong {
+  color: #3b82f6;
 }
 
 /* Settings Dialog */
