@@ -25,6 +25,8 @@ import { useTagDependencies } from '../composables/useTagDependencies'
 import { useBackendScripts } from '../composables/useBackendScripts'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
+import OpcUaDeviceConfig from './OpcUaDeviceConfig.vue'
+import EtherNetIPDeviceConfig from './EtherNetIPDeviceConfig.vue'
 
 const store = useDashboardStore()
 const tagDeps = useTagDependencies()
@@ -110,15 +112,15 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9219': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch universal AI
 
   // ===== ANALOG OUTPUT - VOLTAGE =====
-  'NI 9260': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch ±10V
-  'NI 9262': { channel_type: 'analog_output', category: 'voltage' },   // 2-ch ±100V
-  'NI 9263': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch ±10V
-  'NI 9264': { channel_type: 'analog_output', category: 'voltage' },   // 16-ch ±10V
-  'NI 9269': { channel_type: 'analog_output', category: 'voltage' },   // 4-ch isolated ±10V
+  'NI 9260': { channel_type: 'voltage_output', category: 'voltage' },   // 4-ch ±10V
+  'NI 9262': { channel_type: 'voltage_output', category: 'voltage' },   // 2-ch ±100V
+  'NI 9263': { channel_type: 'voltage_output', category: 'voltage' },   // 4-ch ±10V
+  'NI 9264': { channel_type: 'voltage_output', category: 'voltage' },   // 16-ch ±10V
+  'NI 9269': { channel_type: 'voltage_output', category: 'voltage' },   // 4-ch isolated ±10V
 
   // ===== ANALOG OUTPUT - CURRENT =====
-  'NI 9265': { channel_type: 'analog_output', category: 'current_output' }, // 4-ch 0-20mA
-  'NI 9266': { channel_type: 'analog_output', category: 'current_output' }, // 8-ch 0-20mA
+  'NI 9265': { channel_type: 'current_output', category: 'current' }, // 4-ch 0-20mA
+  'NI 9266': { channel_type: 'current_output', category: 'current' }, // 8-ch 0-20mA
 
   // ===== RELAY MODULES =====
   // Relay modules are digital outputs - NI-DAQmx treats them as DO channels
@@ -435,6 +437,99 @@ const systemSettingsForm = ref({
   project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22'
 })
 
+// Auto-Gen Widgets Modal State
+const showAutoGenModal = ref(false)
+const autoGenForm = ref({
+  channelTypes: ['thermocouple', 'rtd', 'voltage_input', 'current_input', 'digital_input', 'digital_output', 'voltage_output', 'current_output'] as string[],
+  widgetSize: 'compact' as 'compact' | 'normal' | 'large',
+  columns: 4,
+  onlyEnabled: true
+})
+
+// Available channel types for auto-gen selection
+const availableChannelTypes = [
+  { id: 'thermocouple', label: 'Thermocouple (TC)', icon: '🌡' },
+  { id: 'rtd', label: 'RTD', icon: '🌡' },
+  { id: 'voltage_input', label: 'Voltage Input', icon: '⚡' },
+  { id: 'current_input', label: 'Current Input', icon: '〰' },
+  { id: 'voltage_output', label: 'Voltage Output', icon: '↗' },
+  { id: 'current_output', label: 'Current Output', icon: '↗' },
+  { id: 'digital_input', label: 'Digital Input', icon: '◯' },
+  { id: 'digital_output', label: 'Digital Output', icon: '●' },
+  { id: 'counter', label: 'Counter', icon: '⏱' },
+  { id: 'strain', label: 'Strain/Bridge', icon: '⚖' },
+  { id: 'modbus_register', label: 'Modbus Register', icon: '📊' },
+  { id: 'modbus_coil', label: 'Modbus Coil', icon: '🔘' },
+  { id: 'string', label: 'String', icon: '📝' }
+]
+
+// Batch Selection State - for multi-select operations
+const selectedTableChannels = ref<Set<string>>(new Set())
+
+// Computed: Check if all visible channels are selected
+const allVisibleSelected = computed(() => {
+  const visibleNames = filteredChannels.value.map(([name]) => name)
+  return visibleNames.length > 0 && visibleNames.every(name => selectedTableChannels.value.has(name))
+})
+
+// Computed: Check if some visible channels are selected
+const someVisibleSelected = computed(() => {
+  const visibleNames = filteredChannels.value.map(([name]) => name)
+  return visibleNames.some(name => selectedTableChannels.value.has(name)) && !allVisibleSelected.value
+})
+
+// Toggle all visible channels selection
+function toggleSelectAll() {
+  const visibleNames = filteredChannels.value.map(([name]) => name)
+  if (allVisibleSelected.value) {
+    // Deselect all
+    visibleNames.forEach(name => selectedTableChannels.value.delete(name))
+  } else {
+    // Select all
+    visibleNames.forEach(name => selectedTableChannels.value.add(name))
+  }
+}
+
+// Toggle individual channel selection
+function toggleChannelSelection(name: string, event: Event) {
+  event.stopPropagation()
+  if (selectedTableChannels.value.has(name)) {
+    selectedTableChannels.value.delete(name)
+  } else {
+    selectedTableChannels.value.add(name)
+  }
+}
+
+// Batch delete selected channels
+function deleteSelectedChannels() {
+  const count = selectedTableChannels.value.size
+  if (count === 0) return
+
+  const confirmed = window.confirm(
+    `Delete ${count} selected channel(s)?\n\nThis cannot be undone.`
+  )
+  if (!confirmed) return
+
+  selectedTableChannels.value.forEach(name => {
+    deleteChannel(name)
+  })
+  selectedTableChannels.value.clear()
+  showFeedback('success', `Deleted ${count} channel(s)`)
+}
+
+// Batch enable/disable selected channels
+function toggleSelectedChannelsEnabled(enable: boolean) {
+  const count = selectedTableChannels.value.size
+  if (count === 0) return
+
+  selectedTableChannels.value.forEach(name => {
+    channelEnabled.value[name] = enable
+  })
+
+  const action = enable ? 'enabled' : 'disabled'
+  showFeedback('success', `${count} channel(s) ${action}`)
+}
+
 // Project Manager State
 const showProjectManager = ref(false)
 
@@ -579,7 +674,7 @@ function cancelEditSafetyAction() {
 // Get available output channels for safety action configuration
 const outputChannels = computed(() => {
   return Object.entries(store.channels)
-    .filter(([_, config]) => config.channel_type === 'digital_output' || config.channel_type === 'analog_output')
+    .filter(([_, config]) => config.channel_type === 'digital_output' || config.channel_type === 'voltage_output' || config.channel_type === 'current_output' || config.channel_type === 'analog_output')
     .map(([name, config]) => ({
       name,
       displayName: name,  // TAG is the only identifier
@@ -635,10 +730,10 @@ function openAddChannelModal() {
     const tabToType: Record<string, ChannelType> = {
       'thermocouple': 'thermocouple',
       'rtd': 'rtd',
-      'voltage': 'voltage',
-      'current': 'current',
-      'voltage_output': 'analog_output',  // V-OUT uses analog_output type
-      'current_output': 'analog_output',  // mA-OUT uses analog_output type
+      'voltage': 'voltage_input',
+      'current': 'current_input',
+      'voltage_output': 'voltage_output',
+      'current_output': 'current_output',
       'digital_input': 'digital_input',
       'digital_output': 'digital_output',
       'counter': 'counter',
@@ -676,8 +771,9 @@ function openAddChannelModal() {
 
   // Auto-scan for hardware if no discovery data exists
   if (!hasDiscoveryData() && !isScanning.value) {
+    const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
     showFeedback('info', 'Scanning for available hardware...')
-    mqtt.scanDevices()
+    mqtt.scanDevices(mode)
   }
 }
 
@@ -742,13 +838,17 @@ function getDefaultUnit(channelType: ChannelType): string {
     rtd: '°C',
     voltage: 'V',
     current: 'mA',
+    voltage_input: 'V',
+    current_input: 'mA',
     strain: 'µε',
     iepe: 'g',
     counter: 'counts',
     resistance: 'Ω',
     digital_input: '',
     digital_output: '',
-    analog_output: 'V',
+    voltage_output: 'V',
+    current_output: 'mA',
+    analog_output: 'V',  // Legacy
     modbus_register: '',
     modbus_coil: ''
   }
@@ -756,8 +856,8 @@ function getDefaultUnit(channelType: ChannelType): string {
 }
 
 // Delete channel with dependency checking
-function deleteChannel(channelName: string, event: Event) {
-  event.stopPropagation()
+function deleteChannel(channelName: string, event?: Event) {
+  event?.stopPropagation()
 
   // Check for dependencies before deleting
   const refs = tagDeps.getTagReferences(channelName)
@@ -828,32 +928,70 @@ function saveSystemSettings() {
   showSystemSettings.value = false
 }
 
-// Auto-generate widgets
+// Open Auto-Gen Widgets modal
 function autoGenerateWidgets() {
-  const channelCount = Object.keys(store.channels).filter(name => {
+  // Reset form with all types selected by default
+  autoGenForm.value.channelTypes = availableChannelTypes.map(t => t.id)
+  showAutoGenModal.value = true
+}
+
+// Get count of channels matching current auto-gen filter
+function getAutoGenChannelCount(): number {
+  return Object.keys(store.channels).filter(name => {
     const ch = store.channels[name]
-    return ch && ch.visible !== false
+    if (!ch) return false
+    if (autoGenForm.value.onlyEnabled && channelEnabled.value[name] === false) return false
+    return autoGenForm.value.channelTypes.includes(ch.channel_type)
   }).length
+}
+
+// Execute auto-generation with current settings
+function executeAutoGenWidgets() {
+  const channelCount = getAutoGenChannelCount()
 
   if (channelCount === 0) {
-    showFeedback('info', 'No channels available to generate widgets')
+    showFeedback('info', 'No channels match the selected filters')
     return
   }
 
-  const confirmed = window.confirm(
-    `This will create ${channelCount} widgets for all visible channels.\n\n` +
-    'Widgets will be placed on the Overview page below existing widgets.\n\n' +
-    'Continue?'
-  )
-
-  if (!confirmed) return
+  // Filter channels based on settings - receives ChannelConfig from store
+  const selectedTypes = autoGenForm.value.channelTypes
+  const onlyEnabled = autoGenForm.value.onlyEnabled
+  const channelFilter = (ch: any) => {
+    if (!ch) return false
+    // Check if enabled (if onlyEnabled filter is active)
+    if (onlyEnabled && channelEnabled.value[ch.name || ''] === false) return false
+    // Check channel type
+    return selectedTypes.includes(ch.channel_type)
+  }
 
   const count = store.autoGenerateWidgets({
-    widgetSize: 'compact',  // Can be 'compact', 'normal', or 'large'
-    columns: 4              // Grid columns
+    widgetSize: autoGenForm.value.widgetSize,
+    columns: autoGenForm.value.columns,
+    channelFilter
   })
 
+  showAutoGenModal.value = false
   showFeedback('success', `Created ${count} widgets! Go to Overview page to see them.`)
+}
+
+// Toggle channel type selection in auto-gen form
+function toggleAutoGenType(typeId: string) {
+  const idx = autoGenForm.value.channelTypes.indexOf(typeId)
+  if (idx >= 0) {
+    autoGenForm.value.channelTypes.splice(idx, 1)
+  } else {
+    autoGenForm.value.channelTypes.push(typeId)
+  }
+}
+
+// Select/deselect all channel types in auto-gen form
+function setAllAutoGenTypes(select: boolean) {
+  if (select) {
+    autoGenForm.value.channelTypes = availableChannelTypes.map(t => t.id)
+  } else {
+    autoGenForm.value.channelTypes = []
+  }
 }
 
 // Discovery state
@@ -993,7 +1131,7 @@ function showFeedback(type: 'success' | 'error' | 'info', text: string, duration
   }, duration)
 }
 
-// Device discovery
+// Device discovery - respects current project mode setting
 function scanDevices() {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
@@ -1007,8 +1145,11 @@ function scanDevices() {
   expandedModules.value = new Set()
   expandedCrioNodes.value = new Set()
 
-  showFeedback('info', 'Discovering hardware devices...')
-  mqtt.scanDevices()
+  // Get current project mode from system settings or store status
+  const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
+  const modeLabel = mode === 'cdaq' ? 'cDAQ' : mode === 'crio' ? 'cRIO' : 'Opto22'
+  showFeedback('info', `Discovering ${modeLabel} devices...`)
+  mqtt.scanDevices(mode)
   showDiscoveryPanel.value = true
 }
 
@@ -1204,12 +1345,15 @@ function generateSmartChannelName(physicalChannel: string, channelType: string, 
     rtd: 'RTD',
     voltage: 'AI',
     current: 'mA',
+    current_input: 'mA',
     strain: 'STR',
     iepe: 'IEPE',
     counter: 'CTR',
     digital_input: 'DI',
     digital_output: 'DO',
-    analog_output: 'AO',
+    voltage_output: 'VO',
+    current_output: 'CO',
+    analog_output: 'AO',  // Legacy
   }
 
   const prefix = prefixes[channelType] || chanType.toUpperCase()
@@ -1228,7 +1372,9 @@ function getDefaultLimits(channelType: string): { low: number, high: number, low
     counter: { low: 0, high: 1000000 },
     digital_input: { low: 0, high: 1 },
     digital_output: { low: 0, high: 1 },
-    analog_output: { low: -10, high: 10 },
+    voltage_output: { low: -10, high: 10 },
+    current_output: { low: 0, high: 20 },
+    analog_output: { low: -10, high: 10 },  // Legacy
   }
   return limits[channelType] || { low: 0, high: 100 }
 }
@@ -1245,7 +1391,9 @@ function getDefaultGroupName(channelType: string, moduleName: string): string {
     counter: 'Counters',
     digital_input: 'Digital Inputs',
     digital_output: 'Digital Outputs',
-    analog_output: 'Analog Outputs',
+    voltage_output: 'Voltage Outputs',
+    current_output: 'Current Outputs',
+    analog_output: 'Analog Outputs',  // Legacy
   }
   return groupNames[channelType] || moduleName || 'Ungrouped'
 }
@@ -1559,21 +1707,29 @@ function applyConfigChanges() {
 // Channel type tabs - each type needs unique columns, so keep them separate
 // Using shorter labels to reduce horizontal space
 const channelTypeTabs = [
-  { id: 'all', label: 'ALL', icon: '⊞' },
-  { id: 'thermocouple', label: 'TC', icon: '🌡' },
-  { id: 'rtd', label: 'RTD', icon: '🌡' },
-  { id: 'voltage', label: 'V-IN', icon: '⚡' },
-  { id: 'current', label: 'mA-IN', icon: '〰' },
-  { id: 'voltage_output', label: 'V-OUT', icon: '↗' },
-  { id: 'current_output', label: 'mA-OUT', icon: '↗' },
-  { id: 'digital_input', label: 'DI', icon: '▢' },
-  { id: 'digital_output', label: 'DO', icon: '▣' },
-  { id: 'counter', label: 'CTR', icon: '#' },
-  { id: 'strain', label: 'STR', icon: '⚖' },
-  { id: 'iepe', label: 'IEPE', icon: '〰' },
-  { id: 'modbus', label: 'MODBUS', icon: '🔌' },
-  { id: 'rest_api', label: 'REST', icon: '🌐' },
+  { id: 'all', label: 'ALL', icon: '⊞', fullName: 'All Channels' },
+  { id: 'thermocouple', label: 'TC', icon: '🌡', fullName: 'Thermocouple Analog Input' },
+  { id: 'rtd', label: 'RTD', icon: '🌡', fullName: 'RTD Temperature Input' },
+  { id: 'voltage_input', label: 'V-IN', icon: '⚡', fullName: 'Voltage Input' },
+  { id: 'current_input', label: 'mA-IN', icon: '〰', fullName: 'Current Input (4-20mA)' },
+  { id: 'voltage_output', label: 'V-OUT', icon: '↗', fullName: 'Voltage Output' },
+  { id: 'current_output', label: 'mA-OUT', icon: '↗', fullName: 'Current Output (4-20mA)' },
+  { id: 'digital_input', label: 'DI', icon: '▢', fullName: 'Digital Input' },
+  { id: 'digital_output', label: 'DO', icon: '▣', fullName: 'Digital Output' },
+  { id: 'counter', label: 'CTR', icon: '#', fullName: 'Counter/Timer Input' },
+  { id: 'strain', label: 'STR', icon: '⚖', fullName: 'Strain Gauge / Bridge Input' },
+  { id: 'iepe', label: 'IEPE', icon: '〰', fullName: 'IEPE Accelerometer Input' },
+  { id: 'modbus', label: 'MODBUS', icon: '🔌', fullName: 'Modbus TCP/RTU Device' },
+  { id: 'rest_api', label: 'REST', icon: '🌐', fullName: 'REST API Device' },
+  { id: 'opc_ua', label: 'OPC-UA', icon: '🔗', fullName: 'OPC-UA Server' },
+  { id: 'ethernet_ip', label: 'AB PLC', icon: '🏭', fullName: 'Allen Bradley EtherNet/IP' },
 ]
+
+// Get full name for current signal type
+const activeTypeFullName = computed(() => {
+  const tab = channelTypeTabs.find(t => t.id === activeTypeTab.value)
+  return tab?.fullName || 'All Channels'
+})
 
 const activeTypeTab = ref('all')
 const searchQuery = ref('')
@@ -1592,16 +1748,26 @@ const filteredChannels = computed(() => {
         ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
       )
     } else if (activeTypeTab.value === 'voltage_output') {
-      // V-OUT: analog_output channels with voltage range
+      // V-OUT: voltage_output channels (or legacy analog_output with voltage range)
       channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'analog_output' &&
-        (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA'))
+        ch.channel_type === 'voltage_output' ||
+        (ch.channel_type === 'analog_output' && (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA')))
       )
     } else if (activeTypeTab.value === 'current_output') {
-      // mA-OUT: analog_output channels with current range
+      // mA-OUT: current_output channels (or legacy analog_output with current range)
       channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'analog_output' &&
-        ch.ao_range?.includes('mA')
+        ch.channel_type === 'current_output' ||
+        (ch.channel_type === 'analog_output' && ch.ao_range?.includes('mA'))
+      )
+    } else if (activeTypeTab.value === 'voltage_input') {
+      // V-IN: voltage_input channels (or legacy 'voltage')
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'voltage_input' || ch.channel_type === 'voltage'
+      )
+    } else if (activeTypeTab.value === 'current_input') {
+      // mA-IN: current_input channels (or legacy 'current')
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'current_input' || ch.channel_type === 'current'
       )
     } else {
       channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
@@ -1890,13 +2056,17 @@ function formatChannelType(type: ChannelType): string {
     rtd: 'RTD',
     voltage: 'AI',
     current: 'mA',
+    voltage_input: 'AI',
+    current_input: 'mA',
     strain: 'STR',
     iepe: 'IEPE',
     counter: 'CTR',
     resistance: 'RES',
     digital_input: 'DI',
     digital_output: 'DO',
-    analog_output: 'AO',
+    voltage_output: 'VO',
+    current_output: 'CO',
+    analog_output: 'AO',  // Legacy
     modbus_register: 'MB',
     modbus_coil: 'MBC',
   }
@@ -1933,7 +2103,8 @@ function openChannelConfig(channelName: string) {
     case 'rtd':
       moduleConfig = { ...DEFAULT_RTD_CONFIG }
       break
-    case 'voltage':
+    case 'voltage_input':
+    case 'voltage':  // Legacy
       moduleConfig = {
         ...DEFAULT_VOLTAGE_INPUT_CONFIG,
         // Load existing voltage config from backend
@@ -1948,7 +2119,8 @@ function openChannelConfig(channelName: string) {
         scaled_units: config.unit,
       }
       break
-    case 'current':
+    case 'current_input':
+    case 'current':  // Legacy
       moduleConfig = {
         ...DEFAULT_CURRENT_INPUT_CONFIG,
         // Load existing 4-20mA config from backend
@@ -2493,7 +2665,7 @@ const tableColumns = computed(() => {
         { key: 'units', label: 'UNITS', width: '60px' },
         { key: 'value', label: 'TEMP', width: '100px' },
       ]
-    case 'voltage':
+    case 'voltage_input':
       return [
         ...baseColumns,
         { key: 'raw_min', label: 'RAW MIN', width: '70px' },
@@ -2503,7 +2675,7 @@ const tableColumns = computed(() => {
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
-    case 'current':
+    case 'current_input':
       return [
         ...baseColumns,
         { key: 'raw_min', label: 'RAW MIN', width: '70px' },
@@ -2617,36 +2789,6 @@ watch(() => Object.keys(store.channels), () => {
 
 <template>
   <div class="config-tab">
-    <!-- Channel Type Tabs + Status Bar -->
-    <div class="type-tabs-row">
-      <div class="type-tabs">
-        <button
-          v-for="tab in channelTypeTabs"
-          :key="tab.id"
-          class="type-tab"
-          :class="{ active: activeTypeTab === tab.id }"
-          @click="activeTypeTab = tab.id"
-        >
-          <span class="tab-icon">{{ tab.icon }}</span>
-          {{ tab.label }}
-        </button>
-      </div>
-      <div class="status-compact">
-        <span class="status-item channels">{{ Object.keys(store.channels).length }} ch</span>
-        <span class="status-item mqtt" :class="{ connected: mqtt.connected.value }">
-          {{ mqtt.connected.value ? 'MQTT' : 'Disconnected' }}
-        </span>
-        <button class="theme-toggle-small" @click="toggleTheme" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
-          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-
     <!-- Search and Actions Bar -->
     <div class="actions-bar">
       <div class="left-actions">
@@ -2676,12 +2818,6 @@ watch(() => Object.keys(store.channels), () => {
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
-        <button class="action-btn" @click="openProjectManager" title="Manage projects - load existing or start new">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          </svg>
-          Projects
-        </button>
         <button class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
@@ -2726,17 +2862,9 @@ watch(() => Object.keys(store.channels), () => {
           {{ showLimitColors ? 'Limits ON' : 'Limits' }}
         </button>
 
-        <!-- Group 3: Safety (orange - draws attention) -->
-        <button class="action-btn warning" @click="openSafetyActionsModal" title="Configure safety interlocks and actions">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          Safety
-        </button>
-
         <div class="toolbar-divider"></div>
 
-        <!-- Group 4: File Operations -->
+        <!-- Group 3: File Operations -->
         <button
           class="action-btn primary"
           :class="{ dirty: configDirty }"
@@ -2755,15 +2883,15 @@ watch(() => Object.keys(store.channels), () => {
           {{ isSaving ? 'Saving...' : 'Save' }}
           <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
-        <button class="action-btn" @click="exportProject" :disabled="isExporting" title="Export project as .json file to your computer">
+        <button class="action-btn" @click="exportProject" :disabled="isExporting" title="Save a timestamped copy to config/projects/">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="17 8 12 3 7 8"/>
-            <line x1="12" y1="3" x2="12" y2="15"/>
+            <path d="M8 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/>
+            <polyline points="12 15 12 22"/>
+            <polyline points="9 19 12 22 15 19"/>
           </svg>
           Export
         </button>
-        <button class="action-btn" @click="triggerImport" title="Import project from a .json file on your computer">
+        <button class="action-btn" @click="triggerImport" title="Import a project file into config/projects/">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -2813,6 +2941,36 @@ watch(() => Object.keys(store.channels), () => {
       </div>
     </div>
 
+    <!-- Channel Type Tabs + Status Bar -->
+    <div class="type-tabs-row">
+      <div class="type-tabs">
+        <button
+          v-for="tab in channelTypeTabs"
+          :key="tab.id"
+          class="type-tab"
+          :class="{ active: activeTypeTab === tab.id }"
+          @click="activeTypeTab = tab.id"
+        >
+          <span class="tab-icon">{{ tab.icon }}</span>
+          {{ tab.label }}
+        </button>
+      </div>
+      <div class="status-compact">
+        <span class="status-item channels">{{ Object.keys(store.channels).length }} ch</span>
+        <span class="status-item mqtt" :class="{ connected: mqtt.connected.value }">
+          {{ mqtt.connected.value ? 'MQTT' : 'Disconnected' }}
+        </span>
+        <button class="theme-toggle-small" @click="toggleTheme" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
     <!-- Feedback Message -->
     <Transition name="fade">
       <div v-if="feedbackMessage" class="feedback-message" :class="feedbackMessage.type">
@@ -2835,11 +2993,57 @@ watch(() => Object.keys(store.channels), () => {
         @dirty="markDirty"
       />
 
+      <!-- OPC-UA Device Configuration (shown when OPC-UA tab is active) -->
+      <OpcUaDeviceConfig
+        v-if="activeTypeTab === 'opc_ua'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
+      <!-- EtherNet/IP Device Configuration (shown when AB PLC tab is active) -->
+      <EtherNetIPDeviceConfig
+        v-if="activeTypeTab === 'ethernet_ip'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
       <!-- Channel Table -->
+      <!-- Batch Action Bar - appears when channels are selected -->
+      <div v-if="selectedTableChannels.size > 0" class="batch-action-bar">
+        <span class="batch-count">{{ selectedTableChannels.size }} selected</span>
+        <button class="btn btn-sm" @click="toggleSelectedChannelsEnabled(true)" :disabled="!canEdit" title="Enable selected channels">
+          Enable
+        </button>
+        <button class="btn btn-sm" @click="toggleSelectedChannelsEnabled(false)" :disabled="!canEdit" title="Disable selected channels">
+          Disable
+        </button>
+        <button class="btn btn-sm btn-danger" @click="deleteSelectedChannels" :disabled="!canEdit" title="Delete selected channels">
+          Delete
+        </button>
+        <button class="btn btn-sm" @click="selectedTableChannels.clear()">
+          Clear Selection
+        </button>
+      </div>
+
       <div class="table-container" :class="{ 'with-panel': showConfigPanel }">
         <table class="channel-table">
           <thead>
-            <tr>
+            <!-- Signal Type Header Row -->
+            <tr v-if="!['modbus', 'rest_api', 'opc_ua', 'ethernet_ip'].includes(activeTypeTab)" class="signal-type-row">
+              <th :colspan="tableColumns.length + 3" class="signal-type-header">
+                {{ activeTypeFullName }}
+              </th>
+            </tr>
+            <tr class="column-headers-row" :class="{ 'has-signal-row': !['modbus', 'rest_api', 'opc_ua', 'ethernet_ip'].includes(activeTypeTab) }">
+              <th class="col-select">
+                <input
+                  type="checkbox"
+                  :checked="allVisibleSelected"
+                  :indeterminate="someVisibleSelected"
+                  @change="toggleSelectAll"
+                  title="Select all visible channels"
+                />
+              </th>
               <th
                 v-for="col in tableColumns"
                 :key="col.key"
@@ -2855,9 +3059,16 @@ watch(() => Object.keys(store.channels), () => {
             <tr
               v-for="[name, config] in filteredChannels"
               :key="name"
-              :class="['channel-row', getAlarmStatus(name), { selected: selectedChannel === name, disabled: channelEnabled[name] === false }]"
+              :class="['channel-row', getAlarmStatus(name), { selected: selectedChannel === name, disabled: channelEnabled[name] === false, 'batch-selected': selectedTableChannels.has(name) }]"
               @click="openChannelConfig(name)"
             >
+              <td class="col-select" @click.stop>
+                <input
+                  type="checkbox"
+                  :checked="selectedTableChannels.has(name)"
+                  @change="toggleChannelSelection(name, $event)"
+                />
+              </td>
               <td class="col-enable">
                 <input
                   type="checkbox"
@@ -2969,7 +3180,7 @@ watch(() => Object.keys(store.channels), () => {
                   </select>
                 </td>
               </template>
-              <template v-else-if="activeTypeTab === 'voltage'">
+              <template v-else-if="activeTypeTab === 'voltage_input'">
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
@@ -3020,7 +3231,7 @@ watch(() => Object.keys(store.channels), () => {
                   <span class="value">{{ getCurrentValue(name) }}</span>
                 </td>
               </template>
-              <template v-else-if="activeTypeTab === 'current'">
+              <template v-else-if="activeTypeTab === 'current_input'">
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
@@ -3406,7 +3617,7 @@ watch(() => Object.keys(store.channels), () => {
 
               <!-- Value column - only for tabs that don't have built-in value display -->
               <td
-                v-if="!['voltage', 'current', 'voltage_output', 'current_output', 'analog_output'].includes(activeTypeTab)"
+                v-if="!['voltage_input', 'current_input', 'voltage_output', 'current_output', 'analog_output'].includes(activeTypeTab)"
                 class="col-value"
                 :class="getAlarmStatus(name)"
               >
@@ -3470,7 +3681,7 @@ watch(() => Object.keys(store.channels), () => {
               </td>
             </tr>
             <tr v-if="filteredChannels.length === 0" class="empty-row">
-              <td :colspan="tableColumns.length + 2">
+              <td :colspan="tableColumns.length + 3">
                 <div class="empty-state">
                   <p v-if="searchQuery">No channels matching "{{ searchQuery }}"</p>
                   <p v-else>No channels configured</p>
@@ -3483,7 +3694,7 @@ watch(() => Object.keys(store.channels), () => {
               class="add-channel-row"
               @click="openAddChannelModal"
             >
-              <td :colspan="tableColumns.length + 2">
+              <td :colspan="tableColumns.length + 3">
                 <div class="add-channel-cell">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -3494,7 +3705,7 @@ watch(() => Object.keys(store.channels), () => {
             </tr>
             <!-- Hint row on ALL tab -->
             <tr v-else class="add-channel-hint-row">
-              <td :colspan="tableColumns.length + 2">
+              <td :colspan="tableColumns.length + 3">
                 <div class="add-channel-hint">
                   Select a channel type tab (TC, V-IN, DO, etc.) to add channels
                 </div>
@@ -4826,7 +5037,8 @@ watch(() => Object.keys(store.channels), () => {
                 <option value="resistance">Resistance</option>
                 <option value="digital_input">Digital Input</option>
                 <option value="digital_output">Digital Output</option>
-                <option value="analog_output">Analog Output</option>
+                <option value="voltage_output">Voltage Output</option>
+                <option value="current_output">Current Output</option>
                 <option value="modbus_register">Modbus Register</option>
                 <option value="modbus_coil">Modbus Coil</option>
               </select>
@@ -4914,7 +5126,7 @@ watch(() => Object.keys(store.channels), () => {
                 />
                 <span class="form-hint" v-if="!isScanning">
                   No channels discovered.
-                  <button class="btn-link" @click="mqtt.scanDevices()">Scan for hardware</button>
+                  <button class="btn-link" @click="scanDevices">Scan for hardware</button>
                 </span>
               </template>
               <span class="form-hint" v-if="getAvailablePhysicalChannels().length > 0">
@@ -5058,6 +5270,100 @@ watch(() => Object.keys(store.channels), () => {
             <button class="btn btn-secondary" @click="showSystemSettings = false">Cancel</button>
             <button class="btn btn-primary" @click="saveSystemSettings">
               Apply Settings
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Auto-Gen Widgets Modal -->
+    <Transition name="modal">
+      <div v-if="showAutoGenModal" class="discovery-overlay" @click.self="showAutoGenModal = false">
+        <div class="settings-dialog" style="max-width: 520px;">
+          <div class="discovery-header">
+            <h3>Auto-Generate Widgets</h3>
+            <button class="close-btn" @click="showAutoGenModal = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="settings-content">
+            <div class="auto-gen-info">
+              <strong>{{ getAutoGenChannelCount() }}</strong> channels match current filters.
+              Widgets will be placed on the Overview page.
+            </div>
+
+            <div class="settings-section">
+              <h4>Channel Types to Include</h4>
+              <div class="type-checkbox-grid">
+                <label class="type-checkbox-select-all">
+                  <button
+                    class="btn btn-sm"
+                    @click="setAllAutoGenTypes(true)"
+                  >Select All</button>
+                  <button
+                    class="btn btn-sm"
+                    @click="setAllAutoGenTypes(false)"
+                  >Clear All</button>
+                </label>
+                <label
+                  v-for="type in availableChannelTypes"
+                  :key="type.id"
+                  class="type-checkbox"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="autoGenForm.channelTypes.includes(type.id)"
+                    @change="toggleAutoGenType(type.id)"
+                  />
+                  <span class="type-icon">{{ type.icon }}</span>
+                  <span>{{ type.label }}</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h4>Options</h4>
+              <div class="form-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="autoGenForm.onlyEnabled"
+                  />
+                  Only include enabled channels
+                </label>
+              </div>
+              <div class="form-row">
+                <label>Widget Size</label>
+                <select v-model="autoGenForm.widgetSize">
+                  <option value="compact">Compact (small)</option>
+                  <option value="normal">Normal</option>
+                  <option value="large">Large</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Widgets per Row</label>
+                <select v-model.number="autoGenForm.columns">
+                  <option :value="2">2 columns</option>
+                  <option :value="3">3 columns</option>
+                  <option :value="4">4 columns</option>
+                  <option :value="6">6 columns</option>
+                  <option :value="8">8 columns</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="discovery-footer">
+            <button class="btn btn-secondary" @click="showAutoGenModal = false">Cancel</button>
+            <button
+              class="btn btn-primary"
+              @click="executeAutoGenWidgets"
+              :disabled="getAutoGenChannelCount() === 0"
+            >
+              Generate {{ getAutoGenChannelCount() }} Widgets
             </button>
           </div>
         </div>
@@ -5426,6 +5732,22 @@ watch(() => Object.keys(store.channels), () => {
   background: #0a0a14;
 }
 
+/* Signal Type Header Row - spans all columns, sticky at top */
+.signal-type-row .signal-type-header {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #666;
+  background: #0f0f1a;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1a1a2e;
+}
+
 /* Channel Type Tabs Row (tabs + status) */
 .type-tabs-row {
   display: flex;
@@ -5581,7 +5903,8 @@ watch(() => Object.keys(store.channels), () => {
   font-size: 0.75rem;
 }
 
-.channel-table th {
+/* Column headers - sticky below signal type row */
+.column-headers-row th {
   position: sticky;
   top: 0;
   z-index: 10;
@@ -5594,12 +5917,13 @@ watch(() => Object.keys(store.channels), () => {
   white-space: nowrap;
 }
 
-.channel-table th.col-actions {
-  position: sticky;
-  top: 0;
-  right: 0;
-  z-index: 20;
-  background: #0f0f1a;
+/* When signal type row is present, column headers stick below it */
+.column-headers-row.has-signal-row th {
+  top: 27px;
+}
+
+/* CONFIG column - normal column like the others */
+.column-headers-row th.col-actions {
   text-align: center;
   width: 70px;
   min-width: 70px;
@@ -5611,21 +5935,11 @@ watch(() => Object.keys(store.channels), () => {
   color: #ccc;
 }
 
+/* CONFIG data cells - normal column like the others */
 .channel-table td.col-actions {
-  position: sticky;
-  right: 0;
-  background: #0a0a14;
   text-align: center;
   width: 70px;
   min-width: 70px;
-}
-
-.channel-row:hover td.col-actions {
-  background: #1a1a2e;
-}
-
-.channel-row.selected td.col-actions {
-  background: #1e3a5f;
 }
 
 .channel-row {
@@ -5650,9 +5964,68 @@ watch(() => Object.keys(store.channels), () => {
 }
 
 /* Column styling */
+.col-select { width: 32px; text-align: center; }
 .col-enable { text-align: center; }
 .col-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 600; }
 .col-actions { width: 50px; text-align: center; }
+
+/* Batch selection styling */
+.channel-row.batch-selected {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.channel-row.batch-selected:hover {
+  background: rgba(59, 130, 246, 0.25);
+}
+
+/* Batch action bar */
+.batch-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.batch-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent, #60a5fa);
+  margin-right: 8px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  background: var(--surface-3, #334155);
+  border: 1px solid var(--border, #475569);
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-sm:hover:not(:disabled) {
+  background: var(--surface-hover, #475569);
+  color: var(--text-primary, #e2e8f0);
+}
+
+.btn-sm.btn-danger {
+  color: #f87171;
+}
+
+.btn-sm.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Source Badge - indicates which node a channel comes from */
 .source-badge {
@@ -5696,7 +6069,9 @@ watch(() => Object.keys(store.channels), () => {
 .type-badge.resistance { background: #3f3f46; color: #d4d4d8; }
 .type-badge.digital_input { background: #14532d; color: #86efac; }
 .type-badge.digital_output { background: #78350f; color: #fcd34d; }
-.type-badge.analog_output { background: #0e7490; color: #67e8f9; }
+.type-badge.voltage_output { background: #0e7490; color: #67e8f9; }
+.type-badge.current_output { background: #7c2d12; color: #fed7aa; }
+.type-badge.analog_output { background: #0e7490; color: #67e8f9; } /* Legacy */
 
 /* Value Cell */
 .col-value .value {
@@ -6988,7 +7363,9 @@ input[type="checkbox"] {
 .type-badge.iepe { background: #db2777; color: #fff; }
 .type-badge.digital_input { background: #0891b2; color: #fff; }
 .type-badge.digital_output { background: #059669; color: #fff; }
-.type-badge.analog_output { background: #d97706; color: #fff; }
+.type-badge.voltage_output { background: #d97706; color: #fff; }
+.type-badge.current_output { background: #ea580c; color: #fff; }
+.type-badge.analog_output { background: #d97706; color: #fff; } /* Legacy */
 .type-badge.counter { background: #7c3aed; color: #fff; }
 
 /* Toolbar separator */
@@ -7084,8 +7461,8 @@ input[type="checkbox"] {
   color: #60a5fa;
 }
 
-/* Delete Button in table */
-.col-actions {
+/* Delete Button in table - only for data cells, not header */
+.channel-table td.col-actions {
   display: flex;
   gap: 4px;
   justify-content: center;
@@ -7370,6 +7747,61 @@ input[type="checkbox"] {
   font-size: 0.8rem;
   color: #60a5fa;
   text-transform: uppercase;
+}
+
+/* Auto-Gen Widgets Modal */
+.auto-gen-info {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.auto-gen-info strong {
+  color: var(--accent, #60a5fa);
+  font-size: 1.1em;
+}
+
+.type-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.type-checkbox-select-all {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #334155);
+}
+
+.type-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-2, #1e293b);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.15s;
+}
+
+.type-checkbox:hover {
+  background: var(--surface-3, #334155);
+}
+
+.type-checkbox input {
+  margin: 0;
+}
+
+.type-checkbox .type-icon {
+  font-size: 1em;
 }
 
 .settings-info {

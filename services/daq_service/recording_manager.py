@@ -917,3 +917,429 @@ class RecordingManager:
         if file_path.exists():
             return str(file_path)
         return None
+
+    def read_file(self, filename: str, start_time: str = None, end_time: str = None,
+                  channels: List[str] = None, decimation: int = 1,
+                  max_samples: int = 50000) -> Dict[str, Any]:
+        """
+        Read historical data from a recording file.
+
+        Args:
+            filename: Name of the recording file (relative to base_path)
+            start_time: ISO format start time filter (optional)
+            end_time: ISO format end time filter (optional)
+            channels: List of channels to include (None = all)
+            decimation: Return every Nth sample (1 = all samples)
+            max_samples: Maximum samples to return (prevents memory issues)
+
+        Returns:
+            {
+                success: bool,
+                error: str or None,
+                filename: str,
+                channels: List[str],
+                data: List[{timestamp: str, values: Dict[str, float]}],
+                start_time: str (actual data start),
+                end_time: str (actual data end),
+                sample_count: int,
+                total_samples: int (before decimation/filtering)
+            }
+        """
+        result = {
+            "success": False,
+            "error": None,
+            "filename": filename,
+            "channels": [],
+            "data": [],
+            "start_time": None,
+            "end_time": None,
+            "sample_count": 0,
+            "total_samples": 0
+        }
+
+        # Find the file (check base path and subdirectories)
+        file_path = self._find_recording_file(filename)
+        if not file_path:
+            result["error"] = f"File not found: {filename}"
+            return result
+
+        try:
+            # Parse time filters
+            filter_start = None
+            filter_end = None
+            if start_time:
+                try:
+                    filter_start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                except ValueError:
+                    result["error"] = f"Invalid start_time format: {start_time}"
+                    return result
+            if end_time:
+                try:
+                    filter_end = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                except ValueError:
+                    result["error"] = f"Invalid end_time format: {end_time}"
+                    return result
+
+            with open(file_path, 'r', newline='') as f:
+                # Skip comment lines at the start
+                header_line = None
+                for line in f:
+                    if not line.startswith('#'):
+                        header_line = line.strip()
+                        break
+
+                if not header_line:
+                    result["error"] = "No header found in file"
+                    return result
+
+                # Parse header
+                all_columns = [col.strip() for col in header_line.split(',')]
+                if 'timestamp' not in all_columns:
+                    result["error"] = "Missing timestamp column"
+                    return result
+
+                timestamp_idx = all_columns.index('timestamp')
+                data_columns = [c for c in all_columns if c != 'timestamp']
+
+                # Filter channels if specified
+                if channels:
+                    selected_columns = [c for c in data_columns if c in channels]
+                else:
+                    selected_columns = data_columns
+
+                result["channels"] = selected_columns
+
+                # Build column index map
+                col_indices = {col: all_columns.index(col) for col in selected_columns}
+
+                # Read data rows
+                reader = csv.reader(f)
+                data = []
+                total_samples = 0
+                decimation_counter = 0
+                actual_start = None
+                actual_end = None
+
+                for row in reader:
+                    # Skip empty rows or comment rows
+                    if not row or row[0].startswith('#'):
+                        continue
+
+                    total_samples += 1
+
+                    # Parse timestamp
+                    try:
+                        ts_str = row[timestamp_idx]
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    except (ValueError, IndexError):
+                        continue
+
+                    # Apply time filter
+                    if filter_start and ts < filter_start:
+                        continue
+                    if filter_end and ts > filter_end:
+                        continue
+
+                    # Apply decimation
+                    decimation_counter += 1
+                    if decimation_counter < decimation:
+                        continue
+                    decimation_counter = 0
+
+                    # Track actual time range
+                    if actual_start is None:
+                        actual_start = ts_str
+                    actual_end = ts_str
+
+                    # Build row data
+                    values = {}
+                    for col, idx in col_indices.items():
+                        try:
+                            val = row[idx]
+                            # Try to parse as number
+                            if '.' in val:
+                                values[col] = float(val)
+                            else:
+                                values[col] = int(val)
+                        except (ValueError, IndexError):
+                            values[col] = None
+
+                    data.append({
+                        "timestamp": ts_str,
+                        "values": values
+                    })
+
+                    # Limit samples to prevent memory issues
+                    if len(data) >= max_samples:
+                        logger.warning(f"read_file: max_samples ({max_samples}) reached, truncating")
+                        break
+
+                result["data"] = data
+                result["start_time"] = actual_start
+                result["end_time"] = actual_end
+                result["sample_count"] = len(data)
+                result["total_samples"] = total_samples
+                result["success"] = True
+
+        except Exception as e:
+            logger.error(f"Error reading recording file {filename}: {e}")
+            result["error"] = str(e)
+
+        return result
+
+    def read_file_range(self, filename: str, start_sample: int = 0,
+                        end_sample: int = None, channels: List[str] = None) -> Dict[str, Any]:
+        """
+        Read a range of samples from a recording file (lazy loading for large files).
+
+        Args:
+            filename: Name of the recording file
+            start_sample: Starting sample index (0-based)
+            end_sample: Ending sample index (exclusive, None = to end)
+            channels: List of channels to include (None = all)
+
+        Returns:
+            {
+                success: bool,
+                error: str or None,
+                channels: List[str],
+                data: List[{timestamp: str, values: Dict[str, float]}],
+                start_sample: int,
+                end_sample: int,
+                total_samples: int
+            }
+        """
+        result = {
+            "success": False,
+            "error": None,
+            "filename": filename,
+            "channels": [],
+            "data": [],
+            "start_sample": start_sample,
+            "end_sample": 0,
+            "total_samples": 0
+        }
+
+        file_path = self._find_recording_file(filename)
+        if not file_path:
+            result["error"] = f"File not found: {filename}"
+            return result
+
+        try:
+            with open(file_path, 'r', newline='') as f:
+                # Skip comment lines
+                header_line = None
+                for line in f:
+                    if not line.startswith('#'):
+                        header_line = line.strip()
+                        break
+
+                if not header_line:
+                    result["error"] = "No header found in file"
+                    return result
+
+                all_columns = [col.strip() for col in header_line.split(',')]
+                timestamp_idx = all_columns.index('timestamp') if 'timestamp' in all_columns else 0
+                data_columns = [c for c in all_columns if c != 'timestamp']
+
+                if channels:
+                    selected_columns = [c for c in data_columns if c in channels]
+                else:
+                    selected_columns = data_columns
+
+                result["channels"] = selected_columns
+                col_indices = {col: all_columns.index(col) for col in selected_columns}
+
+                reader = csv.reader(f)
+                data = []
+                sample_idx = 0
+                max_samples = 10000  # Limit per request
+
+                for row in reader:
+                    if not row or row[0].startswith('#'):
+                        continue
+
+                    # Skip until start_sample
+                    if sample_idx < start_sample:
+                        sample_idx += 1
+                        continue
+
+                    # Stop at end_sample
+                    if end_sample is not None and sample_idx >= end_sample:
+                        break
+
+                    # Build row data
+                    ts_str = row[timestamp_idx] if len(row) > timestamp_idx else ""
+                    values = {}
+                    for col, idx in col_indices.items():
+                        try:
+                            val = row[idx]
+                            if '.' in val:
+                                values[col] = float(val)
+                            else:
+                                values[col] = int(val)
+                        except (ValueError, IndexError):
+                            values[col] = None
+
+                    data.append({
+                        "timestamp": ts_str,
+                        "values": values
+                    })
+
+                    sample_idx += 1
+
+                    if len(data) >= max_samples:
+                        break
+
+                # Count total samples (continue reading without storing)
+                total = sample_idx
+                for row in reader:
+                    if row and not row[0].startswith('#'):
+                        total += 1
+
+                result["data"] = data
+                result["end_sample"] = start_sample + len(data)
+                result["total_samples"] = total
+                result["success"] = True
+
+        except Exception as e:
+            logger.error(f"Error reading file range {filename}: {e}")
+            result["error"] = str(e)
+
+        return result
+
+    def get_file_info(self, filename: str) -> Dict[str, Any]:
+        """
+        Get metadata about a recording file without loading all data.
+
+        Returns:
+            {
+                success: bool,
+                error: str or None,
+                filename: str,
+                path: str,
+                size_bytes: int,
+                channels: List[str],
+                sample_count: int,
+                start_time: str,
+                end_time: str,
+                duration_seconds: float,
+                sample_rate_hz: float (estimated)
+            }
+        """
+        result = {
+            "success": False,
+            "error": None,
+            "filename": filename,
+            "path": None,
+            "size_bytes": 0,
+            "channels": [],
+            "sample_count": 0,
+            "start_time": None,
+            "end_time": None,
+            "duration_seconds": 0.0,
+            "sample_rate_hz": 0.0
+        }
+
+        file_path = self._find_recording_file(filename)
+        if not file_path:
+            result["error"] = f"File not found: {filename}"
+            return result
+
+        try:
+            result["path"] = str(file_path)
+            result["size_bytes"] = file_path.stat().st_size
+
+            with open(file_path, 'r', newline='') as f:
+                # Parse header comments for metadata
+                header_line = None
+                first_data_ts = None
+                last_data_ts = None
+
+                for line in f:
+                    if line.startswith('# Duration:'):
+                        try:
+                            result["duration_seconds"] = float(line.split(':')[1].strip().rstrip('s'))
+                        except:
+                            pass
+                    elif line.startswith('# Total Samples:') or line.startswith('# Samples:'):
+                        try:
+                            result["sample_count"] = int(line.split(':')[1].strip())
+                        except:
+                            pass
+                    elif line.startswith('# Effective Rate:'):
+                        try:
+                            rate_str = line.split(':')[1].strip().split()[0]
+                            result["sample_rate_hz"] = float(rate_str)
+                        except:
+                            pass
+                    elif not line.startswith('#'):
+                        header_line = line.strip()
+                        break
+
+                if header_line:
+                    columns = [col.strip() for col in header_line.split(',')]
+                    result["channels"] = [c for c in columns if c != 'timestamp']
+
+                    # Read first data row for start_time
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if row and not row[0].startswith('#'):
+                            first_data_ts = row[0]
+                            break
+
+                    # Read last few rows for end_time (seek to near end for efficiency)
+                    # For large files, this is more efficient than reading all rows
+                    f.seek(0, 2)  # Seek to end
+                    file_size = f.tell()
+
+                    if file_size > 10000:
+                        f.seek(max(0, file_size - 10000))  # Back up 10KB
+                        f.readline()  # Skip partial line
+
+                    for line in f:
+                        if line.strip() and not line.startswith('#'):
+                            parts = line.strip().split(',')
+                            if parts:
+                                last_data_ts = parts[0]
+
+                result["start_time"] = first_data_ts
+                result["end_time"] = last_data_ts
+
+                # Calculate duration if not in metadata
+                if result["duration_seconds"] == 0.0 and first_data_ts and last_data_ts:
+                    try:
+                        start = datetime.fromisoformat(first_data_ts.replace('Z', '+00:00'))
+                        end = datetime.fromisoformat(last_data_ts.replace('Z', '+00:00'))
+                        result["duration_seconds"] = (end - start).total_seconds()
+                    except:
+                        pass
+
+                result["success"] = True
+
+        except Exception as e:
+            logger.error(f"Error getting file info {filename}: {e}")
+            result["error"] = str(e)
+
+        return result
+
+    def _find_recording_file(self, filename: str) -> Optional[Path]:
+        """Find a recording file by name, checking base path and subdirectories"""
+        # Check if it's an absolute path
+        if os.path.isabs(filename):
+            path = Path(filename)
+            if path.exists():
+                return path
+            return None
+
+        # Check base path directly
+        base = Path(self.config.base_path)
+        direct_path = base / filename
+        if direct_path.exists():
+            return direct_path
+
+        # Search subdirectories
+        for f in base.glob(f"**/{filename}"):
+            return f
+
+        return None

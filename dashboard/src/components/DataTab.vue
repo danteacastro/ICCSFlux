@@ -4,11 +4,20 @@ import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useProjectFiles } from '../composables/useProjectFiles'
+import { useAzureIot } from '../composables/useAzureIot'
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
 const pythonScripts = usePythonScripts()
 const projectFiles = useProjectFiles()
+const azureIot = useAzureIot()
+
+// Azure IoT configuration state
+const showAzureConfig = ref(false)
+const azureConnectionString = ref('')
+const azureChannels = ref<string[]>([])
+const azureBatchSize = ref(10)
+const azureBatchInterval = ref(1000)
 
 // Permission-based edit control (injected from App.vue)
 const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(true))
@@ -327,6 +336,52 @@ function downloadFile(filename: string) {
   }
 }
 
+// Azure IoT Hub methods
+function openAzureConfig() {
+  // Load current config into form
+  azureChannels.value = [...azureIot.config.value.channels]
+  azureBatchSize.value = azureIot.config.value.batch_size
+  azureBatchInterval.value = azureIot.config.value.batch_interval_ms
+  showAzureConfig.value = true
+}
+
+function saveAzureConfig() {
+  const config: Record<string, unknown> = {
+    channels: azureChannels.value,
+    batch_size: azureBatchSize.value,
+    batch_interval_ms: azureBatchInterval.value,
+    enabled: azureIot.isEnabled.value,
+  }
+
+  // Only include connection string if provided (non-empty)
+  if (azureConnectionString.value.trim()) {
+    config.connection_string = azureConnectionString.value.trim()
+  }
+
+  azureIot.updateConfig(config)
+  showFeedback('info', 'Saving Azure IoT configuration...')
+  showAzureConfig.value = false
+  azureConnectionString.value = '' // Clear for security
+}
+
+function toggleAzureStreaming() {
+  if (azureIot.isEnabled.value) {
+    azureIot.stop()
+    showFeedback('info', 'Stopping Azure IoT streaming...')
+  } else {
+    azureIot.start()
+    showFeedback('info', 'Starting Azure IoT streaming...')
+  }
+}
+
+function selectAllAzureChannels() {
+  azureChannels.value = availableChannels.value.map(ch => ch.name)
+}
+
+function clearAzureChannels() {
+  azureChannels.value = []
+}
+
 // Cleanup on unmount
 let unsubscribeProjectLoaded: (() => void) | null = null
 
@@ -364,6 +419,7 @@ onMounted(() => {
   if (mqtt.connected.value) {
     mqtt.getRecordingConfig()
     mqtt.listRecordedFiles()
+    azureIot.refreshConfig()
   }
 
   // Subscribe to project loaded events - reload config when a new project is loaded
@@ -557,8 +613,8 @@ const scheduleDayLabels = [
               </select>
             </div>
             <div class="form-group" style="flex: 1;">
-              <label>Decimation</label>
-              <input type="number" v-model.number="recordingConfig.decimation" min="1" max="100" :disabled="configLocked" />
+              <label>Decimal Points</label>
+              <input type="number" v-model.number="recordingConfig.decimation" min="1" max="100" :disabled="configLocked" title="Precision for recorded values" />
             </div>
           </div>
 
@@ -1057,6 +1113,66 @@ const scheduleDayLabels = [
           </div>
         </div>
 
+        <!-- Cloud Streaming Section -->
+        <div class="settings-section cloud-section">
+          <h3>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+            </svg>
+            Cloud Streaming
+          </h3>
+
+          <div class="cloud-destinations">
+            <!-- CSV Recording (always available) -->
+            <div class="destination-item">
+              <div class="destination-header">
+                <label class="destination-toggle">
+                  <input type="checkbox" checked disabled />
+                  <span class="toggle-label">CSV Recording</span>
+                </label>
+                <span class="destination-status active">Always On</span>
+              </div>
+              <p class="destination-desc">Local file recording (configured above)</p>
+            </div>
+
+            <!-- Azure IoT Hub -->
+            <div class="destination-item" :class="{ unavailable: !azureIot.available.value }">
+              <div class="destination-header">
+                <label class="destination-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="azureIot.isEnabled.value"
+                    :disabled="!azureIot.hasConnectionString.value || configLocked"
+                    @change="toggleAzureStreaming"
+                  />
+                  <span class="toggle-label">Azure IoT Hub</span>
+                </label>
+                <span
+                  class="destination-status"
+                  :class="{
+                    active: azureIot.isConnected.value,
+                    warning: azureIot.hasConnectionString.value && !azureIot.isConnected.value,
+                    inactive: !azureIot.hasConnectionString.value
+                  }"
+                >
+                  {{ azureIot.isConnected.value ? 'Connected' : (azureIot.hasConnectionString.value ? 'Disconnected' : 'Not Configured') }}
+                </span>
+              </div>
+              <p class="destination-desc">
+                Real-time telemetry to Azure IoT Hub
+                <span v-if="!azureIot.available.value" class="sdk-warning">(SDK not installed)</span>
+              </p>
+              <button
+                class="btn btn-sm btn-secondary"
+                @click="openAzureConfig"
+                :disabled="!azureIot.available.value"
+              >
+                Configure
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-actions">
           <button class="btn btn-secondary" @click="loadRecordedFiles">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1147,6 +1263,29 @@ const scheduleDayLabels = [
             <span class="info-value">{{ store.status.scan_rate_hz || '--' }} Hz</span>
           </div>
         </div>
+
+        <!-- Azure IoT Hub Status -->
+        <div class="info-section" v-if="azureIot.available.value && azureIot.hasConnectionString.value">
+          <h3>Azure IoT Hub</h3>
+          <div class="info-item">
+            <span class="info-label">Status:</span>
+            <span class="info-value" :class="{ active: azureIot.isConnected.value }">
+              {{ azureIot.isConnected.value ? 'Connected' : 'Disconnected' }}
+            </span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Messages:</span>
+            <span class="info-value">{{ azureIot.stats.value.messages_sent.toLocaleString() }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Samples:</span>
+            <span class="info-value">{{ azureIot.stats.value.samples_sent.toLocaleString() }}</span>
+          </div>
+          <div class="info-item" v-if="azureIot.stats.value.last_error">
+            <span class="info-label">Error:</span>
+            <span class="info-value error">{{ azureIot.stats.value.last_error }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1223,6 +1362,118 @@ const scheduleDayLabels = [
 
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="showFileBrowser = false">Close</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Azure IoT Configuration Modal -->
+    <Transition name="modal">
+      <div v-if="showAzureConfig" class="modal-overlay" @click.self="showAzureConfig = false">
+        <div class="azure-config-modal">
+          <div class="modal-header">
+            <h3>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+              </svg>
+              Azure IoT Hub Configuration
+            </h3>
+            <button class="close-btn" @click="showAzureConfig = false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="modal-content azure-config-content">
+            <!-- Connection String -->
+            <div class="form-group">
+              <label>Device Connection String</label>
+              <input
+                type="password"
+                v-model="azureConnectionString"
+                placeholder="HostName=xxx.azure-devices.net;DeviceId=xxx;SharedAccessKey=xxx"
+                class="connection-string-input"
+              />
+              <p class="field-hint">
+                {{ azureIot.hasConnectionString.value ? 'Connection string configured. Enter new value to update.' : 'Get this from Azure Portal > IoT Hub > Devices > Your Device' }}
+              </p>
+            </div>
+
+            <!-- Batch Settings -->
+            <div class="form-row">
+              <div class="form-group">
+                <label>Batch Size</label>
+                <input type="number" v-model.number="azureBatchSize" min="1" max="100" />
+                <p class="field-hint">Samples per message</p>
+              </div>
+              <div class="form-group">
+                <label>Batch Interval (ms)</label>
+                <input type="number" v-model.number="azureBatchInterval" min="100" max="60000" step="100" />
+                <p class="field-hint">Max time between sends</p>
+              </div>
+            </div>
+
+            <!-- Channel Selection -->
+            <div class="form-group">
+              <label>
+                Channels to Stream
+                <span class="channel-count">({{ azureChannels.length }} selected)</span>
+              </label>
+              <div class="channel-actions">
+                <button class="btn btn-xs" @click="selectAllAzureChannels">Select All</button>
+                <button class="btn btn-xs" @click="clearAzureChannels">Clear</button>
+              </div>
+              <div class="azure-channel-list">
+                <label
+                  v-for="ch in availableChannels"
+                  :key="ch.name"
+                  class="azure-channel-item"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="azureChannels.includes(ch.name)"
+                    @change="azureChannels.includes(ch.name)
+                      ? azureChannels.splice(azureChannels.indexOf(ch.name), 1)
+                      : azureChannels.push(ch.name)"
+                  />
+                  <span>{{ ch.name }}</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Status Display -->
+            <div class="azure-status-box" v-if="azureIot.hasConnectionString.value">
+              <div class="status-row">
+                <span class="status-label">Connection:</span>
+                <span class="status-value" :class="{ connected: azureIot.isConnected.value }">
+                  {{ azureIot.isConnected.value ? 'Connected' : 'Disconnected' }}
+                </span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Messages Sent:</span>
+                <span class="status-value">{{ azureIot.stats.value.messages_sent.toLocaleString() }}</span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Samples Sent:</span>
+                <span class="status-value">{{ azureIot.stats.value.samples_sent.toLocaleString() }}</span>
+              </div>
+              <div class="status-row" v-if="azureIot.stats.value.samples_dropped > 0">
+                <span class="status-label">Samples Dropped:</span>
+                <span class="status-value error">{{ azureIot.stats.value.samples_dropped.toLocaleString() }}</span>
+              </div>
+              <div class="status-row" v-if="azureIot.stats.value.last_error">
+                <span class="status-label">Last Error:</span>
+                <span class="status-value error">{{ azureIot.stats.value.last_error }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="showAzureConfig = false">Cancel</button>
+            <button class="btn btn-primary" @click="saveAzureConfig" :disabled="azureIot.isLoading.value">
+              {{ azureIot.isLoading.value ? 'Saving...' : 'Save Configuration' }}
+            </button>
           </div>
         </div>
       </div>
@@ -2619,5 +2870,235 @@ const scheduleDayLabels = [
   border-radius: 4px;
   font-size: 0.65rem;
   font-weight: 700;
+}
+
+/* Cloud Streaming Section */
+.cloud-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-section h3 svg {
+  color: #3b82f6;
+}
+
+.cloud-destinations {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.destination-item {
+  padding: 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.destination-item.unavailable {
+  opacity: 0.5;
+}
+
+.destination-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.destination-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.destination-toggle input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.destination-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+.toggle-label {
+  font-weight: 600;
+  color: #e5e7eb;
+  font-size: 0.9rem;
+}
+
+.destination-status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+
+.destination-status.active {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.destination-status.warning {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+}
+
+.destination-status.inactive {
+  background: rgba(107, 114, 128, 0.2);
+  color: #9ca3af;
+}
+
+.destination-desc {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-bottom: 8px;
+}
+
+.sdk-warning {
+  color: #f59e0b;
+  font-style: italic;
+}
+
+.destination-item .btn-sm {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+}
+
+/* Azure Config Modal */
+.azure-config-modal {
+  background: #12121e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.azure-config-modal .modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.azure-config-modal .modal-header h3 svg {
+  color: #3b82f6;
+}
+
+.azure-config-content {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.connection-string-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.field-hint {
+  font-size: 0.7rem;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.channel-count {
+  font-size: 0.75rem;
+  color: #6b7280;
+  font-weight: 400;
+}
+
+.channel-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.btn-xs {
+  padding: 2px 8px;
+  font-size: 0.7rem;
+}
+
+.azure-channel-list {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px;
+}
+
+.azure-channel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.azure-channel-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.azure-channel-item input {
+  cursor: pointer;
+}
+
+.azure-status-box {
+  padding: 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.azure-status-box .status-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.azure-status-box .status-row:last-child {
+  border-bottom: none;
+}
+
+.azure-status-box .status-label {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.azure-status-box .status-value {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.azure-status-box .status-value.connected {
+  color: #22c55e;
+}
+
+.azure-status-box .status-value.error {
+  color: #ef4444;
+}
+
+/* Info panel error value */
+.info-value.error {
+  color: #ef4444;
+  font-size: 0.7rem;
+  word-break: break-word;
 }
 </style>

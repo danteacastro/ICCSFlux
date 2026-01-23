@@ -16,3 +16,10 @@ scipy>=1.7.0
 
 # Utilities
 python-dateutil>=2.8.0
+
+# Industrial protocols (optional - for specific integrations)
+opcua>=0.98.0          # OPC-UA server/client communication
+pycomm3>=1.2.0         # Allen Bradley EtherNet/IP (ControlLogix/CompactLogix)
+
+# Cloud integration (optional)
+azure-iot-device>=2.12.0   # Azure IoT Hub telemetry streaming

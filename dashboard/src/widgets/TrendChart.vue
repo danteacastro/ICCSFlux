@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { useHistoricalData, type RecordingFile, type HistoricalData } from '../composables/useHistoricalData'
 import uPlot, { type AlignedData } from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import type { ChartUpdateMode, ChartToolMode, ChartPlotStyle, ChartYAxis, ChartCursor } from '../types'
+import type { ChartUpdateMode, ChartToolMode, ChartPlotStyle, ChartYAxis, ChartCursor, ChartThreshold } from '../types'
+
+export type ChartMode = 'time' | 'xy'
 
 const props = defineProps<{
   widgetId: string
   channels: string[]
   timeRange?: number        // seconds (X-axis range)
   label?: string            // Custom title (defaults to "Trend")
+  // XY mode: plot channels[0] vs channels[1] instead of time vs channels
+  chartMode?: ChartMode     // 'time' (default) or 'xy'
   // LabVIEW-style features
   historySize?: number      // Max points to keep (default 1024)
   updateMode?: ChartUpdateMode  // strip, scope, sweep
@@ -28,6 +33,11 @@ const props = defineProps<{
   plotStyles?: ChartPlotStyle[]
   // Cursors
   cursors?: ChartCursor[]
+  // Threshold/reference lines
+  thresholds?: ChartThreshold[]
+  // Historical mode
+  historicalMode?: boolean  // If true, show historical data instead of live
+  historicalFile?: string   // Selected recording file
 }>()
 
 const emit = defineEmits<{
@@ -39,6 +49,15 @@ const emit = defineEmits<{
 }>()
 
 const store = useDashboardStore()
+const historical = useHistoricalData()
+
+// Historical mode state
+const isHistoricalMode = ref(props.historicalMode ?? false)
+const showRecordingSelector = ref(false)
+const selectedRecordingFile = ref<string | null>(props.historicalFile ?? null)
+const historicalDataLoaded = ref<HistoricalData | null>(null)
+const isLoadingHistorical = ref(false)
+const historicalScrubPosition = ref(0) // 0-1 scrubber position
 
 const chartContainer = ref<HTMLDivElement | null>(null)
 let chart: uPlot | null = null
@@ -77,12 +96,27 @@ const timeRangeOptions = [
 ]
 const activeTimeRange = ref(props.timeRange || 300)
 
+// Custom time range input
+const showCustomTimeInput = ref(false)
+const customTimeInput = ref('')
+const customTimeInputRef = ref<HTMLInputElement | null>(null)
+
+// Context menu state
+const showContextMenu = ref(false)
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+
 // Data buffer: [timestamps, ...channelData]
 const dataBuffer = ref<(number | null)[][]>([[]])
 const maxPoints = computed(() => props.historySize || 1024)
 
 // Sweep mode position tracking
 const sweepPosition = ref(0)
+
+// XY mode computed properties
+const isXYMode = computed(() => props.chartMode === 'xy')
+const xChannel = computed(() => isXYMode.value ? props.channels[0] : null)
+const yChannel = computed(() => isXYMode.value ? props.channels[1] : null)
 
 // Default channel colors
 const defaultColors = [
@@ -139,26 +173,64 @@ function initChart() {
   if (rect.width === 0 || rect.height === 0) return
 
   // Initialize data with empty arrays
-  dataBuffer.value = [[], ...props.channels.map(() => [])]
+  if (isXYMode.value) {
+    // XY mode: [x_values, y_values]
+    dataBuffer.value = [[], []]
+  } else {
+    dataBuffer.value = [[], ...props.channels.map(() => [])]
+  }
   sweepPosition.value = 0
 
-  const series: uPlot.Series[] = [
-    { label: 'Time' },
-    ...props.channels.map((ch, i) => {
-      const visible = isChannelVisible(ch)
-      return {
-        label: ch,  // TAG is the only identifier
-        stroke: getChannelColor(ch, i),
-        width: getChannelLineWidth(ch),
-        show: visible,
-        spanGaps: true,
+  // Build series based on mode
+  let series: uPlot.Series[]
+
+  if (isXYMode.value) {
+    // XY mode: X channel vs Y channel
+    series = [
+      {
+        label: xChannel.value || 'X',
         value: (_self: uPlot, rawValue: number | null) => {
           if (rawValue === null || rawValue === undefined) return '--'
           return rawValue.toFixed(2)
         }
+      },
+      {
+        label: yChannel.value || 'Y',
+        stroke: getChannelColor(yChannel.value || '', 0),
+        width: 1.5,
+        show: true,
+        spanGaps: false,  // Don't connect discontinuous points in XY
+        value: (_self: uPlot, rawValue: number | null) => {
+          if (rawValue === null || rawValue === undefined) return '--'
+          return rawValue.toFixed(2)
+        },
+        points: {
+          show: true,
+          size: 4,
+          fill: getChannelColor(yChannel.value || '', 0)
+        }
       }
-    })
-  ]
+    ]
+  } else {
+    // Time mode: Time vs all channels
+    series = [
+      { label: 'Time' },
+      ...props.channels.map((ch, i) => {
+        const visible = isChannelVisible(ch)
+        return {
+          label: ch,  // TAG is the only identifier
+          stroke: getChannelColor(ch, i),
+          width: getChannelLineWidth(ch),
+          show: visible,
+          spanGaps: true,
+          value: (_self: uPlot, rawValue: number | null) => {
+            if (rawValue === null || rawValue === undefined) return '--'
+            return rawValue.toFixed(2)
+          }
+        }
+      })
+    ]
+  }
 
   const showGrid = props.showGrid !== false
   const gridStyle = showGrid ? { stroke: '#333', width: 1 } : { show: false }
@@ -167,32 +239,66 @@ function initChart() {
   const yAxisAuto = localYAxisAuto.value
 
   // Support for multiple Y-axes
-  const axes: uPlot.Axis[] = [
-    // X-axis
-    {
-      stroke: '#666',
-      grid: gridStyle as any,
-      ticks: { stroke: '#444', width: 1 },
-      font: '10px sans-serif',
-      labelFont: '10px sans-serif',
-      values: (_self: uPlot, splits: number[]) => {
-        return splits.map(v => {
-          const d = new Date(v * 1000)
-          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        })
+  let axes: uPlot.Axis[]
+
+  if (isXYMode.value) {
+    // XY mode: both axes are value axes
+    axes = [
+      // X-axis (channel values, not time)
+      {
+        stroke: '#666',
+        grid: gridStyle as any,
+        ticks: { stroke: '#444', width: 1 },
+        font: '10px sans-serif',
+        labelFont: '10px sans-serif',
+        label: xChannel.value || 'X',
+        labelSize: 16,
+        values: (_self: uPlot, splits: number[]) => {
+          return splits.map(v => v.toFixed(1))
+        }
+      },
+      // Y-axis (channel values)
+      {
+        stroke: '#666',
+        grid: gridStyle as any,
+        ticks: { stroke: '#444', width: 1 },
+        font: '10px sans-serif',
+        labelFont: '10px sans-serif',
+        label: yChannel.value || 'Y',
+        labelSize: 16,
+        size: 50,
+        side: 3,  // left
       }
-    },
-    // Primary Y-axis (left)
-    {
-      stroke: '#666',
-      grid: gridStyle as any,
-      ticks: { stroke: '#444', width: 1 },
-      font: '10px sans-serif',
-      labelFont: '10px sans-serif',
-      size: 50,
-      side: 3,  // left
-    }
-  ]
+    ]
+  } else {
+    // Time mode: standard axes
+    axes = [
+      // X-axis
+      {
+        stroke: '#666',
+        grid: gridStyle as any,
+        ticks: { stroke: '#444', width: 1 },
+        font: '10px sans-serif',
+        labelFont: '10px sans-serif',
+        values: (_self: uPlot, splits: number[]) => {
+          return splits.map(v => {
+            const d = new Date(v * 1000)
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          })
+        }
+      },
+      // Primary Y-axis (left)
+      {
+        stroke: '#666',
+        grid: gridStyle as any,
+        ticks: { stroke: '#444', width: 1 },
+        font: '10px sans-serif',
+        labelFont: '10px sans-serif',
+        size: 50,
+        side: 3,  // left
+      }
+    ]
+  }
 
   // Add secondary Y-axis if configured
   if (props.yAxes && props.yAxes.length > 1) {
@@ -212,12 +318,41 @@ function initChart() {
   }
 
   // Build scales
-  const scales: uPlot.Scales = {
-    x: { time: true }
+  const scales: uPlot.Scales = {}
+
+  if (isXYMode.value) {
+    // XY mode: both axes are value scales (not time)
+    scales.x = {
+      auto: true,
+      time: false,
+      range: (u: uPlot, dataMin: number | null, dataMax: number | null) => {
+        if (dataMin === null || dataMax === null || dataMin === dataMax) {
+          return [0, 100]
+        }
+        const range = dataMax - dataMin
+        const padding = range * 0.1 || 1
+        return [dataMin - padding, dataMax + padding]
+      }
+    }
+  } else {
+    scales.x = { time: true }
   }
 
   if (yAxisAuto) {
-    scales.y = { auto: true }
+    // Auto-scale with sensible default range when no data
+    scales.y = {
+      auto: true,
+      range: (u: uPlot, dataMin: number | null, dataMax: number | null) => {
+        // If no data, use default range 0-100
+        if (dataMin === null || dataMax === null || dataMin === dataMax) {
+          return [0, 100]
+        }
+        // Add 10% padding to auto range
+        const range = dataMax - dataMin
+        const padding = range * 0.1 || 1
+        return [dataMin - padding, dataMax + padding]
+      }
+    }
   } else {
     scales.y = {
       auto: false,
@@ -268,6 +403,11 @@ function initChart() {
             updateCursorValues(u)
           }
         }
+      ],
+      draw: [
+        (u) => {
+          drawThresholdLines(u)
+        }
       ]
     },
     scales,
@@ -299,6 +439,66 @@ function updateCursorValues(u: uPlot) {
   }
 }
 
+// ========== THRESHOLD/REFERENCE LINES ==========
+
+function drawThresholdLines(u: uPlot) {
+  if (!props.thresholds || props.thresholds.length === 0) return
+
+  const ctx = u.ctx
+  const { left, top, width, height } = u.bbox
+
+  ctx.save()
+
+  for (const threshold of props.thresholds) {
+    // Convert Y value to pixel position
+    const yPos = u.valToPos(threshold.value, 'y', true)
+
+    // Skip if outside visible area
+    if (yPos < top || yPos > top + height) continue
+
+    // Set line style
+    ctx.strokeStyle = threshold.color || '#ef4444'
+    ctx.lineWidth = 1
+
+    // Set dash pattern
+    if (threshold.style === 'dotted') {
+      ctx.setLineDash([2, 4])
+    } else if (threshold.style === 'dashed' || !threshold.style) {
+      ctx.setLineDash([6, 4])
+    } else {
+      ctx.setLineDash([])
+    }
+
+    // Draw the line
+    ctx.beginPath()
+    ctx.moveTo(left, yPos)
+    ctx.lineTo(left + width, yPos)
+    ctx.stroke()
+
+    // Draw label if provided
+    if (threshold.label) {
+      ctx.setLineDash([])
+      ctx.font = '10px sans-serif'
+      ctx.fillStyle = threshold.color || '#ef4444'
+
+      // Position label at right edge with padding
+      const labelWidth = ctx.measureText(threshold.label).width
+      const labelX = left + width - labelWidth - 4
+      const labelY = yPos - 3
+
+      // Draw background for readability
+      ctx.fillStyle = 'rgba(13, 13, 26, 0.8)'
+      ctx.fillRect(labelX - 2, labelY - 10, labelWidth + 4, 12)
+
+      // Draw label text
+      ctx.fillStyle = threshold.color || '#ef4444'
+      ctx.fillText(threshold.label, labelX, labelY)
+    }
+  }
+
+  ctx.restore()
+}
+
 function updateData() {
   if (isPaused.value) return
 
@@ -309,6 +509,41 @@ function updateData() {
 
   if (props.channels.length === 0) return
 
+  // XY mode: plot channel[0] vs channel[1]
+  if (isXYMode.value) {
+    if (props.channels.length < 2) return
+
+    const xChannel = props.channels[0]!
+    const yChannel = props.channels[1]!
+    const xVal = store.values[xChannel]?.value ?? null
+    const yVal = store.values[yChannel]?.value ?? null
+
+    // Only add point if both values are valid
+    if (xVal !== null && yVal !== null) {
+      buffer[0]?.push(xVal)
+      buffer[1]?.push(yVal)
+
+      // Limit max points (XY mode keeps more history for patterns)
+      const xyMaxPoints = maxPoints.value * 2
+      while (buffer[0] && buffer[0].length > xyMaxPoints) {
+        buffer[0].shift()
+        buffer[1]?.shift()
+      }
+
+      // Update chart
+      if (chart && buffer[0] && buffer[0].length > 0) {
+        // For XY charts, sort by X value for proper line drawing
+        const combined = buffer[0].map((x, i) => ({ x, y: buffer[1]?.[i] ?? null }))
+        combined.sort((a, b) => (a.x ?? 0) - (b.x ?? 0))
+        buffer[0] = combined.map(p => p.x)
+        buffer[1] = combined.map(p => p.y)
+        chart.setData(buffer as AlignedData)
+      }
+    }
+    return
+  }
+
+  // Time mode: standard behavior
   // Add new point
   buffer[0]?.push(now)
   props.channels.forEach((ch, i) => {
@@ -518,6 +753,73 @@ function goLive() {
   viewEnd.value = activeTimeRange.value
 }
 
+// ========== CUSTOM TIME RANGE INPUT ==========
+
+function openCustomTimeInput() {
+  showCustomTimeInput.value = true
+  // Pre-fill with current range in friendly format
+  customTimeInput.value = formatSecondsToInput(activeTimeRange.value)
+  nextTick(() => {
+    customTimeInputRef.value?.focus()
+    customTimeInputRef.value?.select()
+  })
+}
+
+function formatSecondsToInput(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  return `${Math.round(seconds / 3600)}h`
+}
+
+function parseTimeInput(input: string): number | null {
+  const trimmed = input.trim().toLowerCase()
+  if (!trimmed) return null
+
+  // Match number with optional unit (s, m, h)
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)?$/)
+  if (!match) return null
+
+  const value = parseFloat(match[1]!)
+  const unit = match[2] || 's'  // Default to seconds
+
+  if (isNaN(value) || value <= 0) return null
+
+  // Convert to seconds
+  if (unit.startsWith('h')) {
+    return Math.round(value * 3600)
+  } else if (unit.startsWith('m')) {
+    return Math.round(value * 60)
+  } else {
+    return Math.round(value)
+  }
+}
+
+function applyCustomTimeRange() {
+  const seconds = parseTimeInput(customTimeInput.value)
+  if (seconds && seconds >= 5 && seconds <= 86400) {  // 5 seconds to 24 hours
+    setTimeRange(seconds)
+    showCustomTimeInput.value = false
+  } else {
+    // Flash error - invalid input
+    customTimeInputRef.value?.classList.add('error')
+    setTimeout(() => {
+      customTimeInputRef.value?.classList.remove('error')
+    }, 300)
+  }
+}
+
+function handleCustomTimeKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    applyCustomTimeRange()
+  } else if (e.key === 'Escape') {
+    showCustomTimeInput.value = false
+  }
+}
+
+function cancelCustomTimeInput() {
+  showCustomTimeInput.value = false
+}
+
 // ========== CSV EXPORT ==========
 
 function exportToCSV() {
@@ -543,12 +845,243 @@ function exportToCSV() {
   URL.revokeObjectURL(url)
 }
 
+// ========== PNG SNAPSHOT ==========
+
+function exportToPNG() {
+  if (!chart || !chartContainer.value) return
+
+  // Get the uPlot canvas
+  const canvas = chartContainer.value.querySelector('canvas')
+  if (!canvas) return
+
+  // Create a new canvas with white/dark background
+  const exportCanvas = document.createElement('canvas')
+  exportCanvas.width = canvas.width
+  exportCanvas.height = canvas.height
+  const ctx = exportCanvas.getContext('2d')
+  if (!ctx) return
+
+  // Fill background
+  ctx.fillStyle = '#1a1a2e'
+  ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height)
+
+  // Draw the chart
+  ctx.drawImage(canvas, 0, 0)
+
+  // Add title overlay
+  ctx.fillStyle = '#fff'
+  ctx.font = 'bold 14px sans-serif'
+  ctx.fillText(props.label || 'Trend', 10, 20)
+
+  // Add timestamp
+  ctx.font = '10px sans-serif'
+  ctx.fillStyle = '#888'
+  ctx.fillText(new Date().toLocaleString(), 10, exportCanvas.height - 10)
+
+  // Download
+  const link = document.createElement('a')
+  link.download = `chart_${props.label || 'trend'}_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.png`
+  link.href = exportCanvas.toDataURL('image/png')
+  link.click()
+}
+
+// ========== MOUSE WHEEL ZOOM ==========
+
+function handleChartWheel(e: WheelEvent) {
+  e.preventDefault()
+
+  // Zoom factor: scroll down = zoom out, scroll up = zoom in
+  const zoomFactor = e.deltaY > 0 ? 1.25 : 0.8
+
+  // Get current time range
+  const currentRange = activeTimeRange.value
+
+  // Calculate new range (clamped between 5 seconds and 24 hours)
+  const newRange = Math.max(5, Math.min(86400, Math.round(currentRange * zoomFactor)))
+
+  if (newRange !== currentRange) {
+    activeTimeRange.value = newRange
+    viewStart.value = 0
+    viewEnd.value = newRange
+    emit('update:timeRange', newRange)
+
+    // If significantly changed, pause to show the zoom effect
+    if (Math.abs(newRange - currentRange) > 10) {
+      // Stay live but update the range
+    }
+  }
+}
+
+// ========== CONTEXT MENU ==========
+
+function handleContextMenu(e: MouseEvent) {
+  e.preventDefault()
+
+  // Position menu at mouse location
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  contextMenuX.value = e.clientX - rect.left
+  contextMenuY.value = e.clientY - rect.top
+  showContextMenu.value = true
+}
+
+function closeContextMenu() {
+  showContextMenu.value = false
+}
+
+function contextMenuAction(action: string) {
+  closeContextMenu()
+
+  switch (action) {
+    case 'pause':
+      togglePause()
+      break
+    case 'reset':
+      resetZoom()
+      break
+    case 'export-csv':
+      exportToCSV()
+      break
+    case 'export-png':
+      exportToPNG()
+      break
+    case 'configure':
+      emit('configure')
+      break
+    case 'auto-y':
+      autoScaleYAxis()
+      break
+  }
+}
+
 // Reinit chart helper
 function reinitChart() {
   if (chart) {
     chart.destroy()
     nextTick(() => initChart())
   }
+}
+
+// ========== HISTORICAL MODE ==========
+
+// Toggle between live and historical mode
+function toggleHistoricalMode() {
+  isHistoricalMode.value = !isHistoricalMode.value
+  if (isHistoricalMode.value) {
+    isPaused.value = true
+    // Load recording list
+    loadRecordingsList()
+  } else {
+    // Switch back to live
+    historicalDataLoaded.value = null
+    isPaused.value = false
+    dataBuffer.value = [[], ...props.channels.map(() => [])]
+    reinitChart()
+  }
+}
+
+// Load available recordings
+async function loadRecordingsList() {
+  isLoadingHistorical.value = true
+  await historical.loadRecordings()
+  isLoadingHistorical.value = false
+  showRecordingSelector.value = true
+}
+
+// Select a recording file
+async function selectRecording(filename: string) {
+  selectedRecordingFile.value = filename
+  showRecordingSelector.value = false
+  await loadHistoricalData(filename)
+}
+
+// Load historical data from selected file
+async function loadHistoricalData(filename: string) {
+  isLoadingHistorical.value = true
+
+  // Get file info first
+  const fileInfo = await historical.getFileInfo(filename)
+  if (!fileInfo || !fileInfo.success) {
+    isLoadingHistorical.value = false
+    return
+  }
+
+  // Calculate decimation based on file size to limit points
+  const decimation = historical.calculateDecimation(fileInfo.sample_count, 2000)
+
+  // Load data with decimation and channel filter
+  const data = await historical.loadFileData(filename, {
+    channels: props.channels.length > 0 ? props.channels : undefined,
+    decimation,
+    max_samples: 5000
+  })
+
+  isLoadingHistorical.value = false
+
+  if (data && data.success) {
+    historicalDataLoaded.value = data
+    displayHistoricalData(data)
+  }
+}
+
+// Display loaded historical data in chart
+function displayHistoricalData(data: HistoricalData) {
+  if (!data.data || data.data.length === 0) return
+
+  // Build data buffer from historical data
+  const timestamps: (number | null)[] = []
+  const channelArrays: (number | null)[][] = props.channels.map(() => [])
+
+  for (const point of data.data) {
+    // Convert ISO timestamp to epoch seconds
+    const ts = new Date(point.timestamp).getTime() / 1000
+    timestamps.push(ts)
+
+    props.channels.forEach((ch, idx) => {
+      channelArrays[idx]?.push(point.values[ch] ?? null)
+    })
+  }
+
+  dataBuffer.value = [timestamps, ...channelArrays]
+
+  // Update chart
+  if (chart) {
+    chart.setData(dataBuffer.value as AlignedData)
+  }
+
+  // Set scrubber to end
+  historicalScrubPosition.value = 1
+}
+
+// Scrub through historical data
+function handleHistoricalScrub(e: Event) {
+  const target = e.target as HTMLInputElement
+  historicalScrubPosition.value = parseFloat(target.value)
+
+  // Calculate visible window based on scrub position
+  if (!historicalDataLoaded.value || !chart) return
+
+  const totalPoints = historicalDataLoaded.value.sample_count
+  const viewPoints = Math.min(500, totalPoints)
+  const startIdx = Math.floor((totalPoints - viewPoints) * historicalScrubPosition.value)
+
+  // For now, just update the view scale
+  // Full implementation would reload data range
+}
+
+// Format file size for display
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Format duration for display
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(0)}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
+  const hours = Math.floor(seconds / 3600)
+  const mins = Math.floor((seconds % 3600) / 60)
+  return `${hours}h ${mins}m`
 }
 
 // Scrollbar handling
@@ -591,7 +1124,7 @@ watch(() => [props.channels, props.plotStyles], () => {
 }, { deep: true })
 
 watch(
-  () => [props.yAxisAuto, props.yAxisMin, props.yAxisMax, props.showGrid, props.updateMode, props.yAxes],
+  () => [props.yAxisAuto, props.yAxisMin, props.yAxisMax, props.showGrid, props.updateMode, props.yAxes, props.thresholds],
   () => {
     if (chart) {
       chart.destroy()
@@ -635,8 +1168,9 @@ function toggleChannelVisibility(channel: string) {
     <!-- Chart Header with Title and Tools -->
     <div class="chart-header">
       <div class="header-left">
-        <span class="title">{{ label || 'Trend' }}</span>
-        <span v-if="updateMode && updateMode !== 'strip'" class="mode-badge">{{ updateMode.toUpperCase() }}</span>
+        <span class="title">{{ label || (isXYMode ? 'XY Graph' : 'Trend') }}</span>
+        <span v-if="isXYMode" class="mode-badge xy">XY</span>
+        <span v-else-if="updateMode && updateMode !== 'strip'" class="mode-badge">{{ updateMode.toUpperCase() }}</span>
       </div>
 
       <!-- Digital Display (current values in header) -->
@@ -728,17 +1262,47 @@ function toggleChannelVisibility(channel: string) {
       </div>
     </div>
 
-    <!-- Quick Time Range Buttons -->
-    <div class="time-range-bar">
+    <!-- Quick Time Range Buttons (hidden in XY mode) -->
+    <div v-if="!isXYMode" class="time-range-bar">
       <button
         v-for="tr in timeRangeOptions"
         :key="tr.value"
         class="time-range-btn"
-        :class="{ active: activeTimeRange === tr.value && !isPaused }"
+        :class="{ active: activeTimeRange === tr.value && !isPaused && !showCustomTimeInput }"
         @click="setTimeRange(tr.value)"
       >
         {{ tr.label }}
       </button>
+
+      <!-- Custom Time Range Input -->
+      <div class="custom-time-container">
+        <button
+          v-if="!showCustomTimeInput"
+          class="time-range-btn custom-btn"
+          :class="{ active: !timeRangeOptions.some(t => t.value === activeTimeRange) }"
+          @click="openCustomTimeInput"
+          title="Custom time range (e.g., 30s, 2m, 45m)"
+        >
+          {{ timeRangeOptions.some(t => t.value === activeTimeRange) ? '...' : formatSecondsToInput(activeTimeRange) }}
+        </button>
+        <div v-else class="custom-time-input-wrapper">
+          <input
+            ref="customTimeInputRef"
+            v-model="customTimeInput"
+            type="text"
+            class="custom-time-input"
+            placeholder="30s, 2m, 1h"
+            @keydown="handleCustomTimeKeydown"
+            @blur="cancelCustomTimeInput"
+          />
+          <button class="custom-time-apply" @mousedown.prevent="applyCustomTimeRange" title="Apply">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
       <button
         class="time-range-btn live-btn"
         :class="{ active: !isPaused }"
@@ -747,6 +1311,13 @@ function toggleChannelVisibility(channel: string) {
         LIVE
       </button>
       <div class="time-range-spacer"></div>
+      <button class="time-range-btn export-btn" @click="exportToPNG" title="Save as PNG">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+          <circle cx="8.5" cy="8.5" r="1.5"/>
+          <polyline points="21 15 16 10 5 21"/>
+        </svg>
+      </button>
       <button class="time-range-btn export-btn" @click="exportToCSV" title="Export to CSV">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -754,10 +1325,89 @@ function toggleChannelVisibility(channel: string) {
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
       </button>
+      <div class="tool-separator"></div>
+      <button
+        class="time-range-btn history-btn"
+        :class="{ active: isHistoricalMode }"
+        @click="toggleHistoricalMode"
+        title="Toggle Historical Mode"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        {{ isHistoricalMode ? 'HIST' : 'HIST' }}
+      </button>
+    </div>
+
+    <!-- Historical Mode Bar -->
+    <div v-if="isHistoricalMode" class="historical-bar">
+      <button
+        class="hist-file-btn"
+        @click="showRecordingSelector = !showRecordingSelector"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        {{ selectedRecordingFile || 'Select Recording...' }}
+      </button>
+
+      <div v-if="historicalDataLoaded" class="hist-info">
+        <span class="hist-samples">{{ historicalDataLoaded.sample_count }} pts</span>
+        <span class="hist-range" v-if="historicalDataLoaded.start_time">
+          {{ new Date(historicalDataLoaded.start_time).toLocaleString() }}
+        </span>
+      </div>
+
+      <div v-if="isLoadingHistorical" class="hist-loading">
+        <div class="spinner"></div>
+        Loading...
+      </div>
+
+      <div class="hist-spacer"></div>
+
+      <button class="hist-action-btn" @click="loadHistoricalData(selectedRecordingFile!)" v-if="selectedRecordingFile" title="Reload">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Recording Selector Panel -->
+    <div v-if="showRecordingSelector && isHistoricalMode" class="recording-selector">
+      <div class="recording-selector-header">
+        <span>Select Recording</span>
+        <button class="close-selector" @click="showRecordingSelector = false">&times;</button>
+      </div>
+      <div v-if="historical.isLoadingList.value" class="recording-loading">
+        <div class="spinner"></div>
+        Loading recordings...
+      </div>
+      <div v-else-if="historical.recordings.value.length === 0" class="no-recordings">
+        No recordings found
+      </div>
+      <div v-else class="recording-list">
+        <button
+          v-for="rec in historical.recordings.value"
+          :key="rec.name"
+          class="recording-item"
+          :class="{ selected: rec.name === selectedRecordingFile }"
+          @click="selectRecording(rec.name)"
+        >
+          <div class="rec-name">{{ rec.name }}</div>
+          <div class="rec-meta">
+            <span>{{ formatFileSize(rec.size) }}</span>
+            <span v-if="rec.duration">{{ formatDuration(rec.duration) }}</span>
+            <span>{{ rec.sample_count }} samples</span>
+          </div>
+        </button>
+      </div>
     </div>
 
     <!-- Chart Container with Y-Axis Click Zone -->
-    <div class="chart-wrapper">
+    <div class="chart-wrapper" @contextmenu="handleContextMenu" @click="closeContextMenu">
       <!-- Y-Axis Click Zone (for direct editing) -->
       <div
         class="y-axis-zone"
@@ -776,7 +1426,70 @@ function toggleChannelVisibility(channel: string) {
       </div>
 
       <!-- Chart Container -->
-      <div ref="chartContainer" class="chart-container"></div>
+      <div
+        ref="chartContainer"
+        class="chart-container"
+        @wheel.prevent="handleChartWheel"
+      ></div>
+
+      <!-- Context Menu -->
+      <div
+        v-if="showContextMenu"
+        class="context-menu"
+        :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
+        @click.stop
+      >
+        <button class="context-menu-item" @click="contextMenuAction('pause')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <template v-if="isPaused">
+              <polygon points="5,3 19,12 5,21"/>
+            </template>
+            <template v-else>
+              <rect x="6" y="4" width="4" height="16"/>
+              <rect x="14" y="4" width="4" height="16"/>
+            </template>
+          </svg>
+          {{ isPaused ? 'Resume' : 'Pause' }}
+        </button>
+        <button class="context-menu-item" @click="contextMenuAction('reset')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          Reset View
+        </button>
+        <button class="context-menu-item" @click="contextMenuAction('auto-y')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 20V4M5 11l7-7 7 7"/>
+          </svg>
+          Auto-Scale Y
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @click="contextMenuAction('export-png')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          Save as PNG
+        </button>
+        <button class="context-menu-item" @click="contextMenuAction('export-csv')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Export CSV
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @click="contextMenuAction('configure')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4"/>
+          </svg>
+          Configure...
+        </button>
+      </div>
 
       <!-- Y-Axis Editor Popup -->
       <div v-if="showYAxisEditor" ref="yAxisEditorRef" class="y-axis-editor">
@@ -910,6 +1623,10 @@ function toggleChannelVisibility(channel: string) {
   color: #fff;
 }
 
+.mode-badge.xy {
+  background: #8b5cf6;
+}
+
 /* Digital Display */
 .digital-display {
   display: flex;
@@ -1023,6 +1740,66 @@ function toggleChannelVisibility(channel: string) {
 
 .time-range-btn.export-btn {
   padding: 3px 6px;
+}
+
+/* Custom Time Range Input */
+.custom-time-container {
+  position: relative;
+}
+
+.time-range-btn.custom-btn {
+  min-width: 32px;
+  text-align: center;
+}
+
+.custom-time-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.custom-time-input {
+  width: 60px;
+  background: #0f0f1a;
+  border: 1px solid #3b82f6;
+  border-radius: 2px;
+  color: #fff;
+  font-size: 0.6rem;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 2px 4px;
+  outline: none;
+  text-align: center;
+}
+
+.custom-time-input::placeholder {
+  color: #555;
+}
+
+.custom-time-input.error {
+  border-color: #ef4444;
+  animation: shake 0.3s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.custom-time-apply {
+  background: #22c55e;
+  border: none;
+  border-radius: 2px;
+  color: #fff;
+  cursor: pointer;
+  padding: 3px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.custom-time-apply:hover {
+  background: #16a34a;
 }
 
 /* Chart Wrapper with Y-Axis Zone */
@@ -1189,9 +1966,56 @@ function toggleChannelVisibility(channel: string) {
   text-align: center;
 }
 
+/* Context Menu */
+.context-menu {
+  position: absolute;
+  background: #1a1a2e;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  padding: 4px 0;
+  z-index: 200;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  min-width: 150px;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.context-menu-item svg {
+  flex-shrink: 0;
+  color: #888;
+}
+
+.context-menu-item:hover svg {
+  color: #3b82f6;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: #2a2a4a;
+  margin: 4px 0;
+}
+
 .chart-container {
   flex: 1;
   min-height: 0;
+  cursor: crosshair;
 }
 
 /* Scrollbar */
@@ -1335,5 +2159,248 @@ function toggleChannelVisibility(channel: string) {
 
 :deep(.uplot) {
   font-family: inherit;
+}
+
+/* ========== HISTORICAL MODE STYLES ========== */
+
+.history-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-btn.active {
+  background: #7c3aed;
+  border-color: #7c3aed;
+}
+
+.historical-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: linear-gradient(to right, rgba(124, 58, 237, 0.1), rgba(124, 58, 237, 0.05));
+  border-bottom: 1px solid #5b21b6;
+  flex-shrink: 0;
+}
+
+.hist-file-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #1e1b4b;
+  border: 1px solid #5b21b6;
+  border-radius: 4px;
+  color: #c4b5fd;
+  font-size: 0.7rem;
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist-file-btn:hover {
+  background: #2e2963;
+  border-color: #7c3aed;
+}
+
+.hist-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.65rem;
+  color: #a78bfa;
+}
+
+.hist-samples {
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(124, 58, 237, 0.2);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.hist-range {
+  color: #8b5cf6;
+}
+
+.hist-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.65rem;
+  color: #a78bfa;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(139, 92, 246, 0.3);
+  border-top-color: #8b5cf6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.hist-spacer {
+  flex: 1;
+}
+
+.hist-action-btn {
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid #5b21b6;
+  border-radius: 3px;
+  color: #a78bfa;
+  cursor: pointer;
+}
+
+.hist-action-btn:hover {
+  background: #5b21b6;
+  color: #fff;
+}
+
+/* Recording Selector Panel */
+.recording-selector {
+  position: absolute;
+  top: 80px;
+  left: 8px;
+  width: 320px;
+  max-height: 300px;
+  background: #1a1a2e;
+  border: 1px solid #5b21b6;
+  border-radius: 8px;
+  z-index: 300;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.recording-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: rgba(124, 58, 237, 0.1);
+  border-bottom: 1px solid #5b21b6;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.close-selector {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.close-selector:hover {
+  color: #fff;
+}
+
+.recording-loading,
+.no-recordings {
+  padding: 20px;
+  text-align: center;
+  color: #888;
+  font-size: 0.75rem;
+}
+
+.recording-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.recording-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.recording-item {
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.recording-item:hover {
+  background: rgba(124, 58, 237, 0.1);
+  border-color: #5b21b6;
+}
+
+.recording-item.selected {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: #7c3aed;
+}
+
+.rec-name {
+  font-size: 0.75rem;
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rec-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 0.65rem;
+  color: #888;
+}
+
+.rec-meta span {
+  white-space: nowrap;
+}
+
+/* Historical scrubber */
+.hist-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(124, 58, 237, 0.05);
+  border-top: 1px solid #2a2a4a;
+}
+
+.hist-scrubber input[type="range"] {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #1a1a2e;
+  border-radius: 2px;
+}
+
+.hist-scrubber input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #8b5cf6;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.hist-time-display {
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: #a78bfa;
+  min-width: 150px;
+  text-align: right;
 }
 </style>

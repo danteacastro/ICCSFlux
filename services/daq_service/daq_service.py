@@ -59,10 +59,13 @@ from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
 from user_variables import UserVariableManager
 from alarm_manager import AlarmManager, AlarmConfig, AlarmSeverity, LatchBehavior
+from safety_manager import SafetyManager, Interlock, InterlockCondition, InterlockControl, SafeStateConfig
 from audit_trail import AuditTrail, AuditEventType
 from user_session import UserSessionManager, UserRole, Permission
 from project_manager import ProjectManager, ProjectStatus
 from archive_manager import ArchiveManager
+from pid_engine import PIDEngine, PIDLoop, PIDMode
+from azure_iot_uploader import AzureIoTUploader, is_available as azure_iot_available
 
 # Try to import nidaqmx - if not available, we'll use simulation only
 try:
@@ -188,6 +191,9 @@ class DAQService:
         # Script manager (Python script execution)
         self.script_manager: Optional[ScriptManager] = None
 
+        # Interactive console (IPython-like REPL) - persistent namespace
+        self._console_namespace: Optional[Dict[str, Any]] = None
+
         # Trigger engine (automation triggers)
         self.trigger_engine: Optional[TriggerEngine] = None
 
@@ -199,6 +205,9 @@ class DAQService:
 
         # Enhanced alarm manager
         self.alarm_manager: Optional[AlarmManager] = None
+
+        # Backend safety manager (interlocks, latch, trip actions)
+        self.safety_manager: Optional[SafetyManager] = None
 
         # Audit trail (21 CFR Part 11 / ALCOA+ compliance)
         self.audit_trail: Optional[AuditTrail] = None
@@ -212,12 +221,23 @@ class DAQService:
         # Archive manager (long-term data retention)
         self.archive_manager: Optional[ArchiveManager] = None
 
+        # PID control engine
+        self.pid_engine: Optional[PIDEngine] = None
+
+        # Azure IoT Hub uploader (cloud telemetry)
+        self.azure_uploader: Optional[AzureIoTUploader] = None
+
         # Resource monitoring
         self._cpu_percent = 0.0
         self._memory_mb = 0.0
+        self._disk_percent = 0.0
+        self._disk_used_gb = 0.0
+        self._disk_total_gb = 0.0
         self._resource_monitor_enabled = False
+        self._psutil = None  # Store psutil module reference for disk_usage
         try:
             import psutil
+            self._psutil = psutil
             self._process = psutil.Process()
             self._resource_monitor_enabled = True
         except ImportError:
@@ -234,10 +254,13 @@ class DAQService:
         self._init_watchdog_engine()
         self._init_user_variables()
         self._init_alarm_manager()
+        self._init_safety_manager()
         self._init_audit_trail()
         self._init_user_session_manager()
         self._init_project_manager()
         self._init_archive_manager()
+        self._init_pid_engine()
+        self._init_azure_uploader()
 
     # =========================================================================
     # THREAD-SAFE PROPERTY ACCESSORS
@@ -362,7 +385,7 @@ class DAQService:
             for name, channel in self.config.channels.items():
                 if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
                     self.channel_values[name] = channel.default_state
-                elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
+                elif channel.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
                     self.channel_values[name] = channel.default_value
                 else:
                     self.channel_values[name] = 0.0
@@ -525,7 +548,7 @@ class DAQService:
             for name, channel in self.config.channels.items():
                 if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
                     self.channel_values[name] = channel.default_state
-                elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
+                elif channel.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
                     self.channel_values[name] = channel.default_value
                 else:
                     self.channel_values[name] = 0.0
@@ -537,6 +560,20 @@ class DAQService:
             if self.alarm_manager:
                 self.alarm_manager.clear_all(clear_configs=True)
             self._init_alarm_manager(from_project=True)
+
+            # Clear and reload safety manager interlocks from project
+            if self.safety_manager:
+                self.safety_manager.clear_all()
+                # Load interlocks from project if present
+                interlocks_data = project_data.get('interlocks', [])
+                for interlock_data in interlocks_data:
+                    interlock = Interlock.from_dict(interlock_data)
+                    self.safety_manager.add_interlock(interlock, 'project_load')
+                # Load safe state config from project if present
+                safe_state_data = project_data.get('safeStateConfig')
+                if safe_state_data:
+                    self.safety_manager.update_safe_state_config(safe_state_data)
+                logger.info(f"Loaded {len(interlocks_data)} interlocks from project")
 
             # Load scripts from project
             # Scripts with run_mode=acquisition or session will auto-start when triggered
@@ -564,6 +601,15 @@ class DAQService:
                 watchdog_count = self.watchdog_engine.load_from_project(project_data)
                 if watchdog_count > 0:
                     logger.info(f"Loaded {watchdog_count} watchdogs from project")
+
+            # Load PID loops from project
+            if self.pid_engine:
+                pid_data = project_data.get('pidLoops', {})
+                if pid_data:
+                    self.pid_engine.load_config(pid_data)
+                    loop_count = len(self.pid_engine.loops)
+                    if loop_count > 0:
+                        logger.info(f"Loaded {loop_count} PID loops from project")
 
             logger.info(f"Applied project config: {len(channels)} channels")
 
@@ -733,7 +779,8 @@ class DAQService:
 
     def _init_script_manager(self):
         """Initialize the script manager for Python script execution"""
-        self.script_manager = ScriptManager()
+        data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+        self.script_manager = ScriptManager(data_dir=data_dir)
 
         # Wire up callbacks
         self.script_manager.on_get_channel_value = self._script_get_channel_value
@@ -752,6 +799,27 @@ class DAQService:
         self.script_manager.on_publish_value = self._script_publish_value
         self.script_manager.on_script_event = self._script_event_handler
         self.script_manager.on_script_output = self._script_output_handler
+
+        # Share the console namespace with scripts - unified Python environment
+        # Variables defined in console are accessible in scripts and vice versa
+        self.script_manager.on_get_shared_namespace = self._get_console_namespace
+
+        # User variables API (vars.* in scripts)
+        self.script_manager.on_get_variable_value = self._script_get_variable_value
+        self.script_manager.on_set_variable_value = self._script_set_variable_value
+        self.script_manager.on_reset_variable = self._script_reset_variable
+        self.script_manager.on_get_variable_names = self._script_get_variable_names
+        self.script_manager.on_has_variable = self._script_has_variable
+
+        # PID API (pid.* in scripts)
+        self.script_manager.on_get_pid_status = self._script_get_pid_status
+        self.script_manager.on_set_pid_setpoint = self._script_set_pid_setpoint
+        self.script_manager.on_set_pid_mode = self._script_set_pid_mode
+        self.script_manager.on_set_pid_output = self._script_set_pid_output
+        self.script_manager.on_set_pid_enabled = self._script_set_pid_enabled
+        self.script_manager.on_set_pid_tuning = self._script_set_pid_tuning
+        self.script_manager.on_get_pid_loop_ids = self._script_get_pid_loop_ids
+        self.script_manager.on_has_pid_loop = self._script_has_pid_loop
 
         logger.info("Script manager initialized")
 
@@ -847,10 +915,34 @@ class DAQService:
         """Check if channel exists"""
         return channel in self.channel_values
 
-    def _script_set_output(self, channel: str, value) -> None:
-        """Set output from script"""
-        if channel in self.config.channels:
+    def _script_set_output(self, channel: str, value) -> bool:
+        """Set output from script. Returns True if command was accepted.
+
+        Scripts are subject to safety interlock checks - if an interlock blocks
+        the output channel, the command will be rejected and return False.
+        """
+        if channel not in self.config.channels:
+            return False
+        ch = self.config.channels[channel]
+        if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                   ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+            return False
+
+        # Check safety interlocks - scripts must respect interlock blocks
+        if self.safety_manager:
+            block_result = self.safety_manager.is_output_blocked(channel)
+            if block_result.get('blocked', False):
+                blocked_by = block_result.get('blockedBy', [])
+                interlock_names = [b.get('name', 'Unknown') for b in blocked_by]
+                logger.warning(f"Script output blocked by interlock: {channel} = {value} (blocked by: {', '.join(interlock_names)})")
+                return False
+
+        try:
             self._set_output_value(channel, value)
+            return True
+        except Exception as e:
+            logger.error(f"Script set_output failed for {channel}: {e}")
+            return False
 
     def _script_start_acquisition(self) -> None:
         """Start acquisition from script"""
@@ -909,6 +1001,110 @@ class DAQService:
     def _script_get_scan_rate(self) -> float:
         """Get current scan rate"""
         return getattr(self.config.system, 'scan_rate', 10.0)
+
+    # User Variables API for scripts (vars.* namespace)
+    def _script_get_variable_value(self, name: str):
+        """Get user variable value by name for script.
+
+        Returns float for numeric variables, str for string variables.
+        """
+        if not self.user_variables:
+            return 0.0
+        # Find variable by name (not id)
+        for var in self.user_variables.variables.values():
+            if var.name == name:
+                # Return appropriate value based on data type
+                if var.data_type == 'string' or var.variable_type == 'string':
+                    return var.string_value
+                return var.value
+        return 0.0
+
+    def _script_set_variable_value(self, name: str, value) -> bool:
+        """Set user variable value by name for script.
+
+        Accepts float for numeric variables, str for string variables.
+        """
+        if not self.user_variables:
+            return False
+        # Find variable by name
+        for var in self.user_variables.variables.values():
+            if var.name == name:
+                return self.user_variables.set_variable_value(var.id, value)
+        return False
+
+    def _script_reset_variable(self, name: str) -> bool:
+        """Reset user variable by name for script"""
+        if not self.user_variables:
+            return False
+        # Find variable by name
+        for var in self.user_variables.variables.values():
+            if var.name == name:
+                return self.user_variables.reset_variable(var.id)
+        return False
+
+    def _script_get_variable_names(self) -> list:
+        """Get all user variable names for script"""
+        if not self.user_variables:
+            return []
+        return [var.name for var in self.user_variables.variables.values()]
+
+    def _script_has_variable(self, name: str) -> bool:
+        """Check if user variable exists by name"""
+        if not self.user_variables:
+            return False
+        return any(var.name == name for var in self.user_variables.variables.values())
+
+    # PID API callbacks for scripts
+    def _script_get_pid_status(self, loop_id: str) -> Optional[dict]:
+        """Get PID loop status for script"""
+        if not self.pid_engine:
+            return None
+        loop = self.pid_engine.get_loop(loop_id)
+        if loop:
+            return loop.to_status_dict()
+        return None
+
+    def _script_set_pid_setpoint(self, loop_id: str, value: float) -> bool:
+        """Set PID loop setpoint from script"""
+        if not self.pid_engine:
+            return False
+        return self.pid_engine.set_setpoint(loop_id, value)
+
+    def _script_set_pid_mode(self, loop_id: str, mode: str) -> bool:
+        """Set PID loop mode from script"""
+        if not self.pid_engine:
+            return False
+        return self.pid_engine.set_mode(loop_id, mode)
+
+    def _script_set_pid_output(self, loop_id: str, value: float) -> bool:
+        """Set PID loop manual output from script"""
+        if not self.pid_engine:
+            return False
+        return self.pid_engine.set_manual_output(loop_id, value)
+
+    def _script_set_pid_enabled(self, loop_id: str, enabled: bool) -> bool:
+        """Enable/disable PID loop from script"""
+        if not self.pid_engine:
+            return False
+        return self.pid_engine.update_loop(loop_id, {'enabled': enabled})
+
+    def _script_set_pid_tuning(self, loop_id: str, kp: float, ki: float, kd: float) -> bool:
+        """Set PID tuning parameters from script"""
+        if not self.pid_engine:
+            return False
+        return self.pid_engine.set_tuning(loop_id, kp, ki, kd)
+
+    def _script_get_pid_loop_ids(self) -> list:
+        """Get all PID loop IDs for script"""
+        if not self.pid_engine:
+            return []
+        return list(self.pid_engine.loops.keys())
+
+    def _script_has_pid_loop(self, loop_id: str) -> bool:
+        """Check if PID loop exists"""
+        if not self.pid_engine:
+            return False
+        return loop_id in self.pid_engine.loops
 
     def _script_publish_value(self, script_id: str, name: str, value: float, units: str = '') -> None:
         """Publish computed value from script"""
@@ -1088,6 +1284,60 @@ class DAQService:
                 "script_id": script_id
             })
         )
+
+    def _handle_script_reload(self, payload: dict) -> None:
+        """Hot-reload a script without stopping acquisition.
+
+        This allows live code updates while keeping the script's persisted state.
+        If the script uses persist()/restore() for state management, that state
+        survives the reload.
+
+        Payload:
+            id: Script ID to reload
+            code: Optional new code (if omitted, reloads existing code)
+        """
+        script_id = payload.get('id')
+        if not script_id:
+            logger.warning("[SCRIPT RELOAD] Missing script ID")
+            return
+
+        new_code = payload.get('code')  # Optional
+
+        # In CRIO mode, forward to cRIO - scripts run on cRIO
+        if self.config.system.project_mode == ProjectMode.CRIO:
+            logger.info(f"[SCRIPT] CRIO mode - forwarding script reload to cRIO: {script_id}")
+            mqtt_base = self.config.system.mqtt_base_topic
+            crio_nodes = self.device_discovery.get_crio_nodes() if self.device_discovery else []
+            for node in crio_nodes:
+                crio_topic = f"{mqtt_base}/nodes/{node.node_id}/script/reload"
+                self.mqtt_client.publish(crio_topic, json.dumps(payload), qos=1)
+            base = self.get_topic_base()
+            self.mqtt_client.publish(
+                f"{base}/script/response",
+                json.dumps({"action": "reload", "success": True, "script_id": script_id})
+            )
+            return
+
+        # CDAQ mode - handle locally
+        if not self.script_manager:
+            logger.warning("[SCRIPT RELOAD] Script manager not available")
+            return
+
+        success = self.script_manager.reload_script(script_id, new_code)
+
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/script/response",
+            json.dumps({
+                "action": "reload",
+                "success": success,
+                "script_id": script_id,
+                "message": "Script hot-reloaded" if success else "Hot-reload failed"
+            })
+        )
+
+        if success:
+            self._publish_script_status()
 
     def _handle_script_remove(self, payload: dict) -> None:
         """Remove a backend script"""
@@ -1300,14 +1550,50 @@ class DAQService:
         self.mqtt_client.publish(f"{base}/script/status", payload)
 
     # =========================================================================
-    # INTERACTIVE CONSOLE
+    # INTERACTIVE CONSOLE (IPython-like REPL with Persistent Namespace)
     # =========================================================================
+
+    # Names that are part of the base API (not user-defined variables)
+    _CONSOLE_BUILTINS = {
+        # Core API
+        'tags', 'outputs', 'session',
+        # Standard library
+        'time', 'math', 'datetime', 'json', 'statistics', 're',
+        # Scientific computing
+        'np', 'numpy', 'scipy',
+        # Math functions
+        'abs', 'min', 'max', 'sum', 'round', 'pow',
+        'sin', 'cos', 'tan', 'sqrt', 'log', 'log10', 'pi', 'e',
+        # Built-ins
+        'print', 'len', 'range', 'list', 'dict', 'tuple', 'set',
+        'str', 'int', 'float', 'bool', 'True', 'False', 'None',
+        'sorted', 'enumerate', 'zip', 'map', 'filter', 'any', 'all',
+        'isinstance', 'type', 'dir', 'help', 'getattr', 'setattr', 'hasattr',
+        '__builtins__', '__name__', '__doc__',
+        # Script helper classes (available in unified namespace)
+        'RateCalculator', 'Accumulator', 'EdgeDetector', 'RollingStats', 'Scheduler',
+        # Unit conversion functions
+        'F_to_C', 'C_to_F', 'GPM_to_LPM', 'LPM_to_GPM', 'PSI_to_bar', 'bar_to_PSI',
+        'gal_to_L', 'L_to_gal', 'BTU_to_kJ', 'kJ_to_BTU', 'lb_to_kg', 'kg_to_lb',
+        # Time utility functions
+        'now', 'now_ms', 'now_iso', 'time_of_day', 'elapsed_since', 'format_timestamp',
+        # Script-specific functions (added when scripts run)
+        'publish', 'next_scan', 'wait_for', 'wait_until', 'persist', 'restore',
+    }
+
+    def _get_console_namespace(self) -> dict:
+        """Get or create the persistent console namespace."""
+        if self._console_namespace is None:
+            self._console_namespace = self._build_console_namespace()
+        return self._console_namespace
 
     def _handle_console_execute(self, payload: dict) -> None:
         """Execute a single Python command from the interactive console widget.
 
-        This provides a REPL-like experience for quick debugging and inspection.
-        Commands have access to the same API as scripts: tags, outputs, session.
+        This provides an IPython-like REPL experience with:
+        - Persistent namespace (variables survive between commands)
+        - Magic commands (%who, %whos, %reset, %time)
+        - Access to tags, outputs, session API
         """
         code = payload.get('code', '').strip()
         if not code:
@@ -1316,16 +1602,21 @@ class DAQService:
         base = self.get_topic_base()
         result = {'success': False, 'output': '', 'result': '', 'error': ''}
 
+        # Handle magic commands
+        if code.startswith('%'):
+            result = self._handle_magic_command(code)
+            self.mqtt_client.publish(f"{base}/console/result", json.dumps(result))
+            return
+
         try:
             import io
             import contextlib
-            from datetime import datetime
 
             # Capture stdout
             stdout_capture = io.StringIO()
 
-            # Build namespace with nisystem API (simplified version of script runtime)
-            namespace = self._build_console_namespace()
+            # Get persistent namespace
+            namespace = self._get_console_namespace()
 
             # Execute with stdout capture
             with contextlib.redirect_stdout(stdout_capture):
@@ -1349,13 +1640,478 @@ class DAQService:
             logger.debug(f"Console error: {e}")
 
         # Publish result
+        self.mqtt_client.publish(f"{base}/console/result", json.dumps(result))
+
+    def _handle_magic_command(self, code: str) -> dict:
+        """Handle IPython-like magic commands."""
+        result = {'success': True, 'output': '', 'result': '', 'error': ''}
+
+        parts = code.split(None, 1)
+        magic = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ''
+
+        try:
+            if magic == '%who':
+                # List user-defined variable names
+                namespace = self._get_console_namespace()
+                user_vars = [k for k in namespace.keys() if k not in self._CONSOLE_BUILTINS]
+                if user_vars:
+                    result['output'] = '  '.join(sorted(user_vars)) + '\n'
+                else:
+                    result['output'] = 'No user-defined variables.\n'
+
+            elif magic == '%whos':
+                # Detailed variable list with types and values
+                namespace = self._get_console_namespace()
+                user_vars = {k: v for k, v in namespace.items() if k not in self._CONSOLE_BUILTINS}
+                if user_vars:
+                    lines = ['Variable     Type        Value']
+                    lines.append('-' * 50)
+                    for name, value in sorted(user_vars.items()):
+                        type_name = type(value).__name__
+                        # Truncate long values
+                        val_str = repr(value)
+                        if len(val_str) > 30:
+                            val_str = val_str[:27] + '...'
+                        lines.append(f'{name:<12} {type_name:<10} {val_str}')
+                    result['output'] = '\n'.join(lines) + '\n'
+                else:
+                    result['output'] = 'No user-defined variables.\n'
+
+            elif magic == '%reset':
+                # Reset namespace (clear user variables)
+                self._console_namespace = None
+                result['output'] = 'Namespace reset. All user variables cleared.\n'
+
+            elif magic == '%time':
+                # Time a single statement
+                if not args:
+                    result['error'] = 'Usage: %time <statement>'
+                    result['success'] = False
+                else:
+                    import time as time_module
+                    import io
+                    import contextlib
+
+                    namespace = self._get_console_namespace()
+                    stdout_capture = io.StringIO()
+
+                    start = time_module.perf_counter()
+                    with contextlib.redirect_stdout(stdout_capture):
+                        try:
+                            compiled = compile(args, '<console>', 'eval')
+                            exec_result = eval(compiled, namespace)
+                        except SyntaxError:
+                            compiled = compile(args, '<console>', 'exec')
+                            exec(compiled, namespace)
+                            exec_result = None
+                    elapsed = time_module.perf_counter() - start
+
+                    output = stdout_capture.getvalue()
+                    if output:
+                        result['output'] = output
+
+                    # Format timing
+                    if elapsed < 0.001:
+                        time_str = f'{elapsed * 1000000:.1f} us'
+                    elif elapsed < 1:
+                        time_str = f'{elapsed * 1000:.2f} ms'
+                    else:
+                        time_str = f'{elapsed:.3f} s'
+
+                    result['result'] = f'Wall time: {time_str}'
+                    if exec_result is not None:
+                        result['result'] += f'\nResult: {repr(exec_result)}'
+
+            elif magic == '%vars':
+                # Alias for %whos
+                return self._handle_magic_command('%whos')
+
+            elif magic == '%store':
+                # Persist variables across sessions (like Spyder)
+                result = self._handle_store_command(args)
+
+            elif magic == '%help':
+                # Show available magic commands
+                help_text = """Available magic commands:
+  %who     - List user-defined variable names
+  %whos    - Detailed variable list (name, type, value)
+  %vars    - Alias for %whos
+  %reset   - Clear all user-defined variables
+  %time    - Time execution of a statement
+  %store   - Persist variables across sessions
+             %store          - List stored variables
+             %store x y      - Store variables x and y
+             %store -r       - Restore all stored variables
+             %store -r x     - Restore variable x
+             %store -d x     - Delete stored variable x
+             %store -z       - Clear all stored variables
+  %help    - Show this help message
+
+Available APIs:
+  tags     - Read channel values: tags.Temperature or tags['Temperature']
+  outputs  - Set outputs: outputs.set('Relay1', True)
+  session  - Session state: session.active, session.recording, session.elapsed
+
+Helper classes:
+  RateCalculator, Accumulator, EdgeDetector, RollingStats, Scheduler
+
+Unit conversions:
+  F_to_C, C_to_F, GPM_to_LPM, LPM_to_GPM, PSI_to_bar, bar_to_PSI, etc.
+"""
+                result['output'] = help_text
+
+            else:
+                result['error'] = f"Unknown magic command: {magic}\nType %help for available commands."
+                result['success'] = False
+
+        except Exception as e:
+            result['error'] = f"{type(e).__name__}: {str(e)}"
+            result['success'] = False
+
+        return result
+
+    def _handle_store_command(self, args: str) -> dict:
+        """Handle %store magic command for persisting variables.
+
+        Like Spyder's %store:
+        - %store          - List stored variables
+        - %store x y      - Store variables x and y
+        - %store -r       - Restore all stored variables
+        - %store -r x     - Restore variable x
+        - %store -d x     - Delete stored variable x
+        - %store -z       - Clear all stored variables
+        """
+        import pickle
+        import base64
+        from pathlib import Path
+
+        result = {'success': True, 'output': '', 'result': '', 'error': ''}
+
+        # Storage file location
+        data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+        store_file = data_dir / 'console_store.json'
+
+        # Load existing stored data
+        stored_data = {}
+        if store_file.exists():
+            try:
+                with open(store_file, 'r') as f:
+                    stored_data = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load stored variables: {e}")
+
+        def save_store():
+            """Save stored data to file"""
+            try:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                with open(store_file, 'w') as f:
+                    json.dump(stored_data, f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save stored variables: {e}")
+
+        def serialize_value(value):
+            """Serialize a Python value to storable format"""
+            # Try JSON first for simple types
+            try:
+                json.dumps(value)
+                return {'type': 'json', 'data': value}
+            except (TypeError, ValueError):
+                pass
+
+            # Fall back to pickle for complex types (numpy arrays, etc.)
+            try:
+                pickled = pickle.dumps(value)
+                return {'type': 'pickle', 'data': base64.b64encode(pickled).decode('ascii')}
+            except Exception as e:
+                raise ValueError(f"Cannot serialize: {e}")
+
+        def deserialize_value(stored):
+            """Deserialize a stored value back to Python"""
+            if stored['type'] == 'json':
+                return stored['data']
+            elif stored['type'] == 'pickle':
+                pickled = base64.b64decode(stored['data'])
+                return pickle.loads(pickled)
+            else:
+                raise ValueError(f"Unknown storage type: {stored['type']}")
+
+        args_parts = args.split()
+        namespace = self._get_console_namespace()
+
+        try:
+            if not args_parts:
+                # List stored variables
+                if not stored_data:
+                    result['output'] = 'No stored variables.\n'
+                else:
+                    lines = ['Stored variables:']
+                    for name, info in sorted(stored_data.items()):
+                        type_hint = info.get('type_hint', 'unknown')
+                        lines.append(f'  {name} ({type_hint})')
+                    result['output'] = '\n'.join(lines) + '\n'
+
+            elif args_parts[0] == '-r':
+                # Restore variables
+                var_names = args_parts[1:] if len(args_parts) > 1 else list(stored_data.keys())
+
+                if not var_names:
+                    result['output'] = 'No stored variables to restore.\n'
+                else:
+                    restored = []
+                    for name in var_names:
+                        if name in stored_data:
+                            try:
+                                value = deserialize_value(stored_data[name])
+                                namespace[name] = value
+                                restored.append(name)
+                            except Exception as e:
+                                result['output'] += f"Failed to restore '{name}': {e}\n"
+                        else:
+                            result['output'] += f"Variable '{name}' not found in store.\n"
+
+                    if restored:
+                        result['output'] += f"Restored: {', '.join(restored)}\n"
+
+            elif args_parts[0] == '-d':
+                # Delete stored variables
+                if len(args_parts) < 2:
+                    result['error'] = 'Usage: %store -d <varname>'
+                    result['success'] = False
+                else:
+                    deleted = []
+                    for name in args_parts[1:]:
+                        if name in stored_data:
+                            del stored_data[name]
+                            deleted.append(name)
+                        else:
+                            result['output'] += f"Variable '{name}' not in store.\n"
+
+                    if deleted:
+                        save_store()
+                        result['output'] += f"Deleted from store: {', '.join(deleted)}\n"
+
+            elif args_parts[0] == '-z':
+                # Clear all stored variables
+                count = len(stored_data)
+                stored_data.clear()
+                save_store()
+                result['output'] = f'Cleared {count} stored variable(s).\n'
+
+            else:
+                # Store variables
+                stored = []
+                for name in args_parts:
+                    if name.startswith('-'):
+                        result['error'] = f"Unknown option: {name}"
+                        result['success'] = False
+                        return result
+
+                    if name not in namespace:
+                        result['output'] += f"Variable '{name}' not found in namespace.\n"
+                        continue
+
+                    if name in self._CONSOLE_BUILTINS:
+                        result['output'] += f"Cannot store built-in '{name}'.\n"
+                        continue
+
+                    try:
+                        value = namespace[name]
+                        stored_data[name] = serialize_value(value)
+                        stored_data[name]['type_hint'] = type(value).__name__
+                        stored.append(name)
+                    except ValueError as e:
+                        result['output'] += f"Cannot store '{name}': {e}\n"
+
+                if stored:
+                    save_store()
+                    result['output'] += f"Stored: {', '.join(stored)}\n"
+
+        except Exception as e:
+            result['error'] = f"{type(e).__name__}: {str(e)}"
+            result['success'] = False
+
+        return result
+
+    def _handle_console_variables(self, payload: dict) -> None:
+        """Return list of variables in the console namespace for Variable Explorer."""
+        base = self.get_topic_base()
+
+        try:
+            namespace = self._get_console_namespace()
+            variables = []
+
+            for name, value in namespace.items():
+                if name in self._CONSOLE_BUILTINS:
+                    continue  # Skip built-ins
+
+                var_info = {
+                    'name': name,
+                    'type': type(value).__name__,
+                    'value': None,
+                    'size': None,
+                    'shape': None,
+                    'dtype': None,
+                }
+
+                # Handle different types
+                try:
+                    # NumPy arrays
+                    if hasattr(value, 'shape') and hasattr(value, 'dtype'):
+                        var_info['shape'] = list(value.shape)
+                        var_info['dtype'] = str(value.dtype)
+                        var_info['size'] = value.nbytes if hasattr(value, 'nbytes') else None
+                        # Show small arrays, summarize large ones
+                        if value.size <= 10:
+                            var_info['value'] = value.tolist()
+                        else:
+                            var_info['value'] = f'array({value.shape}, dtype={value.dtype})'
+                    # Lists/tuples
+                    elif isinstance(value, (list, tuple)):
+                        var_info['size'] = len(value)
+                        if len(value) <= 10:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = f'{type(value).__name__}[{len(value)} items]'
+                    # Dicts
+                    elif isinstance(value, dict):
+                        var_info['size'] = len(value)
+                        if len(value) <= 5:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = f'dict({len(value)} keys)'
+                    # Strings
+                    elif isinstance(value, str):
+                        var_info['size'] = len(value)
+                        if len(value) <= 50:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = repr(value[:47] + '...')
+                    # Numbers and other simple types
+                    else:
+                        var_info['value'] = repr(value)
+                        if len(str(var_info['value'])) > 100:
+                            var_info['value'] = str(var_info['value'])[:97] + '...'
+                except Exception:
+                    var_info['value'] = '<error reading value>'
+
+                variables.append(var_info)
+
+            # Sort by name
+            variables.sort(key=lambda v: v['name'])
+
+            self.mqtt_client.publish(
+                f"{base}/console/variables/result",
+                json.dumps({'success': True, 'variables': variables})
+            )
+
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/console/variables/result",
+                json.dumps({'success': False, 'error': str(e), 'variables': []})
+            )
+
+    def _handle_console_complete(self, payload: dict) -> None:
+        """Provide tab completion suggestions for console input."""
+        base = self.get_topic_base()
+        text = payload.get('text', '')
+        cursor_pos = payload.get('cursor_pos', len(text))
+
+        try:
+            completions = []
+
+            # Get the word being completed
+            # Find start of current word (go back until whitespace or operator)
+            word_start = cursor_pos
+            while word_start > 0 and text[word_start - 1] not in ' \t\n.([{=+-*/%<>!&|^~,':
+                word_start -= 1
+            partial = text[word_start:cursor_pos]
+
+            # Check if we're completing an attribute (after a dot)
+            if word_start > 0 and text[word_start - 1] == '.':
+                # Find the object name before the dot
+                obj_end = word_start - 1
+                obj_start = obj_end
+                while obj_start > 0 and text[obj_start - 1] not in ' \t\n([{=+-*/%<>!&|^~,':
+                    obj_start -= 1
+                obj_name = text[obj_start:obj_end]
+
+                # Get the object from namespace
+                namespace = self._get_console_namespace()
+                if obj_name in namespace:
+                    obj = namespace[obj_name]
+                    # Get attributes that match partial
+                    for attr in dir(obj):
+                        if not attr.startswith('_') and attr.lower().startswith(partial.lower()):
+                            completions.append({
+                                'text': attr,
+                                'type': 'attribute',
+                                'start': word_start,
+                                'end': cursor_pos
+                            })
+            else:
+                # Complete from namespace
+                namespace = self._get_console_namespace()
+                for name in namespace.keys():
+                    if name.lower().startswith(partial.lower()) and not name.startswith('_'):
+                        comp_type = 'variable'
+                        if callable(namespace[name]):
+                            comp_type = 'function'
+                        elif name in ('tags', 'outputs', 'session'):
+                            comp_type = 'api'
+                        completions.append({
+                            'text': name,
+                            'type': comp_type,
+                            'start': word_start,
+                            'end': cursor_pos
+                        })
+
+                # Add Python keywords
+                keywords = ['if', 'else', 'elif', 'for', 'while', 'try', 'except',
+                           'finally', 'with', 'def', 'class', 'return', 'yield',
+                           'import', 'from', 'as', 'lambda', 'and', 'or', 'not',
+                           'in', 'is', 'True', 'False', 'None', 'pass', 'break',
+                           'continue', 'raise', 'assert', 'del', 'global', 'nonlocal']
+                for kw in keywords:
+                    if kw.lower().startswith(partial.lower()):
+                        completions.append({
+                            'text': kw,
+                            'type': 'keyword',
+                            'start': word_start,
+                            'end': cursor_pos
+                        })
+
+            # Sort and limit completions
+            completions.sort(key=lambda c: c['text'].lower())
+            completions = completions[:50]  # Limit to 50 suggestions
+
+            self.mqtt_client.publish(
+                f"{base}/console/complete/result",
+                json.dumps({'success': True, 'completions': completions})
+            )
+
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/console/complete/result",
+                json.dumps({'success': False, 'error': str(e), 'completions': []})
+            )
+
+    def _handle_console_reset(self, payload: dict) -> None:
+        """Reset the console namespace."""
+        base = self.get_topic_base()
+        self._console_namespace = None
         self.mqtt_client.publish(
             f"{base}/console/result",
-            json.dumps(result)
+            json.dumps({
+                'success': True,
+                'output': 'Namespace reset. All user variables cleared.\n',
+                'result': '',
+                'error': ''
+            })
         )
 
     def _build_console_namespace(self) -> dict:
-        """Build namespace for console commands (simpler than full script runtime)."""
+        """Build the initial namespace for console commands."""
         import math
         from datetime import datetime
 
@@ -1373,11 +2129,20 @@ class DAQService:
             def keys(self):
                 return list(self._service.channel_configs.keys())
 
+            def values(self):
+                return [self._service.get_channel_value(k) for k in self.keys()]
+
+            def items(self):
+                return [(k, self._service.get_channel_value(k)) for k in self.keys()]
+
             def get(self, name: str, default=0.0):
                 try:
                     return self._service.get_channel_value(name)
                 except:
                     return default
+
+            def __repr__(self):
+                return f'<TagsAPI: {len(self.keys())} channels>'
 
         # Simple outputs accessor
         class OutputsAPI:
@@ -1389,6 +2154,9 @@ class DAQService:
 
             def __setitem__(self, name: str, value):
                 self.set(name, value)
+
+            def __repr__(self):
+                return '<OutputsAPI: outputs.set(channel, value)>'
 
         # Simple session accessor
         class SessionAPI:
@@ -1411,6 +2179,9 @@ class DAQService:
             def elapsed(self):
                 return self._service.session_elapsed
 
+            def __repr__(self):
+                return f'<SessionAPI: active={self.active}, recording={self.recording}>'
+
         namespace = {
             # API
             'tags': TagsAPI(self),
@@ -1422,6 +2193,8 @@ class DAQService:
             'math': math,
             'datetime': datetime,
             'json': __import__('json'),
+            're': __import__('re'),
+            'statistics': __import__('statistics'),
 
             # Math functions (commonly used)
             'abs': abs, 'min': min, 'max': max, 'sum': sum,
@@ -1432,11 +2205,72 @@ class DAQService:
 
             # Built-ins
             'print': print,
-            'len': len, 'range': range, 'list': list, 'dict': dict,
+            'len': len, 'range': range, 'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
             'str': str, 'int': int, 'float': float, 'bool': bool,
             'True': True, 'False': False, 'None': None,
             'sorted': sorted, 'enumerate': enumerate, 'zip': zip,
+            'map': map, 'filter': filter, 'any': any, 'all': all,
+            'isinstance': isinstance, 'type': type, 'dir': dir, 'help': help,
+            'getattr': getattr, 'setattr': setattr, 'hasattr': hasattr,
         }
+
+        # Try to add numpy and scipy if available
+        try:
+            import numpy as np
+            namespace['np'] = np
+            namespace['numpy'] = np
+        except ImportError:
+            pass
+
+        try:
+            import scipy
+            namespace['scipy'] = scipy
+        except ImportError:
+            pass
+
+        # Import script helper classes and utilities for unified environment
+        # These are also available in scripts, making the namespace consistent
+        from .script_manager import (
+            RateCalculator, Accumulator, EdgeDetector, RollingStats, Scheduler,
+            F_to_C, C_to_F, GPM_to_LPM, LPM_to_GPM, PSI_to_bar, bar_to_PSI,
+            gal_to_L, L_to_gal, BTU_to_kJ, kJ_to_BTU, lb_to_kg, kg_to_lb,
+            now, now_ms, now_iso, time_of_day, elapsed_since, format_timestamp
+        )
+
+        # Add script helper classes
+        namespace.update({
+            'RateCalculator': RateCalculator,
+            'Accumulator': Accumulator,
+            'EdgeDetector': EdgeDetector,
+            'RollingStats': RollingStats,
+            'Scheduler': Scheduler,
+        })
+
+        # Add unit conversion functions
+        namespace.update({
+            'F_to_C': F_to_C,
+            'C_to_F': C_to_F,
+            'GPM_to_LPM': GPM_to_LPM,
+            'LPM_to_GPM': LPM_to_GPM,
+            'PSI_to_bar': PSI_to_bar,
+            'bar_to_PSI': bar_to_PSI,
+            'gal_to_L': gal_to_L,
+            'L_to_gal': L_to_gal,
+            'BTU_to_kJ': BTU_to_kJ,
+            'kJ_to_BTU': kJ_to_BTU,
+            'lb_to_kg': lb_to_kg,
+            'kg_to_lb': kg_to_lb,
+        })
+
+        # Add time utility functions
+        namespace.update({
+            'now': now,
+            'now_ms': now_ms,
+            'now_iso': now_iso,
+            'time_of_day': time_of_day,
+            'elapsed_since': elapsed_since,
+            'format_timestamp': format_timestamp,
+        })
 
         return namespace
 
@@ -1541,6 +2375,98 @@ class DAQService:
             self.alarm_manager.add_alarm_config(config)
 
         logger.info(f"Alarm manager initialized with {len(self.alarm_manager.alarm_configs)} alarm configs")
+
+    def _init_safety_manager(self):
+        """Initialize the backend safety manager for interlock evaluation and latch control.
+
+        The safety manager runs all interlock logic on the backend, making the
+        frontend display-only for safety-critical functions. This ensures safety
+        logic continues even if the browser tab closes.
+        """
+        data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+
+        def get_channel_value(channel: str) -> Optional[float]:
+            """Get current value of a channel"""
+            with self.values_lock:
+                val = self.channel_values.get(channel)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return None
+            return None
+
+        def get_channel_type(channel: str) -> Optional[str]:
+            """Get channel type"""
+            if self.config and channel in self.config.channels:
+                return self.config.channels[channel].channel_type.value
+            return None
+
+        def get_all_channels() -> Dict[str, Any]:
+            """Get all channel configs as dicts"""
+            if not self.config:
+                return {}
+            return {
+                name: {'channel_type': ch.channel_type.value}
+                for name, ch in self.config.channels.items()
+            }
+
+        def set_output(channel: str, value: Any):
+            """Set output value via MQTT command"""
+            self._handle_output_set({
+                'channel': channel,
+                'value': value,
+                'source': 'safety_manager'
+            })
+
+        def stop_session():
+            """Stop the test session"""
+            self._stop_session()
+
+        def get_system_state() -> Dict[str, Any]:
+            """Get current system state"""
+            return {
+                'status': 'online' if self.running else 'offline',
+                'acquiring': self.acquiring,
+                'recording': self.recording
+            }
+
+        def get_alarm_state() -> Dict[str, Any]:
+            """Get current alarm state"""
+            if self.alarm_manager:
+                counts = self.alarm_manager.get_alarm_counts()
+                return {'active_count': counts.get('active', 0)}
+            return {'active_count': 0}
+
+        self.safety_manager = SafetyManager(
+            data_dir=data_dir,
+            get_channel_value=get_channel_value,
+            get_channel_type=get_channel_type,
+            get_all_channels=get_all_channels,
+            publish_callback=self._safety_manager_publish,
+            set_output_callback=set_output,
+            stop_session_callback=stop_session,
+            get_system_state=get_system_state,
+            get_alarm_state=get_alarm_state
+        )
+
+        self.safety_manager.node_id = getattr(self.config.system, 'node_id', 'node-001')
+        logger.info("Safety manager initialized")
+
+    def _safety_manager_publish(self, topic: str, data: Any):
+        """Callback from safety manager to publish MQTT messages"""
+        if not self.mqtt_client:
+            return
+
+        base = self.get_topic_base()
+        try:
+            if isinstance(data, dict):
+                payload = json.dumps(data)
+            else:
+                payload = str(data)
+            self.mqtt_client.publish(f"{base}/{topic}", payload, qos=1)
+        except Exception as e:
+            logger.error(f"Error publishing safety event: {e}")
 
     def _update_channel_alarm_config(self, channel_name: str, channel: 'ChannelConfig'):
         """Update or create alarm config for a channel after runtime config change.
@@ -1692,6 +2618,77 @@ class DAQService:
             logger.error(f"Failed to initialize archive manager: {e}")
             self.archive_manager = None
 
+    def _init_pid_engine(self):
+        """Initialize PID control engine"""
+        try:
+            self.pid_engine = PIDEngine(
+                on_set_output=self._set_output_value
+            )
+            # Set callback for publishing status via MQTT
+            self.pid_engine.set_status_callback(self._publish_pid_status)
+            logger.info("PID engine initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize PID engine: {e}")
+            self.pid_engine = None
+
+    def _publish_pid_status(self, loop_id: str, status: Dict[str, Any]):
+        """Publish PID loop status via MQTT"""
+        if not self.mqtt_client:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/pid/loop/{loop_id}/status",
+            json.dumps(status),
+            retain=True
+        )
+
+    def _init_azure_uploader(self):
+        """Initialize Azure IoT Hub uploader (if configured)"""
+        if not azure_iot_available():
+            logger.info("Azure IoT SDK not available - cloud upload disabled")
+            return
+
+        # Azure config comes from project or system config
+        azure_config = getattr(self.config.system, 'azure_iot', None)
+        if not azure_config or not azure_config.get('connection_string'):
+            logger.info("Azure IoT Hub not configured")
+            return
+
+        try:
+            self.azure_uploader = AzureIoTUploader(
+                connection_string=azure_config['connection_string'],
+                batch_size=azure_config.get('batch_size', 10),
+                batch_interval_ms=azure_config.get('batch_interval_ms', 1000),
+                max_queue_size=azure_config.get('max_queue_size', 10000),
+            )
+
+            # Set channels if specified
+            if azure_config.get('channels'):
+                self.azure_uploader.set_channels(azure_config['channels'])
+
+            # Set status callback
+            self.azure_uploader.set_status_callback(self._publish_azure_status)
+
+            # Auto-start if enabled
+            if azure_config.get('enabled', False):
+                self.azure_uploader.start()
+
+            logger.info("Azure IoT Hub uploader initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Azure IoT uploader: {e}")
+            self.azure_uploader = None
+
+    def _publish_azure_status(self, status: Dict[str, Any]):
+        """Publish Azure IoT uploader status via MQTT"""
+        if not self.mqtt_client:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/azure/status",
+            json.dumps(status),
+            retain=True
+        )
+
     def _alarm_manager_publish(self, event_type: str, data: dict):
         """Callback from alarm manager to publish events"""
         if not self.mqtt_client:
@@ -1816,7 +2813,7 @@ class DAQService:
             return
 
         ch = self.config.channels[channel]
-        if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT,
+        if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
             return
 
@@ -2090,6 +3087,16 @@ class DAQService:
             client.subscribe(f"{base}/recording/list")
             client.subscribe(f"{base}/recording/delete")
             client.subscribe(f"{base}/recording/script-values")
+            client.subscribe(f"{base}/recording/read")
+            client.subscribe(f"{base}/recording/read-range")
+            client.subscribe(f"{base}/recording/file-info")
+
+            # Subscribe to Azure IoT Hub topics
+            client.subscribe(f"{base}/azure/config")
+            client.subscribe(f"{base}/azure/config/get")
+            client.subscribe(f"{base}/azure/start")
+            client.subscribe(f"{base}/azure/stop")
+            client.subscribe(f"{base}/azure/status/get")
 
             # Subscribe to dependency management topics
             client.subscribe(f"{base}/dependencies/check")
@@ -2137,8 +3144,11 @@ class DAQService:
             client.subscribe(f"{base}/script/get")
             client.subscribe(f"{base}/script/status")
 
-            # Subscribe to interactive console topic
+            # Subscribe to interactive console topics (IPython-like REPL)
             client.subscribe(f"{base}/console/execute")
+            client.subscribe(f"{base}/console/variables")  # List namespace variables
+            client.subscribe(f"{base}/console/complete")   # Tab completion
+            client.subscribe(f"{base}/console/reset")      # Reset namespace
 
             # Subscribe to notebook topics
             client.subscribe(f"{base}/notebook/save")
@@ -2149,6 +3159,8 @@ class DAQService:
             client.subscribe(f"{base}/chassis/update")
             client.subscribe(f"{base}/chassis/delete")
             client.subscribe(f"{base}/chassis/test")
+            client.subscribe(f"{base}/modbus/write_register")
+            client.subscribe(f"{base}/modbus/write")  # Generic write with verification
 
             # Subscribe to cRIO node status messages (wildcard for all nodes)
             # This allows us to discover and track remote cRIO nodes
@@ -2190,6 +3202,29 @@ class DAQService:
             client.subscribe(f"{base}/archive/list")
             client.subscribe(f"{base}/archive/retrieve")
             client.subscribe(f"{base}/archive/verify")
+
+            # Subscribe to safety/interlock management topics
+            client.subscribe(f"{base}/safety/latch/arm")
+            client.subscribe(f"{base}/safety/latch/disarm")
+            client.subscribe(f"{base}/safety/trip/reset")
+            client.subscribe(f"{base}/safety/status/request")
+            client.subscribe(f"{base}/safety/config/update")
+            client.subscribe(f"{base}/interlocks/add")
+            client.subscribe(f"{base}/interlocks/update")
+            client.subscribe(f"{base}/interlocks/remove")
+            client.subscribe(f"{base}/interlocks/bypass")
+            client.subscribe(f"{base}/interlocks/sync")
+            client.subscribe(f"{base}/interlocks/list")
+
+            # Subscribe to PID control topics
+            client.subscribe(f"{base}/pid/loops")
+            client.subscribe(f"{base}/pid/loop/+/config")
+            client.subscribe(f"{base}/pid/loop/+/setpoint")
+            client.subscribe(f"{base}/pid/loop/+/mode")
+            client.subscribe(f"{base}/pid/loop/+/output")
+            client.subscribe(f"{base}/pid/loop/+/tuning")
+            client.subscribe(f"{base}/pid/add")
+            client.subscribe(f"{base}/pid/remove")
 
             # Publish connection status
             self._publish_system_status()
@@ -2284,6 +3319,53 @@ class DAQService:
         elif topic.endswith('/archive/verify'):
             self._handle_archive_verify(payload)
 
+        # === SAFETY / INTERLOCK MANAGEMENT ===
+        elif topic == f"{base}/safety/latch/arm":
+            self._handle_safety_latch_arm(payload)
+        elif topic == f"{base}/safety/latch/disarm":
+            self._handle_safety_latch_disarm(payload)
+        elif topic == f"{base}/safety/trip/reset":
+            self._handle_safety_trip_reset(payload)
+        elif topic == f"{base}/safety/status/request":
+            self._handle_safety_status_request()
+        elif topic == f"{base}/safety/config/update":
+            self._handle_safety_config_update(payload)
+        elif topic == f"{base}/interlocks/add":
+            self._handle_interlock_add(payload)
+        elif topic == f"{base}/interlocks/update":
+            self._handle_interlock_update(payload)
+        elif topic == f"{base}/interlocks/remove":
+            self._handle_interlock_remove(payload)
+        elif topic == f"{base}/interlocks/bypass":
+            self._handle_interlock_bypass(payload)
+        elif topic == f"{base}/interlocks/sync":
+            self._handle_interlock_sync(payload)
+        elif topic == f"{base}/interlocks/list":
+            self._handle_interlocks_list()
+
+        # === PID CONTROL ===
+        elif topic == f"{base}/pid/loops":
+            self._handle_pid_list_loops()
+        elif topic == f"{base}/pid/add":
+            self._handle_pid_add_loop(payload)
+        elif topic == f"{base}/pid/remove":
+            self._handle_pid_remove_loop(payload)
+        elif topic.startswith(f"{base}/pid/loop/") and topic.endswith("/config"):
+            loop_id = topic.split('/')[-2]
+            self._handle_pid_loop_config(loop_id, payload)
+        elif topic.startswith(f"{base}/pid/loop/") and topic.endswith("/setpoint"):
+            loop_id = topic.split('/')[-2]
+            self._handle_pid_loop_setpoint(loop_id, payload)
+        elif topic.startswith(f"{base}/pid/loop/") and topic.endswith("/mode"):
+            loop_id = topic.split('/')[-2]
+            self._handle_pid_loop_mode(loop_id, payload)
+        elif topic.startswith(f"{base}/pid/loop/") and topic.endswith("/output"):
+            loop_id = topic.split('/')[-2]
+            self._handle_pid_loop_output(loop_id, payload)
+        elif topic.startswith(f"{base}/pid/loop/") and topic.endswith("/tuning"):
+            loop_id = topic.split('/')[-2]
+            self._handle_pid_loop_tuning(loop_id, payload)
+
         # === CONFIG MANAGEMENT ===
         elif topic == f"{base}/config/get":
             self._handle_config_get()
@@ -2342,7 +3424,7 @@ class DAQService:
 
         # === DEVICE DISCOVERY ===
         elif topic == f"{base}/discovery/scan":
-            self._handle_discovery_scan()
+            self._handle_discovery_scan(payload)
 
         # === ALARM CONTROL ===
         elif topic == f"{base}/alarm/acknowledge":
@@ -2377,6 +3459,24 @@ class DAQService:
             self._handle_recording_delete(payload)
         elif topic == f"{base}/recording/script-values":
             self._handle_recording_script_values(payload)
+        elif topic == f"{base}/recording/read":
+            self._handle_recording_read(payload)
+        elif topic == f"{base}/recording/read-range":
+            self._handle_recording_read_range(payload)
+        elif topic == f"{base}/recording/file-info":
+            self._handle_recording_file_info(payload)
+
+        # === AZURE IOT HUB ===
+        elif topic == f"{base}/azure/config":
+            self._handle_azure_config(payload)
+        elif topic == f"{base}/azure/config/get":
+            self._handle_azure_config_get()
+        elif topic == f"{base}/azure/start":
+            self._handle_azure_start(payload)
+        elif topic == f"{base}/azure/stop":
+            self._handle_azure_stop()
+        elif topic == f"{base}/azure/status/get":
+            self._handle_azure_status_get()
 
         # === DEPENDENCY MANAGEMENT ===
         elif topic == f"{base}/dependencies/check":
@@ -2409,6 +3509,12 @@ class DAQService:
             self._handle_project_import_json(payload)
         elif topic == f"{base}/project/close":
             self._handle_project_close(payload)
+        elif topic == f"{base}/project/autosave":
+            self._handle_project_autosave(payload)
+        elif topic == f"{base}/project/autosave/discard":
+            self._handle_project_autosave_discard()
+        elif topic == f"{base}/project/autosave/check":
+            self._handle_project_autosave_check()
 
         # === USER VARIABLES / PLAYGROUND ===
         elif topic == f"{base}/variables/create":
@@ -2449,6 +3555,8 @@ class DAQService:
             self._handle_script_add(payload)
         elif topic == f"{base}/script/update":
             self._handle_script_update(payload)
+        elif topic == f"{base}/script/reload":
+            self._handle_script_reload(payload)
         elif topic == f"{base}/script/remove":
             self._handle_script_remove(payload)
         elif topic == f"{base}/script/clear-all":
@@ -2460,9 +3568,15 @@ class DAQService:
         # NOTE: Do NOT handle script/status here - it's our own outbound topic
         # Handling it would cause an infinite publish loop
 
-        # === INTERACTIVE CONSOLE ===
+        # === INTERACTIVE CONSOLE (IPython-like) ===
         elif topic == f"{base}/console/execute":
             self._handle_console_execute(payload)
+        elif topic == f"{base}/console/variables":
+            self._handle_console_variables(payload)
+        elif topic == f"{base}/console/complete":
+            self._handle_console_complete(payload)
+        elif topic == f"{base}/console/reset":
+            self._handle_console_reset(payload)
 
         # === NOTEBOOK ===
         elif topic == f"{base}/notebook/save":
@@ -2489,6 +3603,8 @@ class DAQService:
             self._handle_chassis_delete(payload)
         elif topic == f"{base}/chassis/test":
             self._handle_chassis_test(payload)
+        elif topic == f"{base}/modbus/write_register" or topic == f"{base}/modbus/write":
+            self._handle_modbus_write_register(payload)
 
         # === DATA SOURCE MANAGEMENT (REST API, OPC-UA, etc.) ===
         elif topic == f"{base}/datasource/add":
@@ -2571,7 +3687,7 @@ class DAQService:
         channel = self.config.channels[channel_name]
 
         # Check if this is an output channel
-        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             logger.warning(f"Cannot write to input channel: {channel_name}")
             return
 
@@ -3099,11 +4215,18 @@ class DAQService:
                     logger.info(f"[SAFE STATE] DO {channel_name} -> 0 (OFF)")
                 except Exception as e:
                     logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
-            elif config.channel_type == ChannelType.ANALOG_OUTPUT:
+            elif config.channel_type == ChannelType.VOLTAGE_OUTPUT:
                 try:
-                    # AO safe state: 0V
+                    # Voltage output safe state: 0V
                     self._set_output_value(channel_name, 0.0)
-                    logger.info(f"[SAFE STATE] AO {channel_name} -> 0.0")
+                    logger.info(f"[SAFE STATE] VO {channel_name} -> 0.0V")
+                except Exception as e:
+                    logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
+            elif config.channel_type == ChannelType.CURRENT_OUTPUT:
+                try:
+                    # Current output safe state: 0mA
+                    self._set_output_value(channel_name, 0.0)
+                    logger.info(f"[SAFE STATE] CO {channel_name} -> 0.0mA")
                 except Exception as e:
                     logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
 
@@ -3269,6 +4392,74 @@ class DAQService:
             })
         )
 
+    def _handle_recording_read(self, payload: Any):
+        """Read historical data from a recording file"""
+        if not isinstance(payload, dict):
+            self._publish_recording_read_response({"success": False, "error": "Invalid payload"})
+            return
+
+        filename = payload.get('filename')
+        if not filename:
+            self._publish_recording_read_response({"success": False, "error": "No filename specified"})
+            return
+
+        result = self.recording_manager.read_file(
+            filename=filename,
+            start_time=payload.get('start_time'),
+            end_time=payload.get('end_time'),
+            channels=payload.get('channels'),
+            decimation=payload.get('decimation', 1),
+            max_samples=payload.get('max_samples', 50000)
+        )
+
+        self._publish_recording_read_response(result)
+
+    def _handle_recording_read_range(self, payload: Any):
+        """Read a range of samples from a recording file (lazy loading)"""
+        if not isinstance(payload, dict):
+            self._publish_recording_read_response({"success": False, "error": "Invalid payload"})
+            return
+
+        filename = payload.get('filename')
+        if not filename:
+            self._publish_recording_read_response({"success": False, "error": "No filename specified"})
+            return
+
+        result = self.recording_manager.read_file_range(
+            filename=filename,
+            start_sample=payload.get('start_sample', 0),
+            end_sample=payload.get('end_sample'),
+            channels=payload.get('channels')
+        )
+
+        self._publish_recording_read_response(result)
+
+    def _handle_recording_file_info(self, payload: Any):
+        """Get metadata about a recording file"""
+        if not isinstance(payload, dict):
+            self._publish_recording_read_response({"success": False, "error": "Invalid payload"})
+            return
+
+        filename = payload.get('filename')
+        if not filename:
+            self._publish_recording_read_response({"success": False, "error": "No filename specified"})
+            return
+
+        result = self.recording_manager.get_file_info(filename)
+        self._publish_recording_read_response(result)
+
+    def _publish_recording_read_response(self, result: dict):
+        """Publish recording read response"""
+        base = self.get_topic_base()
+
+        # Add timestamp
+        result["timestamp"] = datetime.now().isoformat()
+
+        self.mqtt_client.publish(
+            f"{base}/recording/read/response",
+            json.dumps(result)
+        )
+
     def _publish_recording_config(self):
         """Publish current recording configuration"""
         base = self.get_topic_base()
@@ -3281,6 +4472,136 @@ class DAQService:
             json.dumps({
                 "config": config,
                 "status": status,
+                "timestamp": datetime.now().isoformat()
+            }),
+            retain=True
+        )
+
+    # =========================================================================
+    # AZURE IOT HUB COMMAND HANDLERS
+    # =========================================================================
+
+    def _handle_azure_config(self, payload: Any):
+        """Update Azure IoT Hub configuration"""
+        if not isinstance(payload, dict):
+            self._publish_azure_response({"success": False, "error": "Invalid payload"})
+            return
+
+        if not azure_iot_available():
+            self._publish_azure_response({"success": False, "error": "Azure IoT SDK not available"})
+            return
+
+        try:
+            connection_string = payload.get('connection_string')
+            channels = payload.get('channels', [])
+            batch_size = payload.get('batch_size', 10)
+            batch_interval_ms = payload.get('batch_interval_ms', 1000)
+            enabled = payload.get('enabled', False)
+
+            # If uploader exists, update config
+            if self.azure_uploader:
+                self.azure_uploader.update_config(
+                    channels=channels,
+                    batch_size=batch_size,
+                    batch_interval_ms=batch_interval_ms
+                )
+
+                # Handle enable/disable
+                if enabled and not self.azure_uploader.enabled:
+                    self.azure_uploader.start()
+                elif not enabled and self.azure_uploader.enabled:
+                    self.azure_uploader.stop()
+
+            elif connection_string:
+                # Create new uploader
+                self.azure_uploader = AzureIoTUploader(
+                    connection_string=connection_string,
+                    batch_size=batch_size,
+                    batch_interval_ms=batch_interval_ms,
+                )
+                self.azure_uploader.set_channels(channels)
+                self.azure_uploader.set_status_callback(self._publish_azure_status)
+
+                if enabled:
+                    self.azure_uploader.start()
+
+            self._publish_azure_response({"success": True})
+            self._publish_azure_config_current()
+
+            # Log to audit trail
+            if self.audit_trail:
+                self.audit_trail.log_config_change(
+                    changed_by=self.current_session_id or 'system',
+                    section='azure_iot',
+                    old_value=None,
+                    new_value={'enabled': enabled, 'channels': channels}
+                )
+
+        except Exception as e:
+            logger.error(f"Error configuring Azure IoT: {e}")
+            self._publish_azure_response({"success": False, "error": str(e)})
+
+    def _handle_azure_config_get(self):
+        """Get current Azure IoT configuration"""
+        self._publish_azure_config_current()
+
+    def _handle_azure_start(self, payload: Any = None):
+        """Start Azure IoT Hub streaming"""
+        if not self.azure_uploader:
+            self._publish_azure_response({"success": False, "error": "Azure IoT Hub not configured"})
+            return
+
+        if self.azure_uploader.start():
+            self._publish_azure_response({"success": True, "message": "Azure IoT streaming started"})
+            logger.info("Azure IoT Hub streaming started")
+        else:
+            self._publish_azure_response({"success": False, "error": "Failed to start Azure IoT streaming"})
+
+    def _handle_azure_stop(self):
+        """Stop Azure IoT Hub streaming"""
+        if not self.azure_uploader:
+            self._publish_azure_response({"success": False, "error": "Azure IoT Hub not configured"})
+            return
+
+        self.azure_uploader.stop()
+        self._publish_azure_response({"success": True, "message": "Azure IoT streaming stopped"})
+        logger.info("Azure IoT Hub streaming stopped")
+
+    def _handle_azure_status_get(self):
+        """Get Azure IoT Hub status"""
+        self._publish_azure_config_current()
+
+    def _publish_azure_response(self, result: dict):
+        """Publish Azure command response"""
+        base = self.get_topic_base()
+        result["timestamp"] = datetime.now().isoformat()
+        self.mqtt_client.publish(
+            f"{base}/azure/response",
+            json.dumps(result)
+        )
+
+    def _publish_azure_config_current(self):
+        """Publish current Azure IoT configuration and status"""
+        base = self.get_topic_base()
+
+        if self.azure_uploader:
+            config = self.azure_uploader.get_config()
+            stats = self.azure_uploader.stats
+        else:
+            config = {
+                'enabled': False,
+                'channels': [],
+                'has_connection_string': False,
+                'available': azure_iot_available()
+            }
+            stats = {}
+
+        self.mqtt_client.publish(
+            f"{base}/azure/config/current",
+            json.dumps({
+                "config": config,
+                "stats": stats,
+                "available": azure_iot_available(),
                 "timestamp": datetime.now().isoformat()
             }),
             retain=True
@@ -3373,6 +4694,12 @@ class DAQService:
                 self._cpu_percent = self._process.cpu_percent(interval=None)
                 mem_info = self._process.memory_info()
                 self._memory_mb = mem_info.rss / (1024 * 1024)  # Convert to MB
+                # Get disk usage for data directory
+                if self._psutil:
+                    disk = self._psutil.disk_usage('/')
+                    self._disk_percent = disk.percent
+                    self._disk_used_gb = disk.used / (1024 ** 3)  # Convert to GB
+                    self._disk_total_gb = disk.total / (1024 ** 3)
             except Exception as e:
                 logger.warning(f"Resource monitoring error: {e}")
 
@@ -3425,6 +4752,9 @@ class DAQService:
             # Resource monitoring
             "cpu_percent": round(self._cpu_percent, 1) if self._resource_monitor_enabled else None,
             "memory_mb": round(self._memory_mb, 1) if self._resource_monitor_enabled else None,
+            "disk_percent": round(self._disk_percent, 1) if self._resource_monitor_enabled else None,
+            "disk_used_gb": round(self._disk_used_gb, 1) if self._resource_monitor_enabled else None,
+            "disk_total_gb": round(self._disk_total_gb, 1) if self._resource_monitor_enabled else None,
             "resource_monitoring": self._resource_monitor_enabled
         }
 
@@ -4500,6 +5830,10 @@ class DAQService:
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
 
+        # Clear safety interlocks (per-project)
+        if self.safety_manager:
+            self.safety_manager.clear_all()
+
         logger.info("No project configured - starting with empty state")
 
     def _clear_startup_state(self):
@@ -4535,6 +5869,11 @@ class DAQService:
             self.alarm_manager.clear_all(clear_configs=True)
             # Publish alarms cleared to MQTT
             self._publish_alarms_cleared(reason="startup_clean_slate")
+
+        # Clear safety manager (interlocks and trip state)
+        if self.safety_manager:
+            logger.info("Clearing safety manager")
+            self.safety_manager.clear_all()
 
         # Clear script manager
         if self.script_manager:
@@ -4578,6 +5917,10 @@ class DAQService:
             retain=True,
             qos=1
         )
+
+        # Check for autosave file (crash recovery)
+        # Publish status BEFORE startup-cleared so frontend has the info
+        self._publish_autosave_status()
 
         # Publish startup cleared event to trigger frontend dialog
         # This tells frontend to show the "Load Last Project" or "Start Fresh" dialog
@@ -4844,9 +6187,10 @@ class DAQService:
         self._load_project_from_path(project_path)
 
     def _handle_project_import_json(self, payload: Any):
-        """Import a project directly from JSON object (no file path needed)
+        """Import a project directly from JSON object
 
         Used when frontend loads a project file and sends the parsed JSON.
+        The project is saved to config/projects/ and then loaded.
         """
         if not isinstance(payload, dict):
             self._publish_project_response(False, "Invalid payload - expected JSON object")
@@ -4863,16 +6207,39 @@ class DAQService:
             return
 
         try:
+            # Determine filename from project name
+            project_name = payload.get("name", "Imported Project")
+            safe_name = "".join(c if c.isalnum() or c in (' ', '_', '-') else '_' for c in project_name)
+            safe_name = safe_name.strip().replace(' ', '_')
+            filename = f"{safe_name}.json"
+
+            # Save to config/projects/
+            projects_dir = self._get_projects_dir()
+            project_path = projects_dir / filename
+
+            # Add/update metadata
+            payload["type"] = "nisystem-project"
+            payload["version"] = payload.get("version", "1.0")
+            payload["modified"] = datetime.now().isoformat()
+            if not payload.get("created"):
+                payload["created"] = datetime.now().isoformat()
+
+            # Save the file
+            with open(project_path, 'w') as f:
+                json.dump(payload, f, indent=2)
+
+            logger.info(f"Saved imported project to {project_path}")
+
             # Apply the project configuration
             if self._apply_project_config(payload):
                 self.current_project_data = payload
-                self.current_project_path = None  # No file path - imported directly
+                self.current_project_path = project_path  # Now has a file path
+                self._save_last_project_path(project_path)
 
                 self._publish_channel_config()
 
-                project_name = payload.get("name", "Imported Project")
-                logger.info(f"Imported project from JSON: {project_name}")
-                self._publish_project_response(True, f"Project '{project_name}' imported successfully")
+                logger.info(f"Imported project: {project_name} -> {filename}")
+                self._publish_project_response(True, f"Project '{project_name}' imported to projects/{filename}")
             else:
                 self._publish_project_response(False, "Failed to apply project configuration")
         except Exception as e:
@@ -4893,12 +6260,117 @@ class DAQService:
         if self.alarm_manager:
             self.alarm_manager.clear_all(clear_configs=True)
 
+        # Clear safety state - interlocks are per-project
+        if self.safety_manager:
+            self.safety_manager.clear_all()
+
         logger.info("Project closed - now in empty state")
 
         self.mqtt_client.publish(
             f"{base}/project/closed",
             json.dumps({"success": True, "message": "Project closed"})
         )
+
+    # =========================================================================
+    # AUTOSAVE / CRASH RECOVERY
+    # =========================================================================
+
+    def _get_autosave_path(self) -> Path:
+        """Get the path to the autosave file"""
+        projects_dir = self._get_projects_dir()
+        return projects_dir / ".autosave.json"
+
+    def _handle_project_autosave(self, payload: Any):
+        """Save current state to autosave file for crash recovery"""
+        if not isinstance(payload, dict):
+            return
+
+        autosave_data = payload.get("data", {})
+        if not autosave_data:
+            return
+
+        autosave_path = self._get_autosave_path()
+
+        try:
+            # Add metadata
+            autosave_data["_autosave"] = {
+                "timestamp": datetime.now().isoformat(),
+                "source_project": self.current_project_path.name if self.current_project_path else None,
+                "reason": "periodic_autosave"
+            }
+
+            with open(autosave_path, 'w') as f:
+                json.dump(autosave_data, f, indent=2)
+
+            logger.debug(f"Autosave written to {autosave_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to write autosave: {e}")
+
+    def _handle_project_autosave_discard(self):
+        """Delete the autosave file (user chose not to recover)"""
+        base = self.get_topic_base()
+        autosave_path = self._get_autosave_path()
+
+        try:
+            if autosave_path.exists():
+                autosave_path.unlink()
+                logger.info("Autosave file discarded by user")
+
+            self.mqtt_client.publish(
+                f"{base}/project/autosave/status",
+                json.dumps({"exists": False, "discarded": True})
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to delete autosave: {e}")
+
+    def _handle_project_autosave_check(self):
+        """Check if autosave file exists and publish status"""
+        self._publish_autosave_status()
+
+    def _publish_autosave_status(self):
+        """Publish autosave status to MQTT"""
+        base = self.get_topic_base()
+        autosave_path = self._get_autosave_path()
+
+        status = {"exists": False}
+
+        if autosave_path.exists():
+            try:
+                with open(autosave_path, 'r') as f:
+                    autosave_data = json.load(f)
+
+                metadata = autosave_data.get("_autosave", {})
+                status = {
+                    "exists": True,
+                    "timestamp": metadata.get("timestamp"),
+                    "source_project": metadata.get("source_project"),
+                    "project_name": autosave_data.get("name", "Unsaved Project")
+                }
+                logger.info(f"Autosave file found from {metadata.get('timestamp')}")
+
+            except Exception as e:
+                logger.error(f"Failed to read autosave file: {e}")
+                status = {"exists": False, "error": str(e)}
+
+        self.mqtt_client.publish(
+            f"{base}/project/autosave/status",
+            json.dumps(status),
+            retain=True
+        )
+
+    def _delete_autosave_on_save(self):
+        """Delete autosave file after successful project save"""
+        autosave_path = self._get_autosave_path()
+        if autosave_path.exists():
+            try:
+                autosave_path.unlink()
+                logger.info("Autosave file deleted after successful save")
+                # Publish updated status
+                self._publish_autosave_status()
+            except Exception as e:
+                logger.error(f"Failed to delete autosave after save: {e}")
 
     def _handle_project_save(self, payload: Any):
         """Save project to file - saves to current path or specified path"""
@@ -4956,6 +6428,7 @@ class DAQService:
                 self.current_project_path = project_path
                 self.current_project_data = project_data
                 self._save_last_project_path(project_path)
+                self._delete_autosave_on_save()  # Clear autosave after successful save
                 logger.info(f"Saved project: {project_path}")
                 self._publish_project_response(True, message)
             elif status == ProjectStatus.VALIDATION_ERROR:
@@ -4976,6 +6449,7 @@ class DAQService:
                 self.current_project_path = project_path
                 self.current_project_data = project_data
                 self._save_last_project_path(project_path)
+                self._delete_autosave_on_save()  # Clear autosave after successful save
 
                 logger.info(f"Saved project: {project_path}")
                 self._publish_project_response(True, f"Project saved: {project_path.name}")
@@ -5321,6 +6795,285 @@ class DAQService:
         except Exception as e:
             logger.error(f"Failed to test chassis: {e}")
             self._publish_chassis_response(False, str(e))
+
+    def _handle_modbus_write_register(self, payload: Any):
+        """
+        Write a value to a Modbus register with optional verification.
+
+        Supports two modes:
+        1. Direct register access: specify register_address directly
+        2. Channel-based: specify channel name to use its configured register
+
+        Payload options:
+        - channel: Channel name (uses channel's register config)
+        - register_address: Direct register address (if not using channel)
+        - value: Value to write (required)
+        - slave_id: Modbus slave ID (required for direct mode, optional for channel mode)
+        - data_type: 'int16', 'uint16', 'int32', 'uint32', 'float32' (default: uint16)
+        - verify: true/false - read back after write to confirm (default: false)
+        - connection_type: 'tcp' or 'rtu' (default: tcp)
+        - ip_address: For TCP connections
+        - port: TCP port (default: 502)
+        - serial_port: For RTU connections
+        - baudrate, parity, stopbits, bytesize: RTU params
+        """
+        base = self.get_topic_base()
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Invalid payload"
+            }))
+            return
+
+        # Check for channel-based write
+        channel_name = payload.get('channel')
+        register_address = payload.get('register_address')
+        value = payload.get('value')
+        data_type = payload.get('data_type', 'uint16')
+        verify = payload.get('verify', False)
+
+        # Connection parameters
+        connection_type = payload.get('connection_type', 'tcp')
+        slave_id = payload.get('slave_id')
+        ip_address = payload.get('ip_address')
+        port = payload.get('port', 502)
+        serial_port = payload.get('serial_port')
+        baudrate = payload.get('baudrate', 9600)
+        parity = payload.get('parity', 'N')
+        stopbits = payload.get('stopbits', 1)
+        bytesize = payload.get('bytesize', 8)
+
+        # If channel specified, get register info from channel config
+        if channel_name:
+            if channel_name not in self.config.channels:
+                self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                    "success": False, "error": f"Channel '{channel_name}' not found"
+                }))
+                return
+
+            ch_config = self.config.channels[channel_name]
+
+            # Get register address from channel
+            if hasattr(ch_config, 'address') and ch_config.address is not None:
+                register_address = ch_config.address
+            elif hasattr(ch_config, 'modbus_address') and ch_config.modbus_address is not None:
+                register_address = ch_config.modbus_address
+            else:
+                self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                    "success": False, "error": f"Channel '{channel_name}' has no register address configured"
+                }))
+                return
+
+            # Get slave ID from channel if not specified
+            if slave_id is None:
+                slave_id = getattr(ch_config, 'slave_id', None) or getattr(ch_config, 'modbus_slave_id', 1)
+
+            # Get data type from channel if available
+            if hasattr(ch_config, 'data_type') and ch_config.data_type:
+                data_type = ch_config.data_type
+
+            # Get connection info from chassis/device config if available
+            if hasattr(ch_config, 'device') and ch_config.device:
+                device_id = ch_config.device
+                if hasattr(self.config, 'chassis') and self.config.chassis:
+                    for chassis in self.config.chassis.values():
+                        if hasattr(chassis, 'devices'):
+                            for dev in chassis.devices:
+                                if getattr(dev, 'id', None) == device_id or getattr(dev, 'name', None) == device_id:
+                                    if not ip_address and hasattr(dev, 'ip_address'):
+                                        ip_address = dev.ip_address
+                                    if not serial_port and hasattr(dev, 'serial_port'):
+                                        serial_port = dev.serial_port
+                                        connection_type = 'rtu'
+                                    break
+
+        # Validate required params
+        if value is None:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Missing required parameter: value"
+            }))
+            return
+
+        if register_address is None:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Missing register_address (specify directly or via channel)"
+            }))
+            return
+
+        if slave_id is None:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Missing slave_id"
+            }))
+            return
+
+        if connection_type == 'tcp' and not ip_address:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Missing ip_address for TCP connection"
+            }))
+            return
+
+        if connection_type == 'rtu' and not serial_port:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "Missing serial_port for RTU connection"
+            }))
+            return
+
+        try:
+            import struct
+            from pymodbus.client import ModbusTcpClient, ModbusSerialClient
+
+            # Create connection
+            if connection_type == 'tcp':
+                client = ModbusTcpClient(host=ip_address, port=port, timeout=3)
+            else:
+                client = ModbusSerialClient(
+                    port=serial_port,
+                    baudrate=baudrate,
+                    parity=parity,
+                    stopbits=stopbits,
+                    bytesize=bytesize,
+                    timeout=3
+                )
+
+            if not client.connect():
+                self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                    "success": False, "error": "Failed to connect to device"
+                }))
+                return
+
+            try:
+                # Convert value to register(s) based on data type
+                registers = self._value_to_modbus_registers(float(value), data_type)
+
+                if registers is None:
+                    self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                        "success": False, "error": f"Unsupported data type: {data_type}"
+                    }))
+                    return
+
+                # Write register(s)
+                if len(registers) == 1:
+                    result = client.write_register(int(register_address), registers[0], device_id=int(slave_id))
+                else:
+                    result = client.write_registers(int(register_address), registers, device_id=int(slave_id))
+
+                if result.isError():
+                    self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                        "success": False,
+                        "error": f"Modbus write error at register {register_address}",
+                        "channel": channel_name,
+                        "register_address": register_address,
+                        "requested_value": value
+                    }))
+                    return
+
+                # Verification: read back the value
+                verified_value = None
+                verification_passed = None
+
+                if verify:
+                    time.sleep(0.05)  # Small delay before read-back
+
+                    read_result = client.read_holding_registers(int(register_address), len(registers), device_id=int(slave_id))
+
+                    if not read_result.isError():
+                        verified_value = self._modbus_registers_to_value(read_result.registers, data_type)
+
+                        # Check if values match (with tolerance for floats)
+                        if data_type in ('float32', 'real', 'float'):
+                            verification_passed = abs(verified_value - float(value)) < 0.001
+                        else:
+                            verification_passed = int(verified_value) == int(value)
+                    else:
+                        verification_passed = False
+                        logger.warning(f"Verification read-back failed for register {register_address}")
+
+                # Build response
+                response = {
+                    "success": True,
+                    "message": f"Successfully wrote to register {register_address}",
+                    "register_address": register_address,
+                    "slave_id": slave_id,
+                    "value_written": value,
+                    "data_type": data_type
+                }
+
+                if channel_name:
+                    response["channel"] = channel_name
+
+                if verify:
+                    response["verified"] = verification_passed
+                    response["verified_value"] = verified_value
+                    if not verification_passed:
+                        response["success"] = False
+                        response["warning"] = "Write verification failed - value read back does not match"
+
+                logger.info(f"Modbus write: register={register_address}, value={value}, type={data_type}, verified={verification_passed}")
+                self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps(response))
+
+            finally:
+                client.close()
+
+        except ImportError:
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": "pymodbus library not available"
+            }))
+        except Exception as e:
+            logger.error(f"Failed to write Modbus register: {e}")
+            self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                "success": False, "error": str(e)
+            }))
+
+    def _value_to_modbus_registers(self, value: float, data_type: str) -> list:
+        """Convert a value to Modbus register(s) based on data type"""
+        import struct
+
+        try:
+            if data_type in ('int16', 'sint16'):
+                packed = struct.pack('>h', int(value))
+                return [struct.unpack('>H', packed)[0]]
+            elif data_type in ('uint16', 'word'):
+                return [int(value) & 0xFFFF]
+            elif data_type in ('int32', 'sint32', 'dint'):
+                packed = struct.pack('>i', int(value))
+                return list(struct.unpack('>HH', packed))
+            elif data_type in ('uint32', 'dword'):
+                packed = struct.pack('>I', int(value))
+                return list(struct.unpack('>HH', packed))
+            elif data_type in ('float32', 'real', 'float'):
+                packed = struct.pack('>f', float(value))
+                return list(struct.unpack('>HH', packed))
+            else:
+                # Default to uint16
+                return [int(value) & 0xFFFF]
+        except Exception as e:
+            logger.error(f"Error converting value {value} to {data_type}: {e}")
+            return None
+
+    def _modbus_registers_to_value(self, registers: list, data_type: str) -> float:
+        """Convert Modbus register(s) to a value based on data type"""
+        import struct
+
+        try:
+            if data_type in ('int16', 'sint16'):
+                packed = struct.pack('>H', registers[0])
+                return struct.unpack('>h', packed)[0]
+            elif data_type in ('uint16', 'word'):
+                return registers[0]
+            elif data_type in ('int32', 'sint32', 'dint'):
+                packed = struct.pack('>HH', registers[0], registers[1])
+                return struct.unpack('>i', packed)[0]
+            elif data_type in ('uint32', 'dword'):
+                packed = struct.pack('>HH', registers[0], registers[1])
+                return struct.unpack('>I', packed)[0]
+            elif data_type in ('float32', 'real', 'float'):
+                packed = struct.pack('>HH', registers[0], registers[1])
+                return struct.unpack('>f', packed)[0]
+            else:
+                return registers[0]
+        except Exception as e:
+            logger.error(f"Error converting registers {registers} from {data_type}: {e}")
+            return None
 
     def _publish_modbus_status(self):
         """Publish Modbus connection status"""
@@ -5714,29 +7467,42 @@ class DAQService:
                 self._process_crio_single_value(node_id, channel_suffix, value)
 
     def _process_crio_batch_values(self, node_id: str, batch_payload: Dict[str, Any]):
-        """Process batch channel values from cRIO."""
+        """Process batch channel values from cRIO/Opto22 with SOE timestamps."""
         with self.values_lock:
             for crio_channel, ch_data in batch_payload.items():
                 if isinstance(ch_data, dict):
                     value = ch_data.get('value')
+                    # SOE: Preserve source acquisition timestamp from remote node
+                    acquisition_ts_us = ch_data.get('acquisition_ts_us', 0)
+                    quality = ch_data.get('quality', 'good')
                 else:
                     value = ch_data  # Simple value format
+                    acquisition_ts_us = 0
+                    quality = 'good'
 
                 if value is not None:
-                    self._update_crio_channel_value(node_id, crio_channel, value)
+                    self._update_crio_channel_value(node_id, crio_channel, value, acquisition_ts_us, quality)
 
     def _process_crio_single_value(self, node_id: str, crio_channel: str, value: Any):
         """Process single channel value from cRIO."""
         with self.values_lock:
-            self._update_crio_channel_value(node_id, crio_channel, value)
+            self._update_crio_channel_value(node_id, crio_channel, value, 0, 'good')
 
-    def _update_crio_channel_value(self, node_id: str, crio_channel: str, value: Any):
+    def _update_crio_channel_value(self, node_id: str, crio_channel: str, value: Any,
+                                    acquisition_ts_us: int = 0, quality: str = 'good'):
         """
-        Update local channel value from cRIO.
+        Update local channel value from cRIO/Opto22.
 
         Matches by:
         1. TAG name (if cRIO sends TAG names after config push)
         2. Physical channel path (fallback for legacy/pre-config mode)
+
+        Args:
+            node_id: Remote node identifier
+            crio_channel: Channel name on remote node
+            value: Channel value
+            acquisition_ts_us: SOE source timestamp in microseconds (from remote node)
+            quality: OPC UA style quality code (good/bad/uncertain)
         """
         # First try direct TAG name match (cRIO sends TAG names after config push)
         if crio_channel in self.config.channels:
@@ -5744,7 +7510,14 @@ class DAQService:
             if channel.is_crio:
                 self.channel_values[crio_channel] = value
                 self.channel_timestamps[crio_channel] = time.time()
-                logger.debug(f"cRIO value (TAG match): {crio_channel} = {value}")
+                # SOE: Store source acquisition timestamp from remote node
+                if acquisition_ts_us > 0:
+                    self.channel_acquisition_ts_us[crio_channel] = acquisition_ts_us
+                # Store quality for publishing
+                if not hasattr(self, 'channel_qualities'):
+                    self.channel_qualities = {}
+                self.channel_qualities[crio_channel] = quality
+                logger.debug(f"cRIO value (TAG match): {crio_channel} = {value} (quality={quality})")
                 # Also publish to MQTT for dashboard
                 self._publish_channel_value(crio_channel, value)
                 return
@@ -5759,7 +7532,14 @@ class DAQService:
                 if channel.physical_channel == crio_channel:
                     self.channel_values[name] = value
                     self.channel_timestamps[name] = time.time()
-                    logger.debug(f"cRIO value (physical match): {name} ({crio_channel}) = {value}")
+                    # SOE: Store source acquisition timestamp from remote node
+                    if acquisition_ts_us > 0:
+                        self.channel_acquisition_ts_us[name] = acquisition_ts_us
+                    # Store quality for publishing
+                    if not hasattr(self, 'channel_qualities'):
+                        self.channel_qualities = {}
+                    self.channel_qualities[name] = quality
+                    logger.debug(f"cRIO value (physical match): {name} ({crio_channel}) = {value} (quality={quality})")
                     # Also publish to MQTT for dashboard
                     self._publish_channel_value(name, value)
                     return
@@ -6577,6 +8357,20 @@ class DAQService:
                 }
                 self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
                 logger.info(f"[SESSION] Forwarded start to cRIO {node.node_id}")
+
+            # Audit trail: Log session start (PC audit for cRIO mode)
+            if self.audit_trail and crio_nodes:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.TEST_SESSION_STARTED,
+                    user=started_by,
+                    description="Test session started (forwarded to cRIO)",
+                    details={
+                        'mode': 'crio',
+                        'target_nodes': [n.node_id for n in crio_nodes],
+                        'timeout_minutes': payload.get('timeout_minutes', 0)
+                    }
+                )
+
             # cRIO will publish session/status which triggers _handle_crio_session_status
             return
 
@@ -6613,6 +8407,19 @@ class DAQService:
             self._publish_variable_response(True, "Test session started")
             self._publish_test_session_status()
             self._publish_user_variables_values()
+
+            # Audit trail: Log session start
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.TEST_SESSION_STARTED,
+                    user=started_by,
+                    description="Test session started",
+                    details={
+                        'mode': 'cdaq',
+                        'require_no_latched': require_no_latched,
+                        'require_no_active': require_no_active
+                    }
+                )
         else:
             self._publish_variable_response(False, result.get('error', 'Failed to start session'))
 
@@ -6631,6 +8438,20 @@ class DAQService:
                 crio_payload = {'reason': 'user_command'}
                 self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
                 logger.info(f"[SESSION] Forwarded stop to cRIO {node.node_id}")
+
+            # Audit trail: Log session stop (PC audit for cRIO mode)
+            if self.audit_trail and crio_nodes:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.TEST_SESSION_STOPPED,
+                    user=self.auth_username or "user",
+                    description="Test session stopped (forwarded to cRIO)",
+                    details={
+                        'mode': 'crio',
+                        'target_nodes': [n.node_id for n in crio_nodes],
+                        'reason': 'user_command'
+                    }
+                )
+
             # cRIO will publish session/status which triggers _handle_crio_session_status
             return
 
@@ -6641,6 +8462,19 @@ class DAQService:
             self._publish_variable_response(True, "Test session stopped")
             self._publish_test_session_status()
             self._publish_user_variables_values()
+
+            # Audit trail: Log session stop
+            if self.audit_trail:
+                self.audit_trail.log_event(
+                    event_type=AuditEventType.TEST_SESSION_STOPPED,
+                    user=self.auth_username or "user",
+                    description="Test session stopped",
+                    details={
+                        'mode': 'cdaq',
+                        'stopped_at': result.get('stopped_at'),
+                        'session_started_at': result.get('session_started_at')
+                    }
+                )
         else:
             self._publish_variable_response(False, result.get('error', 'Failed to stop session'))
 
@@ -6676,6 +8510,49 @@ class DAQService:
             json.dumps(status),
             retain=True
         )
+
+    def _check_session_timeout(self):
+        """
+        Check if CDAQ mode session has timed out.
+
+        This provides autonomous operation protection - if the session runs
+        longer than the configured timeout, it automatically stops.
+        This matches the behavior of cRIO/Opto22 edge nodes.
+        """
+        if not self.user_variables:
+            return
+
+        result = self.user_variables.check_session_timeout()
+        if result and result.get('success'):
+            # Session was stopped due to timeout
+            logger.warning(f"[SESSION] Auto-stopped due to timeout after {result.get('timeout_minutes', 0)} minutes")
+
+            # Publish status update
+            self._publish_test_session_status()
+            self._publish_user_variables_values()
+
+            # Publish timeout event for frontend notification
+            base = self.get_topic_base()
+            self.mqtt_client.publish(
+                f"{base}/test-session/timeout",
+                json.dumps({
+                    'reason': 'timeout',
+                    'timeout_minutes': result.get('timeout_minutes', 0),
+                    'stopped_at': result.get('stopped_at'),
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                })
+            )
+
+            # Audit log the timeout
+            if self.audit_trail:
+                self.audit_trail.log(
+                    AuditEventType.USER_SESSION_TIMEOUT,
+                    user="system",
+                    details={
+                        'timeout_minutes': result.get('timeout_minutes', 0),
+                        'session_started_at': result.get('session_started_at')
+                    }
+                )
 
     # =========================================================================
     # FORMULA BLOCK HANDLERS
@@ -7169,7 +9046,7 @@ class DAQService:
             # Initialize channel value
             if channel_type == ChannelType.DIGITAL_OUTPUT:
                 self.channel_values[channel_name] = channel.default_state
-            elif channel_type == ChannelType.ANALOG_OUTPUT:
+            elif channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
                 self.channel_values[channel_name] = channel.default_value
             else:
                 self.channel_values[channel_name] = 0.0
@@ -7406,7 +9283,7 @@ class DAQService:
                 # Initialize value
                 if channel_type == ChannelType.DIGITAL_OUTPUT:
                     self.channel_values[channel_name] = channel.default_state
-                elif channel_type == ChannelType.ANALOG_OUTPUT:
+                elif channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
                     self.channel_values[channel_name] = channel.default_value
                 else:
                     self.channel_values[channel_name] = 0.0
@@ -7463,67 +9340,114 @@ class DAQService:
         )
         logger.debug("Sent cRIO discovery ping")
 
-    def _handle_discovery_scan(self):
+    def _handle_discovery_scan(self, payload: Any = None):
         """Handle device discovery scan request.
+
+        Args:
+            payload: Optional dict with 'mode' key:
+                - 'cdaq': Only scan local NI cDAQ hardware
+                - 'crio': Only ping cRIO nodes
+                - 'opto22': Only scan Opto22 nodes
+                - 'all' or None: Scan everything (default)
 
         Pings remote cRIO nodes and waits for responses before returning results.
         Scans local hardware first, then waits for cRIO responses.
         """
-        logger.info("Starting device discovery scan...")
+        # Get mode from payload
+        mode = 'all'
+        if isinstance(payload, dict):
+            mode = payload.get('mode', 'all') or 'all'
+
+        logger.info(f"Starting device discovery scan (mode: {mode})...")
         base = self.get_topic_base()
 
         try:
             import time
 
-            # Step 1: Record current cRIO count before ping
-            crio_count_before = len(self.device_discovery.get_crio_nodes())
-
-            # Step 2: Send discovery ping FIRST so cRIOs start responding
-            self._send_crio_discovery_ping()
-            logger.info(f"Sent discovery ping (known cRIOs before: {crio_count_before})")
-
-            # Step 3: Scan local hardware while cRIOs are responding
-            # This runs in parallel with cRIO response time
-            result = self.device_discovery.scan()
-            logger.info(f"Local hardware scan complete: {result.message}")
-
-            # Step 4: Now wait for cRIO responses
-            # cRIOs can take 5-6 seconds to respond over network
-            # Check every 500ms, max wait 6 seconds total
-            max_wait = 6.0
-            wait_interval = 0.5
-            waited = 0.0
+            crio_count_before = 0
             crio_found = False
 
-            while waited < max_wait:
-                time.sleep(wait_interval)
-                waited += wait_interval
+            # Step 1: Ping cRIO nodes if mode allows (crio or all)
+            if mode in ('crio', 'all'):
+                crio_count_before = len(self.device_discovery.get_crio_nodes())
+                self._send_crio_discovery_ping()
+                logger.info(f"Sent discovery ping (known cRIOs before: {crio_count_before})")
 
-                # Check if new cRIOs have registered
-                crio_count_now = len(self.device_discovery.get_crio_nodes())
-                if crio_count_now > crio_count_before:
-                    logger.info(f"cRIO detected during wait ({crio_count_before} -> {crio_count_now}) after {waited:.1f}s")
-                    crio_found = True
-                    # Give a bit more time in case more are coming
-                    time.sleep(0.5)
-                    break
+            # Step 2: Scan local hardware if mode allows (cdaq, opto22, or all)
+            # Note: opto22 nodes are included in device_discovery.scan() results
+            if mode in ('cdaq', 'opto22', 'all'):
+                result = self.device_discovery.scan()
+                logger.info(f"Local hardware scan complete: {result.message}")
+            elif mode == 'crio':
+                # For crio-only mode, create empty result (will be populated after cRIO ping)
+                from device_discovery import DiscoveryResult
+                result = DiscoveryResult(success=True, message="Waiting for cRIO responses...")
 
-            if not crio_found and crio_count_before == 0:
-                logger.info(f"No cRIO responses after {waited:.1f}s wait")
+            # Step 3: Wait for cRIO responses if we sent pings
+            if mode in ('crio', 'all'):
+                max_wait = 6.0
+                wait_interval = 0.5
+                waited = 0.0
 
-            # Step 5: Re-scan to include any newly registered cRIOs
-            if crio_found or len(self.device_discovery.get_crio_nodes()) > crio_count_before:
+                while waited < max_wait:
+                    time.sleep(wait_interval)
+                    waited += wait_interval
+
+                    crio_count_now = len(self.device_discovery.get_crio_nodes())
+                    if crio_count_now > crio_count_before:
+                        logger.info(f"cRIO detected during wait ({crio_count_before} -> {crio_count_now}) after {waited:.1f}s")
+                        crio_found = True
+                        time.sleep(0.5)
+                        break
+
+                if not crio_found and crio_count_before == 0:
+                    logger.info(f"No cRIO responses after {waited:.1f}s wait")
+
+            # Step 4: Re-scan to include any newly registered cRIOs (if mode allows)
+            if mode in ('crio', 'all') and (crio_found or len(self.device_discovery.get_crio_nodes()) > crio_count_before):
                 result = self.device_discovery.scan()
                 logger.info(f"Re-scanned with cRIO nodes: {result.message}")
 
-            # Publish discovery result
+            # Filter result based on mode
+            result_dict = result.to_dict()
+            if mode == 'cdaq':
+                # Only include local cDAQ chassis, remove remote nodes
+                result_dict['crio_nodes'] = []
+                result_dict['opto22_nodes'] = []
+            elif mode == 'crio':
+                # Only include cRIO nodes, remove local chassis
+                result_dict['chassis'] = []
+                result_dict['standalone_devices'] = []
+                result_dict['opto22_nodes'] = []
+            elif mode == 'opto22':
+                # Only include Opto22 nodes
+                result_dict['chassis'] = []
+                result_dict['standalone_devices'] = []
+                result_dict['crio_nodes'] = []
+
+            # Recalculate total channels based on filtered results
+            total_channels = 0
+            for chassis in result_dict.get('chassis', []):
+                for module in chassis.get('modules', []):
+                    total_channels += len(module.get('channels', []))
+            for device in result_dict.get('standalone_devices', []):
+                total_channels += len(device.get('channels', []))
+            for node in result_dict.get('crio_nodes', []):
+                for module in node.get('modules', []):
+                    total_channels += len(module.get('channels', []))
+            for node in result_dict.get('opto22_nodes', []):
+                for module in node.get('modules', []):
+                    total_channels += len(module.get('channels', []))
+            result_dict['total_channels'] = total_channels
+
+            # Publish filtered discovery result
             self.mqtt_client.publish(
                 f"{base}/discovery/result",
-                json.dumps(result.to_dict()),
+                json.dumps(result_dict),
                 qos=1
             )
 
-            logger.info(f"Discovery complete: {result.message}")
+            logger.info(f"Discovery complete (mode: {mode}): {result_dict.get('message', 'OK')}")
 
             # Also publish available channels for easy access
             channels = self.device_discovery.get_available_channels()
@@ -8584,6 +10508,9 @@ class DAQService:
             # Get SOE acquisition timestamp (microseconds since epoch)
             acquisition_ts_us = self.channel_acquisition_ts_us.get(channel_name, 0)
 
+            # Get quality from remote node if available, otherwise determine locally
+            remote_quality = getattr(self, 'channel_qualities', {}).get(channel_name)
+
             # Handle NaN - JSON doesn't support NaN, so use null and set quality to "bad"
             if is_nan:
                 payload = {
@@ -8592,17 +10519,19 @@ class DAQService:
                     "timestamp": datetime.now().isoformat(),
                     "acquisition_ts_us": acquisition_ts_us,  # SOE: microsecond precision
                     "units": channel.units,
-                    "quality": "bad",
+                    "quality": "bad",  # NaN always means bad quality
                     "status": error_status  # More specific: disconnected, open_thermocouple, overflow
                 }
             else:
+                # Use remote node's quality if available, otherwise assume good
+                quality = remote_quality if remote_quality else "good"
                 payload = {
                     "value": value,
                     "timestamp": datetime.now().isoformat(),
                     "acquisition_ts_us": acquisition_ts_us,  # SOE: microsecond precision
                     "units": channel.units,
-                    "quality": "good",
-                    "status": "normal"
+                    "quality": quality,
+                    "status": "normal" if quality == "good" else "uncertain"
                 }
 
             # Include raw value and scaling info for validation/debugging
@@ -8767,6 +10696,252 @@ class DAQService:
             self.alarm_manager.unshelve_alarm(alarm_id, user)
             logger.info(f"Alarm unshelved: {alarm_id} by {user}")
 
+    # =========================================================================
+    # SAFETY / INTERLOCK HANDLERS
+    # =========================================================================
+
+    def _handle_safety_latch_arm(self, payload: Any):
+        """Arm the safety latch"""
+        if not self.safety_manager:
+            return
+        user = payload.get('user', 'Unknown') if isinstance(payload, dict) else 'Unknown'
+        if self.safety_manager.arm_latch(user):
+            logger.info(f"Safety latch armed by {user}")
+        else:
+            logger.warning(f"Failed to arm safety latch - user: {user}")
+
+    def _handle_safety_latch_disarm(self, payload: Any):
+        """Disarm the safety latch"""
+        if not self.safety_manager:
+            return
+        user = payload.get('user', 'Unknown') if isinstance(payload, dict) else 'Unknown'
+        self.safety_manager.disarm_latch(user)
+        logger.info(f"Safety latch disarmed by {user}")
+
+    def _handle_safety_trip_reset(self, payload: Any):
+        """Reset the trip state"""
+        if not self.safety_manager:
+            return
+        user = payload.get('user', 'Unknown') if isinstance(payload, dict) else 'Unknown'
+        if self.safety_manager.reset_trip(user):
+            logger.info(f"Safety trip reset by {user}")
+        else:
+            logger.warning(f"Failed to reset trip - interlocks still failed")
+
+    def _handle_safety_status_request(self):
+        """Publish safety status"""
+        if self.safety_manager:
+            self.safety_manager.publish_status()
+
+    def _handle_safety_config_update(self, payload: Any):
+        """Update safe state configuration"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        self.safety_manager.update_safe_state_config(payload)
+        logger.info("Safe state config updated")
+
+    def _handle_interlock_add(self, payload: Any):
+        """Add a new interlock"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        user = payload.get('user', 'system')
+        interlock = Interlock.from_dict(payload)
+        self.safety_manager.add_interlock(interlock, user)
+        logger.info(f"Interlock added: {interlock.name}")
+
+    def _handle_interlock_update(self, payload: Any):
+        """Update an existing interlock"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock_id = payload.get('id')
+        user = payload.get('user', 'system')
+        if interlock_id:
+            self.safety_manager.update_interlock(interlock_id, payload, user)
+            logger.info(f"Interlock updated: {interlock_id}")
+
+    def _handle_interlock_remove(self, payload: Any):
+        """Remove an interlock"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock_id = payload.get('id')
+        user = payload.get('user', 'system')
+        if interlock_id:
+            self.safety_manager.remove_interlock(interlock_id, user)
+            logger.info(f"Interlock removed: {interlock_id}")
+
+    def _handle_interlock_bypass(self, payload: Any):
+        """Bypass or un-bypass an interlock"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock_id = payload.get('id')
+        bypass = payload.get('bypass', True)
+        user = payload.get('user', 'Unknown')
+        reason = payload.get('reason', '')
+        if interlock_id:
+            self.safety_manager.bypass_interlock(interlock_id, bypass, user, reason)
+            action = 'bypassed' if bypass else 'un-bypassed'
+            logger.info(f"Interlock {action}: {interlock_id} by {user}")
+
+    def _handle_interlock_sync(self, payload: Any):
+        """Sync interlock from frontend (add or update)"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock = Interlock.from_dict(payload)
+        self.safety_manager.add_interlock(interlock, 'frontend_sync')
+
+    def _handle_interlocks_list(self):
+        """Publish list of all interlocks"""
+        if not self.safety_manager:
+            return
+        base = self.get_topic_base()
+        interlocks = [i.to_dict() for i in self.safety_manager.get_all_interlocks()]
+        self.mqtt_client.publish(
+            f"{base}/interlocks/list/response",
+            json.dumps({'interlocks': interlocks}),
+            qos=1
+        )
+
+    # =========================================================================
+    # PID CONTROL HANDLERS
+    # =========================================================================
+
+    def _handle_pid_list_loops(self):
+        """Publish list of all PID loops"""
+        if not self.pid_engine:
+            return
+        base = self.get_topic_base()
+        loops = [loop.to_config_dict() for loop in self.pid_engine.get_all_loops()]
+        self.mqtt_client.publish(
+            f"{base}/pid/loops/response",
+            json.dumps({'loops': loops, 'count': len(loops)}),
+            qos=1
+        )
+
+    def _handle_pid_add_loop(self, payload: Any):
+        """Add a new PID loop"""
+        if not self.pid_engine or not isinstance(payload, dict):
+            return
+
+        try:
+            loop = PIDLoop.from_dict(payload)
+            if self.pid_engine.add_loop(loop):
+                self._publish_pid_response(True, f"Added PID loop: {loop.name}")
+                self._handle_pid_list_loops()  # Publish updated list
+            else:
+                self._publish_pid_response(False, f"Loop ID already exists: {loop.id}")
+        except Exception as e:
+            logger.error(f"Failed to add PID loop: {e}")
+            self._publish_pid_response(False, str(e))
+
+    def _handle_pid_remove_loop(self, payload: Any):
+        """Remove a PID loop"""
+        if not self.pid_engine:
+            return
+
+        loop_id = payload.get('id') if isinstance(payload, dict) else payload
+        if self.pid_engine.remove_loop(loop_id):
+            self._publish_pid_response(True, f"Removed PID loop: {loop_id}")
+            self._handle_pid_list_loops()
+        else:
+            self._publish_pid_response(False, f"Loop not found: {loop_id}")
+
+    def _handle_pid_loop_config(self, loop_id: str, payload: Any):
+        """Get or update PID loop configuration"""
+        if not self.pid_engine:
+            return
+
+        base = self.get_topic_base()
+
+        if not payload or payload == {}:
+            # GET - return current config
+            loop = self.pid_engine.get_loop(loop_id)
+            if loop:
+                self.mqtt_client.publish(
+                    f"{base}/pid/loop/{loop_id}/config/response",
+                    json.dumps(loop.to_config_dict()),
+                    qos=1
+                )
+            else:
+                self._publish_pid_response(False, f"Loop not found: {loop_id}")
+        else:
+            # UPDATE - apply configuration changes
+            if isinstance(payload, dict):
+                if self.pid_engine.update_loop(loop_id, payload):
+                    self._publish_pid_response(True, f"Updated loop: {loop_id}")
+                else:
+                    self._publish_pid_response(False, f"Loop not found: {loop_id}")
+
+    def _handle_pid_loop_setpoint(self, loop_id: str, payload: Any):
+        """Set PID loop setpoint"""
+        if not self.pid_engine:
+            return
+
+        setpoint = payload.get('value') if isinstance(payload, dict) else payload
+        try:
+            setpoint = float(setpoint)
+            if self.pid_engine.set_setpoint(loop_id, setpoint):
+                self._publish_pid_response(True, f"Setpoint set to {setpoint}")
+            else:
+                self._publish_pid_response(False, f"Loop not found: {loop_id}")
+        except (ValueError, TypeError):
+            self._publish_pid_response(False, "Invalid setpoint value")
+
+    def _handle_pid_loop_mode(self, loop_id: str, payload: Any):
+        """Set PID loop mode (auto/manual)"""
+        if not self.pid_engine:
+            return
+
+        mode = payload.get('value') if isinstance(payload, dict) else payload
+        if self.pid_engine.set_mode(loop_id, mode):
+            self._publish_pid_response(True, f"Mode set to {mode}")
+        else:
+            self._publish_pid_response(False, f"Invalid mode or loop not found")
+
+    def _handle_pid_loop_output(self, loop_id: str, payload: Any):
+        """Set manual output value"""
+        if not self.pid_engine:
+            return
+
+        output = payload.get('value') if isinstance(payload, dict) else payload
+        try:
+            output = float(output)
+            if self.pid_engine.set_manual_output(loop_id, output):
+                self._publish_pid_response(True, f"Manual output set to {output}")
+            else:
+                self._publish_pid_response(False, f"Loop not found: {loop_id}")
+        except (ValueError, TypeError):
+            self._publish_pid_response(False, "Invalid output value")
+
+    def _handle_pid_loop_tuning(self, loop_id: str, payload: Any):
+        """Update PID tuning parameters"""
+        if not self.pid_engine or not isinstance(payload, dict):
+            return
+
+        kp = payload.get('kp')
+        ki = payload.get('ki')
+        kd = payload.get('kd')
+
+        if kp is None or ki is None or kd is None:
+            self._publish_pid_response(False, "Missing kp, ki, or kd parameter")
+            return
+
+        try:
+            if self.pid_engine.set_tuning(loop_id, float(kp), float(ki), float(kd)):
+                self._publish_pid_response(True, f"Tuning updated: Kp={kp}, Ki={ki}, Kd={kd}")
+            else:
+                self._publish_pid_response(False, f"Loop not found: {loop_id}")
+        except (ValueError, TypeError):
+            self._publish_pid_response(False, "Invalid tuning values")
+
+    def _publish_pid_response(self, success: bool, message: str):
+        """Publish response to PID commands"""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/pid/response",
+            json.dumps({'success': success, 'message': message}),
+            qos=1
+        )
+
     def _publish_output_response(self, success: bool, channel: str = None,
                                    value: Any = None, error: str = None):
         """Publish response to output/set command"""
@@ -8828,7 +11003,7 @@ class DAQService:
         channel = self.config.channels[channel_name]
 
         # Check if this is an output channel
-        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             self._publish_output_response(False, channel=channel_name,
                                           error=f"Channel {channel_name} is not an output channel (type: {channel.channel_type.value})")
             return
@@ -9167,7 +11342,7 @@ class DAQService:
                             if name in self.config.channels:
                                 channel = self.config.channels[name]
                                 # Don't apply scaling to output channels - they store engineering units directly
-                                if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+                                if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
                                     self.channel_values[name] = raw_value
                                     if is_valid_value(raw_value):
                                         valid_channels.add(name)
@@ -9234,6 +11409,10 @@ class DAQService:
                         # Process formula blocks (must be after process_scan so user vars are updated)
                         self.user_variables.process_formula_blocks(self.channel_values)
 
+                    # Process PID control loops (deterministic timing critical)
+                    if self.pid_engine:
+                        self.pid_engine.process_scan(self.channel_values, scan_interval)
+
                     # Process automation triggers
                     if self.trigger_engine:
                         self.trigger_engine.process_scan(self.channel_values)
@@ -9241,6 +11420,10 @@ class DAQService:
                     # Process watchdogs (channel health monitoring)
                     if self.watchdog_engine:
                         self.watchdog_engine.process_scan(self.channel_values, self.channel_timestamps)
+
+                    # Evaluate safety interlocks (backend-authoritative safety logic)
+                    if self.safety_manager:
+                        self.safety_manager.evaluate_all()
 
                 except Exception as e:
                     logger.error(f"Error in scan loop: {e}")
@@ -9326,6 +11509,10 @@ class DAQService:
 
                         self.recording_manager.write_sample(values, channel_configs)
 
+                    # Push to Azure IoT Hub if enabled
+                    if self.azure_uploader and self.azure_uploader.enabled:
+                        self.azure_uploader.push_data(values)
+
                     publish_count += 1
 
                 except Exception as e:
@@ -9342,6 +11529,10 @@ class DAQService:
                     self._publish_formula_blocks_values()
                 # Check for cRIO config push timeouts (non-blocking)
                 self._check_crio_push_timeouts()
+
+                # Check session timeout (CDAQ mode only - cRIO handles its own timeout)
+                if self.config.system.project_mode != ProjectMode.CRIO:
+                    self._check_session_timeout()
 
                 # Industrial-grade: Periodic hardware output verification
                 # Refresh actual output states from hardware to detect drift/faults
@@ -9457,10 +11648,20 @@ class DAQService:
             logger.info("Flushing recording buffer...")
             self.recording_manager.stop()
 
+        # Stop Azure IoT uploader
+        if self.azure_uploader and self.azure_uploader.enabled:
+            logger.info("Stopping Azure IoT uploader...")
+            self.azure_uploader.stop()
+
         # Save alarm manager state
         if self.alarm_manager:
             logger.info("Saving alarm manager state...")
             self.alarm_manager.save_all()
+
+        # Save safety manager state
+        if self.safety_manager:
+            logger.info("Saving safety manager state...")
+            self.safety_manager.save_all()
 
         # Join threads with reasonable timeouts
         shutdown_timeout = 5.0  # seconds per thread

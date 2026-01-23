@@ -251,7 +251,12 @@ export function usePlayground() {
     // Also update the main variables object with current values
     for (const [id, data] of Object.entries(payload)) {
       if (variables.value[id]) {
-        variables.value[id].value = data.value
+        // Handle both numeric and string values
+        if (typeof data.value === 'number') {
+          variables.value[id].value = data.value
+        } else if (typeof data.value === 'string') {
+          variables.value[id].stringValue = data.value
+        }
         variables.value[id].timerRunning = data.timer_running
         variables.value[id].formatted = data.formatted
         variables.value[id].lastUpdated = data.last_update
@@ -328,7 +333,8 @@ export function usePlayground() {
       runtime: [],
       dwell: [],
       conditional_average: [],
-      cross_channel: []
+      cross_channel: [],
+      string: []
     }
 
     for (const variable of variablesList.value) {
@@ -517,6 +523,13 @@ export function usePlayground() {
       description: 'Min/max/delta across multiple channels',
       icon: '🔀',
       requiresSource: true,
+      supportsFormula: false
+    },
+    string: {
+      label: 'String',
+      description: 'Text value (notes, batch ID, operator input)',
+      icon: '📝',
+      requiresSource: false,
       supportsFormula: false
     }
   }
