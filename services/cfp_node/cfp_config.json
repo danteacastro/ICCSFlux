@@ -1,0 +1,97 @@
+{
+  "node_id": "cfp-001",
+  "cfp_host": "192.168.1.30",
+  "cfp_port": 502,
+  "mqtt_broker": "192.168.1.100",
+  "mqtt_port": 1883,
+  "mqtt_base_topic": "nisystem",
+  "poll_interval": 1.0,
+  "modules": [
+    {
+      "slot": 1,
+      "module_type": "cFP-AI-110",
+      "base_address": 0,
+      "channels": [
+        {
+          "name": "AI01",
+          "address": 0,
+          "register_type": "input",
+          "data_type": "int16",
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": false
+        },
+        {
+          "name": "AI02",
+          "address": 1,
+          "register_type": "input",
+          "data_type": "int16",
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": false
+        }
+      ]
+    },
+    {
+      "slot": 2,
+      "module_type": "cFP-AO-210",
+      "base_address": 100,
+      "channels": [
+        {
+          "name": "AO01",
+          "address": 100,
+          "register_type": "holding",
+          "data_type": "int16",
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": true
+        }
+      ]
+    },
+    {
+      "slot": 3,
+      "module_type": "cFP-DI-330",
+      "base_address": 200,
+      "channels": [
+        {
+          "name": "DI01",
+          "address": 200,
+          "register_type": "discrete",
+          "data_type": "bool",
+          "writable": false
+        },
+        {
+          "name": "DI02",
+          "address": 201,
+          "register_type": "discrete",
+          "data_type": "bool",
+          "writable": false
+        }
+      ]
+    },
+    {
+      "slot": 4,
+      "module_type": "cFP-DO-403",
+      "base_address": 300,
+      "channels": [
+        {
+          "name": "DO01",
+          "address": 300,
+          "register_type": "coil",
+          "data_type": "bool",
+          "writable": true
+        },
+        {
+          "name": "DO02",
+          "address": 301,
+          "register_type": "coil",
+          "data_type": "bool",
+          "writable": true
+        }
+      ]
+    }
+  ]
+}

@@ -219,16 +219,16 @@ class NodeDeployer:
         status['reachable'] = True
 
         # Check if service is running
-        if node.node_type == 'crio':
-            ok, output = self._run_ssh(node, 'pgrep -f crio_node.py')
-            if ok and output.strip():
-                status['service_running'] = True
-                status['pid'] = output.strip().split('\n')[0]
-        elif node.node_type == 'opto22':
-            ok, output = self._run_ssh(node, 'pgrep -f opto22_node.py')
-            if ok and output.strip():
-                status['service_running'] = True
-                status['pid'] = output.strip().split('\n')[0]
+        script_names = {
+            'crio': 'crio_node.py',
+            'opto22': 'opto22_node.py',
+            'cfp': 'cfp_node.py'
+        }
+        script_name = script_names.get(node.node_type, f'{node.node_type}_node.py')
+        ok, output = self._run_ssh(node, f'pgrep -f {script_name}')
+        if ok and output.strip():
+            status['service_running'] = True
+            status['pid'] = output.strip().split('\n')[0]
 
         # Check recent log for MQTT status
         log_file = f'{node.log_path}/{node.node_type}_node.log'
@@ -329,6 +329,53 @@ class NodeDeployer:
 
         return True
 
+    def deploy_cfp(self, node: NodeConfig) -> bool:
+        """Deploy cFP node code and config"""
+        header(f"Deploying to cFP host: {node.name} ({node.host})")
+
+        if not self.check_connectivity(node):
+            return False
+
+        # Determine local paths
+        cfp_node_path = self.script_dir / 'cfp_node' / 'cfp_node.py'
+        cfp_config_path = self.script_dir / 'cfp_node' / 'cfp_config.json'
+        requirements_path = self.script_dir / 'cfp_node' / 'requirements.txt'
+
+        if not cfp_node_path.exists():
+            error(f"cfp_node.py not found at {cfp_node_path}")
+            return False
+
+        # Create remote directory
+        info("Ensuring remote directory exists...")
+        self._run_ssh(node, f'mkdir -p {node.deploy_path}')
+
+        # Copy cfp_node.py
+        info(f"Copying cfp_node.py ({cfp_node_path.stat().st_size / 1024:.1f} KB)...")
+        ok, output = self._run_scp(node, cfp_node_path, f'{node.deploy_path}/cfp_node.py')
+        if not ok:
+            error(f"Failed to copy cfp_node.py: {output}")
+            return False
+        success("Copied cfp_node.py")
+
+        # Copy config if exists
+        if cfp_config_path.exists():
+            info("Copying cfp_config.json...")
+            ok, output = self._run_scp(node, cfp_config_path, f'{node.deploy_path}/cfp_config.json')
+            if ok:
+                success("Copied cfp_config.json")
+
+        # Copy requirements.txt if exists
+        if requirements_path.exists():
+            info("Copying requirements.txt...")
+            ok, output = self._run_scp(node, requirements_path, f'{node.deploy_path}/requirements.txt')
+            if ok:
+                success("Copied requirements.txt")
+
+        # Make executable
+        self._run_ssh(node, f'chmod +x {node.deploy_path}/cfp_node.py')
+
+        return True
+
     def restart_service(self, node: NodeConfig) -> bool:
         """Restart node service"""
         header(f"Restarting service on {node.name}")
@@ -336,7 +383,13 @@ class NodeDeployer:
         if not self.check_connectivity(node):
             return False
 
-        script_name = 'crio_node.py' if node.node_type == 'crio' else 'opto22_node.py'
+        # Determine script name based on node type
+        script_names = {
+            'crio': 'crio_node.py',
+            'opto22': 'opto22_node.py',
+            'cfp': 'cfp_node.py'
+        }
+        script_name = script_names.get(node.node_type, f'{node.node_type}_node.py')
         log_file = f'{node.log_path}/{node.node_type}_node.log'
 
         # Stop existing process
@@ -458,6 +511,26 @@ def create_default_config(config_path: Path) -> DeployConfig:
                 mqtt_broker=broker
             )
 
+    # cFP configuration (runs on a Linux host that connects to cFP via Modbus)
+    print("\n--- cFP (CompactFieldPoint) Configuration ---")
+    print("Note: cFP node runs on a Linux host that connects to cFP via Modbus TCP")
+    add_cfp = input("Add cFP node? [y/N]: ").strip().lower() == 'y'
+
+    if add_cfp:
+        cfp_host = input("cFP host IP address (Linux host running cfp_node.py): ").strip()
+        cfp_name = input("cFP node name [cfp-001]: ").strip() or 'cfp-001'
+
+        if cfp_host:
+            config.nodes['cfp'] = NodeConfig(
+                name=cfp_name,
+                host=cfp_host,
+                user='admin',
+                deploy_path='/home/admin/nisystem',
+                log_path='/var/log',
+                node_type='cfp',
+                mqtt_broker=broker
+            )
+
     # Save configuration
     config.save(config_path)
     success(f"Configuration saved to {config_path}")
@@ -473,6 +546,7 @@ def main():
 Examples:
   %(prog)s deploy crio          Deploy code to cRIO
   %(prog)s deploy opto22        Deploy code to Opto22
+  %(prog)s deploy cfp           Deploy code to cFP host
   %(prog)s deploy all           Deploy to all configured nodes
   %(prog)s status crio          Check cRIO status
   %(prog)s restart crio         Restart cRIO service
@@ -487,21 +561,21 @@ Examples:
 
     # Deploy command
     deploy_parser = subparsers.add_parser('deploy', help='Deploy code to node(s)')
-    deploy_parser.add_argument('target', choices=['crio', 'opto22', 'all'], help='Target node(s)')
+    deploy_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
     deploy_parser.add_argument('--restart', '-r', action='store_true', help='Restart service after deploy')
     deploy_parser.add_argument('--install', '-i', action='store_true', help='Install requirements')
 
     # Status command
     status_parser = subparsers.add_parser('status', help='Check node status')
-    status_parser.add_argument('target', choices=['crio', 'opto22', 'all'], help='Target node(s)')
+    status_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
 
     # Restart command
     restart_parser = subparsers.add_parser('restart', help='Restart node service')
-    restart_parser.add_argument('target', choices=['crio', 'opto22', 'all'], help='Target node(s)')
+    restart_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
 
     # Logs command
     logs_parser = subparsers.add_parser('logs', help='View node logs')
-    logs_parser.add_argument('target', choices=['crio', 'opto22'], help='Target node')
+    logs_parser.add_argument('target', choices=['crio', 'opto22', 'cfp'], help='Target node')
     logs_parser.add_argument('-n', '--lines', type=int, default=50, help='Number of lines')
     logs_parser.add_argument('-f', '--follow', action='store_true', help='Follow log output')
 
@@ -512,7 +586,7 @@ Examples:
 
     # Install command
     install_parser = subparsers.add_parser('install', help='Install requirements on node')
-    install_parser.add_argument('target', choices=['crio', 'opto22', 'all'], help='Target node(s)')
+    install_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
 
     args = parser.parse_args()
 
@@ -571,8 +645,13 @@ Examples:
         for node in targets:
             if node.node_type == 'crio':
                 ok = deployer.deploy_crio(node)
-            else:
+            elif node.node_type == 'opto22':
                 ok = deployer.deploy_opto22(node)
+            elif node.node_type == 'cfp':
+                ok = deployer.deploy_cfp(node)
+            else:
+                warning(f"Unknown node type: {node.node_type}")
+                ok = False
 
             if ok:
                 if args.install:

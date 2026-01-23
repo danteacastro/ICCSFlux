@@ -1,0 +1,5 @@
+# cFP Node Service Requirements
+paho-mqtt>=1.6.0
+
+# Optional: pymodbus for advanced Modbus features
+# pymodbus>=3.0.0

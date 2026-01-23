@@ -23,14 +23,17 @@ import { useTheme } from '../composables/useTheme'
 import { useSafety } from '../composables/useSafety'
 import { useTagDependencies } from '../composables/useTagDependencies'
 import { useBackendScripts } from '../composables/useBackendScripts'
+import { useAuth } from '../composables/useAuth'
 import ModbusDeviceConfig from './ModbusDeviceConfig.vue'
 import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
 import OpcUaDeviceConfig from './OpcUaDeviceConfig.vue'
 import EtherNetIPDeviceConfig from './EtherNetIPDeviceConfig.vue'
+import CompactFieldpointDeviceConfig from './CompactFieldpointDeviceConfig.vue'
 
 const store = useDashboardStore()
 const tagDeps = useTagDependencies()
 const backendScripts = useBackendScripts()
+const { isAdmin } = useAuth()
 
 // =============================================================================
 // NI Module Type Mapping
@@ -1723,7 +1726,13 @@ const channelTypeTabs = [
   { id: 'rest_api', label: 'REST', icon: '🌐', fullName: 'REST API Device' },
   { id: 'opc_ua', label: 'OPC-UA', icon: '🔗', fullName: 'OPC-UA Server' },
   { id: 'ethernet_ip', label: 'AB PLC', icon: '🏭', fullName: 'Allen Bradley EtherNet/IP' },
+  { id: 'cfp', label: 'CFP', icon: '📦', fullName: 'Compact FieldPoint (Legacy)', adminOnly: true },
 ]
+
+// Filter tabs - hide admin-only tabs from non-admins
+const visibleTypeTabs = computed(() => {
+  return channelTypeTabs.filter(tab => !(tab as any).adminOnly || isAdmin.value)
+})
 
 // Get full name for current signal type
 const activeTypeFullName = computed(() => {
@@ -2945,7 +2954,7 @@ watch(() => Object.keys(store.channels), () => {
     <div class="type-tabs-row">
       <div class="type-tabs">
         <button
-          v-for="tab in channelTypeTabs"
+          v-for="tab in visibleTypeTabs"
           :key="tab.id"
           class="type-tab"
           :class="{ active: activeTypeTab === tab.id }"
@@ -3003,6 +3012,13 @@ watch(() => Object.keys(store.channels), () => {
       <!-- EtherNet/IP Device Configuration (shown when AB PLC tab is active) -->
       <EtherNetIPDeviceConfig
         v-if="activeTypeTab === 'ethernet_ip'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
+      <!-- Compact FieldPoint Configuration (admin only) -->
+      <CompactFieldpointDeviceConfig
+        v-if="activeTypeTab === 'cfp'"
         :edit-mode="editMode"
         @dirty="markDirty"
       />
