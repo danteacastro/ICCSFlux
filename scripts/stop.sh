@@ -1,5 +1,5 @@
 #!/bin/bash
-# CZFlux Stop Script
+# ICCSFlux Stop Script
 # Cleanly stops all services
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 
-log_info "Stopping CZFlux services..."
+log_info "Stopping ICCSFlux services..."
 
 # Stop DAQ service via PID file
 if [ -f "$PID_FILE" ]; then
@@ -44,4 +44,4 @@ if pgrep -f "daq_service.py" > /dev/null; then
     pkill -9 -f "daq_service.py" 2>/dev/null || true
 fi
 
-log_info "CZFlux stopped"
+log_info "ICCSFlux stopped"

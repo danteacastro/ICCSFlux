@@ -124,6 +124,7 @@ const currentConfigFile = ref('system.ini')
 export function useProjectManager() {
   const store = useDashboardStore()
   const mqtt = useMqtt()
+  const projectFiles = useProjectFiles()
 
   // ============================================================================
   // HELPER: Storage keys for all localStorage data
@@ -177,7 +178,6 @@ export function useProjectManager() {
 
   function collectAllState(): Omit<ProjectFile, 'version' | 'type' | 'name' | 'description' | 'createdAt' | 'modifiedAt' | 'configFile'> & { channels?: Record<string, any>; system?: any; service?: any } {
     const layout = store.getLayout()
-    const projectFiles = useProjectFiles()
 
     // IMPORTANT: Include channels from store so they're saved/downloaded
     // Spread ALL channel fields to preserve hardware-specific settings
@@ -348,27 +348,25 @@ export function useProjectManager() {
   }
 
   // ============================================================================
-  // EXPORT / DOWNLOAD
+  // EXPORT (Save copy to config/projects/)
   // ============================================================================
 
   async function downloadProject(name?: string, description?: string) {
     try {
-      const project = createProjectFile(name, description)
-
-      const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-
-      const a = document.createElement('a')
-      a.href = url
+      // Generate filename with timestamp
       const timestamp = new Date().toISOString().slice(0, 10)
-      const safeName = (project.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')
-      a.download = `${safeName}_${timestamp}.nisystem.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      const projectName = name || store.systemName || 'project'
+      const safeName = projectName.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const filename = `${safeName}_export_${timestamp}.json`
 
-      return { success: true, message: 'Project exported successfully' }
+      // Use the backend save via useProjectFiles
+      const success = await projectFiles.saveProject(filename, `${projectName} (Export ${timestamp})`)
+
+      if (success) {
+        return { success: true, message: `Exported to projects/${filename}` }
+      } else {
+        return { success: false, message: 'Export failed - backend error' }
+      }
     } catch (error: any) {
       return { success: false, message: error.message || 'Export failed' }
     }

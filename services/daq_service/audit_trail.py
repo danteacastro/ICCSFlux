@@ -83,6 +83,10 @@ class AuditEventType(Enum):
     USER_LOGOUT = "user.logout"
     USER_SESSION_TIMEOUT = "user.session.timeout"
 
+    # Test session control
+    TEST_SESSION_STARTED = "test.session.started"
+    TEST_SESSION_STOPPED = "test.session.stopped"
+
     # System events
     SYSTEM_STARTUP = "system.startup"
     SYSTEM_SHUTDOWN = "system.shutdown"

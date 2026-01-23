@@ -1,10 +1,10 @@
-# Python Scripting in CZFlux
+# Python Scripting in ICCSFlux
 
-Run custom Python scripts directly in your browser to process data from cDAQ, cRIO, and Opto22 hardware, control outputs, calculate derived values, and automate sequences.
+Run custom Python scripts on the backend to process data from cDAQ, cRIO, and Opto22 hardware, control outputs, calculate derived values, and automate sequences.
 
 ## Overview
 
-CZFlux includes **Pyodide** - a complete Python interpreter running in WebAssembly. This means you can write real Python code that:
+ICCSFlux includes a **server-side Python script engine** running in the daq_service backend. Scripts execute in isolated threads with full access to the Python ecosystem. This means you can write real Python code that:
 
 - Reads live channel data from **any hardware source** (cDAQ, cRIO, Opto22)
 - Controls digital and analog outputs across all connected nodes
@@ -12,8 +12,13 @@ CZFlux includes **Pyodide** - a complete Python interpreter running in WebAssemb
 - Runs synchronized loops with your scan cycle
 - Performs unit conversions and calculations
 - Automates sequences and schedules
+- **Continues running even if the browser is closed** (headless operation)
 
 > **Multi-Hardware Support**: Scripts access all channels uniformly through the `tags` object, regardless of whether they come from local cDAQ hardware, remote cRIO nodes, or Opto22 groov devices. The hardware source is transparent to your scripts.
+
+> **Safety Architecture**: Scripts respect the SafetyManager interlock system - output commands are blocked when interlocks are not satisfied. However, **safety-critical logic should always reside in the edge nodes** (cRIO/Opto22) where hardware watchdogs and SIL-rated interlock checks operate independently of the PC. The edge nodes validate interlocks even if the PC or network connection fails.
+
+> **Edge Node Scripts**: Scripts can also run directly on cRIO and Opto22 nodes, using the same API documented here. Edge node scripts have local persistence, continue running independently of PC connectivity, and automatically start/stop with acquisition or session events. This enables autonomous edge computing for remote installations.
 
 ---
 
@@ -39,7 +44,9 @@ while session.active:
 
 ## Imports and Initialization
 
-Your script code runs inside an async function. Any code **before** the `while session.active:` loop executes once when the script starts. This is where you put imports and initialization.
+Your script code runs in an isolated thread on the backend. Any code **before** the `while session.active:` loop executes once when the script starts. This is where you put imports and initialization.
+
+> **Note**: The `await` keyword is optional. Scripts written with `await next_scan()` will work identically to those without - the backend automatically handles synchronization.
 
 ### Script Structure
 
@@ -78,11 +85,13 @@ These are available immediately without imports:
 
 | Category | Available |
 |----------|-----------|
-| **Core** | `tags`, `session`, `outputs`, `publish`, `next_scan`, `wait_for`, `wait_until` |
-| **Time** | `now`, `now_ms`, `now_iso`, `time_of_day`, `elapsed_since`, `format_timestamp` |
-| **Conversions** | `F_to_C`, `C_to_F`, `GPM_to_LPM`, `PSI_to_bar`, `gal_to_L`, `BTU_to_kJ`, `lb_to_kg`, etc. |
-| **Helpers** | `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `Scheduler` |
-| **NumPy** | Pre-loaded by Pyodide (just `import numpy as np`) |
+| **Core** | `tags`, `session`, `outputs`, `vars`, `pid`, `publish`, `next_scan`, `wait_for`, `wait_until` |
+| **Persistence** | `persist(key, value)`, `restore(key, default=None)` |
+| **Time Functions** | `now`, `now_ms`, `now_iso`, `time_of_day`, `elapsed_since`, `format_timestamp` |
+| **Conversions** | `F_to_C`, `C_to_F`, `GPM_to_LPM`, `LPM_to_GPM`, `PSI_to_bar`, `bar_to_PSI`, `gal_to_L`, `L_to_gal`, `BTU_to_kJ`, `kJ_to_BTU`, `lb_to_kg`, `kg_to_lb` |
+| **Helpers** | `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `Scheduler`, `StateMachine` |
+| **Libraries** | `time`, `datetime`, `math`, `json`, `re`, `statistics`, `numpy` (also as `np`), `scipy` |
+| **Built-ins** | `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `pow`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip` |
 
 ### Importing CSV/Excel Data
 
@@ -285,6 +294,114 @@ outputs['Pump_1'] = True
 outputs['Flow_SP'] = 10.5
 ```
 
+### Output Validation
+`outputs.set()` returns `True` if the command was accepted:
+```python
+if outputs.set('Valve_1', True):
+    print("Valve command sent")
+else:
+    print("Failed - channel may not exist, not an output, or blocked by interlock")
+```
+
+> **Note**: For local cDAQ outputs, `True` means the write succeeded. For remote nodes (cRIO/Opto22), `True` means the command was sent via MQTT. The actual hardware confirmation comes asynchronously.
+
+### Interlock Blocking
+
+Scripts respect the SafetyManager interlock system. If an interlock blocks a channel, `outputs.set()` returns `False`:
+
+```python
+# Check if output was blocked
+if not outputs.set('Heater', True):
+    print("Heater blocked by interlock - check safety conditions")
+    # Optionally wait and retry, or take alternative action
+
+# Robust pattern for interlock-aware control
+def safe_set_output(channel, value, retries=3, delay=1.0):
+    """Attempt to set output with retries (in case interlock clears)"""
+    for attempt in range(retries):
+        if outputs.set(channel, value):
+            return True
+        print(f"Output {channel} blocked, attempt {attempt + 1}/{retries}")
+        time.sleep(delay)
+    return False
+```
+
+> **Safety Note**: Interlock blocking is enforced at the backend level. Scripts cannot bypass configured interlocks. For safety-critical applications, always configure interlocks in the Safety tab and use edge-node interlocks for hardware-level protection.
+
+### Output Arbitration (Multiple Scripts)
+
+When multiple scripts run in parallel, they can potentially conflict by writing to the same output. Use **output claiming** to prevent conflicts:
+
+```python
+# Claim exclusive control of an output
+if outputs.claim('Heater'):
+    print("We have exclusive control of Heater")
+    # Now only this script can write to Heater
+    outputs.set('Heater', True)
+else:
+    owner = outputs.claimed_by('Heater')
+    print(f"Heater already controlled by script: {owner}")
+```
+
+#### Claim API
+
+| Method | Description |
+|--------|-------------|
+| `outputs.claim(channel)` | Claim exclusive control. Returns `True` if successful, `False` if already claimed by another script |
+| `outputs.release(channel)` | Release a claimed output (automatic on script stop) |
+| `outputs.available(channel)` | Check if output is unclaimed or claimed by you |
+| `outputs.claimed_by(channel)` | Get script_id of claim owner, or `None` if unclaimed |
+| `outputs.claims()` | Get dict of all claims: `{channel: script_id}` |
+
+#### Behavior
+
+- **Claims are optional**: `outputs.set()` works without claiming, but writes will be rejected if another script has claimed that output
+- **Auto-release**: Claims are automatically released when a script stops (whether normally, on error, or timeout)
+- **Same-script OK**: A script can always write to outputs it has claimed
+- **Transparent conflicts**: When a write is blocked, it returns `False` and logs a warning
+
+#### Example: Temperature Control with Claim
+
+```python
+# Temperature control script - claims heater outputs
+HEATER_OUTPUTS = ['Zone1_Heater', 'Zone2_Heater', 'Zone3_Heater']
+
+# Claim all heater outputs at startup
+for output in HEATER_OUTPUTS:
+    if not outputs.claim(output):
+        print(f"ERROR: Cannot claim {output} - another script controls it")
+        raise Exception("Failed to claim heater outputs")
+
+print("Heater control script has exclusive control")
+
+while session.active:
+    # Control logic here - no other script can interfere
+    for i, output in enumerate(HEATER_OUTPUTS):
+        temp = tags[f'Zone{i+1}_Temp']
+        setpoint = vars[f'Zone{i+1}_SP']
+        outputs.set(output, temp < setpoint)
+
+    await next_scan()
+
+# Claims auto-released when script stops
+```
+
+#### Example: Check Before Writing
+
+```python
+# Script that doesn't claim but checks availability
+while session.active:
+    if outputs.available('EmergencyVent'):
+        # Safe to write - no other script controls this
+        if tags.Pressure > 100:
+            outputs.set('EmergencyVent', True)
+    else:
+        # Another script has claimed it - let them handle it
+        pass
+
+    await next_scan()
+```
+
 ---
 
 ## Publishing Computed Values
@@ -329,7 +446,7 @@ Published values are available as tags with the `py.` prefix:
 - Use in widgets, calculated parameters, or other scripts
 
 ### Recording Published Values
-Published values integrate with the CZFlux recording system:
+Published values integrate with the ICCSFlux recording system:
 
 1. Go to **Recording** tab
 2. Published values appear in the channel list as `py.YourName`
@@ -415,10 +532,318 @@ while session.active:
 ```
 
 ### Important
-- Always use `await next_scan()` in your loop
+- Always use `next_scan()` in your loop (with or without `await`)
 - Scripts automatically stop when session ends
-- Click **■ Stop** to manually stop a script
+- Click **Stop** to manually stop a script
+- Scripts continue running even if you close the browser (headless operation)
 - Use session control methods sparingly - they affect the entire system
+
+---
+
+## User Variables (vars)
+
+Access user-defined variables configured in the Variables tab. These include constants, manual values, accumulators, counters, timers, and calculated expressions.
+
+### Reading Variables
+```python
+# Attribute access
+k_factor = vars.CalibrationFactor
+target_temp = vars.TargetSetpoint
+
+# Dictionary access (for names with special characters)
+offset = vars['TC001_Offset']
+
+# Safe access with default
+value = vars.get('OptionalVar', default=0.0)
+```
+
+### Setting Variables
+```python
+# Set a manual variable's value
+vars.set('TargetTemp', 350.0)
+vars.set('BatchCount', 42)
+
+# Useful for operator-adjustable parameters
+if vars.AutoMode:
+    setpoint = vars.AutoSetpoint
+else:
+    setpoint = vars.ManualSetpoint
+```
+
+### Resetting Variables
+```python
+# Reset an accumulator or counter to 0
+vars.reset('TotalFlow')
+vars.reset('CycleCount')
+```
+
+### Check if Variable Exists
+```python
+if 'MyVariable' in vars:
+    value = vars.MyVariable
+
+# List all variable names
+print(vars.keys())
+```
+
+### Variable Types
+Variables are configured in the **Variables** tab and can be:
+
+| Type | Description | Script Access |
+|------|-------------|---------------|
+| `constant` | Fixed calibration factors, setpoints | Read-only (use `vars.Name`) |
+| `manual` | User-adjustable values | Read/write (use `vars.set()`) |
+| `string` | Text values (batch IDs, notes, operator names) | Read/write (use `vars.set()`) |
+| `accumulator` | Running total from counter channel | Read-only, reset with `vars.reset()` |
+| `counter` | Counts edge transitions | Read-only, reset with `vars.reset()` |
+| `timer` | Elapsed time since start | Read-only, reset with `vars.reset()` |
+| `average` | Running average of channel | Read-only, reset with `vars.reset()` |
+| `expression` | Calculated from formula | Read-only |
+
+### String Variables
+String variables store text values like batch IDs, operator names, or notes:
+
+```python
+# Read string variables
+batch_id = vars.BatchID
+operator = vars.OperatorName
+
+# Set string variables
+vars.set('BatchID', 'BATCH-2024-0542')
+vars.set('Notes', 'Test run for calibration')
+
+# Use in logging
+print(f"Starting batch {vars.BatchID} by {vars.OperatorName}")
+```
+
+### Example: Using Constants for Calibration
+```python
+# Constants configured in Variables tab:
+# - K_Factor: 0.95 (calibration factor)
+# - TempOffset: 2.3 (sensor offset)
+
+while session.active:
+    raw_flow = tags.FlowCounter
+    raw_temp = tags.TC001
+
+    # Apply calibration using user variables
+    cal_flow = raw_flow * vars.K_Factor
+    cal_temp = raw_temp + vars.TempOffset
+
+    publish('CalibratedFlow', cal_flow, units='GPM')
+    publish('CalibratedTemp', cal_temp, units='°F')
+
+    await next_scan()
+```
+
+### Example: Operator-Adjustable Setpoints
+```python
+# Manual variable 'TargetTemp' can be changed from dashboard widget
+# using the Variable Input widget
+
+while session.active:
+    current_temp = tags.TC001
+    target = vars.TargetTemp  # Reads latest operator-set value
+
+    error = target - current_temp
+
+    # Simple proportional control
+    heater_cmd = max(0, min(100, error * 5))
+    outputs.set('HeaterPower', heater_cmd)
+
+    publish('TempError', error, units='°F')
+
+    await next_scan()
+```
+
+### Example: Reset Accumulator on Button Press
+```python
+# Works with Action Button widget configured with variable_reset action
+# Or reset programmatically when conditions are met
+
+while session.active:
+    total_flow = vars.DailyTotal  # Accumulator variable
+
+    # Reset at midnight (if configured in Variables tab)
+    # Or reset via dashboard button
+    # Or reset when batch complete:
+    if total_flow >= vars.BatchSize:
+        print(f"Batch complete: {total_flow:.1f} gallons")
+        vars.reset('DailyTotal')
+
+    publish('BatchProgress', (total_flow / vars.BatchSize) * 100, units='%')
+
+    await next_scan()
+```
+
+### Difference from `tags` and `persist`
+
+| API | Purpose | Storage |
+|-----|---------|---------|
+| `tags` | Hardware channel values (read-only) | Real-time from hardware |
+| `vars` | User-configured variables | Persisted, shared across scripts |
+| `persist` | Script-specific state | Per-script, survives restarts |
+
+Use `vars` when you need values that:
+- Are configured once and used across multiple scripts
+- Can be adjusted by operators during runtime
+- Accumulate data (counters, timers) managed by the system
+
+Use `persist` when you need values that:
+- Are private to a single script
+- Need to survive script restarts
+- Track internal script state
+
+---
+
+## PID Control (pid)
+
+Access and control PID loops configured in the project. PID loops run in the backend and can be monitored and adjusted from scripts.
+
+### Accessing PID Loops
+
+```python
+# Attribute access (preferred)
+loop = pid.TempControl
+
+# Dictionary access (for names with special characters)
+loop = pid['TC-Loop-1']
+```
+
+### Reading Loop Status
+
+```python
+# Get current values
+pv = pid.TempControl.pv          # Process variable (current value)
+sp = pid.TempControl.setpoint    # Current setpoint
+output = pid.TempControl.output  # Control output (0-100%)
+error = pid.TempControl.error    # Setpoint - PV
+
+# Get mode
+mode = pid.TempControl.mode      # 'auto' or 'manual'
+enabled = pid.TempControl.enabled
+
+# Get tuning parameters
+kp = pid.TempControl.kp
+ki = pid.TempControl.ki
+kd = pid.TempControl.kd
+
+# Check saturation
+saturated = pid.TempControl.output_saturated
+```
+
+### Controlling Loops
+
+```python
+# Change setpoint
+pid.TempControl.setpoint = 150.0
+
+# Switch modes
+pid.TempControl.mode = 'manual'
+pid.TempControl.mode = 'auto'
+
+# Or use convenience methods
+pid.TempControl.auto()
+pid.TempControl.manual()
+
+# Set manual output (only in manual mode)
+pid.TempControl.output = 50.0
+
+# Enable/disable loop
+pid.TempControl.enable()
+pid.TempControl.disable()
+```
+
+### Tuning
+
+```python
+# Update tuning parameters
+pid.TempControl.tune(kp=2.0, ki=0.1, kd=0.05)
+
+# Or set individually
+pid.TempControl.kp = 2.0
+pid.TempControl.ki = 0.1
+pid.TempControl.kd = 0.05
+```
+
+### Listing Loops
+
+```python
+# Get all configured loop IDs
+loop_ids = pid.keys()
+print(f"Available loops: {loop_ids}")
+
+# Check if loop exists
+if 'TempControl' in pid:
+    print(f"TempControl PV: {pid.TempControl.pv}")
+```
+
+### Example: Cascade Control
+
+```python
+# Outer loop controls setpoint of inner loop
+while session.active:
+    # Outer loop (slow) - master temperature control
+    master_output = pid.MasterTemp.output
+
+    # Feed master output to slave setpoint
+    pid.SlaveFlow.setpoint = master_output * 10  # Scale as needed
+
+    # Publish status
+    publish('CascadeOutput', master_output, units='%')
+
+    await next_scan()
+```
+
+### Example: Setpoint Ramping
+
+```python
+# Gradually ramp setpoint from current to target
+target_temp = 300.0
+ramp_rate = 5.0  # degrees per minute
+ramp_interval = 1.0  # seconds
+
+current_sp = pid.TempControl.setpoint
+
+while session.active:
+    if current_sp < target_temp:
+        # Increment setpoint
+        current_sp = min(current_sp + (ramp_rate / 60) * ramp_interval, target_temp)
+        pid.TempControl.setpoint = current_sp
+
+    publish('RampProgress', (current_sp / target_temp) * 100, units='%')
+
+    await wait_for(ramp_interval)
+```
+
+### Example: Auto-Tune Detection
+
+```python
+# Monitor loop for oscillation (auto-tune detection)
+from collections import deque
+
+error_history = deque(maxlen=100)
+zero_crossings = 0
+last_sign = None
+
+while session.active:
+    error = pid.TempControl.error
+    error_history.append(error)
+
+    # Count zero crossings
+    current_sign = error >= 0
+    if last_sign is not None and current_sign != last_sign:
+        zero_crossings += 1
+    last_sign = current_sign
+
+    # If oscillating, report
+    if len(error_history) == 100:
+        if zero_crossings > 10:
+            publish('TuneStatus', 1, description='Loop oscillating')
+        zero_crossings = 0
+
+    await next_scan()
+```
 
 ---
 
@@ -773,6 +1198,83 @@ while session.active:
 
 ---
 
+## State Persistence
+
+Scripts can persist values that survive service restarts using `persist()` and `restore()`.
+
+### Basic Usage
+```python
+# Restore previous total on script start (or 0.0 if first run)
+total_gallons = restore('flow_total', 0.0)
+
+while session.active:
+    # Accumulate flow
+    total_gallons += tags.FlowRate / 60  # GPM to gallons per scan
+
+    # Persist every scan (stored to disk)
+    persist('flow_total', total_gallons)
+
+    publish('TotalGallons', total_gallons, units='gal')
+    next_scan()
+```
+
+### With Helper Classes
+```python
+# Restore Accumulator state
+initial_total = restore('pump_cycles', 0.0)
+cycle_counter = Accumulator(initial=initial_total)
+
+pump_edge = EdgeDetector()
+
+while session.active:
+    rising, falling, state = pump_edge.update(tags.PumpStatus)
+
+    if rising:
+        cycles = cycle_counter.update(cycle_counter.total + 1)
+        persist('pump_cycles', cycles)
+        print(f"Pump cycle #{cycles}")
+
+    publish('PumpCycles', cycle_counter.total)
+    next_scan()
+```
+
+### Multiple Values
+```python
+# Restore multiple values
+run_hours = restore('run_hours', 0.0)
+start_count = restore('start_count', 0)
+last_maintenance = restore('last_maintenance', None)
+
+while session.active:
+    # Track run time
+    if tags.MotorRunning:
+        run_hours += 1/3600  # Add seconds converted to hours
+        persist('run_hours', run_hours)
+
+    publish('RunHours', run_hours, units='hrs')
+    next_scan()
+```
+
+### Persistence Notes
+
+- **Automatic namespace**: Each script's values are isolated by script ID
+- **JSON-compatible**: Persist numbers, strings, bools, lists, and dicts
+- **Survives restarts**: Values persist across service restarts and reboots
+
+**Storage Locations by Platform:**
+
+| Platform | Storage Location |
+|----------|------------------|
+| PC (DAQ Service) | `data/script_state.json` |
+| cRIO Node | `/home/admin/crio_node/state/script_state.json` |
+| Opto22 Node | `/home/dev/opto22_node/state/script_state.json` |
+
+> **Tip**: Persist only what you need. For high-frequency updates, consider persisting periodically (e.g., every 100 scans) rather than every scan to reduce disk I/O.
+
+> **Edge Node Autonomy**: Scripts running on cRIO or Opto22 nodes persist data locally, ensuring accumulated values survive even if the PC connection is lost.
+
+---
+
 ## Example Scripts
 
 ### Temperature Monitor with Alarm
@@ -1030,7 +1532,7 @@ Published values can be used in the Calculated Parameters feature just like any 
 
 ## Error Handling
 
-Scripts run inside an async function with automatic error catching. Use try/except for graceful error handling.
+Scripts run in isolated threads with automatic error catching. Use try/except for graceful error handling.
 
 ### Basic Error Handling
 ```python
@@ -1105,17 +1607,30 @@ except Exception as e:
 
 ## Best Practices
 
-### Always Use `await next_scan()`
-Without this, your script won't yield and may freeze the browser:
+### Always Use `next_scan()` in Loops
+Without this, your script won't synchronize with the scan cycle and may timeout:
 ```python
-# ✅ Good
+# ✅ Good - synchronizes with scan cycle
 while session.active:
     # work
-    await next_scan()
+    next_scan()  # await is optional
 
-# ❌ Bad - will freeze
+# ❌ Bad - tight loop, will timeout
 while session.active:
-    # work (no await)
+    # work (no next_scan)
+```
+
+### Keep Safety Logic on Edge Nodes
+Scripts are for calculations, not safety:
+```python
+# ✅ Good - monitoring and derived values
+while session.active:
+    temp = tags.TC001
+    publish('TempStatus', 1 if temp > 180 else 0)  # Just status
+    next_scan()
+
+# ❌ Don't rely on scripts for safety-critical control
+# Instead, configure interlocks in the Safety tab - they run on edge nodes
 ```
 
 ### Handle Division by Zero
@@ -1176,11 +1691,11 @@ while session.active:
 
 ### Script Won't Start
 - Check for syntax errors in the console output panel
-- Ensure Pyodide has finished loading (first load takes ~5 seconds)
 - Look for red error messages in the script output
+- Verify the script is enabled and acquisition is running
 
 ### Values Not Updating
-- Make sure you're using `await next_scan()` in your loop
+- Make sure you're using `next_scan()` in your loop (with or without `await`)
 - Check that the acquisition session is running (green status indicator)
 - Verify the tag name matches exactly (case-sensitive)
 
@@ -1190,10 +1705,10 @@ while session.active:
 - Check for validation errors in console (invalid names, etc.)
 
 ### Script Runs Slowly
-- Reduce print statements (console output is expensive)
-- Use `await wait_for()` if you don't need every scan
+- Reduce print statements (console output is forwarded via MQTT)
+- Use `wait_for()` if you don't need every scan
 - Complex calculations may need optimization
-- Large arrays consume memory - use fixed-size buffers
+- Keep per-scan compute light for high scan rates
 
 ### Debugging Tips
 
@@ -1233,19 +1748,31 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `Unknown tag: "XYZ"` | Tag doesn't exist | Check spelling, use `tags.keys()` |
-| `Script froze browser` | Missing `await next_scan()` | Add await in your loop |
+| `Script timeout` | Script exceeded max runtime | Add `next_scan()` to yield, or increase timeout |
 | `Value must be a number` | Publishing string/None | Convert to float: `float(value)` |
 | `Invalid name` | Bad publish name | Use letters, numbers, underscore only |
+| `Script stopped` | Session ended or manual stop | Normal - restart when ready |
 
 ---
 
 ## Limitations
 
-- **Browser-based**: Scripts run in the browser, not on a server
-- **No file I/O**: Cannot read/write files directly (use MQTT for data export)
-- **Single thread**: Long calculations may affect UI responsiveness
-- **Memory**: Large data arrays may consume browser memory
+- **Supervisory only**: PC backend scripts are for supervisory logic - for safety-critical control, use edge node interlocks (cRIO/Opto22) which operate independently
+- **Edge node scripts**: cRIO and Opto22 nodes support the same script API with local execution and persistence, enabling autonomous operation
+- **Script timeout**: Scripts have a configurable max runtime (default 5 minutes) to prevent runaway execution
+- **Restricted namespace**: Only a safe subset of Python built-ins and libraries are available (no `open()`, `exec()`, `eval()`, `__import__` on arbitrary modules)
 - **Network latency**: Remote node data (cRIO, Opto22) has minimal additional latency (~5-10ms on wired Ethernet), typically negligible compared to scan intervals
+
+### What Scripts Are Good For
+- Calculated/derived values (efficiency, heat transfer rates, rolling averages)
+- Data quality monitoring (stale data detection, range checks)
+- Non-critical automation (scheduled logging, conditional recording)
+- Cross-node data aggregation
+
+### What Should Stay on Edge Nodes
+- Safety interlocks (temperature limits, pressure relief)
+- Emergency stop logic
+- Any logic that must operate if PC/network fails
 
 ---
 
@@ -1259,7 +1786,8 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | `tags.get_with_timestamp(name)` | Get `(value, timestamp)` tuple |
 | `tags.age(name)` | Get data age in seconds (useful for remote node health monitoring) |
 | `session` | Session state and control (see below) |
-| `outputs` | Control outputs on any node: `outputs.set('name', value)` |
+| `outputs` | Control outputs on any node: `outputs.set('name', value)` returns `bool` |
+| `vars` | Read/write user variables: `vars.MyVar`, `vars.set('MyVar', value)`, `vars.reset('MyVar')` |
 
 ### Session Object
 | Property/Method | Description |
@@ -1272,6 +1800,16 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | `session.start_recording(filename?)` | Start recording (optional filename) |
 | `session.stop_recording()` | Stop recording |
 
+### Vars Object
+| Property/Method | Description |
+|-----------------|-------------|
+| `vars.Name` or `vars['Name']` | Read a user variable value |
+| `vars.get(name, default=0.0)` | Read with default if not found |
+| `vars.set(name, value)` | Set a variable's value (returns `bool`) |
+| `vars.reset(name)` | Reset a variable to 0 (returns `bool`) |
+| `vars.keys()` | Get list of all variable names |
+| `name in vars` | Check if variable exists |
+
 ### Functions
 | Function | Description |
 |----------|-------------|
@@ -1279,6 +1817,8 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | `await next_scan()` | Wait for next scan cycle |
 | `await wait_for(seconds)` | Wait for duration |
 | `await wait_until(condition, timeout=0)` | Wait for condition |
+| `persist(key, value)` | Save value to disk (survives restarts) |
+| `restore(key, default=None)` | Restore persisted value or return default |
 
 ### Time Functions
 | Function | Description |
@@ -1314,6 +1854,230 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 | `EdgeDetector(threshold=0.5)` | Detect rising/falling edges |
 | `RollingStats(window_size)` | Calculate running statistics |
 | `Scheduler()` | APScheduler-like job scheduling |
+| `StateMachine(initial_state)` | Finite state machine for sequences/recipes |
+
+---
+
+## State Machines and Recipes
+
+Use the `StateMachine` helper class to implement sequences, recipes, and batch processes in transparent Python code.
+
+### Basic StateMachine
+
+```python
+# Create state machine starting in IDLE
+sm = StateMachine('IDLE')
+
+# Define states with optional entry/exit actions
+sm.add_state('IDLE')
+sm.add_state('HEATING',
+    on_enter=lambda: outputs.set('Heater', True),
+    on_exit=lambda: outputs.set('Heater', False))
+sm.add_state('SOAKING')
+sm.add_state('COOLING',
+    on_enter=lambda: outputs.set('CoolValve', True),
+    on_exit=lambda: outputs.set('CoolValve', False))
+sm.add_state('COMPLETE')
+
+# Define transitions with conditions
+sm.add_transition('IDLE', 'HEATING', lambda: vars.StartCmd > 0)
+sm.add_transition('HEATING', 'SOAKING', lambda: tags.Temp >= vars.TargetTemp)
+sm.add_transition('SOAKING', 'COOLING', lambda: sm.time_in_state() >= vars.SoakTime)
+sm.add_transition('COOLING', 'COMPLETE', lambda: tags.Temp <= 50)
+sm.add_transition('COMPLETE', 'IDLE', lambda: vars.ResetCmd > 0)
+
+# Main loop
+while session.active:
+    sm.tick()  # Evaluate transitions, run callbacks
+
+    # Publish state for dashboard widgets
+    publish('SM_State', sm.state)
+    publish('SM_StateTime', sm.time_in_state())
+
+    next_scan()
+```
+
+### StateMachine API
+
+| Method | Description |
+|--------|-------------|
+| `add_state(name, on_enter, on_exit, on_tick)` | Define a state with optional callbacks |
+| `add_transition(from, to, condition, priority, action)` | Add transition between states |
+| `tick()` | Evaluate transitions (call every scan) |
+| `force_state(state)` | Force transition (manual override) |
+| `state` | Current state name (property) |
+| `previous_state` | Previous state name (property) |
+| `time_in_state()` | Seconds in current state |
+| `is_in(*states)` | Check if in one of given states |
+| `reset(initial_state)` | Reset to initial state |
+
+### Multi-Phase Recipe Pattern
+
+```python
+# Recipe with named phases and parameters
+recipe = StateMachine('IDLE')
+
+# Recipe parameters (from user variables)
+def get_params():
+    return {
+        'phase1_temp': vars.get('Phase1_Temp', 100),
+        'phase1_time': vars.get('Phase1_Time', 300),
+        'phase2_temp': vars.get('Phase2_Temp', 200),
+        'phase2_time': vars.get('Phase2_Time', 600),
+        'cooldown_temp': vars.get('Cooldown_Temp', 40),
+    }
+
+# Phase actions
+def start_phase1():
+    print(f"Phase 1: Heating to {get_params()['phase1_temp']}°C")
+    outputs.set('TempSetpoint', get_params()['phase1_temp'])
+    outputs.set('Heater', True)
+
+def start_phase2():
+    print(f"Phase 2: Heating to {get_params()['phase2_temp']}°C")
+    outputs.set('TempSetpoint', get_params()['phase2_temp'])
+
+def start_cooldown():
+    print("Cooldown: Cooling to ambient")
+    outputs.set('Heater', False)
+    outputs.set('CoolValve', True)
+
+def finish_recipe():
+    print("Recipe complete!")
+    outputs.set('CoolValve', False)
+    outputs.set('TempSetpoint', 25)
+
+# Define states
+recipe.add_state('IDLE')
+recipe.add_state('PHASE1_HEAT', on_enter=start_phase1)
+recipe.add_state('PHASE1_HOLD')
+recipe.add_state('PHASE2_HEAT', on_enter=start_phase2)
+recipe.add_state('PHASE2_HOLD')
+recipe.add_state('COOLDOWN', on_enter=start_cooldown)
+recipe.add_state('COMPLETE', on_enter=finish_recipe)
+recipe.add_state('ABORTED')
+
+# Transitions
+recipe.add_transition('IDLE', 'PHASE1_HEAT',
+    lambda: vars.StartRecipe > 0)
+recipe.add_transition('PHASE1_HEAT', 'PHASE1_HOLD',
+    lambda: tags.Temp >= get_params()['phase1_temp'])
+recipe.add_transition('PHASE1_HOLD', 'PHASE2_HEAT',
+    lambda: recipe.time_in_state() >= get_params()['phase1_time'])
+recipe.add_transition('PHASE2_HEAT', 'PHASE2_HOLD',
+    lambda: tags.Temp >= get_params()['phase2_temp'])
+recipe.add_transition('PHASE2_HOLD', 'COOLDOWN',
+    lambda: recipe.time_in_state() >= get_params()['phase2_time'])
+recipe.add_transition('COOLDOWN', 'COMPLETE',
+    lambda: tags.Temp <= get_params()['cooldown_temp'])
+recipe.add_transition('COMPLETE', 'IDLE',
+    lambda: vars.ResetRecipe > 0)
+
+# Abort from any running state (high priority)
+for state in ['PHASE1_HEAT', 'PHASE1_HOLD', 'PHASE2_HEAT', 'PHASE2_HOLD', 'COOLDOWN']:
+    recipe.add_transition(state, 'ABORTED', lambda: vars.AbortRecipe > 0, priority=10)
+recipe.add_transition('ABORTED', 'IDLE', lambda: vars.ResetRecipe > 0)
+
+# Main loop
+while session.active:
+    recipe.tick()
+
+    # Publish status
+    publish('Recipe_State', recipe.state)
+    publish('Recipe_Phase', recipe.state.replace('_HEAT', '').replace('_HOLD', ''))
+    publish('Recipe_TimeInPhase', recipe.time_in_state())
+
+    next_scan()
+```
+
+### Batch Process with Lot Tracking
+
+```python
+# Batch process with persistence for crash recovery
+
+batch = StateMachine('IDLE')
+
+# Restore state after restart
+saved_state = restore('batch_state', 'IDLE')
+saved_lot = restore('batch_lot', '')
+batch.force_state(saved_state, run_callbacks=False)
+
+def start_batch():
+    lot = f"LOT-{now_iso()[:10]}-{now_ms() % 10000:04d}"
+    persist('batch_lot', lot)
+    persist('batch_start', now_iso())
+    print(f"Starting batch: {lot}")
+
+def complete_batch():
+    lot = restore('batch_lot', 'unknown')
+    duration = elapsed_since(restore('batch_start', now()))
+    print(f"Batch {lot} complete in {duration:.0f}s")
+    persist('batch_state', 'IDLE')
+    persist('batch_lot', '')
+
+# Define states
+batch.add_state('IDLE')
+batch.add_state('RUNNING', on_enter=start_batch)
+batch.add_state('COMPLETE', on_enter=complete_batch)
+
+batch.add_transition('IDLE', 'RUNNING', lambda: vars.StartBatch > 0)
+batch.add_transition('RUNNING', 'COMPLETE', lambda: vars.BatchDone > 0)
+batch.add_transition('COMPLETE', 'IDLE', lambda: True)  # Auto-return to IDLE
+
+# Main loop
+while session.active:
+    batch.tick()
+
+    # Persist state for crash recovery
+    if batch.state != restore('batch_state', 'IDLE'):
+        persist('batch_state', batch.state)
+
+    publish('Batch_State', batch.state)
+    publish('Batch_Lot', restore('batch_lot', ''))
+
+    next_scan()
+```
+
+### Simple Sequence Without StateMachine
+
+For simple linear sequences, you can use plain Python:
+
+```python
+# Simple linear sequence - no StateMachine needed
+stages = [
+    {'name': 'Preheat', 'temp': 50, 'duration': 60},
+    {'name': 'Ramp1', 'temp': 100, 'duration': 120},
+    {'name': 'Soak1', 'temp': 100, 'duration': 300},
+    {'name': 'Ramp2', 'temp': 150, 'duration': 120},
+    {'name': 'Soak2', 'temp': 150, 'duration': 600},
+    {'name': 'Cool', 'temp': 30, 'duration': 180},
+]
+
+# Wait for start command
+while session.active and vars.StartSequence <= 0:
+    publish('SeqStatus', 'WAITING')
+    next_scan()
+
+# Run sequence
+for i, stage in enumerate(stages):
+    publish('SeqStatus', stage['name'])
+    publish('SeqStage', i + 1)
+    outputs.set('TempSetpoint', stage['temp'])
+
+    # Wait for temperature
+    while session.active and abs(tags.Temp - stage['temp']) > 2:
+        publish('SeqWaiting', 'TEMP')
+        next_scan()
+
+    # Hold for duration
+    stage_start = now()
+    while session.active and elapsed_since(stage_start) < stage['duration']:
+        publish('SeqTimeRemaining', stage['duration'] - elapsed_since(stage_start))
+        next_scan()
+
+publish('SeqStatus', 'COMPLETE')
+outputs.set('TempSetpoint', 25)
+```
 
 ---
 

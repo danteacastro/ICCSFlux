@@ -50,6 +50,10 @@ watch(() => props.widgetId, () => {
     if (!localWidget.value.style) {
       localWidget.value.style = {}
     }
+    // For title widgets, initialize text from title/label if not set
+    if (localWidget.value.type === 'title' && !localWidget.value.text) {
+      localWidget.value.text = localWidget.value.title || localWidget.value.label || 'Title'
+    }
   }
 }, { immediate: true })
 
@@ -203,6 +207,12 @@ function toggleChannel(channelName: string, add: boolean) {
 // Save changes
 function save() {
   if (!props.widgetId || !localWidget.value) return
+
+  // For title widgets, clear the legacy 'title' property so 'text' takes precedence
+  if (localWidget.value.type === 'title') {
+    localWidget.value.title = undefined
+  }
+
   store.updateWidget(props.widgetId, localWidget.value)
   emit('close')
 }
@@ -292,8 +302,8 @@ const selectedChartChannels = computed(() => {
         </div>
 
         <div class="modal-body">
-          <!-- Common: Custom Label (overrides TAG display) -->
-          <div class="form-group">
+          <!-- Common: Custom Label (overrides TAG display) - hide for title widgets -->
+          <div v-if="widgetType !== 'title'" class="form-group">
             <label>Custom Label</label>
             <input
               type="text"
@@ -628,8 +638,78 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
+          <!-- Toggle specific -->
+          <template v-if="widgetType === 'toggle'">
+            <div class="form-group">
+              <label>ON Label</label>
+              <input
+                type="text"
+                v-model="localWidget.onLabel"
+                placeholder="e.g., RUNNING"
+              />
+              <small class="hint">Shown when switch is ON</small>
+            </div>
+            <div class="form-group">
+              <label>OFF Label</label>
+              <input
+                type="text"
+                v-model="localWidget.offLabel"
+                placeholder="e.g., STOPPED"
+              />
+              <small class="hint">Shown when switch is OFF</small>
+            </div>
+            <div class="form-group">
+              <label>ON Color</label>
+              <div class="color-options">
+                <button
+                  v-for="color in WIDGET_COLORS.led.on"
+                  :key="color"
+                  class="color-btn"
+                  :class="{ selected: localWidget.style?.onColor === color }"
+                  :style="{ backgroundColor: color }"
+                  @click="updateStyle('onColor', color)"
+                />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>OFF Color</label>
+              <div class="color-options">
+                <button
+                  v-for="color in WIDGET_COLORS.led.off"
+                  :key="color"
+                  class="color-btn"
+                  :class="{ selected: localWidget.style?.offColor === color }"
+                  :style="{ backgroundColor: color }"
+                  @click="updateStyle('offColor', color)"
+                />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.confirmOn" />
+                  Confirm ON
+                </label>
+              </div>
+              <div class="form-group half checkbox">
+                <label>
+                  <input type="checkbox" v-model="localWidget.confirmOff" />
+                  Confirm OFF
+                </label>
+              </div>
+            </div>
+          </template>
+
           <!-- Title specific -->
           <template v-if="widgetType === 'title'">
+            <div class="form-group">
+              <label>Title Text</label>
+              <input
+                type="text"
+                v-model="localWidget.text"
+                placeholder="Enter title text"
+              />
+            </div>
             <div class="form-group">
               <label>Font Size</label>
               <select
@@ -1106,6 +1186,28 @@ const selectedChartChannels = computed(() => {
               >
                 + Add Item
               </button>
+            </div>
+          </template>
+
+          <!-- Common Appearance Section (for widgets that support background colors) -->
+          <template v-if="['numeric', 'bar_graph', 'setpoint', 'gauge', 'sparkline', 'led', 'alarm_summary', 'value_table', 'clock', 'system_status', 'recording_status', 'interlock_status', 'scheduler_status', 'crio_status', 'latch_switch'].includes(widgetType)">
+            <div class="config-section">
+              <div class="section-header">Appearance</div>
+              <div class="form-group">
+                <label>Background Color</label>
+                <div class="color-options">
+                  <button
+                    v-for="color in WIDGET_COLORS.background"
+                    :key="color"
+                    class="color-btn"
+                    :class="{ selected: localWidget.style?.backgroundColor === color, transparent: color === 'transparent' }"
+                    :style="{ backgroundColor: color === 'transparent' ? '#333' : color }"
+                    @click="updateStyle('backgroundColor', color)"
+                  >
+                    <span v-if="color === 'transparent'" class="transparent-icon">∅</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </template>
         </div>

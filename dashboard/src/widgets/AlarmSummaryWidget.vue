@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSafety } from '../composables/useSafety'
+import type { WidgetStyle } from '../types'
 
-defineProps<{
+const props = defineProps<{
+  title?: string
   showAckButton?: boolean
   compact?: boolean
+  style?: WidgetStyle
 }>()
+
+const containerStyle = computed(() => {
+  const s: Record<string, string> = {}
+  if (props.style?.backgroundColor && props.style.backgroundColor !== 'transparent') {
+    s.backgroundColor = props.style.backgroundColor
+  }
+  return s
+})
 
 const safety = useSafety()
 
@@ -21,7 +32,10 @@ const blockedCount = computed(() =>
 </script>
 
 <template>
-  <div class="alarm-summary-widget" :class="{ compact, 'has-issues': hasIssues }">
+  <div class="alarm-summary-widget" :class="{ compact: props.compact, 'has-issues': hasIssues }" :style="containerStyle">
+    <!-- Widget title -->
+    <div v-if="title" class="widget-title">{{ title }}</div>
+
     <!-- All Clear State -->
     <div v-if="!hasIssues && blockedCount === 0" class="all-clear">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -100,6 +114,16 @@ const blockedCount = computed(() =>
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 6px;
+}
+
+.widget-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #2a2a4a;
 }
 
 .alarm-summary-widget.has-issues {

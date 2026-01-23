@@ -14,15 +14,29 @@ import type { ProjectData } from './useProjectFiles'
 
 // Mock dependencies
 const mockSendNodeCommand = vi.fn()
+const mockSendLocalCommand = vi.fn()
+const mockSendCommand = vi.fn()
 const mockSubscribe = vi.fn()
+const mockOnAlarm = vi.fn().mockReturnValue(() => {}) // Returns unsubscribe function
+const mockSetOutput = vi.fn()
 const mockConnected = { value: true }
 
-// Mock MQTT
+// Mock MQTT with all methods used by composables
 vi.mock('./useMqtt', () => ({
   useMqtt: () => ({
     sendNodeCommand: mockSendNodeCommand,
+    sendLocalCommand: mockSendLocalCommand,
+    sendCommand: mockSendCommand,
     subscribe: mockSubscribe,
-    connected: mockConnected
+    onAlarm: mockOnAlarm,
+    setOutput: mockSetOutput,
+    setAllOutputsSafe: vi.fn(),
+    connected: mockConnected,
+    systemStatus: { value: { acquiring: false, recording: false } },
+    channelValues: { value: {} },
+    channelConfigs: { value: {} },
+    onConfigCurrent: vi.fn().mockReturnValue(() => {}),
+    onSystemUpdate: vi.fn().mockReturnValue(() => {}),
   })
 }))
 
@@ -40,7 +54,9 @@ vi.mock('../stores/dashboard', () => ({
     channels: mockStoreChannels,
     setLayout: mockSetLayout,
     getLayout: mockGetLayout,
-    setChannels: vi.fn()
+    setChannels: vi.fn(),
+    saveLayoutToStorage: vi.fn(),
+    systemId: 'test-system'
   })
 }))
 
@@ -58,24 +74,38 @@ vi.mock('./usePythonScripts', () => ({
 // Mock backend scripts composable
 const mockAddScript = vi.fn()
 const mockClearAllScripts = vi.fn()
+const mockScriptsList = { value: [] }
 
 vi.mock('./useBackendScripts', () => ({
   useBackendScripts: () => ({
     addScript: mockAddScript,
-    clearAllScripts: mockClearAllScripts
+    clearAllScripts: mockClearAllScripts,
+    scriptsList: mockScriptsList,
+    scripts: { value: {} },
+    runningScripts: { value: new Set() },
+    scriptOutputs: { value: {} },
   })
 }))
 
 describe('useProjectFiles', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()  // Reset call counts AND implementations
+    vi.clearAllMocks()  // Clear any remaining state
+    // Reset mock implementations that were cleared by resetAllMocks
+    mockOnAlarm.mockReturnValue(() => {})
+    mockGetLayout.mockReturnValue({
+      widgets: [],
+      gridColumns: 12,
+      rowHeight: 50
+    })
+    mockExportScripts.mockReturnValue([])
     localStorage.clear()
     vi.useFakeTimers()
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    vi.clearAllMocks()
+    vi.resetAllMocks()
   })
 
   // ===========================================================================
@@ -84,6 +114,8 @@ describe('useProjectFiles', () => {
 
   describe('Script Loading - ID Preservation', () => {
     it('should pass script ID to backend when loading project', async () => {
+      // Use real timers for async tests with internal setTimeout
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -126,10 +158,10 @@ describe('useProjectFiles', () => {
         }
       }
 
-      projectFiles.applyProjectData(projectData)
+      await projectFiles.applyProjectData(projectData)
 
-      // Fast-forward past debounce timer
-      vi.advanceTimersByTime(250)
+      // Wait for debounce (200ms) to complete
+      await new Promise(resolve => setTimeout(resolve, 250))
 
       // Should have cleared existing scripts first
       expect(mockClearAllScripts).toHaveBeenCalled()
@@ -146,6 +178,8 @@ describe('useProjectFiles', () => {
     })
 
     it('should clear backend scripts before loading new ones', async () => {
+      // Use real timers for async tests with internal setTimeout
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -170,17 +204,20 @@ describe('useProjectFiles', () => {
         safety: { alarmConfigs: {}, interlocks: [] }
       }
 
-      projectFiles.applyProjectData(projectData)
+      await projectFiles.applyProjectData(projectData)
 
-      // Clear should be called immediately (before debounce)
+      // Clear should be called
       expect(mockClearAllScripts).toHaveBeenCalledTimes(1)
 
+      // Wait for debounce (200ms) to complete
+      await new Promise(resolve => setTimeout(resolve, 250))
+
       // Scripts should be added after debounce
-      vi.advanceTimersByTime(250)
       expect(mockAddScript).toHaveBeenCalledTimes(1)
     })
 
     it('should debounce script loading to prevent duplicates', async () => {
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -206,17 +243,20 @@ describe('useProjectFiles', () => {
       }
 
       // Call applyProjectData twice quickly (simulating project/loaded + project/current)
-      projectFiles.applyProjectData(projectData)
-      projectFiles.applyProjectData(projectData)
+      // Don't await first call so second call can start immediately
+      const p1 = projectFiles.applyProjectData(projectData)
+      const p2 = projectFiles.applyProjectData(projectData)
+      await Promise.all([p1, p2])
 
-      // Fast forward past debounce
-      vi.advanceTimersByTime(250)
+      // Wait for debounce (200ms) to complete
+      await new Promise(resolve => setTimeout(resolve, 250))
 
       // Scripts should only be added ONCE due to debouncing
       expect(mockAddScript).toHaveBeenCalledTimes(1)
     })
 
     it('should handle run_mode field (snake_case from backend)', async () => {
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -247,8 +287,10 @@ describe('useProjectFiles', () => {
         safety: { alarmConfigs: {}, interlocks: [] }
       }
 
-      projectFiles.applyProjectData(projectData)
-      vi.advanceTimersByTime(250)
+      await projectFiles.applyProjectData(projectData)
+
+      // Wait for debounce (200ms) to complete
+      await new Promise(resolve => setTimeout(resolve, 250))
 
       expect(mockAddScript).toHaveBeenCalledWith(expect.objectContaining({
         runMode: 'acquisition'
@@ -291,22 +333,26 @@ describe('useProjectFiles', () => {
       expect(state.channels!['AI_02']).toBeDefined()
     })
 
-    it('should export Python scripts from composable', async () => {
+    it('should export Python scripts from backend scripts composable', async () => {
       vi.resetModules()
 
-      mockExportScripts.mockReturnValue([
-        { id: 'exported-1', name: 'Exported Script', code: 'z=1' }
-      ])
+      // collectCurrentState uses backendScripts.scriptsList, not pythonScripts.exportScripts
+      mockScriptsList.value = [
+        { id: 'exported-1', name: 'Exported Script', code: 'z=1', runMode: 'manual', enabled: true }
+      ]
 
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
 
       const state = projectFiles.collectCurrentState()
 
-      // Python scripts should come from composable export
+      // Python scripts should come from backend scripts composable
       expect(state.scripts?.pythonScripts).toBeDefined()
       expect(state.scripts?.pythonScripts?.length).toBe(1)
       expect(state.scripts?.pythonScripts?.[0].name).toBe('Exported Script')
+
+      // Clean up
+      mockScriptsList.value = []
     })
   })
 
@@ -316,6 +362,8 @@ describe('useProjectFiles', () => {
 
   describe('Layout Application', () => {
     it('should apply layout with multi-page support', async () => {
+      // Use real timers for async tests that await functions with setTimeout
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -347,7 +395,8 @@ describe('useProjectFiles', () => {
         safety: { alarmConfigs: {}, interlocks: [] }
       }
 
-      projectFiles.applyProjectData(projectData)
+      // applyProjectData is async with internal setTimeout
+      await projectFiles.applyProjectData(projectData)
 
       expect(mockSetLayout).toHaveBeenCalledWith(expect.objectContaining({
         pages: expect.arrayContaining([
@@ -358,6 +407,7 @@ describe('useProjectFiles', () => {
     })
 
     it('should handle legacy single-page layout', async () => {
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -385,7 +435,7 @@ describe('useProjectFiles', () => {
         safety: { alarmConfigs: {}, interlocks: [] }
       }
 
-      projectFiles.applyProjectData(projectData)
+      await projectFiles.applyProjectData(projectData)
 
       expect(mockSetLayout).toHaveBeenCalled()
     })
@@ -397,6 +447,7 @@ describe('useProjectFiles', () => {
 
   describe('Safety Settings', () => {
     it('should save alarm configs to localStorage', async () => {
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -427,7 +478,7 @@ describe('useProjectFiles', () => {
         }
       }
 
-      projectFiles.applyProjectData(projectData)
+      await projectFiles.applyProjectData(projectData)
 
       // Should save to both v1 and v2 keys for compatibility
       const savedV1 = localStorage.getItem('nisystem-alarm-configs')
@@ -447,6 +498,7 @@ describe('useProjectFiles', () => {
 
   describe('Recording Settings', () => {
     it('should save recording config and selected channels', async () => {
+      vi.useRealTimers()
       vi.resetModules()
       const { useProjectFiles } = await import('./useProjectFiles')
       const projectFiles = useProjectFiles()
@@ -473,7 +525,7 @@ describe('useProjectFiles', () => {
         safety: { alarmConfigs: {}, interlocks: [] }
       }
 
-      projectFiles.applyProjectData(projectData)
+      await projectFiles.applyProjectData(projectData)
 
       const savedConfig = JSON.parse(localStorage.getItem('nisystem-recording-config') || '{}')
       const savedChannels = JSON.parse(localStorage.getItem('nisystem-recording-channels') || '[]')
@@ -491,18 +543,26 @@ describe('useProjectFiles', () => {
 
 describe('Project Data Roundtrip', () => {
   beforeEach(() => {
+    vi.resetAllMocks()
     vi.clearAllMocks()
+    // Restore mock implementations
+    mockOnAlarm.mockReturnValue(() => {})
+    mockGetLayout.mockReturnValue({
+      widgets: [],
+      gridColumns: 12,
+      rowHeight: 50
+    })
+    mockExportScripts.mockReturnValue([])
     localStorage.clear()
   })
 
   it('should preserve script IDs through save/load cycle', async () => {
     vi.resetModules()
-    vi.useFakeTimers()
 
-    // Setup: exported scripts have specific IDs
-    mockExportScripts.mockReturnValue([
+    // Setup: backend scripts have specific IDs (collectCurrentState uses scriptsList)
+    mockScriptsList.value = [
       { id: 'preserved-id-123', name: 'My Script', code: 'x=1', runMode: 'session', enabled: true }
-    ])
+    ]
 
     const { useProjectFiles } = await import('./useProjectFiles')
     const projectFiles = useProjectFiles()
@@ -533,14 +593,18 @@ describe('Project Data Roundtrip', () => {
       safety: collectedState.safety || { alarmConfigs: {}, interlocks: [] }
     }
 
-    projectFiles.applyProjectData(fullProjectData)
-    vi.advanceTimersByTime(250)
+    // applyProjectData is async with internal setTimeout - use real timers
+    await projectFiles.applyProjectData(fullProjectData)
+
+    // Wait for debounce (200ms) to complete
+    await new Promise(resolve => setTimeout(resolve, 250))
 
     // Verify script was added with preserved ID
     expect(mockAddScript).toHaveBeenCalledWith(expect.objectContaining({
       id: 'preserved-id-123'
     }))
 
-    vi.useRealTimers()
+    // Clean up
+    mockScriptsList.value = []
   })
 })

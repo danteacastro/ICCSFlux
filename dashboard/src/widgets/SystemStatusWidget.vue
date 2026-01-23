@@ -3,6 +3,19 @@ import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useScripts } from '../composables/useScripts'
+import type { WidgetStyle } from '../types'
+
+const props = defineProps<{
+  style?: WidgetStyle
+}>()
+
+const containerStyle = computed(() => {
+  const s: Record<string, string> = {}
+  if (props.style?.backgroundColor && props.style.backgroundColor !== 'transparent') {
+    s.backgroundColor = props.style.backgroundColor
+  }
+  return s
+})
 
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
@@ -16,6 +29,33 @@ const isSimulation = computed(() => store.status?.simulation_mode ?? false)
 
 const channelCount = computed(() => store.status?.channel_count ?? 0)
 const publishRate = computed(() => store.status?.publish_rate_hz ?? 0)
+
+// Resource monitoring
+const resourceMonitoringEnabled = computed(() => store.status?.resource_monitoring ?? false)
+const cpuPercent = computed(() => store.status?.cpu_percent ?? 0)
+const memoryMb = computed(() => store.status?.memory_mb ?? 0)
+const diskPercent = computed(() => store.status?.disk_percent ?? 0)
+const diskUsedGb = computed(() => store.status?.disk_used_gb ?? 0)
+const diskTotalGb = computed(() => store.status?.disk_total_gb ?? 0)
+
+// Health status helpers
+const getCpuStatus = computed(() => {
+  if (cpuPercent.value > 80) return 'critical'
+  if (cpuPercent.value > 50) return 'warning'
+  return 'ok'
+})
+
+const getMemoryStatus = computed(() => {
+  if (memoryMb.value > 500) return 'critical'
+  if (memoryMb.value > 300) return 'warning'
+  return 'ok'
+})
+
+const getDiskStatus = computed(() => {
+  if (diskPercent.value > 90) return 'critical'
+  if (diskPercent.value > 75) return 'warning'
+  return 'ok'
+})
 
 // Running sequence info
 const runningSequence = computed(() => scripts.runningSequence.value)
@@ -47,7 +87,7 @@ const isDataStale = computed(() => {
 </script>
 
 <template>
-  <div class="system-status-widget">
+  <div class="system-status-widget" :style="containerStyle">
     <!-- Connection Status -->
     <div class="status-row">
       <div class="status-item" :class="{ ok: mqttConnected, error: !mqttConnected }">
@@ -86,6 +126,31 @@ const isDataStale = computed(() => {
       <div v-if="isSimulation" class="sim-badge">SIM</div>
     </div>
 
+    <!-- System Health -->
+    <div v-if="resourceMonitoringEnabled" class="health-row">
+      <div class="health-item" :class="getCpuStatus">
+        <span class="health-label">CPU</span>
+        <div class="health-bar">
+          <div class="health-fill" :style="{ width: cpuPercent + '%' }"></div>
+        </div>
+        <span class="health-value">{{ cpuPercent }}%</span>
+      </div>
+      <div class="health-item" :class="getMemoryStatus">
+        <span class="health-label">MEM</span>
+        <div class="health-bar">
+          <div class="health-fill" :style="{ width: Math.min(memoryMb / 5, 100) + '%' }"></div>
+        </div>
+        <span class="health-value">{{ memoryMb }}M</span>
+      </div>
+      <div class="health-item" :class="getDiskStatus">
+        <span class="health-label">DISK</span>
+        <div class="health-bar">
+          <div class="health-fill" :style="{ width: diskPercent + '%' }"></div>
+        </div>
+        <span class="health-value">{{ diskPercent }}%</span>
+      </div>
+    </div>
+
     <!-- Sequence & Alarm Status -->
     <div class="activity-row">
       <!-- Running Sequence -->
@@ -115,34 +180,38 @@ const isDataStale = computed(() => {
 .system-status-widget {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   height: 100%;
-  padding: 8px;
+  padding: 4px 6px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
-  gap: 8px;
+  gap: 4px;
+  container-type: size;
+  overflow: hidden;
 }
 
 .status-row {
   display: flex;
-  gap: 8px;
-  justify-content: space-around;
+  gap: 6px;
+  justify-content: center;
 }
 
 .status-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 3px;
+  padding: 2px 6px;
   background: #0f0f1a;
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 .status-item .dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: #4b5563;
+  flex-shrink: 0;
 }
 
 .status-item.ok .dot {
@@ -159,7 +228,7 @@ const isDataStale = computed(() => {
 }
 
 .status-item .label {
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   font-weight: 600;
   color: #9ca3af;
   text-transform: uppercase;
@@ -177,13 +246,19 @@ const isDataStale = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 8px;
   background: #14532d;
   color: #86efac;
-  border-radius: 4px;
-  font-size: 0.7rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
   font-weight: 600;
+}
+
+.data-status svg {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
 }
 
 .data-status.stale {
@@ -193,7 +268,7 @@ const isDataStale = computed(() => {
 
 .stats-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   justify-content: center;
   align-items: center;
 }
@@ -205,48 +280,47 @@ const isDataStale = computed(() => {
 }
 
 .stat .value {
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   color: #fff;
 }
 
 .stat .label {
-  font-size: 0.55rem;
+  font-size: 0.5rem;
   color: #6b7280;
   text-transform: uppercase;
 }
 
 .sim-badge {
-  font-size: 0.55rem;
-  padding: 2px 6px;
+  font-size: 0.5rem;
+  padding: 1px 4px;
   background: #7c3aed;
   color: #fff;
-  border-radius: 3px;
+  border-radius: 2px;
   font-weight: 700;
 }
 
 .activity-row {
   display: flex;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 4px;
 }
 
 .activity-item {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 0.6rem;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.55rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .activity-icon {
-  font-size: 0.55rem;
+  font-size: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -275,6 +349,194 @@ const isDataStale = computed(() => {
 .activity-item.ok {
   background: #14532d;
   color: #86efac;
+}
+
+/* System Health Row */
+.health-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.health-label {
+  font-size: 0.5rem;
+  font-weight: 600;
+  color: #6b7280;
+  width: 28px;
+  flex-shrink: 0;
+}
+
+.health-bar {
+  flex: 1;
+  height: 4px;
+  background: #1a1a2e;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.health-fill {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.health-item.warning .health-fill {
+  background: #eab308;
+}
+
+.health-item.critical .health-fill {
+  background: #ef4444;
+}
+
+.health-value {
+  font-size: 0.5rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  color: #9ca3af;
+  width: 32px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.health-item.ok .health-value {
+  color: #86efac;
+}
+
+.health-item.warning .health-value {
+  color: #fbbf24;
+}
+
+.health-item.critical .health-value {
+  color: #fca5a5;
+}
+
+/* Compact mode: hide activity and health rows when short */
+@container (max-height: 90px) {
+  .activity-row {
+    display: none;
+  }
+}
+
+@container (max-height: 120px) {
+  .health-row {
+    display: none;
+  }
+}
+
+/* Very compact: combine stats with data-status */
+@container (max-height: 60px) {
+  .data-status {
+    display: none;
+  }
+  .system-status-widget {
+    gap: 2px;
+  }
+}
+
+/* Scale up when taller */
+@container (min-height: 120px) {
+  .system-status-widget {
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .status-item {
+    padding: 3px 8px;
+    gap: 4px;
+  }
+  .status-item .dot {
+    width: 6px;
+    height: 6px;
+  }
+  .status-item .label {
+    font-size: 0.6rem;
+  }
+  .data-status {
+    padding: 4px 10px;
+    font-size: 0.7rem;
+  }
+  .stat .value {
+    font-size: 0.85rem;
+  }
+  .stat .label {
+    font-size: 0.55rem;
+  }
+  .activity-item {
+    padding: 3px 6px;
+    font-size: 0.6rem;
+  }
+  .health-row {
+    gap: 4px;
+  }
+  .health-label {
+    font-size: 0.55rem;
+  }
+  .health-bar {
+    height: 5px;
+  }
+  .health-value {
+    font-size: 0.55rem;
+  }
+}
+
+/* Large mode */
+@container (min-height: 160px) {
+  .system-status-widget {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .status-item {
+    padding: 4px 10px;
+  }
+  .status-item .dot {
+    width: 8px;
+    height: 8px;
+  }
+  .status-item .label {
+    font-size: 0.65rem;
+  }
+  .data-status {
+    padding: 6px 12px;
+    font-size: 0.75rem;
+  }
+  .data-status svg {
+    width: 12px;
+    height: 12px;
+  }
+  .stat .value {
+    font-size: 1rem;
+  }
+  .stat .label {
+    font-size: 0.6rem;
+  }
+  .sim-badge {
+    font-size: 0.55rem;
+    padding: 2px 6px;
+  }
+  .activity-item {
+    padding: 4px 8px;
+    font-size: 0.65rem;
+  }
+  .health-row {
+    gap: 5px;
+  }
+  .health-label {
+    font-size: 0.6rem;
+    width: 32px;
+  }
+  .health-bar {
+    height: 6px;
+  }
+  .health-value {
+    font-size: 0.6rem;
+    width: 36px;
+  }
 }
 
 @keyframes pulse-seq {

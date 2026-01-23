@@ -18,6 +18,7 @@ const editText = ref(props.text || 'Title')
 // Style settings
 const fontSize = computed(() => props.style?.fontSize || 'medium')
 const textAlign = computed(() => props.style?.textAlign || 'left')
+const verticalAlign = computed(() => props.style?.verticalAlign || 'center')
 const textColor = computed(() => props.style?.textColor || '#ffffff')
 const backgroundColor = computed(() => props.style?.backgroundColor || 'transparent')
 
@@ -31,7 +32,7 @@ const fontSizeClass = computed(() => {
   return sizes[fontSize.value] || 'text-md'
 })
 
-const alignClass = computed(() => `align-${textAlign.value}`)
+const alignClass = computed(() => `align-${textAlign.value} valign-${verticalAlign.value}`)
 
 const customStyle = computed(() => ({
   color: textColor.value,
@@ -47,7 +48,13 @@ function startEdit() {
 
 function saveEdit() {
   isEditing.value = false
-  store.updateWidget(props.widgetId, { label: editText.value })
+  // Update text property (which takes precedence in DashboardGrid)
+  // Also clear title to prevent it from overriding
+  store.updateWidget(props.widgetId, {
+    text: editText.value,
+    label: editText.value,
+    title: undefined
+  })
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -79,7 +86,7 @@ watch(() => props.text, (newText) => {
 
 <template>
   <div
-    class="title-label"
+    class="title-label no-drag"
     :class="[fontSizeClass, alignClass]"
     :style="customStyle"
     @dblclick="startEdit"
@@ -89,7 +96,7 @@ watch(() => props.text, (newText) => {
       v-model="editText"
       @blur="saveEdit"
       @keydown="handleKeydown"
-      class="edit-input"
+      class="edit-input no-drag"
       autofocus
     />
     <span v-else class="label-text">{{ text || 'Title' }}</span>
@@ -127,9 +134,9 @@ watch(() => props.text, (newText) => {
           </div>
         </div>
 
-        <!-- Text Align -->
+        <!-- Horizontal Align -->
         <div class="setting-group">
-          <label>Alignment</label>
+          <label>Horizontal</label>
           <div class="btn-group">
             <button :class="{ active: textAlign === 'left' }" @click="updateStyle({ textAlign: 'left' })">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -144,6 +151,28 @@ watch(() => props.text, (newText) => {
             <button :class="{ active: textAlign === 'right' }" @click="updateStyle({ textAlign: 'right' })">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="3" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="6" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Vertical Align -->
+        <div class="setting-group">
+          <label>Vertical</label>
+          <div class="btn-group">
+            <button :class="{ active: verticalAlign === 'top' }" @click="updateStyle({ verticalAlign: 'top' })">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="3" x2="12" y2="15"/><polyline points="5 10 12 3 19 10"/>
+              </svg>
+            </button>
+            <button :class="{ active: verticalAlign === 'center' }" @click="updateStyle({ verticalAlign: 'center' })">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="4" y1="12" x2="20" y2="12"/><circle cx="12" cy="12" r="2" fill="currentColor"/>
+              </svg>
+            </button>
+            <button :class="{ active: verticalAlign === 'bottom' }" @click="updateStyle({ verticalAlign: 'bottom' })">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="21" x2="12" y2="9"/><polyline points="19 14 12 21 5 14"/>
               </svg>
             </button>
           </div>
@@ -204,9 +233,15 @@ watch(() => props.text, (newText) => {
 .text-lg { font-size: 1.5rem; }
 .text-xl { font-size: 2rem; }
 
+/* Horizontal alignment */
 .align-left { justify-content: flex-start; }
 .align-center { justify-content: center; }
 .align-right { justify-content: flex-end; }
+
+/* Vertical alignment */
+.valign-top { align-items: flex-start; }
+.valign-center { align-items: center; }
+.valign-bottom { align-items: flex-end; }
 
 .label-text {
   white-space: nowrap;

@@ -4,9 +4,15 @@ import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
 
 const props = defineProps<{
+  widgetId?: string
   channel: string
   label?: string
   disabled?: boolean
+  onLabel?: string      // Label when ON
+  offLabel?: string     // Label when OFF
+  confirmOn?: boolean   // Require confirmation to turn ON
+  confirmOff?: boolean  // Require confirmation to turn OFF
+  style?: { onColor?: string; offColor?: string }
 }>()
 
 const emit = defineEmits<{
@@ -36,9 +42,16 @@ const isOn = computed(() => {
   return channelValue.value.value !== 0
 })
 
-const displayLabel = computed(() =>
-  props.label || props.channel
-)
+// Display label - use onLabel/offLabel if provided, otherwise fallback to label or channel
+const displayLabel = computed(() => {
+  if (isOn.value && props.onLabel) return props.onLabel
+  if (!isOn.value && props.offLabel) return props.offLabel
+  return props.label || channelConfig.value?.name || props.channel
+})
+
+// Custom colors from style prop
+const onColor = computed(() => props.style?.onColor || '#22c55e')
+const offColor = computed(() => props.style?.offColor || '#4b5563')
 
 // Block toggle if: disabled, not acquiring, OR blocked by interlocks
 const canToggle = computed(() => !props.disabled && store.isAcquiring && !isBlocked.value)
@@ -61,6 +74,7 @@ function toggle() {
     <button
       class="switch"
       :class="{ on: isOn }"
+      :style="{ backgroundColor: isOn ? onColor : offColor }"
       @click="toggle"
       :disabled="!canToggle"
     >
@@ -82,6 +96,7 @@ function toggle() {
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
+  container-type: size;
 }
 
 .toggle-switch.disabled {
@@ -97,6 +112,25 @@ function toggle() {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+/* Compact horizontal layout when short (1 row ~30-40px) */
+@container (max-height: 50px) {
+  .toggle-switch {
+    flex-direction: row;
+    gap: 8px;
+    padding: 4px 8px;
+  }
+
+  .label {
+    margin-bottom: 0;
+    flex: 1;
+    text-align: left;
+  }
+
+  .switch {
+    flex-shrink: 0;
+  }
 }
 
 .switch {

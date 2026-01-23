@@ -6,8 +6,8 @@ Usage:
     python add_crio_source.py <input.nisystem> <node_id> [output.nisystem]
 
 Example:
-    python add_crio_source.py CZFlux.nisystem crio-001
-    python add_crio_source.py CZFlux.nisystem crio-001 CZFlux_crio.nisystem
+    python add_crio_source.py ICCSFlux.nisystem crio-001
+    python add_crio_source.py ICCSFlux.nisystem crio-001 ICCSFlux_crio.nisystem
 """
 
 import json

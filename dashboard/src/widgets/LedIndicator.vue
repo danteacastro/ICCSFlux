@@ -15,15 +15,17 @@ const props = defineProps<{
   label?: string
   style?: WidgetStyle
   invert?: boolean
-  compact?: boolean        // Compact mode: smaller, inline
   industrial?: boolean     // Industrial theme: flat, square
   showLabel?: boolean      // Show/hide label (default true)
-  showStatus?: boolean     // Show/hide status text (default true in normal, false in compact)
+  showStatus?: boolean     // Show/hide status text
   ledSize?: 'small' | 'medium' | 'large'
+  onColor?: string         // LED on color (can also be in style.onColor)
+  offColor?: string        // LED off color (can also be in style.offColor)
   // Props passed by grid but not used - declare to prevent warnings
   showUnit?: boolean
   text?: string
   showValue?: boolean
+  compact?: boolean        // Legacy prop - ignored, layout is now CSS-based
 }>()
 
 // Declare emits to prevent warnings
@@ -34,6 +36,12 @@ defineEmits<{
 
 const store = useDashboardStore()
 const showSettings = ref(false)
+
+// Get widget config directly from store for reliable label access
+// This fixes the bug where props weren't being passed reactively on initial load
+const widgetConfig = computed(() =>
+  props.widgetId ? store.widgets.find(w => w.id === props.widgetId) : null
+)
 
 const channelConfig = computed(() => store.channels[props.channel])
 const channelValue = computed(() => store.values[props.channel])
@@ -52,17 +60,19 @@ const isOn = computed(() => {
   return shouldInvert ? val === 0 : val !== 0
 })
 
+// Display label - check props first, then widget config from store, then channel name
 const displayLabel = computed(() =>
-  props.label || props.channel
+  props.label || widgetConfig.value?.label || props.channel || widgetConfig.value?.channel || ''
 )
 
-const onColor = computed(() => props.style?.onColor || '#22c55e')
-const offColor = computed(() => props.style?.offColor || '#374151')
+// Support both direct props and style object for colors
+const onColor = computed(() => props.onColor || props.style?.onColor || '#22c55e')
+const offColor = computed(() => props.offColor || props.style?.offColor || '#374151')
 
 const ledColor = computed(() => isOn.value ? onColor.value : offColor.value)
 const statusText = computed(() => {
   if (isStale.value) return '--'
-  return isOn.value ? 'OK' : 'OFF'
+  return isOn.value ? 'ON' : 'OFF'
 })
 
 function openSettings() {
@@ -81,30 +91,48 @@ function updateStyle(updates: Partial<WidgetStyle>) {
 
 // Mode classes
 const modeClasses = computed(() => ({
-  compact: props.compact,
   industrial: props.industrial,
   [`led-${props.ledSize || 'medium'}`]: true
 }))
 
-// Show/hide logic
-const shouldShowLabel = computed(() => props.showLabel !== false)
-const shouldShowStatus = computed(() => {
-  if (props.showStatus !== undefined) return props.showStatus
-  return !props.compact // Default: show status in normal mode, hide in compact
+// Container style for background color
+const containerStyle = computed(() => {
+  const s: Record<string, string> = {}
+  if (props.style?.backgroundColor && props.style.backgroundColor !== 'transparent') {
+    s.backgroundColor = props.style.backgroundColor
+  }
+  return s
 })
+
+// Show/hide logic - label always shows by default
+const shouldShowLabel = computed(() => props.showLabel !== false)
+const shouldShowStatus = computed(() => props.showStatus === true)
 </script>
 
 <template>
-  <div class="led-indicator" :class="modeClasses">
-    <div
-      class="led"
-      :style="{
-        backgroundColor: ledColor,
-        boxShadow: isOn && !industrial ? `0 0 8px ${ledColor}` : 'none'
-      }"
-    ></div>
-    <div v-if="shouldShowLabel || shouldShowStatus" class="info">
+  <div class="led-indicator" :class="modeClasses" :style="containerStyle">
+    <!-- Compact horizontal layout (shown when short) -->
+    <div class="layout-horizontal">
+      <div
+        class="led"
+        :style="{
+          backgroundColor: ledColor,
+          boxShadow: isOn && !industrial ? `0 0 8px ${ledColor}` : 'none'
+        }"
+      ></div>
       <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+    </div>
+
+    <!-- Vertical layout (shown when tall enough) -->
+    <div class="layout-vertical">
+      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+      <div
+        class="led"
+        :style="{
+          backgroundColor: ledColor,
+          boxShadow: isOn && !industrial ? `0 0 12px ${ledColor}` : 'none'
+        }"
+      ></div>
       <div v-if="shouldShowStatus" class="status" :style="{ color: isOn ? onColor : '#6b7280' }">{{ statusText }}</div>
     </div>
 
@@ -168,15 +196,50 @@ const shouldShowStatus = computed(() => {
 .led-indicator {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   height: 100%;
   padding: 4px 8px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   position: relative;
+  container-type: size;
 }
 
+/* ========================================
+   LAYOUT SWITCHING VIA CONTAINER QUERIES
+   ======================================== */
+
+/* Default: show horizontal, hide vertical */
+.layout-horizontal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.layout-vertical {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+}
+
+/* When widget is tall enough (2+ rows ~60px), switch to vertical layout */
+@container (min-height: 60px) {
+  .layout-horizontal {
+    display: none;
+  }
+  .layout-vertical {
+    display: flex;
+  }
+}
+
+/* ========================================
+   LED ELEMENT
+   ======================================== */
 .led {
   width: 16px;
   height: 16px;
@@ -185,26 +248,95 @@ const shouldShowStatus = computed(() => {
   transition: all 0.2s;
 }
 
-.info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+/* Larger LED in vertical mode */
+@container (min-height: 60px) {
+  .led {
+    width: 24px;
+    height: 24px;
+  }
 }
 
+@container (min-height: 100px) {
+  .led {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* ========================================
+   LABEL
+   ======================================== */
 .label {
-  font-size: 0.65rem;
-  color: var(--label-color, #888);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #ccc;
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: 0.5px;
 }
 
+/* Label styling in vertical mode */
+@container (min-height: 60px) {
+  .label {
+    font-size: 0.65rem;
+    color: #888;
+    text-align: center;
+    max-width: 100%;
+  }
+}
+
+/* ========================================
+   STATUS TEXT
+   ======================================== */
 .status {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
+  text-transform: uppercase;
 }
 
+/* ========================================
+   LED SIZES (can override defaults)
+   ======================================== */
+.led-small .led {
+  width: 10px;
+  height: 10px;
+}
+
+.led-medium .led {
+  width: 16px;
+  height: 16px;
+}
+
+.led-large .led {
+  width: 24px;
+  height: 24px;
+}
+
+/* ========================================
+   INDUSTRIAL MODE
+   Flat, square, LabVIEW-style
+   ======================================== */
+.industrial {
+  border-radius: 0;
+  border: 1px solid #444;
+  background: #2a2a2a;
+}
+
+.industrial .led {
+  border-radius: 2px;
+  border: 1px solid #555;
+}
+
+.industrial .label {
+  font-size: 0.6rem;
+  color: #aaa;
+}
+
+/* ========================================
+   SETTINGS BUTTON
+   ======================================== */
 .settings-btn {
   position: absolute;
   top: 2px;
@@ -219,6 +351,7 @@ const shouldShowStatus = computed(() => {
   align-items: center;
   opacity: 0;
   transition: opacity 0.2s;
+  z-index: 10;
 }
 
 .led-indicator:hover .settings-btn {
@@ -230,7 +363,9 @@ const shouldShowStatus = computed(() => {
   color: #fff;
 }
 
-/* Modal styles */
+/* ========================================
+   MODAL STYLES
+   ======================================== */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -306,77 +441,5 @@ const shouldShowStatus = computed(() => {
 
 .close-btn:hover {
   background: #2563eb;
-}
-
-/* ========================================
-   LED SIZES
-   ======================================== */
-.led-small .led {
-  width: 10px;
-  height: 10px;
-}
-
-.led-medium .led {
-  width: 16px;
-  height: 16px;
-}
-
-.led-large .led {
-  width: 24px;
-  height: 24px;
-}
-
-/* ========================================
-   COMPACT MODE
-   Smaller, tighter, inline
-   ======================================== */
-.compact {
-  padding: 2px 6px;
-  gap: 4px;
-}
-
-.compact .led {
-  width: 10px;
-  height: 10px;
-}
-
-.compact .label {
-  font-size: 0.6rem;
-}
-
-.compact .status {
-  font-size: 0.65rem;
-}
-
-.compact .info {
-  flex-direction: row;
-  align-items: center;
-  gap: 4px;
-}
-
-/* ========================================
-   INDUSTRIAL MODE
-   Flat, square, LabVIEW-style
-   ======================================== */
-.industrial {
-  border-radius: 0;
-  border: 1px solid #444;
-  background: #2a2a2a;
-}
-
-.industrial .led {
-  border-radius: 2px;
-  border: 1px solid #555;
-}
-
-.industrial .label {
-  font-size: 0.6rem;
-  color: #aaa;
-  letter-spacing: 0.5px;
-}
-
-/* Compact + Industrial combo */
-.compact.industrial {
-  padding: 1px 4px;
 }
 </style>

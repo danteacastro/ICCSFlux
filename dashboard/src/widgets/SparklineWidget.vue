@@ -2,6 +2,7 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { formatUnit } from '../utils/formatUnit'
+import type { WidgetStyle } from '../types'
 
 const props = defineProps<{
   channel: string
@@ -9,7 +10,16 @@ const props = defineProps<{
   historyLength?: number
   showValue?: boolean
   showMinMax?: boolean
+  style?: WidgetStyle
 }>()
+
+const containerStyle = computed(() => {
+  const s: Record<string, string> = {}
+  if (props.style?.backgroundColor && props.style.backgroundColor !== 'transparent') {
+    s.backgroundColor = props.style.backgroundColor
+  }
+  return s
+})
 
 const store = useDashboardStore()
 
@@ -116,7 +126,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="sparkline-widget" :class="statusClass">
+  <div class="sparkline-widget" :class="statusClass" :style="containerStyle">
     <div class="header">
       <span class="label">{{ displayLabel }}</span>
       <span v-if="showValue !== false" class="value">{{ currentValue }} <span class="unit">{{ unit }}</span></span>

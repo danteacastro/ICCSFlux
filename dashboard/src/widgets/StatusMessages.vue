@@ -261,8 +261,8 @@ const hasError = computed(() => {
         <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount }}</span>
       </div>
 
-      <!-- Status Indicators -->
-      <div class="status-group" @click.stop>
+      <!-- Status Indicators (hidden when minimized) -->
+      <div v-if="!isMinimized" class="status-group" @click.stop>
         <!-- Safety Status -->
         <div
           v-if="safety.hasLatchedAlarms.value"

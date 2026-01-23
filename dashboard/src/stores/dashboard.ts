@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
+import { useWindowSync } from '../composables/useWindowSync'
 import type {
   ChannelConfig,
   ChannelValue,
@@ -14,7 +15,11 @@ import type {
   PidLayerData,
   PidSymbol,
   PidPipe,
-  PidPoint
+  PidPoint,
+  PidTextAnnotation,
+  PidCommand,
+  PidGroup,
+  PidTemplate
 } from '../types'
 
 // Recording configuration interface
@@ -105,7 +110,7 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
 export const useDashboardStore = defineStore('dashboard', () => {
   // System state
   const systemId = ref<string>('default')
-  const systemName = ref<string>('CZFlux')
+  const systemName = ref<string>('ICCSFlux')
   const mqttPrefix = ref<string>('nisystem')
 
   // Channel data
@@ -116,6 +121,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Multi-page dashboard state
   const pages = ref<DashboardPage[]>([])
   const currentPageId = ref<string>('default')
+  const layoutVersion = ref(0)  // Increments on setLayout to force widget re-render
+  const editMode = ref(false)   // Must be declared before windowSync handlers use it
 
   // Legacy: widgets ref for backward compatibility (maps to current page)
   const widgets = computed({
@@ -161,6 +168,108 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // P&ID Canvas Layer (free-form, pixel-based)
   const pidEditMode = ref(false)  // Separate edit mode for P&ID layer
   const pidDrawingMode = ref(false)  // Free-form pipe drawing mode
+  const pidGridSnapEnabled = ref(true)  // Snap to grid toggle (default ON)
+  const pidGridSize = ref(10)  // Grid cell size in pixels (finer than widget grid, snaps ports)
+  const pidShowGrid = ref(true)  // Show grid overlay (default ON)
+  const pidColorScheme = ref<'standard' | 'isa101'>('standard')  // ISA-101 grayscale mode
+  const pidOrthogonalPipes = ref(true)  // Draw pipes at 90-degree angles only (Shift to disable)
+
+  // ========================================================================
+  // P&ID TEMPLATE LIBRARY
+  // ========================================================================
+  const pidTemplates = ref<PidTemplate[]>([])
+  const PID_TEMPLATES_KEY = 'nisystem-pid-templates'
+
+  // Load templates from localStorage
+  function loadPidTemplates() {
+    try {
+      const saved = localStorage.getItem(PID_TEMPLATES_KEY)
+      if (saved) {
+        pidTemplates.value = JSON.parse(saved)
+      }
+    } catch (e) {
+      console.error('[STORE] Failed to load P&ID templates:', e)
+    }
+  }
+
+  // Save templates to localStorage
+  function savePidTemplates() {
+    try {
+      localStorage.setItem(PID_TEMPLATES_KEY, JSON.stringify(pidTemplates.value))
+    } catch (e) {
+      console.error('[STORE] Failed to save P&ID templates:', e)
+    }
+  }
+
+  // Load templates on init
+  loadPidTemplates()
+
+  // ========================================================================
+  // P&ID UNDO/REDO SYSTEM (Command Pattern)
+  // ========================================================================
+  const pidUndoStack = ref<PidCommand[]>([])
+  const pidRedoStack = ref<PidCommand[]>([])
+  const PID_MAX_UNDO_STACK = 50  // Limit stack size to prevent memory issues
+
+  // ========================================================================
+  // P&ID CLIPBOARD (Copy/Paste)
+  // ========================================================================
+  const pidClipboard = ref<{
+    symbols: PidSymbol[]
+    pipes: PidPipe[]
+    textAnnotations: PidTextAnnotation[]
+  } | null>(null)
+
+  // ========================================================================
+  // P&ID SELECTION STATE (Multi-Select)
+  // ========================================================================
+  const pidSelectedIds = ref<{
+    symbolIds: string[]
+    pipeIds: string[]
+    textAnnotationIds: string[]
+  }>({ symbolIds: [], pipeIds: [], textAnnotationIds: [] })
+
+  // Computed: Check if anything is selected
+  const hasPidSelection = computed(() =>
+    pidSelectedIds.value.symbolIds.length > 0 ||
+    pidSelectedIds.value.pipeIds.length > 0 ||
+    pidSelectedIds.value.textAnnotationIds.length > 0
+  )
+
+  // ========================================================================
+  // CROSS-WINDOW SYNC (Multi-Monitor Support)
+  // ========================================================================
+  const windowSync = useWindowSync()
+
+  // Initialize window sync
+  windowSync.init()
+
+  // Listen for layout updates from other windows
+  windowSync.onLayoutUpdate((newPages: DashboardPage[]) => {
+    console.log('[STORE] Received layout update from another window')
+    pages.value = newPages
+    layoutVersion.value++
+  })
+
+  // Listen for edit mode changes from other windows
+  windowSync.onEditModeChange((enabled: boolean) => {
+    console.log('[STORE] Received edit mode change from another window:', enabled)
+    editMode.value = enabled
+  })
+
+  // Watch for local layout changes and broadcast to other windows
+  watch(pages, (newPages) => {
+    if (!windowSync.isReceiving()) {
+      windowSync.broadcastLayoutUpdate(JSON.parse(JSON.stringify(newPages)))
+    }
+  }, { deep: true })
+
+  // Watch for edit mode changes and broadcast
+  watch(editMode, (enabled) => {
+    if (!windowSync.isReceiving()) {
+      windowSync.broadcastEditMode(enabled)
+    }
+  })
 
   // P&ID layer for current page
   const pidLayer = computed({
@@ -180,7 +289,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Grid settings
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
   const rowHeight = ref(30)    // Smaller row height to match (was 60)
-  const editMode = ref(false)
 
   // ========================================================================
   // RECORDING CONFIGURATION (Data tab)
@@ -417,6 +525,43 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const temp = currentPage.order
     currentPage.order = targetPage.order
     targetPage.order = temp
+  }
+
+  /**
+   * Set ISA-101 display hierarchy level for a page
+   */
+  function setPageHierarchyLevel(pageId: string, level: 'L1' | 'L2' | 'L3' | 'L4' | undefined) {
+    const page = pages.value.find(p => p.id === pageId)
+    if (page) {
+      page.hierarchyLevel = level
+      saveLayoutToStorage()
+    }
+  }
+
+  /**
+   * Link a page to a parent page (for navigation)
+   */
+  function setPageParent(pageId: string, parentId: string | undefined) {
+    const page = pages.value.find(p => p.id === pageId)
+    if (page) {
+      if (!page.linkedPages) page.linkedPages = {}
+      page.linkedPages.parentId = parentId
+      saveLayoutToStorage()
+    }
+  }
+
+  /**
+   * Get pages by hierarchy level
+   */
+  function getPagesByLevel(level: 'L1' | 'L2' | 'L3' | 'L4') {
+    return pages.value.filter(p => p.hierarchyLevel === level)
+  }
+
+  /**
+   * Get child pages linked to a parent
+   */
+  function getChildPages(parentId: string) {
+    return pages.value.filter(p => p.linkedPages?.parentId === parentId)
   }
 
   // ========================================================================
@@ -732,6 +877,23 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidDrawingMode.value = enabled
   }
 
+  function togglePidGridSnap() {
+    pidGridSnapEnabled.value = !pidGridSnapEnabled.value
+    pidShowGrid.value = pidGridSnapEnabled.value
+  }
+
+  function setPidGridSize(size: number) {
+    pidGridSize.value = Math.max(5, Math.min(100, size))
+  }
+
+  function togglePidColorScheme() {
+    pidColorScheme.value = pidColorScheme.value === 'standard' ? 'isa101' : 'standard'
+  }
+
+  function setPidColorScheme(scheme: 'standard' | 'isa101') {
+    pidColorScheme.value = scheme
+  }
+
   function addPidSymbol(symbol: Omit<PidSymbol, 'id'>): string {
     const id = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     const newSymbol: PidSymbol = { ...symbol, id }
@@ -796,6 +958,1506 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidLayer.value = { symbols: [], pipes: [], visible: true, opacity: 1 }
   }
 
+  /**
+   * Set background image for current page's P&ID layer
+   */
+  function setPidBackgroundImage(imageConfig: {
+    url: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    opacity?: number
+    locked?: boolean
+  }) {
+    const background = {
+      url: imageConfig.url,
+      x: imageConfig.x ?? 0,
+      y: imageConfig.y ?? 0,
+      width: imageConfig.width ?? 800,
+      height: imageConfig.height ?? 600,
+      opacity: imageConfig.opacity ?? 0.5,
+      locked: imageConfig.locked ?? false
+    }
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      backgroundImage: background
+    }
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Update background image properties
+   */
+  function updatePidBackgroundImage(updates: Partial<{
+    x: number
+    y: number
+    width: number
+    height: number
+    opacity: number
+    locked: boolean
+  }>) {
+    if (!pidLayer.value.backgroundImage) return
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      backgroundImage: {
+        ...pidLayer.value.backgroundImage,
+        ...updates
+      }
+    }
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Remove background image
+   */
+  function removePidBackgroundImage() {
+    pidLayer.value = {
+      ...pidLayer.value,
+      backgroundImage: undefined
+    }
+    saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // P&ID UNDO/REDO ACTIONS (Command Pattern)
+  // ========================================================================
+
+  /**
+   * Create a snapshot of current PID layer state for undo/redo
+   */
+  function createPidStateSnapshot(): PidCommand['beforeState'] {
+    return {
+      symbols: JSON.parse(JSON.stringify(pidLayer.value.symbols)),
+      pipes: JSON.parse(JSON.stringify(pidLayer.value.pipes)),
+      textAnnotations: JSON.parse(JSON.stringify(pidLayer.value.textAnnotations || [])),
+      groups: JSON.parse(JSON.stringify(pidLayer.value.groups || []))
+    }
+  }
+
+  /**
+   * Push a command to the undo stack (called after each edit operation)
+   */
+  function pushPidCommand(type: PidCommand['type'], description: string, beforeState: PidCommand['beforeState']) {
+    const command: PidCommand = {
+      id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type,
+      timestamp: Date.now(),
+      description,
+      beforeState,
+      afterState: createPidStateSnapshot()
+    }
+
+    pidUndoStack.value.push(command)
+
+    // Limit stack size
+    if (pidUndoStack.value.length > PID_MAX_UNDO_STACK) {
+      pidUndoStack.value.shift()
+    }
+
+    // Clear redo stack on new action
+    pidRedoStack.value = []
+  }
+
+  /**
+   * Undo the last PID operation
+   */
+  function pidUndo(): boolean {
+    const command = pidUndoStack.value.pop()
+    if (!command) return false
+
+    // Restore before state
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: command.beforeState.symbols || [],
+      pipes: command.beforeState.pipes || [],
+      textAnnotations: command.beforeState.textAnnotations || [],
+      groups: command.beforeState.groups || []
+    }
+
+    // Push to redo stack
+    pidRedoStack.value.push(command)
+
+    saveLayoutToStorage()
+    return true
+  }
+
+  /**
+   * Redo the last undone PID operation
+   */
+  function pidRedo(): boolean {
+    const command = pidRedoStack.value.pop()
+    if (!command) return false
+
+    // Restore after state
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: command.afterState.symbols || [],
+      pipes: command.afterState.pipes || [],
+      textAnnotations: command.afterState.textAnnotations || [],
+      groups: command.afterState.groups || []
+    }
+
+    // Push back to undo stack
+    pidUndoStack.value.push(command)
+
+    saveLayoutToStorage()
+    return true
+  }
+
+  /**
+   * Check if undo is available
+   */
+  const canPidUndo = computed(() => pidUndoStack.value.length > 0)
+
+  /**
+   * Check if redo is available
+   */
+  const canPidRedo = computed(() => pidRedoStack.value.length > 0)
+
+  /**
+   * Clear undo/redo history
+   */
+  function clearPidHistory() {
+    pidUndoStack.value = []
+    pidRedoStack.value = []
+  }
+
+  // ========================================================================
+  // P&ID COPY/PASTE/DUPLICATE ACTIONS
+  // ========================================================================
+
+  /**
+   * Copy selected PID elements to clipboard
+   */
+  function pidCopy(): boolean {
+    if (!hasPidSelection.value) return false
+
+    const selectedSymbols = pidLayer.value.symbols.filter(s =>
+      pidSelectedIds.value.symbolIds.includes(s.id)
+    )
+    const selectedPipes = pidLayer.value.pipes.filter(p =>
+      pidSelectedIds.value.pipeIds.includes(p.id)
+    )
+    const selectedTextAnnotations = (pidLayer.value.textAnnotations || []).filter(t =>
+      pidSelectedIds.value.textAnnotationIds.includes(t.id)
+    )
+
+    pidClipboard.value = {
+      symbols: JSON.parse(JSON.stringify(selectedSymbols)),
+      pipes: JSON.parse(JSON.stringify(selectedPipes)),
+      textAnnotations: JSON.parse(JSON.stringify(selectedTextAnnotations))
+    }
+
+    return true
+  }
+
+  /**
+   * Paste clipboard contents with offset
+   */
+  function pidPaste(offsetX: number = 20, offsetY: number = 20): string[] {
+    if (!pidClipboard.value) return []
+
+    const beforeState = createPidStateSnapshot()
+    const newIds: string[] = []
+    const idMapping: Record<string, string> = {}
+
+    // Paste symbols with new IDs and offset positions
+    for (const symbol of pidClipboard.value.symbols) {
+      const newId = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      idMapping[symbol.id] = newId
+
+      const newSymbol: PidSymbol = {
+        ...symbol,
+        id: newId,
+        x: symbol.x + offsetX,
+        y: symbol.y + offsetY,
+        groupId: undefined  // Clear group association
+      }
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: [...pidLayer.value.symbols, newSymbol]
+      }
+
+      newIds.push(newId)
+    }
+
+    // Paste pipes with new IDs and offset positions, update symbol references
+    for (const pipe of pidClipboard.value.pipes) {
+      const newId = `pid-pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      idMapping[pipe.id] = newId
+
+      const newPipe: PidPipe = {
+        ...pipe,
+        id: newId,
+        points: pipe.points.map(p => ({ x: p.x + offsetX, y: p.y + offsetY })),
+        groupId: undefined,
+        // Update symbol references if they were in the clipboard
+        startSymbolId: pipe.startSymbolId ? idMapping[pipe.startSymbolId] || pipe.startSymbolId : undefined,
+        endSymbolId: pipe.endSymbolId ? idMapping[pipe.endSymbolId] || pipe.endSymbolId : undefined
+      }
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: [...pidLayer.value.pipes, newPipe]
+      }
+
+      newIds.push(newId)
+    }
+
+    // Paste text annotations with new IDs and offset positions
+    for (const annotation of pidClipboard.value.textAnnotations) {
+      const newId = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      idMapping[annotation.id] = newId
+
+      const newAnnotation: PidTextAnnotation = {
+        ...annotation,
+        id: newId,
+        x: annotation.x + offsetX,
+        y: annotation.y + offsetY,
+        groupId: undefined
+      }
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: [...(pidLayer.value.textAnnotations || []), newAnnotation]
+      }
+
+      newIds.push(newId)
+    }
+
+    // Push undo command
+    pushPidCommand('paste', `Paste ${newIds.length} element(s)`, beforeState)
+
+    // Select newly pasted items
+    pidSelectItems(
+      pidClipboard.value.symbols.map(s => idMapping[s.id]!),
+      pidClipboard.value.pipes.map(p => idMapping[p.id]!),
+      pidClipboard.value.textAnnotations.map(t => idMapping[t.id]!)
+    )
+
+    saveLayoutToStorage()
+    return newIds
+  }
+
+  /**
+   * Duplicate selected elements in place (shortcut for copy + paste)
+   */
+  function pidDuplicate(): string[] {
+    if (pidCopy()) {
+      return pidPaste(20, 20)
+    }
+    return []
+  }
+
+  /**
+   * Cut selected elements (copy + delete)
+   */
+  function pidCut(): boolean {
+    if (!pidCopy()) return false
+    pidDeleteSelected()
+    return true
+  }
+
+  /**
+   * Check if clipboard has content
+   */
+  const hasPidClipboard = computed(() =>
+    pidClipboard.value !== null && (
+      pidClipboard.value.symbols.length > 0 ||
+      pidClipboard.value.pipes.length > 0 ||
+      pidClipboard.value.textAnnotations.length > 0
+    )
+  )
+
+  // ========================================================================
+  // P&ID SELECTION ACTIONS
+  // ========================================================================
+
+  /**
+   * Select specific items by IDs
+   */
+  function pidSelectItems(symbolIds: string[], pipeIds: string[], textAnnotationIds: string[]) {
+    pidSelectedIds.value = { symbolIds, pipeIds, textAnnotationIds }
+  }
+
+  /**
+   * Add items to selection (for Shift+Click)
+   */
+  function pidAddToSelection(symbolIds: string[], pipeIds: string[], textAnnotationIds: string[]) {
+    pidSelectedIds.value = {
+      symbolIds: [...new Set([...pidSelectedIds.value.symbolIds, ...symbolIds])],
+      pipeIds: [...new Set([...pidSelectedIds.value.pipeIds, ...pipeIds])],
+      textAnnotationIds: [...new Set([...pidSelectedIds.value.textAnnotationIds, ...textAnnotationIds])]
+    }
+  }
+
+  /**
+   * Remove items from selection
+   */
+  function pidRemoveFromSelection(symbolIds: string[], pipeIds: string[], textAnnotationIds: string[]) {
+    pidSelectedIds.value = {
+      symbolIds: pidSelectedIds.value.symbolIds.filter(id => !symbolIds.includes(id)),
+      pipeIds: pidSelectedIds.value.pipeIds.filter(id => !pipeIds.includes(id)),
+      textAnnotationIds: pidSelectedIds.value.textAnnotationIds.filter(id => !textAnnotationIds.includes(id))
+    }
+  }
+
+  /**
+   * Toggle item selection (for Ctrl+Click)
+   */
+  function pidToggleSelection(id: string, type: 'symbol' | 'pipe' | 'textAnnotation') {
+    if (type === 'symbol') {
+      if (pidSelectedIds.value.symbolIds.includes(id)) {
+        pidRemoveFromSelection([id], [], [])
+      } else {
+        pidAddToSelection([id], [], [])
+      }
+    } else if (type === 'pipe') {
+      if (pidSelectedIds.value.pipeIds.includes(id)) {
+        pidRemoveFromSelection([], [id], [])
+      } else {
+        pidAddToSelection([], [id], [])
+      }
+    } else {
+      if (pidSelectedIds.value.textAnnotationIds.includes(id)) {
+        pidRemoveFromSelection([], [], [id])
+      } else {
+        pidAddToSelection([], [], [id])
+      }
+    }
+  }
+
+  /**
+   * Clear all selection
+   */
+  function pidClearSelection() {
+    pidSelectedIds.value = { symbolIds: [], pipeIds: [], textAnnotationIds: [] }
+  }
+
+  /**
+   * Select all elements on current page
+   */
+  function pidSelectAll() {
+    pidSelectedIds.value = {
+      symbolIds: pidLayer.value.symbols.map(s => s.id),
+      pipeIds: pidLayer.value.pipes.map(p => p.id),
+      textAnnotationIds: (pidLayer.value.textAnnotations || []).map(t => t.id)
+    }
+  }
+
+  /**
+   * Delete all selected elements
+   */
+  function pidDeleteSelected(): boolean {
+    if (!hasPidSelection.value) return false
+
+    const beforeState = createPidStateSnapshot()
+
+    // Remove selected symbols
+    if (pidSelectedIds.value.symbolIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: pidLayer.value.symbols.filter(s => !pidSelectedIds.value.symbolIds.includes(s.id))
+      }
+    }
+
+    // Remove selected pipes
+    if (pidSelectedIds.value.pipeIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: pidLayer.value.pipes.filter(p => !pidSelectedIds.value.pipeIds.includes(p.id))
+      }
+    }
+
+    // Remove selected text annotations
+    if (pidSelectedIds.value.textAnnotationIds.length > 0 && pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.filter(t => !pidSelectedIds.value.textAnnotationIds.includes(t.id))
+      }
+    }
+
+    const deletedCount =
+      pidSelectedIds.value.symbolIds.length +
+      pidSelectedIds.value.pipeIds.length +
+      pidSelectedIds.value.textAnnotationIds.length
+
+    // Push undo command
+    pushPidCommand('delete', `Delete ${deletedCount} element(s)`, beforeState)
+
+    // Clear selection
+    pidClearSelection()
+
+    saveLayoutToStorage()
+    return true
+  }
+
+  /**
+   * Bring selected elements to front (highest z-index)
+   */
+  function pidBringToFront() {
+    if (!hasPidSelection.value) return
+
+    const beforeState = createPidStateSnapshot()
+
+    // Find max z-index
+    const allZIndices = [
+      ...pidLayer.value.symbols.map(s => s.zIndex || 0),
+      ...pidLayer.value.pipes.map(p => p.zIndex || 0),
+      ...(pidLayer.value.textAnnotations || []).map(t => t.zIndex || 0)
+    ]
+    const maxZ = Math.max(0, ...allZIndices)
+
+    // Update z-index for selected items
+    let nextZ = maxZ + 1
+
+    if (pidSelectedIds.value.symbolIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: pidLayer.value.symbols.map(s =>
+          pidSelectedIds.value.symbolIds.includes(s.id)
+            ? { ...s, zIndex: nextZ++ }
+            : s
+        )
+      }
+    }
+
+    if (pidSelectedIds.value.pipeIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: pidLayer.value.pipes.map(p =>
+          pidSelectedIds.value.pipeIds.includes(p.id)
+            ? { ...p, zIndex: nextZ++ }
+            : p
+        )
+      }
+    }
+
+    if (pidSelectedIds.value.textAnnotationIds.length > 0 && pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t =>
+          pidSelectedIds.value.textAnnotationIds.includes(t.id)
+            ? { ...t, zIndex: nextZ++ }
+            : t
+        )
+      }
+    }
+
+    pushPidCommand('modify', 'Bring to front', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Send selected elements to back (lowest z-index)
+   */
+  function pidSendToBack() {
+    if (!hasPidSelection.value) return
+
+    const beforeState = createPidStateSnapshot()
+
+    // Find min z-index
+    const allZIndices = [
+      ...pidLayer.value.symbols.map(s => s.zIndex || 0),
+      ...pidLayer.value.pipes.map(p => p.zIndex || 0),
+      ...(pidLayer.value.textAnnotations || []).map(t => t.zIndex || 0)
+    ]
+    const minZ = Math.min(0, ...allZIndices)
+
+    // Update z-index for selected items
+    let nextZ = minZ - 1
+
+    if (pidSelectedIds.value.symbolIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: pidLayer.value.symbols.map(s =>
+          pidSelectedIds.value.symbolIds.includes(s.id)
+            ? { ...s, zIndex: nextZ-- }
+            : s
+        )
+      }
+    }
+
+    if (pidSelectedIds.value.pipeIds.length > 0) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: pidLayer.value.pipes.map(p =>
+          pidSelectedIds.value.pipeIds.includes(p.id)
+            ? { ...p, zIndex: nextZ-- }
+            : p
+        )
+      }
+    }
+
+    if (pidSelectedIds.value.textAnnotationIds.length > 0 && pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t =>
+          pidSelectedIds.value.textAnnotationIds.includes(t.id)
+            ? { ...t, zIndex: nextZ-- }
+            : t
+        )
+      }
+    }
+
+    pushPidCommand('modify', 'Send to back', beforeState)
+    saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // P&ID ALIGNMENT TOOLS
+  // ========================================================================
+
+  /**
+   * Get bounding box of all selected elements
+   */
+  function getSelectedBounds(): { minX: number; maxX: number; minY: number; maxY: number; items: Array<{ id: string; type: 'symbol' | 'pipe' | 'text'; x: number; y: number; width: number; height: number }> } | null {
+    if (!hasPidSelection.value) return null
+
+    const items: Array<{ id: string; type: 'symbol' | 'pipe' | 'text'; x: number; y: number; width: number; height: number }> = []
+
+    // Collect symbols
+    for (const id of pidSelectedIds.value.symbolIds) {
+      const symbol = pidLayer.value.symbols.find(s => s.id === id)
+      if (symbol) {
+        items.push({
+          id: symbol.id,
+          type: 'symbol',
+          x: symbol.x,
+          y: symbol.y,
+          width: symbol.width || 60,
+          height: symbol.height || 60
+        })
+      }
+    }
+
+    // Collect text annotations
+    for (const id of pidSelectedIds.value.textAnnotationIds) {
+      const text = (pidLayer.value.textAnnotations || []).find(t => t.id === id)
+      if (text) {
+        // Estimate text dimensions based on font size
+        const estimatedWidth = (text.text.length * text.fontSize * 0.6) || 100
+        const estimatedHeight = text.fontSize * 1.2 || 20
+        items.push({
+          id: text.id,
+          type: 'text',
+          x: text.x,
+          y: text.y,
+          width: estimatedWidth,
+          height: estimatedHeight
+        })
+      }
+    }
+
+    // Collect pipes (use bounding box of all points)
+    for (const id of pidSelectedIds.value.pipeIds) {
+      const pipe = pidLayer.value.pipes.find(p => p.id === id)
+      if (pipe && pipe.points.length > 0) {
+        const xs = pipe.points.map(p => p.x)
+        const ys = pipe.points.map(p => p.y)
+        const minX = Math.min(...xs)
+        const maxX = Math.max(...xs)
+        const minY = Math.min(...ys)
+        const maxY = Math.max(...ys)
+        items.push({
+          id: pipe.id,
+          type: 'pipe',
+          x: minX,
+          y: minY,
+          width: maxX - minX || 1,
+          height: maxY - minY || 1
+        })
+      }
+    }
+
+    if (items.length === 0) return null
+
+    const minX = Math.min(...items.map(i => i.x))
+    const maxX = Math.max(...items.map(i => i.x + i.width))
+    const minY = Math.min(...items.map(i => i.y))
+    const maxY = Math.max(...items.map(i => i.y + i.height))
+
+    return { minX, maxX, minY, maxY, items }
+  }
+
+  /**
+   * Align selected elements to the left
+   */
+  function pidAlignLeft() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const targetX = bounds.minX
+
+    // Move symbols
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          return { ...s, x: targetX }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            return { ...t, x: targetX }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes (shift all points)
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const pipeMinX = Math.min(...p.points.map(pt => pt.x))
+          const dx = targetX - pipeMinX
+          return { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align left', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Align selected elements to horizontal center
+   */
+  function pidAlignCenterH() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const centerX = (bounds.minX + bounds.maxX) / 2
+
+    // Move symbols to center
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          const width = s.width || 60
+          return { ...s, x: centerX - width / 2 }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            const width = t.text.length * t.fontSize * 0.6
+            return { ...t, x: centerX - width / 2 }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const xs = p.points.map(pt => pt.x)
+          const pipeCenterX = (Math.min(...xs) + Math.max(...xs)) / 2
+          const dx = centerX - pipeCenterX
+          return { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align center horizontal', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Align selected elements to the right
+   */
+  function pidAlignRight() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const targetX = bounds.maxX
+
+    // Move symbols
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          const width = s.width || 60
+          return { ...s, x: targetX - width }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            const width = t.text.length * t.fontSize * 0.6
+            return { ...t, x: targetX - width }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const pipeMaxX = Math.max(...p.points.map(pt => pt.x))
+          const dx = targetX - pipeMaxX
+          return { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align right', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Align selected elements to the top
+   */
+  function pidAlignTop() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const targetY = bounds.minY
+
+    // Move symbols
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          return { ...s, y: targetY }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            return { ...t, y: targetY }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const pipeMinY = Math.min(...p.points.map(pt => pt.y))
+          const dy = targetY - pipeMinY
+          return { ...p, points: p.points.map(pt => ({ x: pt.x, y: pt.y + dy })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align top', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Align selected elements to vertical center
+   */
+  function pidAlignCenterV() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const centerY = (bounds.minY + bounds.maxY) / 2
+
+    // Move symbols to center
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          const height = s.height || 60
+          return { ...s, y: centerY - height / 2 }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            const height = t.fontSize * 1.2
+            return { ...t, y: centerY - height / 2 }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const ys = p.points.map(pt => pt.y)
+          const pipeCenterY = (Math.min(...ys) + Math.max(...ys)) / 2
+          const dy = centerY - pipeCenterY
+          return { ...p, points: p.points.map(pt => ({ x: pt.x, y: pt.y + dy })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align center vertical', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Align selected elements to the bottom
+   */
+  function pidAlignBottom() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 2) return
+
+    const beforeState = createPidStateSnapshot()
+    const targetY = bounds.maxY
+
+    // Move symbols
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s => {
+        if (pidSelectedIds.value.symbolIds.includes(s.id)) {
+          const height = s.height || 60
+          return { ...s, y: targetY - height }
+        }
+        return s
+      })
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t => {
+          if (pidSelectedIds.value.textAnnotationIds.includes(t.id)) {
+            const height = t.fontSize * 1.2
+            return { ...t, y: targetY - height }
+          }
+          return t
+        })
+      }
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p => {
+        if (pidSelectedIds.value.pipeIds.includes(p.id)) {
+          const pipeMaxY = Math.max(...p.points.map(pt => pt.y))
+          const dy = targetY - pipeMaxY
+          return { ...p, points: p.points.map(pt => ({ x: pt.x, y: pt.y + dy })) }
+        }
+        return p
+      })
+    }
+
+    pushPidCommand('modify', 'Align bottom', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Distribute selected elements evenly horizontally
+   */
+  function pidDistributeH() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 3) return  // Need at least 3 items to distribute
+
+    const beforeState = createPidStateSnapshot()
+
+    // Sort items by x position
+    const sortedItems = [...bounds.items].sort((a, b) => a.x - b.x)
+    const totalWidth = bounds.maxX - bounds.minX
+    const itemWidths = sortedItems.reduce((sum, item) => sum + item.width, 0)
+    const spacing = (totalWidth - itemWidths) / (sortedItems.length - 1)
+
+    let currentX = bounds.minX
+
+    for (const item of sortedItems) {
+      const dx = currentX - item.x
+
+      if (item.type === 'symbol') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s =>
+            s.id === item.id ? { ...s, x: currentX } : s
+          )
+        }
+      } else if (item.type === 'text') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+            t.id === item.id ? { ...t, x: currentX } : t
+          )
+        }
+      } else if (item.type === 'pipe') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.map(p =>
+            p.id === item.id ? { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y })) } : p
+          )
+        }
+      }
+
+      currentX += item.width + spacing
+    }
+
+    pushPidCommand('modify', 'Distribute horizontally', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Distribute selected elements evenly vertically
+   */
+  function pidDistributeV() {
+    const bounds = getSelectedBounds()
+    if (!bounds || bounds.items.length < 3) return  // Need at least 3 items to distribute
+
+    const beforeState = createPidStateSnapshot()
+
+    // Sort items by y position
+    const sortedItems = [...bounds.items].sort((a, b) => a.y - b.y)
+    const totalHeight = bounds.maxY - bounds.minY
+    const itemHeights = sortedItems.reduce((sum, item) => sum + item.height, 0)
+    const spacing = (totalHeight - itemHeights) / (sortedItems.length - 1)
+
+    let currentY = bounds.minY
+
+    for (const item of sortedItems) {
+      const dy = currentY - item.y
+
+      if (item.type === 'symbol') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s =>
+            s.id === item.id ? { ...s, y: currentY } : s
+          )
+        }
+      } else if (item.type === 'text') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+            t.id === item.id ? { ...t, y: currentY } : t
+          )
+        }
+      } else if (item.type === 'pipe') {
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.map(p =>
+            p.id === item.id ? { ...p, points: p.points.map(pt => ({ x: pt.x, y: pt.y + dy })) } : p
+          )
+        }
+      }
+
+      currentY += item.height + spacing
+    }
+
+    pushPidCommand('modify', 'Distribute vertically', beforeState)
+    saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // P&ID GROUPING TOOLS
+  // ========================================================================
+
+  /**
+   * Group selected elements together
+   */
+  function pidGroup(): string | null {
+    if (!hasPidSelection.value) return null
+
+    const totalSelected = pidSelectedIds.value.symbolIds.length +
+      pidSelectedIds.value.pipeIds.length +
+      pidSelectedIds.value.textAnnotationIds.length
+
+    // Need at least 2 items to group
+    if (totalSelected < 2) return null
+
+    const beforeState = createPidStateSnapshot()
+
+    // Generate group ID
+    const groupId = `pid-group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+
+    // Create group object
+    const group: PidGroup = {
+      id: groupId,
+      symbolIds: [...pidSelectedIds.value.symbolIds],
+      pipeIds: [...pidSelectedIds.value.pipeIds],
+      textAnnotationIds: [...pidSelectedIds.value.textAnnotationIds]
+    }
+
+    // Calculate group bounding box
+    const bounds = getSelectedBounds()
+    if (bounds) {
+      group.x = bounds.minX
+      group.y = bounds.minY
+      group.width = bounds.maxX - bounds.minX
+      group.height = bounds.maxY - bounds.minY
+    }
+
+    // Update all member elements with groupId
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s =>
+        pidSelectedIds.value.symbolIds.includes(s.id) ? { ...s, groupId } : s
+      ),
+      pipes: pidLayer.value.pipes.map(p =>
+        pidSelectedIds.value.pipeIds.includes(p.id) ? { ...p, groupId } : p
+      ),
+      textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+        pidSelectedIds.value.textAnnotationIds.includes(t.id) ? { ...t, groupId } : t
+      ),
+      groups: [...(pidLayer.value.groups || []), group]
+    }
+
+    pushPidCommand('group', `Group ${totalSelected} element(s)`, beforeState)
+    saveLayoutToStorage()
+
+    return groupId
+  }
+
+  /**
+   * Ungroup the group that contains the first selected element
+   */
+  function pidUngroup(): boolean {
+    if (!hasPidSelection.value) return false
+
+    // Find the group that contains any of the selected elements
+    const groups = pidLayer.value.groups || []
+    let targetGroup: PidGroup | null = null
+
+    for (const group of groups) {
+      // Check if any selected element is in this group
+      if (pidSelectedIds.value.symbolIds.some(id => group.symbolIds.includes(id)) ||
+          pidSelectedIds.value.pipeIds.some(id => group.pipeIds.includes(id)) ||
+          pidSelectedIds.value.textAnnotationIds.some(id => group.textAnnotationIds.includes(id))) {
+        targetGroup = group
+        break
+      }
+    }
+
+    if (!targetGroup) return false
+    if (targetGroup.locked) return false  // Can't ungroup locked groups
+
+    const beforeState = createPidStateSnapshot()
+
+    // Clear groupId from all members
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s =>
+        targetGroup!.symbolIds.includes(s.id) ? { ...s, groupId: undefined } : s
+      ),
+      pipes: pidLayer.value.pipes.map(p =>
+        targetGroup!.pipeIds.includes(p.id) ? { ...p, groupId: undefined } : p
+      ),
+      textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+        targetGroup!.textAnnotationIds.includes(t.id) ? { ...t, groupId: undefined } : t
+      ),
+      groups: groups.filter(g => g.id !== targetGroup!.id)
+    }
+
+    // Select all the former group members
+    pidSelectItems(
+      targetGroup.symbolIds,
+      targetGroup.pipeIds,
+      targetGroup.textAnnotationIds
+    )
+
+    pushPidCommand('ungroup', 'Ungroup elements', beforeState)
+    saveLayoutToStorage()
+
+    return true
+  }
+
+  /**
+   * Check if a symbol/pipe/text is in a group
+   */
+  function pidGetGroup(elementId: string): PidGroup | null {
+    const groups = pidLayer.value.groups || []
+    for (const group of groups) {
+      if (group.symbolIds.includes(elementId) ||
+          group.pipeIds.includes(elementId) ||
+          group.textAnnotationIds.includes(elementId)) {
+        return group
+      }
+    }
+    return null
+  }
+
+  /**
+   * Select all members of a group
+   */
+  function pidSelectGroup(groupId: string) {
+    const group = (pidLayer.value.groups || []).find(g => g.id === groupId)
+    if (!group) return
+
+    pidSelectItems(
+      group.symbolIds,
+      group.pipeIds,
+      group.textAnnotationIds
+    )
+  }
+
+  /**
+   * Move selected elements by offset
+   */
+  function pidMoveSelected(dx: number, dy: number) {
+    if (!hasPidSelection.value) return
+
+    const beforeState = createPidStateSnapshot()
+
+    // Move symbols
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.map(s =>
+        pidSelectedIds.value.symbolIds.includes(s.id)
+          ? { ...s, x: s.x + dx, y: s.y + dy }
+          : s
+      )
+    }
+
+    // Move pipes
+    pidLayer.value = {
+      ...pidLayer.value,
+      pipes: pidLayer.value.pipes.map(p =>
+        pidSelectedIds.value.pipeIds.includes(p.id)
+          ? { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }
+          : p
+      )
+    }
+
+    // Move text annotations
+    if (pidLayer.value.textAnnotations) {
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: pidLayer.value.textAnnotations.map(t =>
+          pidSelectedIds.value.textAnnotationIds.includes(t.id)
+            ? { ...t, x: t.x + dx, y: t.y + dy }
+            : t
+        )
+      }
+    }
+
+    pushPidCommand('move', `Move ${pidSelectedIds.value.symbolIds.length + pidSelectedIds.value.pipeIds.length + pidSelectedIds.value.textAnnotationIds.length} element(s)`, beforeState)
+    saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // P&ID TEXT ANNOTATION ACTIONS
+  // ========================================================================
+
+  /**
+   * Add a text annotation to the canvas
+   */
+  function addPidTextAnnotation(annotation: Omit<PidTextAnnotation, 'id'>): string {
+    const beforeState = createPidStateSnapshot()
+
+    const id = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const newAnnotation: PidTextAnnotation = { ...annotation, id }
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      textAnnotations: [...(pidLayer.value.textAnnotations || []), newAnnotation]
+    }
+
+    pushPidCommand('add', 'Add text annotation', beforeState)
+    saveLayoutToStorage()
+    return id
+  }
+
+  /**
+   * Update a text annotation
+   */
+  function updatePidTextAnnotation(id: string, updates: Partial<PidTextAnnotation>) {
+    const beforeState = createPidStateSnapshot()
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+        t.id === id ? { ...t, ...updates } : t
+      )
+    }
+
+    pushPidCommand('modify', 'Update text annotation', beforeState)
+    saveLayoutToStorage()
+  }
+
+  /**
+   * Remove a text annotation
+   */
+  function removePidTextAnnotation(id: string) {
+    const beforeState = createPidStateSnapshot()
+
+    pidLayer.value = {
+      ...pidLayer.value,
+      textAnnotations: (pidLayer.value.textAnnotations || []).filter(t => t.id !== id)
+    }
+
+    pushPidCommand('delete', 'Delete text annotation', beforeState)
+    saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // ENHANCED P&ID SYMBOL/PIPE ACTIONS (with Undo support)
+  // ========================================================================
+
+  /**
+   * Add symbol with undo support
+   */
+  function addPidSymbolWithUndo(symbol: Omit<PidSymbol, 'id'>): string {
+    const beforeState = createPidStateSnapshot()
+    const id = addPidSymbol(symbol)
+    pushPidCommand('add', `Add ${symbol.type} symbol`, beforeState)
+    return id
+  }
+
+  /**
+   * Update symbol with undo support
+   */
+  function updatePidSymbolWithUndo(id: string, updates: Partial<PidSymbol>) {
+    const beforeState = createPidStateSnapshot()
+    updatePidSymbol(id, updates)
+    pushPidCommand('modify', 'Update symbol', beforeState)
+  }
+
+  /**
+   * Remove symbol with undo support
+   */
+  function removePidSymbolWithUndo(id: string) {
+    const beforeState = createPidStateSnapshot()
+    removePidSymbol(id)
+    pushPidCommand('delete', 'Delete symbol', beforeState)
+  }
+
+  /**
+   * Add pipe with undo support
+   */
+  function addPidPipeWithUndo(pipe: Omit<PidPipe, 'id'>): string {
+    const beforeState = createPidStateSnapshot()
+    const id = addPidPipe(pipe)
+    pushPidCommand('add', 'Add pipe', beforeState)
+    return id
+  }
+
+  /**
+   * Update pipe with undo support
+   */
+  function updatePidPipeWithUndo(id: string, updates: Partial<PidPipe>) {
+    const beforeState = createPidStateSnapshot()
+    updatePidPipe(id, updates)
+    pushPidCommand('modify', 'Update pipe', beforeState)
+  }
+
+  /**
+   * Remove pipe with undo support
+   */
+  function removePidPipeWithUndo(id: string) {
+    const beforeState = createPidStateSnapshot()
+    removePidPipe(id)
+    pushPidCommand('delete', 'Delete pipe', beforeState)
+  }
+
+  // ========================================================================
+  // P&ID TEMPLATE MANAGEMENT
+  // ========================================================================
+
+  /**
+   * Create a template from selected elements
+   */
+  function createPidTemplate(name: string, description?: string, category?: string): string | null {
+    if (!hasPidSelection.value) return null
+
+    // Get selected elements
+    const selectedSymbols = pidLayer.value.symbols.filter(s =>
+      pidSelectedIds.value.symbolIds.includes(s.id)
+    )
+    const selectedPipes = pidLayer.value.pipes.filter(p =>
+      pidSelectedIds.value.pipeIds.includes(p.id)
+    )
+    const selectedTextAnnotations = (pidLayer.value.textAnnotations || []).filter(t =>
+      pidSelectedIds.value.textAnnotationIds.includes(t.id)
+    )
+
+    if (selectedSymbols.length === 0 && selectedPipes.length === 0 && selectedTextAnnotations.length === 0) {
+      return null
+    }
+
+    // Calculate bounding box
+    let minX = Infinity, minY = Infinity
+    selectedSymbols.forEach(s => {
+      minX = Math.min(minX, s.x)
+      minY = Math.min(minY, s.y)
+    })
+    selectedPipes.forEach(p => {
+      p.points.forEach(pt => {
+        minX = Math.min(minX, pt.x)
+        minY = Math.min(minY, pt.y)
+      })
+    })
+    selectedTextAnnotations.forEach(t => {
+      minX = Math.min(minX, t.x)
+      minY = Math.min(minY, t.y)
+    })
+
+    // Create template with relative positions
+    const template: PidTemplate = {
+      id: `template-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      description,
+      category,
+      symbols: selectedSymbols.map(s => ({
+        ...s,
+        id: undefined as any,  // Will be regenerated on instantiation
+        offsetX: s.x - minX,
+        offsetY: s.y - minY
+      })),
+      pipes: selectedPipes.map(p => ({
+        ...p,
+        id: undefined as any,
+        offsetPoints: p.points.map(pt => ({ x: pt.x - minX, y: pt.y - minY }))
+      })),
+      textAnnotations: selectedTextAnnotations.map(t => ({
+        ...t,
+        id: undefined as any,
+        offsetX: t.x - minX,
+        offsetY: t.y - minY
+      })),
+      createdAt: new Date().toISOString()
+    }
+
+    pidTemplates.value.push(template)
+    savePidTemplates()
+
+    return template.id
+  }
+
+  /**
+   * Instantiate a template at a given position
+   */
+  function instantiatePidTemplate(templateId: string, x: number, y: number): string[] {
+    const template = pidTemplates.value.find(t => t.id === templateId)
+    if (!template) return []
+
+    const beforeState = createPidStateSnapshot()
+    const newIds: string[] = []
+
+    // Create new symbols
+    for (const symbolDef of template.symbols) {
+      const newId = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const newSymbol: PidSymbol = {
+        ...symbolDef,
+        id: newId,
+        x: x + symbolDef.offsetX,
+        y: y + symbolDef.offsetY
+      }
+      delete (newSymbol as any).offsetX
+      delete (newSymbol as any).offsetY
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: [...pidLayer.value.symbols, newSymbol]
+      }
+      newIds.push(newId)
+    }
+
+    // Create new pipes
+    for (const pipeDef of template.pipes) {
+      const newId = `pid-pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const newPipe: PidPipe = {
+        ...pipeDef,
+        id: newId,
+        points: pipeDef.offsetPoints.map(pt => ({ x: x + pt.x, y: y + pt.y }))
+      }
+      delete (newPipe as any).offsetPoints
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: [...pidLayer.value.pipes, newPipe]
+      }
+      newIds.push(newId)
+    }
+
+    // Create new text annotations
+    for (const textDef of template.textAnnotations) {
+      const newId = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const newText: PidTextAnnotation = {
+        ...textDef,
+        id: newId,
+        x: x + textDef.offsetX,
+        y: y + textDef.offsetY
+      }
+      delete (newText as any).offsetX
+      delete (newText as any).offsetY
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        textAnnotations: [...(pidLayer.value.textAnnotations || []), newText]
+      }
+      newIds.push(newId)
+    }
+
+    pushPidCommand('add', `Instantiate template: ${template.name}`, beforeState)
+    saveLayoutToStorage()
+
+    return newIds
+  }
+
+  /**
+   * Delete a template from the library
+   */
+  function deletePidTemplate(templateId: string): boolean {
+    const index = pidTemplates.value.findIndex(t => t.id === templateId)
+    if (index === -1) return false
+
+    pidTemplates.value.splice(index, 1)
+    savePidTemplates()
+    return true
+  }
+
   // ========================================================================
   // LAYOUT PERSISTENCE (with multi-page support)
   // ========================================================================
@@ -827,7 +2489,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Handle multi-page layouts
     if (layout.pages && layout.pages.length > 0) {
       console.log('[DASHBOARD STORE] Setting multi-page layout with', layout.pages.length, 'pages')
-      pages.value = layout.pages
+      // Deep clone to ensure Vue's reactivity system properly tracks all nested widget properties
+      // This fixes issues where widget props (like label) weren't being reactive on initial load
+      pages.value = JSON.parse(JSON.stringify(layout.pages))
 
       // Log each page
       layout.pages.forEach((page, idx) => {
@@ -841,10 +2505,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
     } else if (layout.widgets && layout.widgets.length > 0) {
       // Legacy single-page layout - migrate to multi-page
       console.log('[DASHBOARD STORE] Migrating legacy single-page layout to multi-page (widgets:', layout.widgets.length, ')')
+      // Deep clone widgets to ensure Vue's reactivity properly tracks all nested properties
       pages.value = [{
         id: 'default',
         name: 'Page 1',
-        widgets: layout.widgets,
+        widgets: JSON.parse(JSON.stringify(layout.widgets)),
         order: 0
       }]
       currentPageId.value = 'default'
@@ -862,6 +2527,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
       console.error('[DASHBOARD STORE] ❌ CRITICAL: No pages after setLayout! Creating default page...')
       ensureDefaultPage()
     }
+
+    // Increment layout version to force widget re-render
+    layoutVersion.value++
+    console.log('[DASHBOARD STORE] Layout version:', layoutVersion.value)
   }
 
   function saveLayoutToStorage() {
@@ -1254,6 +2923,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     currentPageId,
     currentPage,
     sortedPages,
+    layoutVersion,
 
     // Computed
     channelsByGroup,
@@ -1282,6 +2952,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
     switchPage,
     duplicatePage,
     movePage,
+    setPageHierarchyLevel,
+    setPageParent,
+    getPagesByLevel,
+    getChildPages,
 
     // Layout
     addWidget,
@@ -1327,8 +3001,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidLayer,
     pidEditMode,
     pidDrawingMode,
+    pidGridSnapEnabled,
+    pidGridSize,
+    pidShowGrid,
     setPidEditMode,
     setPidDrawingMode,
+    togglePidGridSnap,
+    setPidGridSize,
+    pidColorScheme,
+    togglePidColorScheme,
+    setPidColorScheme,
+    pidOrthogonalPipes,
     addPidSymbol,
     updatePidSymbol,
     removePidSymbol,
@@ -1337,6 +3020,77 @@ export const useDashboardStore = defineStore('dashboard', () => {
     removePidPipe,
     updatePidLayer,
     clearPidLayer,
+    setPidBackgroundImage,
+    updatePidBackgroundImage,
+    removePidBackgroundImage,
+
+    // P&ID Undo/Redo
+    pidUndoStack,
+    pidRedoStack,
+    canPidUndo,
+    canPidRedo,
+    pidUndo,
+    pidRedo,
+    clearPidHistory,
+    pushPidCommand,
+    createPidStateSnapshot,
+
+    // P&ID Copy/Paste/Duplicate
+    pidClipboard,
+    hasPidClipboard,
+    pidCopy,
+    pidPaste,
+    pidDuplicate,
+    pidCut,
+
+    // P&ID Selection
+    pidSelectedIds,
+    hasPidSelection,
+    pidSelectItems,
+    pidAddToSelection,
+    pidRemoveFromSelection,
+    pidToggleSelection,
+    pidClearSelection,
+    pidSelectAll,
+    pidDeleteSelected,
+    pidMoveSelected,
+    pidBringToFront,
+    pidSendToBack,
+
+    // P&ID Alignment
+    pidAlignLeft,
+    pidAlignCenterH,
+    pidAlignRight,
+    pidAlignTop,
+    pidAlignCenterV,
+    pidAlignBottom,
+    pidDistributeH,
+    pidDistributeV,
+
+    // P&ID Grouping
+    pidGroup,
+    pidUngroup,
+    pidGetGroup,
+    pidSelectGroup,
+
+    // P&ID Text Annotations
+    addPidTextAnnotation,
+    updatePidTextAnnotation,
+    removePidTextAnnotation,
+
+    // P&ID Enhanced Actions (with Undo)
+    addPidSymbolWithUndo,
+    updatePidSymbolWithUndo,
+    removePidSymbolWithUndo,
+    addPidPipeWithUndo,
+    updatePidPipeWithUndo,
+    removePidPipeWithUndo,
+
+    // P&ID Templates
+    pidTemplates,
+    createPidTemplate,
+    instantiatePidTemplate,
+    deletePidTemplate,
 
     // Recording configuration (Data tab)
     recordingConfig,

@@ -12,19 +12,26 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { ref } from 'vue'
 
-// Mock useMqtt module
-const mockMqttClient = {
-  subscribe: vi.fn(),
-  publish: vi.fn(),
-  on: vi.fn()
+// Mock useMqtt module with all required methods
+const mockSendLocalCommand = vi.fn()
+const mockSendNodeCommand = vi.fn()
+const mockSubscribe = vi.fn()
+
+const mockMqtt = {
+  connected: ref(true),
+  sendCommand: vi.fn(),
+  sendLocalCommand: mockSendLocalCommand,
+  sendNodeCommand: mockSendNodeCommand,
+  subscribe: mockSubscribe,
+  onSystemUpdate: vi.fn().mockReturnValue(() => {}),
+  systemStatus: ref({ acquiring: false, recording: false }),
+  channelValues: ref({}),
 }
 
 vi.mock('./useMqtt', () => ({
-  useMqtt: () => ({
-    client: { value: mockMqttClient },
-    connected: { value: true }
-  })
+  useMqtt: () => mockMqtt
 }))
 
 // Import after mocking
@@ -47,8 +54,10 @@ describe('useAuth', () => {
       expect(auth.authenticated.value).toBe(false)
     })
 
-    it('should have no current user initially', () => {
-      expect(auth.currentUser.value).toBeNull()
+    it('should have default guest user initially', () => {
+      // useAuth provides a default guest user when not authenticated
+      expect(auth.currentUser.value).toBeTruthy()
+      expect(auth.currentUser.value?.role).toBe('guest')
     })
 
     it('should have no auth error initially', () => {
@@ -85,8 +94,8 @@ describe('useAuth', () => {
       expect(auth.isAdmin.value).toBe(false)
     })
 
-    it('isEngineer should return false when not authenticated', () => {
-      expect(auth.isEngineer.value).toBe(false)
+    it('isSupervisor should return false when not authenticated', () => {
+      expect(auth.isSupervisor.value).toBe(false)
     })
 
     it('isOperator should return false when not authenticated', () => {
@@ -103,17 +112,15 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Login', () => {
-    it('should publish login message to MQTT', () => {
-      // Start login (don't await - just check that message is published)
+    it('should call sendLocalCommand with login data', () => {
       auth.login('testuser', 'testpass')
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/auth/login',
-        expect.stringContaining('"username":"testuser"')
-      )
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/auth/login',
-        expect.stringContaining('"password":"testpass"')
+      expect(mockSendLocalCommand).toHaveBeenCalledWith(
+        'auth/login',
+        expect.objectContaining({
+          username: 'testuser',
+          password: 'testpass',
+        })
       )
     })
 
@@ -125,9 +132,11 @@ describe('useAuth', () => {
     it('should include source_ip in login message', () => {
       auth.login('user', 'pass')
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/auth/login',
-        expect.stringContaining('"source_ip":"dashboard"')
+      expect(mockSendLocalCommand).toHaveBeenCalledWith(
+        'auth/login',
+        expect.objectContaining({
+          source_ip: 'dashboard',
+        })
       )
     })
   })
@@ -137,20 +146,21 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Logout', () => {
-    it('should publish logout message to MQTT', () => {
+    it('should call sendLocalCommand for logout', () => {
       auth.logout()
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/auth/logout',
-        expect.any(String)
+      expect(mockSendLocalCommand).toHaveBeenCalledWith(
+        'auth/logout',
+        expect.any(Object)
       )
     })
 
     it('should clear authentication state on logout', () => {
       auth.logout()
 
+      // Logout returns to guest user (not null)
       expect(auth.authenticated.value).toBe(false)
-      expect(auth.currentUser.value).toBeNull()
+      expect(auth.currentUser.value?.role).toBe('guest')
     })
   })
 
@@ -159,12 +169,12 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Auth Status Request', () => {
-    it('should publish status request to MQTT', () => {
+    it('should call sendLocalCommand for status request', () => {
       auth.requestAuthStatus()
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/auth/status/request',
-        expect.any(String)
+      expect(mockSendLocalCommand).toHaveBeenCalledWith(
+        'auth/status/request',
+        {}
       )
     })
   })
@@ -174,12 +184,12 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('User Management', () => {
-    it('should publish list users message', () => {
+    it('should call sendLocalCommand for list users', () => {
       auth.listUsers()
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/list',
-        '{}'
+      expect(mockSendLocalCommand).toHaveBeenCalledWith(
+        'users/list',
+        {}
       )
     })
 
@@ -188,7 +198,7 @@ describe('useAuth', () => {
       expect(auth.isLoadingUsers.value).toBe(true)
     })
 
-    it('should publish create user message', () => {
+    it('should call sendNodeCommand for create user', () => {
       const newUser = {
         username: 'newuser',
         password: 'newpass',
@@ -198,35 +208,34 @@ describe('useAuth', () => {
 
       auth.createUser(newUser)
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/create',
-        expect.stringContaining('"username":"newuser"')
-      )
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/create',
-        expect.stringContaining('"role":"operator"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'users/create',
+        newUser,
+        'node-001'
       )
     })
 
-    it('should publish update user message', () => {
-      auth.updateUser('testuser', { role: 'engineer', enabled: true })
+    it('should call sendNodeCommand for update user', () => {
+      auth.updateUser('testuser', { role: 'supervisor', enabled: true })
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/update',
-        expect.stringContaining('"username":"testuser"')
-      )
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/update',
-        expect.stringContaining('"role":"engineer"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'users/update',
+        expect.objectContaining({
+          username: 'testuser',
+          role: 'supervisor',
+          enabled: true,
+        }),
+        'node-001'
       )
     })
 
-    it('should publish delete user message', () => {
+    it('should call sendNodeCommand for delete user', () => {
       auth.deleteUser('deleteuser')
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/users/delete',
-        expect.stringContaining('"username":"deleteuser"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'users/delete',
+        { username: 'deleteuser' },
+        'node-001'
       )
     })
   })
@@ -236,45 +245,46 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Audit Trail', () => {
-    it('should publish query audit events message', () => {
+    it('should call sendNodeCommand for query audit events', () => {
       auth.queryAuditEvents({ limit: 100 })
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/audit/query',
-        expect.stringContaining('"limit":100')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'audit/query',
+        { limit: 100 },
+        'node-001'
       )
     })
 
     it('should set loading state when querying audit events', () => {
       auth.queryAuditEvents({})
       expect(auth.isLoadingAudit.value).toBe(true)
-    }),
+    })
 
-    it('should publish query with filters', () => {
-      auth.queryAuditEvents({
+    it('should call sendNodeCommand with filters', () => {
+      const filters = {
         start_time: '2024-01-01T00:00:00Z',
         end_time: '2024-12-31T23:59:59Z',
         event_types: ['login', 'logout'],
         username: 'testuser',
         limit: 50
-      })
+      }
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/audit/query',
-        expect.stringContaining('"start_time":"2024-01-01T00:00:00Z"')
-      )
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/audit/query',
-        expect.stringContaining('"username":"testuser"')
+      auth.queryAuditEvents(filters)
+
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'audit/query',
+        filters,
+        'node-001'
       )
     })
 
-    it('should publish export audit events message', () => {
+    it('should call sendNodeCommand for export audit events', () => {
       auth.exportAuditEvents({ format: 'csv' })
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/audit/export',
-        expect.stringContaining('"format":"csv"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'audit/export',
+        { format: 'csv' },
+        'node-001'
       )
     })
   })
@@ -284,12 +294,13 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Archive Management', () => {
-    it('should publish list archives message', () => {
+    it('should call sendNodeCommand for list archives', () => {
       auth.listArchives()
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/archive/list',
-        '{}'
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'archive/list',
+        {},
+        'node-001'
       )
     })
 
@@ -298,34 +309,39 @@ describe('useAuth', () => {
       expect(auth.isLoadingArchives.value).toBe(true)
     })
 
-    it('should publish list archives with filters', () => {
-      auth.listArchives({
+    it('should call sendNodeCommand with archive filters', () => {
+      const filters = {
         content_type: 'recording',
         start_date: '2024-01-01',
         limit: 25
-      })
+      }
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/archive/list',
-        expect.stringContaining('"content_type":"recording"')
+      auth.listArchives(filters)
+
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'archive/list',
+        filters,
+        'node-001'
       )
     })
 
-    it('should publish verify archive message', () => {
+    it('should call sendNodeCommand for verify archive', () => {
       auth.verifyArchive('archive_123')
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/archive/verify',
-        expect.stringContaining('"archive_id":"archive_123"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'archive/verify',
+        { archive_id: 'archive_123' },
+        'node-001'
       )
     })
 
-    it('should publish retrieve archive message', () => {
+    it('should call sendNodeCommand for retrieve archive', () => {
       auth.retrieveArchive('archive_456')
 
-      expect(mockMqttClient.publish).toHaveBeenCalledWith(
-        'nisystem/archive/retrieve',
-        expect.stringContaining('"archive_id":"archive_456"')
+      expect(mockSendNodeCommand).toHaveBeenCalledWith(
+        'archive/retrieve',
+        { archive_id: 'archive_456' },
+        'node-001'
       )
     })
   })
@@ -416,7 +432,7 @@ describe('Auth Flow Integration', () => {
       const auth = useAuth()
 
       expect(auth.isAdmin).toBeDefined()
-      expect(auth.isEngineer).toBeDefined()
+      expect(auth.isSupervisor).toBeDefined()
       expect(auth.isOperator).toBeDefined()
       expect(typeof auth.hasPermission).toBe('function')
     })

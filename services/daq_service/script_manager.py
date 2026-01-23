@@ -1,5 +1,5 @@
 """
-Script Manager for CZFlux
+Script Manager for ICCSFlux
 
 Executes Python scripts server-side for headless operation.
 Scripts have access to the same API as the browser Pyodide playground:
@@ -28,6 +28,691 @@ import queue
 logger = logging.getLogger('ScriptManager')
 
 
+# =============================================================================
+# STATE PERSISTENCE
+# =============================================================================
+
+class StatePersistence:
+    """
+    Persistent state storage for scripts.
+
+    Stores key-value pairs in a JSON file that survives service restarts.
+    Each script gets its own namespace to prevent collisions.
+
+    File location: {data_dir}/script_state.json
+    """
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.state_file = self.data_dir / "script_state.json"
+        self._lock = threading.Lock()
+        self._state: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    def _load(self):
+        """Load state from disk"""
+        try:
+            if self.state_file.exists():
+                with open(self.state_file, 'r') as f:
+                    self._state = json.load(f)
+                logger.info(f"Loaded script state: {len(self._state)} scripts")
+        except Exception as e:
+            logger.warning(f"Failed to load script state: {e}")
+            self._state = {}
+
+    def _save(self):
+        """Save state to disk (atomic write)"""
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(self._state, f, indent=2)
+            temp_file.replace(self.state_file)
+        except Exception as e:
+            logger.error(f"Failed to save script state: {e}")
+
+    def persist(self, script_id: str, key: str, value: Any) -> bool:
+        """Store a value persistently for a script"""
+        with self._lock:
+            if script_id not in self._state:
+                self._state[script_id] = {}
+            self._state[script_id][key] = value
+            self._save()
+            return True
+
+    def restore(self, script_id: str, key: str, default: Any = None) -> Any:
+        """Restore a persisted value for a script"""
+        with self._lock:
+            return self._state.get(script_id, {}).get(key, default)
+
+    def clear_script(self, script_id: str):
+        """Clear all persisted state for a script"""
+        with self._lock:
+            if script_id in self._state:
+                del self._state[script_id]
+                self._save()
+
+    def get_all(self, script_id: str) -> Dict[str, Any]:
+        """Get all persisted state for a script"""
+        with self._lock:
+            return self._state.get(script_id, {}).copy()
+
+
+# Global persistence instance (set by ScriptManager)
+_persistence: Optional[StatePersistence] = None
+
+
+# =============================================================================
+# HELPER CLASSES FOR SCRIPTS (available in script namespace)
+# =============================================================================
+
+class RateCalculator:
+    """Calculate rate of change over a time window.
+
+    Example:
+        flow_rate = RateCalculator(window_seconds=60)
+        while session.active:
+            gpm = flow_rate.update(tags.FlowCounter)
+            publish('FlowGPM', gpm * 60, units='GPM')
+            next_scan()
+    """
+    def __init__(self, window_seconds: float = 60.0):
+        self.window_seconds = window_seconds
+        self._history: List[tuple] = []  # (timestamp, value)
+
+    def update(self, value: float) -> float:
+        """Update with new value and return rate (units per second)."""
+        now = time.time()
+        self._history.append((now, value))
+
+        # Remove old entries outside window
+        cutoff = now - self.window_seconds
+        self._history = [(t, v) for t, v in self._history if t >= cutoff]
+
+        if len(self._history) < 2:
+            return 0.0
+
+        # Calculate rate from oldest to newest in window
+        t0, v0 = self._history[0]
+        t1, v1 = self._history[-1]
+        dt = t1 - t0
+
+        if dt <= 0:
+            return 0.0
+
+        return (v1 - v0) / dt
+
+    def reset(self):
+        """Clear history."""
+        self._history.clear()
+
+
+class Accumulator:
+    """Track cumulative totals from counter values.
+
+    Handles counter rollover and resets automatically.
+
+    Example:
+        total_flow = Accumulator()
+        while session.active:
+            total = total_flow.update(tags.FlowCounter)
+            publish('TotalGallons', total, units='gal')
+            next_scan()
+    """
+    def __init__(self, initial: float = 0.0):
+        self._total = initial
+        self._last_value: Optional[float] = None
+
+    def update(self, value: float) -> float:
+        """Update with new counter value and return cumulative total."""
+        if self._last_value is not None:
+            delta = value - self._last_value
+            # Handle rollover (assume counter went backwards = rollover)
+            if delta < 0:
+                delta = value  # Treat as fresh start from value
+            self._total += delta
+
+        self._last_value = value
+        return self._total
+
+    def reset(self, initial: float = 0.0):
+        """Reset the accumulator."""
+        self._total = initial
+        self._last_value = None
+
+    @property
+    def total(self) -> float:
+        return self._total
+
+
+class EdgeDetector:
+    """Detect rising and falling edges.
+
+    Example:
+        pump_edge = EdgeDetector(threshold=0.5)
+        while session.active:
+            rising, falling, state = pump_edge.update(tags.Pump_Status)
+            if rising:
+                print("Pump started!")
+            next_scan()
+    """
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+        self._last_state: Optional[bool] = None
+
+    def update(self, value: float) -> tuple:
+        """Update and return (rising, falling, current_state)."""
+        current_state = value > self.threshold
+
+        rising = False
+        falling = False
+
+        if self._last_state is not None:
+            rising = current_state and not self._last_state
+            falling = not current_state and self._last_state
+
+        self._last_state = current_state
+        return (rising, falling, current_state)
+
+    def reset(self):
+        """Reset edge detector state."""
+        self._last_state = None
+
+
+class RollingStats:
+    """Calculate running statistics over a sample window.
+
+    Example:
+        temp_stats = RollingStats(window_size=100)
+        while session.active:
+            stats = temp_stats.update(tags.TC001)
+            publish('TempAvg', stats['mean'], units='F')
+            next_scan()
+    """
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self._buffer: List[float] = []
+
+    def update(self, value: float) -> dict:
+        """Update with new value and return statistics dict."""
+        self._buffer.append(value)
+        if len(self._buffer) > self.window_size:
+            self._buffer = self._buffer[-self.window_size:]
+
+        if not self._buffer:
+            return {'mean': 0, 'min': 0, 'max': 0, 'std': 0, 'count': 0}
+
+        n = len(self._buffer)
+        mean = sum(self._buffer) / n
+        min_val = min(self._buffer)
+        max_val = max(self._buffer)
+
+        # Standard deviation
+        if n > 1:
+            variance = sum((x - mean) ** 2 for x in self._buffer) / (n - 1)
+            std = variance ** 0.5
+        else:
+            std = 0.0
+
+        return {
+            'mean': mean,
+            'min': min_val,
+            'max': max_val,
+            'std': std,
+            'count': n
+        }
+
+    def reset(self):
+        """Clear the buffer."""
+        self._buffer.clear()
+
+
+class Scheduler:
+    """Simple job scheduler for timed operations.
+
+    Example:
+        scheduler = Scheduler()
+        scheduler.add_interval('log', seconds=60, func=my_log_function)
+        while session.active:
+            scheduler.tick()
+            next_scan()
+    """
+    def __init__(self):
+        self._jobs: Dict[str, dict] = {}
+
+    def add_interval(self, job_id: str, func: Callable, seconds: float = 0,
+                     minutes: float = 0, hours: float = 0):
+        """Add an interval job that runs periodically."""
+        interval = seconds + (minutes * 60) + (hours * 3600)
+        self._jobs[job_id] = {
+            'type': 'interval',
+            'func': func,
+            'interval': interval,
+            'last_run': 0,
+            'paused': False,
+            'run_count': 0
+        }
+
+    def add_cron(self, job_id: str, func: Callable, minute: int = None,
+                 hour: int = None, day_of_week: int = None):
+        """Add a cron-like job (simplified - checks each tick)."""
+        self._jobs[job_id] = {
+            'type': 'cron',
+            'func': func,
+            'minute': minute,
+            'hour': hour,
+            'day_of_week': day_of_week,
+            'last_run_minute': None,
+            'paused': False,
+            'run_count': 0
+        }
+
+    def add_once(self, job_id: str, func: Callable, delay: float):
+        """Add a one-shot job that runs after a delay."""
+        self._jobs[job_id] = {
+            'type': 'once',
+            'func': func,
+            'run_at': time.time() + delay,
+            'paused': False,
+            'run_count': 0
+        }
+
+    def tick(self):
+        """Check and run due jobs. Call this in your main loop."""
+        now = time.time()
+        now_dt = datetime.fromtimestamp(now)
+
+        for job_id, job in list(self._jobs.items()):
+            if job['paused']:
+                continue
+
+            should_run = False
+
+            if job['type'] == 'interval':
+                if now - job['last_run'] >= job['interval']:
+                    should_run = True
+                    job['last_run'] = now
+
+            elif job['type'] == 'cron':
+                current_minute = (now_dt.hour, now_dt.minute)
+                if current_minute != job['last_run_minute']:
+                    # Check if matches cron spec
+                    matches = True
+                    if job['minute'] is not None and now_dt.minute != job['minute']:
+                        matches = False
+                    if job['hour'] is not None and now_dt.hour != job['hour']:
+                        matches = False
+                    if job['day_of_week'] is not None and now_dt.weekday() != job['day_of_week']:
+                        matches = False
+
+                    if matches:
+                        should_run = True
+                        job['last_run_minute'] = current_minute
+
+            elif job['type'] == 'once':
+                if now >= job['run_at']:
+                    should_run = True
+
+            if should_run:
+                try:
+                    job['func']()
+                    job['run_count'] += 1
+                except Exception as e:
+                    logger.error(f"Scheduler job {job_id} error: {e}")
+
+                # Remove one-shot jobs after running
+                if job['type'] == 'once':
+                    del self._jobs[job_id]
+
+    def pause(self, job_id: str):
+        """Pause a job."""
+        if job_id in self._jobs:
+            self._jobs[job_id]['paused'] = True
+
+    def resume(self, job_id: str):
+        """Resume a paused job."""
+        if job_id in self._jobs:
+            self._jobs[job_id]['paused'] = False
+
+    def remove(self, job_id: str):
+        """Remove a job."""
+        self._jobs.pop(job_id, None)
+
+    def is_paused(self, job_id: str) -> bool:
+        """Check if job is paused."""
+        return self._jobs.get(job_id, {}).get('paused', False)
+
+    def get_jobs(self) -> dict:
+        """Get all jobs status."""
+        return {
+            jid: {'type': j['type'], 'paused': j['paused'], 'run_count': j['run_count']}
+            for jid, j in self._jobs.items()
+        }
+
+
+class StateMachine:
+    """Finite State Machine for sequence/recipe control.
+
+    Define states and transitions, then call tick() each scan to evaluate.
+    Transitions fire when their condition function returns True.
+
+    Example - Simple heating sequence:
+        sm = StateMachine('IDLE')
+
+        # Define states with optional entry/exit actions
+        sm.add_state('IDLE')
+        sm.add_state('HEATING', on_enter=lambda: outputs.set('Heater', True),
+                                on_exit=lambda: outputs.set('Heater', False))
+        sm.add_state('SOAKING')
+        sm.add_state('COOLING', on_enter=lambda: outputs.set('CoolValve', True),
+                                on_exit=lambda: outputs.set('CoolValve', False))
+        sm.add_state('COMPLETE')
+
+        # Define transitions with conditions
+        sm.add_transition('IDLE', 'HEATING', lambda: vars.StartCmd > 0)
+        sm.add_transition('HEATING', 'SOAKING', lambda: tags.Temp >= vars.TargetTemp)
+        sm.add_transition('SOAKING', 'COOLING', lambda: sm.time_in_state() >= vars.SoakTime)
+        sm.add_transition('COOLING', 'COMPLETE', lambda: tags.Temp <= vars.CooldownTemp)
+        sm.add_transition('COMPLETE', 'IDLE', lambda: vars.ResetCmd > 0)
+
+        while session.active:
+            sm.tick()
+            publish('SM_State', sm.state)
+            publish('SM_StateTime', sm.time_in_state())
+            next_scan()
+
+    Example - Recipe with phases:
+        recipe = StateMachine('IDLE')
+        recipe.add_state('IDLE')
+        recipe.add_state('PHASE1_HEAT', on_enter=lambda: set_temp(100))
+        recipe.add_state('PHASE1_HOLD')
+        recipe.add_state('PHASE2_HEAT', on_enter=lambda: set_temp(200))
+        recipe.add_state('PHASE2_HOLD')
+        recipe.add_state('COOLDOWN', on_enter=lambda: set_temp(25))
+        recipe.add_state('DONE')
+
+        # Chain the phases
+        recipe.add_transition('IDLE', 'PHASE1_HEAT', lambda: vars.Go)
+        recipe.add_transition('PHASE1_HEAT', 'PHASE1_HOLD', lambda: tags.Temp >= 100)
+        recipe.add_transition('PHASE1_HOLD', 'PHASE2_HEAT', lambda: recipe.time_in_state() >= 300)
+        # ... etc
+    """
+
+    def __init__(self, initial_state: str = 'IDLE'):
+        self._states: Dict[str, dict] = {}
+        self._transitions: List[dict] = []
+        self._current_state: str = initial_state
+        self._state_entered_at: float = time.time()
+        self._previous_state: Optional[str] = None
+        self._transition_count: int = 0
+        self._history: List[tuple] = []  # [(timestamp, from_state, to_state), ...]
+        self._max_history: int = 100
+
+        # Auto-add initial state
+        self.add_state(initial_state)
+
+    def add_state(self, name: str, on_enter: Callable = None, on_exit: Callable = None,
+                  on_tick: Callable = None):
+        """Add a state with optional callbacks.
+
+        Args:
+            name: State name (use UPPERCASE by convention)
+            on_enter: Called once when entering this state
+            on_exit: Called once when leaving this state
+            on_tick: Called every tick while in this state
+        """
+        self._states[name] = {
+            'on_enter': on_enter,
+            'on_exit': on_exit,
+            'on_tick': on_tick
+        }
+
+    def add_transition(self, from_state: str, to_state: str, condition: Callable,
+                       priority: int = 0, action: Callable = None):
+        """Add a transition between states.
+
+        Args:
+            from_state: Source state name
+            to_state: Destination state name
+            condition: Function returning True when transition should fire
+            priority: Higher priority transitions are evaluated first (default 0)
+            action: Optional action to execute during transition
+        """
+        self._transitions.append({
+            'from': from_state,
+            'to': to_state,
+            'condition': condition,
+            'priority': priority,
+            'action': action
+        })
+        # Keep transitions sorted by priority (descending)
+        self._transitions.sort(key=lambda t: t['priority'], reverse=True)
+
+    def tick(self) -> Optional[str]:
+        """Evaluate transitions and execute state callbacks. Call every scan.
+
+        Returns the new state name if a transition occurred, None otherwise.
+        """
+        # Execute on_tick for current state
+        state_info = self._states.get(self._current_state)
+        if state_info and state_info['on_tick']:
+            try:
+                state_info['on_tick']()
+            except Exception as e:
+                logger.error(f"StateMachine {self._current_state} on_tick error: {e}")
+
+        # Evaluate transitions from current state
+        for trans in self._transitions:
+            if trans['from'] != self._current_state:
+                continue
+
+            try:
+                if trans['condition']():
+                    return self._do_transition(trans)
+            except Exception as e:
+                logger.error(f"StateMachine transition condition error: {e}")
+
+        return None
+
+    def _do_transition(self, trans: dict) -> str:
+        """Execute a transition."""
+        from_state = self._current_state
+        to_state = trans['to']
+
+        # Exit current state
+        state_info = self._states.get(from_state)
+        if state_info and state_info['on_exit']:
+            try:
+                state_info['on_exit']()
+            except Exception as e:
+                logger.error(f"StateMachine {from_state} on_exit error: {e}")
+
+        # Execute transition action
+        if trans['action']:
+            try:
+                trans['action']()
+            except Exception as e:
+                logger.error(f"StateMachine transition action error: {e}")
+
+        # Update state
+        self._previous_state = from_state
+        self._current_state = to_state
+        self._state_entered_at = time.time()
+        self._transition_count += 1
+
+        # Record history
+        self._history.append((time.time(), from_state, to_state))
+        if len(self._history) > self._max_history:
+            self._history = self._history[-self._max_history:]
+
+        # Enter new state
+        state_info = self._states.get(to_state)
+        if state_info and state_info['on_enter']:
+            try:
+                state_info['on_enter']()
+            except Exception as e:
+                logger.error(f"StateMachine {to_state} on_enter error: {e}")
+
+        logger.debug(f"StateMachine: {from_state} -> {to_state}")
+        return to_state
+
+    def force_state(self, state: str, run_callbacks: bool = True):
+        """Force transition to a state (for manual override or error recovery).
+
+        Args:
+            state: Target state name
+            run_callbacks: Whether to run on_exit/on_enter callbacks
+        """
+        if state not in self._states:
+            self.add_state(state)
+
+        if run_callbacks:
+            # Exit current
+            state_info = self._states.get(self._current_state)
+            if state_info and state_info['on_exit']:
+                try:
+                    state_info['on_exit']()
+                except:
+                    pass
+
+        self._previous_state = self._current_state
+        self._current_state = state
+        self._state_entered_at = time.time()
+
+        if run_callbacks:
+            # Enter new
+            state_info = self._states.get(state)
+            if state_info and state_info['on_enter']:
+                try:
+                    state_info['on_enter']()
+                except:
+                    pass
+
+        self._history.append((time.time(), self._previous_state, state))
+
+    @property
+    def state(self) -> str:
+        """Current state name."""
+        return self._current_state
+
+    @property
+    def previous_state(self) -> Optional[str]:
+        """Previous state name (before last transition)."""
+        return self._previous_state
+
+    def time_in_state(self) -> float:
+        """Seconds elapsed since entering current state."""
+        return time.time() - self._state_entered_at
+
+    @property
+    def transition_count(self) -> int:
+        """Total number of transitions since creation."""
+        return self._transition_count
+
+    def get_history(self, limit: int = 10) -> List[tuple]:
+        """Get recent transition history as [(timestamp, from, to), ...]."""
+        return self._history[-limit:]
+
+    def is_in(self, *states: str) -> bool:
+        """Check if current state is one of the given states."""
+        return self._current_state in states
+
+    def reset(self, initial_state: str = None):
+        """Reset state machine to initial state."""
+        target = initial_state or list(self._states.keys())[0] if self._states else 'IDLE'
+        self._current_state = target
+        self._state_entered_at = time.time()
+        self._previous_state = None
+        self._transition_count = 0
+        self._history.clear()
+
+
+# =============================================================================
+# UNIT CONVERSION FUNCTIONS (available in script namespace)
+# =============================================================================
+
+def F_to_C(f: float) -> float:
+    """Fahrenheit to Celsius."""
+    return (f - 32) * 5 / 9
+
+def C_to_F(c: float) -> float:
+    """Celsius to Fahrenheit."""
+    return c * 9 / 5 + 32
+
+def GPM_to_LPM(gpm: float) -> float:
+    """Gallons per minute to Liters per minute."""
+    return gpm * 3.78541
+
+def LPM_to_GPM(lpm: float) -> float:
+    """Liters per minute to Gallons per minute."""
+    return lpm / 3.78541
+
+def PSI_to_bar(psi: float) -> float:
+    """PSI to Bar."""
+    return psi * 0.0689476
+
+def bar_to_PSI(bar: float) -> float:
+    """Bar to PSI."""
+    return bar / 0.0689476
+
+def gal_to_L(gal: float) -> float:
+    """Gallons to Liters."""
+    return gal * 3.78541
+
+def L_to_gal(l: float) -> float:
+    """Liters to Gallons."""
+    return l / 3.78541
+
+def BTU_to_kJ(btu: float) -> float:
+    """BTU to Kilojoules."""
+    return btu * 1.05506
+
+def kJ_to_BTU(kj: float) -> float:
+    """Kilojoules to BTU."""
+    return kj / 1.05506
+
+def lb_to_kg(lb: float) -> float:
+    """Pounds to Kilograms."""
+    return lb * 0.453592
+
+def kg_to_lb(kg: float) -> float:
+    """Kilograms to Pounds."""
+    return kg / 0.453592
+
+
+# =============================================================================
+# TIME FUNCTIONS (available in script namespace)
+# =============================================================================
+
+def now() -> float:
+    """Current Unix timestamp in seconds."""
+    return time.time()
+
+def now_ms() -> int:
+    """Current Unix timestamp in milliseconds."""
+    return int(time.time() * 1000)
+
+def now_iso() -> str:
+    """Current time as ISO 8601 string."""
+    return datetime.now().isoformat()
+
+def time_of_day() -> str:
+    """Current time as HH:MM:SS."""
+    return datetime.now().strftime('%H:%M:%S')
+
+def elapsed_since(start_ts: float) -> float:
+    """Seconds elapsed since start_ts (in seconds)."""
+    return time.time() - start_ts
+
+def format_timestamp(ts_ms: int, fmt: str = '%Y-%m-%d %H:%M:%S') -> str:
+    """Format millisecond timestamp to string."""
+    return datetime.fromtimestamp(ts_ms / 1000).strftime(fmt)
+
+
+# =============================================================================
+# SCRIPT ENUMS AND DATA CLASSES
+# =============================================================================
+
 class ScriptState(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -53,6 +738,7 @@ class Script:
     created_at: str = ""
     modified_at: str = ""
     max_runtime_seconds: float = 300.0  # Default 5 minute timeout
+    auto_restart: bool = False  # Auto-restart if script times out
 
     # Runtime state (not persisted)
     state: ScriptState = field(default=ScriptState.IDLE, repr=False)
@@ -71,6 +757,7 @@ class Script:
             "runMode": self.run_mode.value if isinstance(self.run_mode, ScriptRunMode) else self.run_mode,
             "createdAt": self.created_at,
             "modifiedAt": self.modified_at,
+            "autoRestart": self.auto_restart,
             # Runtime state
             "state": self.state.value if isinstance(self.state, ScriptState) else self.state,
             "startedAt": self.started_at,
@@ -88,6 +775,9 @@ class Script:
             except ValueError:
                 run_mode = ScriptRunMode.MANUAL
 
+        # Accept both camelCase (autoRestart) and snake_case (auto_restart)
+        auto_restart = data.get("autoRestart") or data.get("auto_restart", False)
+
         return cls(
             id=data["id"],
             name=data["name"],
@@ -96,7 +786,8 @@ class Script:
             enabled=data.get("enabled", True),
             run_mode=run_mode,
             created_at=data.get("createdAt") or data.get("created_at", ""),
-            modified_at=data.get("modifiedAt") or data.get("modified_at", "")
+            modified_at=data.get("modifiedAt") or data.get("modified_at", ""),
+            auto_restart=auto_restart
         )
 
 
@@ -162,8 +853,12 @@ class ScriptRuntime:
             if elapsed >= timeout_seconds:
                 logger.warning(f"SCRIPT TIMEOUT: {self.script.name} exceeded {timeout_seconds}s - forcing stop")
                 self.script.timeout_exceeded = True
-                self.script.error_message = f"Script timeout after {timeout_seconds}s"
+                error_msg = f"Script timeout after {timeout_seconds}s - script was forcefully stopped"
+                self.script.error_message = error_msg
                 self._stop_event.set()
+
+                # Publish timeout error to frontend
+                self.manager.log_script_output(self.script.id, 'error', error_msg)
 
                 # Wait briefly for graceful stop
                 time.sleep(2.0)
@@ -230,15 +925,165 @@ class ScriptRuntime:
 
         except Exception as e:
             self.script.state = ScriptState.ERROR
+            # Store full traceback for better error reporting
+            full_traceback = traceback.format_exc()
             self.script.error_message = str(e)
             logger.error(f"Script {self.script.name} error: {e}")
-            logger.debug(traceback.format_exc())
+            logger.debug(full_traceback)
+
+            # Publish the full traceback to frontend via output handler
+            # This allows the UI to parse line numbers and display detailed errors
+            self.manager.log_script_output(self.script.id, 'error', full_traceback)
 
             # Notify manager of error
             self.manager._on_script_error(self.script, str(e))
 
     def _build_namespace(self) -> dict:
-        """Build the execution namespace with nisystem API"""
+        """Build the execution namespace with nisystem API.
+
+        UNIFIED NAMESPACE:
+        If the manager has a shared namespace callback (on_get_shared_namespace),
+        scripts execute in the global console namespace. This means:
+        - Variables defined in console are accessible in scripts
+        - Variables defined in scripts are visible in Variable Explorer
+        - All scripts and console share the same Python environment
+
+        Script-specific functions (publish, next_scan, etc.) are added to
+        the shared namespace but scoped to this script execution.
+        """
+
+        # Publish function - publish computed values
+        def publish(name: str, value: float, units: str = '', description: str = '') -> None:
+            self._published_values[name] = {
+                'value': value,
+                'units': units,
+                'description': description,
+                'timestamp': time.time()
+            }
+            self.manager.publish_value(self.script.id, name, value, units)
+
+        # Sleep functions that respect stop event
+        # Drift compensation: track target time to prevent cumulative drift
+        _next_target_time = [0.0]  # Use list for closure mutability
+
+        def next_scan() -> None:
+            """Wait for next scan cycle (respects stop event, drift-compensated)"""
+            self.script.iterations += 1
+            scan_rate = self.manager.get_scan_rate()
+            interval = 1.0 / scan_rate if scan_rate > 0 else 0.1
+
+            now_mono = time.monotonic()
+
+            # Initialize target time on first call
+            if _next_target_time[0] == 0.0:
+                _next_target_time[0] = now_mono + interval
+            else:
+                _next_target_time[0] += interval
+
+            # Calculate remaining time to target (compensates for execution time)
+            remaining = _next_target_time[0] - now_mono
+
+            # If we're behind schedule, reset target to avoid catch-up bursts
+            if remaining < 0:
+                _next_target_time[0] = now_mono + interval
+                remaining = interval
+
+            if self._stop_event.wait(remaining):
+                raise StopScript()
+
+        def wait_for(seconds: float) -> None:
+            """Wait for specified duration (respects stop event)"""
+            if self._stop_event.wait(seconds):
+                raise StopScript()
+
+        def wait_until(condition_func, timeout: float = None) -> bool:
+            """Wait until condition is true (respects stop event)"""
+            start = time.time()
+            while True:
+                if self._stop_event.is_set():
+                    raise StopScript()
+                try:
+                    if condition_func():
+                        return True
+                except:
+                    pass
+                if timeout and (time.time() - start) > timeout:
+                    return False
+                time.sleep(0.1)
+
+        # Print function that logs to script output
+        def script_print(*args, **kwargs):
+            message = ' '.join(str(a) for a in args)
+            self.manager.log_script_output(self.script.id, 'info', message)
+
+        # Try to get the shared namespace from the manager
+        # This enables unified Python environment across console and scripts
+        if self.manager.on_get_shared_namespace:
+            try:
+                namespace = self.manager.on_get_shared_namespace()
+            except Exception as e:
+                logger.warning(f"Failed to get shared namespace: {e}, using isolated namespace")
+                namespace = self._build_isolated_namespace()
+        else:
+            # No shared namespace - use isolated mode (backward compatible)
+            namespace = self._build_isolated_namespace()
+
+        # Add script-specific functions to the namespace
+        # These override any existing definitions for this script execution
+        script_additions = {
+            # Script control functions
+            'publish': publish,
+            'next_scan': next_scan,
+            'wait_for': wait_for,
+            'wait_until': wait_until,
+
+            # Override print to log to script output
+            'print': script_print,
+
+            # Helper classes (make available in shared namespace too)
+            'RateCalculator': RateCalculator,
+            'Accumulator': Accumulator,
+            'EdgeDetector': EdgeDetector,
+            'RollingStats': RollingStats,
+            'Scheduler': Scheduler,
+            'StateMachine': StateMachine,
+
+            # Unit conversions
+            'F_to_C': F_to_C,
+            'C_to_F': C_to_F,
+            'GPM_to_LPM': GPM_to_LPM,
+            'LPM_to_GPM': LPM_to_GPM,
+            'PSI_to_bar': PSI_to_bar,
+            'bar_to_PSI': bar_to_PSI,
+            'gal_to_L': gal_to_L,
+            'L_to_gal': L_to_gal,
+            'BTU_to_kJ': BTU_to_kJ,
+            'kJ_to_BTU': kJ_to_BTU,
+            'lb_to_kg': lb_to_kg,
+            'kg_to_lb': kg_to_lb,
+
+            # Time functions (use different name to avoid shadowing time module)
+            'now': now,
+            'now_ms': now_ms,
+            'now_iso': now_iso,
+            'time_of_day': time_of_day,
+            'elapsed_since': elapsed_since,
+            'format_timestamp': format_timestamp,
+
+            # State persistence (survives service restarts)
+            'persist': lambda key, value: self.manager.persistence.persist(self.script.id, key, value) if self.manager.persistence else False,
+            'restore': lambda key, default=None: self.manager.persistence.restore(self.script.id, key, default) if self.manager.persistence else default,
+        }
+
+        namespace.update(script_additions)
+        return namespace
+
+    def _build_isolated_namespace(self) -> dict:
+        """Build an isolated namespace (fallback when shared namespace unavailable).
+
+        This creates a complete standalone namespace with all APIs.
+        Used when on_get_shared_namespace is not configured.
+        """
 
         # Tags API - read channel values
         class TagsAPI:
@@ -269,16 +1114,68 @@ class ScriptRuntime:
                     return float('inf')
                 return time.time() - ts
 
-        # Outputs API - control outputs
+        # Outputs API - control outputs with arbitration
         class OutputsAPI:
+            """Control outputs with optional exclusive claiming.
+
+            Basic usage (no claiming):
+                outputs.set('Relay1', 1)    # Set output
+                outputs['Relay1'] = 1       # Same thing
+
+            With arbitration (prevents conflicts between scripts):
+                if outputs.claim('Heater'):
+                    # We now have exclusive control
+                    outputs.set('Heater', 1)
+                    # ... do work ...
+                    outputs.release('Heater')  # Or auto-released on script stop
+
+            Check availability:
+                if outputs.available('Heater'):
+                    outputs.set('Heater', 1)
+                else:
+                    owner = outputs.claimed_by('Heater')
+                    print(f"Heater controlled by {owner}")
+            """
             def __init__(self, runtime: ScriptRuntime):
                 self._runtime = runtime
 
-            def set(self, channel: str, value) -> None:
-                self._runtime.manager.set_output(channel, value)
+            def set(self, channel: str, value) -> bool:
+                """Set output value. Returns True if command accepted.
+
+                If another script has claimed this channel, the write is rejected.
+                """
+                return self._runtime.manager.set_output(
+                    channel, value, self._runtime.script.id
+                )
 
             def __setitem__(self, name: str, value) -> None:
                 self.set(name, value)
+
+            def claim(self, channel: str) -> bool:
+                """Claim exclusive control of an output channel.
+
+                Once claimed, other scripts cannot write to this channel.
+                Claims are automatically released when script stops.
+
+                Returns True if claim succeeded, False if already claimed.
+                """
+                return self._runtime.manager.claim_output(channel, self._runtime.script.id)
+
+            def release(self, channel: str) -> bool:
+                """Release a claimed output channel."""
+                return self._runtime.manager.release_output(channel, self._runtime.script.id)
+
+            def available(self, channel: str) -> bool:
+                """Check if an output is available (not claimed by another script)."""
+                return self._runtime.manager.is_output_available(channel, self._runtime.script.id)
+
+            def claimed_by(self, channel: str) -> Optional[str]:
+                """Get the script_id that has claimed a channel, or None if unclaimed."""
+                return self._runtime.manager.get_claim_owner(channel)
+
+            def claims(self) -> Dict[str, str]:
+                """Get all current output claims (channel -> script_id)."""
+                return self._runtime.manager.get_output_claims()
 
         # Session API - session state and control
         class SessionAPI:
@@ -327,83 +1224,181 @@ class ScriptRuntime:
                 """Current time as ISO string"""
                 return datetime.now().isoformat()
 
-        # Publish function - publish computed values
-        def publish(name: str, value: float, units: str = '', description: str = '') -> None:
-            self._published_values[name] = {
-                'value': value,
-                'units': units,
-                'description': description,
-                'timestamp': time.time()
-            }
-            self.manager.publish_value(self.script.id, name, value, units)
+        # Vars API - read/write user variables
+        class VarsAPI:
+            """Access user variables (constants, manual values, accumulators, strings, etc.)
 
-        # Sleep functions that respect stop event
-        # Drift compensation: track target time to prevent cumulative drift
-        _next_target_time = [0.0]  # Use list for closure mutability
+            Example:
+                # Read a numeric constant
+                k_factor = vars.CalibrationFactor
 
-        def next_scan() -> None:
-            """Wait for next scan cycle (respects stop event, drift-compensated)"""
-            self.script.iterations += 1
-            scan_rate = self.manager.get_scan_rate()
-            interval = 1.0 / scan_rate if scan_rate > 0 else 0.1
+                # Set a numeric variable
+                vars.set('TargetTemp', 350.0)
 
-            now = time.monotonic()
+                # Read/set a string variable
+                batch_id = vars.BatchID
+                vars.set('OperatorNotes', 'Test run #1')
 
-            # Initialize target time on first call
-            if _next_target_time[0] == 0.0:
-                _next_target_time[0] = now + interval
-            else:
-                _next_target_time[0] += interval
+                # Reset an accumulator
+                vars.reset('TotalFlow')
 
-            # Calculate remaining time to target (compensates for execution time)
-            remaining = _next_target_time[0] - now
+                # Check if variable exists
+                if 'MyVar' in vars:
+                    value = vars.MyVar
+            """
+            def __init__(self, runtime: ScriptRuntime):
+                self._runtime = runtime
 
-            # If we're behind schedule, reset target to avoid catch-up bursts
-            if remaining < 0:
-                _next_target_time[0] = now + interval
-                remaining = interval
+            def __getattr__(self, name: str):
+                """Get variable value by attribute access: vars.MyVar
+                Returns float for numeric variables, str for string variables."""
+                return self._runtime.manager.get_variable_value(name)
 
-            if self._stop_event.wait(remaining):
-                raise StopScript()
+            def __getitem__(self, name: str):
+                """Get variable value by index: vars['MyVar']
+                Returns float for numeric variables, str for string variables."""
+                return self._runtime.manager.get_variable_value(name)
 
-        def wait_for(seconds: float) -> None:
-            """Wait for specified duration (respects stop event)"""
-            if self._stop_event.wait(seconds):
-                raise StopScript()
+            def __contains__(self, name: str) -> bool:
+                """Check if variable exists: 'MyVar' in vars"""
+                return self._runtime.manager.has_variable(name)
 
-        def wait_until(condition_func, timeout: float = None) -> bool:
-            """Wait until condition is true (respects stop event)"""
-            start = time.time()
-            while True:
-                if self._stop_event.is_set():
-                    raise StopScript()
-                try:
-                    if condition_func():
-                        return True
-                except:
-                    pass
-                if timeout and (time.time() - start) > timeout:
-                    return False
-                time.sleep(0.1)
+            def get(self, name: str, default=0.0):
+                """Get variable value with default if not found.
+                Returns float for numeric, str for string variables."""
+                if self._runtime.manager.has_variable(name):
+                    return self._runtime.manager.get_variable_value(name)
+                return default
 
-        # Print function that logs to script output
-        def script_print(*args, **kwargs):
-            message = ' '.join(str(a) for a in args)
-            self.manager.log_script_output(self.script.id, 'info', message)
+            def set(self, name: str, value) -> bool:
+                """Set a variable's value: vars.set('MyVar', 123.4) or vars.set('Notes', 'text')"""
+                return self._runtime.manager.set_variable_value(name, value)
 
-        # Build namespace
+            def reset(self, name: str) -> bool:
+                """Reset a variable (0 for numeric, empty string for string)"""
+                return self._runtime.manager.reset_variable(name)
+
+            def keys(self) -> List[str]:
+                """Get all variable names"""
+                return self._runtime.manager.get_variable_names()
+
+        # PID Loop API - control PID loops
+        class PidLoopProxy:
+            """Proxy for a single PID loop, providing attribute access to loop properties.
+
+            Example:
+                pid.TC001.setpoint = 350      # Set setpoint
+                pid.TC001.mode = 'auto'       # Set mode
+                pid.TC001.output = 50         # Set manual output
+                pid.TC001.tune(1.2, 0.5, 0.1) # Tune Kp, Ki, Kd
+                pv = pid.TC001.pv             # Read process variable
+            """
+            def __init__(self, runtime: ScriptRuntime, loop_id: str):
+                object.__setattr__(self, '_runtime', runtime)
+                object.__setattr__(self, '_loop_id', loop_id)
+
+            def __getattr__(self, name: str):
+                """Get loop property"""
+                status = self._runtime.manager.get_pid_status(self._loop_id)
+                if status is None:
+                    return None
+                return status.get(name)
+
+            def __setattr__(self, name: str, value):
+                """Set loop property (setpoint, mode, output)"""
+                if name == 'setpoint':
+                    self._runtime.manager.set_pid_setpoint(self._loop_id, value)
+                elif name == 'mode':
+                    self._runtime.manager.set_pid_mode(self._loop_id, value)
+                elif name == 'output':
+                    self._runtime.manager.set_pid_output(self._loop_id, value)
+                elif name == 'enabled':
+                    self._runtime.manager.set_pid_enabled(self._loop_id, value)
+                else:
+                    raise AttributeError(f"Cannot set PID property: {name}")
+
+            def tune(self, kp: float, ki: float, kd: float) -> bool:
+                """Set PID tuning parameters"""
+                return self._runtime.manager.set_pid_tuning(self._loop_id, kp, ki, kd)
+
+            def enable(self) -> bool:
+                """Enable the PID loop"""
+                return self._runtime.manager.set_pid_enabled(self._loop_id, True)
+
+            def disable(self) -> bool:
+                """Disable the PID loop"""
+                return self._runtime.manager.set_pid_enabled(self._loop_id, False)
+
+            def auto(self) -> bool:
+                """Switch to automatic mode"""
+                return self._runtime.manager.set_pid_mode(self._loop_id, 'auto')
+
+            def manual(self) -> bool:
+                """Switch to manual mode"""
+                return self._runtime.manager.set_pid_mode(self._loop_id, 'manual')
+
+        class PidAPI:
+            """Access PID loops from scripts.
+
+            Example:
+                # Set setpoint
+                pid.TC001.setpoint = 350
+
+                # Switch mode
+                pid.TC001.mode = 'auto'  # or 'manual'
+                pid.TC001.auto()         # shortcut
+
+                # Set manual output (when in manual mode)
+                pid.TC001.output = 50
+
+                # Tune parameters
+                pid.TC001.tune(kp=1.2, ki=0.5, kd=0.1)
+
+                # Read current values
+                pv = pid.TC001.pv
+                cv = pid.TC001.output
+                error = pid.TC001.error
+
+                # Check all loops
+                for loop_id in pid.keys():
+                    status = pid[loop_id]
+            """
+            def __init__(self, runtime: ScriptRuntime):
+                self._runtime = runtime
+
+            def __getattr__(self, name: str) -> PidLoopProxy:
+                """Get loop proxy by attribute: pid.TC001"""
+                return PidLoopProxy(self._runtime, name)
+
+            def __getitem__(self, name: str) -> PidLoopProxy:
+                """Get loop proxy by index: pid['TC001']"""
+                return PidLoopProxy(self._runtime, name)
+
+            def __contains__(self, name: str) -> bool:
+                """Check if loop exists: 'TC001' in pid"""
+                return self._runtime.manager.has_pid_loop(name)
+
+            def keys(self) -> List[str]:
+                """Get all PID loop IDs"""
+                return self._runtime.manager.get_pid_loop_ids()
+
+            def status(self, loop_id: str) -> Optional[dict]:
+                """Get full status dict for a loop"""
+                return self._runtime.manager.get_pid_status(loop_id)
+
+            def all_status(self) -> Dict[str, dict]:
+                """Get status of all loops"""
+                return {lid: self._runtime.manager.get_pid_status(lid)
+                        for lid in self.keys()}
+
+        # Build isolated namespace
         namespace = {
             # Core API
             'tags': TagsAPI(self),
             'outputs': OutputsAPI(self),
             'session': SessionAPI(self),
-            'publish': publish,
-            'next_scan': next_scan,
-            'wait_for': wait_for,
-            'wait_until': wait_until,
-
-            # Overridden print
-            'print': script_print,
+            'vars': VarsAPI(self),
+            'pid': PidAPI(self),
 
             # Standard library (safe subset)
             'time': time,
@@ -412,11 +1407,6 @@ class ScriptRuntime:
             'json': __import__('json'),
             're': __import__('re'),
             'statistics': __import__('statistics'),
-
-            # Scientific computing (matches browser Pyodide environment)
-            'numpy': __import__('numpy'),
-            'np': __import__('numpy'),  # Common alias
-            'scipy': __import__('scipy'),
 
             # Built-ins (safe subset)
             'abs': abs,
@@ -448,11 +1438,25 @@ class ScriptRuntime:
             'type': type,
             'zip': zip,
 
-            # Helpers
+            # Boolean/None
             'True': True,
             'False': False,
             'None': None,
         }
+
+        # Try to add numpy and scipy
+        try:
+            import numpy as np_mod
+            namespace['numpy'] = np_mod
+            namespace['np'] = np_mod
+        except ImportError:
+            pass
+
+        try:
+            import scipy as scipy_mod
+            namespace['scipy'] = scipy_mod
+        except ImportError:
+            pass
 
         return namespace
 
@@ -482,16 +1486,26 @@ class ScriptManager:
     - on_script_output(script_id, type, message): Script logged output
     """
 
-    def __init__(self):
+    def __init__(self, data_dir: Optional[Path] = None):
+        global _persistence
+
         self.scripts: Dict[str, Script] = {}
         self.runtimes: Dict[str, ScriptRuntime] = {}
+
+        # Initialize state persistence
+        if data_dir:
+            self.data_dir = Path(data_dir)
+        else:
+            self.data_dir = Path('data')
+        _persistence = StatePersistence(self.data_dir)
+        self.persistence = _persistence
 
         # Callbacks (set by DAQ service)
         self.on_get_channel_value: Optional[Callable[[str], float]] = None
         self.on_get_channel_timestamp: Optional[Callable[[str], float]] = None
         self.on_get_channel_names: Optional[Callable[[], List[str]]] = None
         self.on_has_channel: Optional[Callable[[str], bool]] = None
-        self.on_set_output: Optional[Callable[[str, Any], None]] = None
+        self.on_set_output: Optional[Callable[[str, Any], bool]] = None
         self.on_start_acquisition: Optional[Callable[[], None]] = None
         self.on_stop_acquisition: Optional[Callable[[], None]] = None
         self.on_start_recording: Optional[Callable[[Optional[str]], None]] = None
@@ -504,11 +1518,37 @@ class ScriptManager:
         self.on_script_event: Optional[Callable[[str, Script], None]] = None
         self.on_script_output: Optional[Callable[[str, str, str], None]] = None
 
+        # User variables API callbacks (for vars.* in scripts)
+        self.on_get_variable_value: Optional[Callable[[str], float]] = None
+        self.on_set_variable_value: Optional[Callable[[str, float], bool]] = None
+        self.on_reset_variable: Optional[Callable[[str], bool]] = None
+        self.on_get_variable_names: Optional[Callable[[], List[str]]] = None
+        self.on_has_variable: Optional[Callable[[str], bool]] = None
+
+        # PID API callbacks (for pid.* in scripts)
+        self.on_get_pid_status: Optional[Callable[[str], Optional[dict]]] = None
+        self.on_set_pid_setpoint: Optional[Callable[[str, float], bool]] = None
+        self.on_set_pid_mode: Optional[Callable[[str, str], bool]] = None
+        self.on_set_pid_output: Optional[Callable[[str, float], bool]] = None
+        self.on_set_pid_enabled: Optional[Callable[[str, bool], bool]] = None
+        self.on_set_pid_tuning: Optional[Callable[[str, float, float, float], bool]] = None
+        self.on_get_pid_loop_ids: Optional[Callable[[], List[str]]] = None
+        self.on_has_pid_loop: Optional[Callable[[str], bool]] = None
+
+        # Shared namespace callback - scripts execute in the global console namespace
+        # This allows Variable Explorer to show script variables and enables
+        # console<->script interoperability (define in console, use in script)
+        self.on_get_shared_namespace: Optional[Callable[[], Dict[str, Any]]] = None
+
         self._lock = threading.Lock()
 
         # Track which outputs are controlled by scripts during active session
         # This allows selective lockout of only script-controlled channels
         self._controlled_outputs: Set[str] = set()
+
+        # Output claims for arbitration - prevents multiple scripts from conflicting
+        # Maps channel -> script_id that has claimed exclusive control
+        self._output_claims: Dict[str, str] = {}
 
         # Startup delay for auto-start scripts (seconds)
         # Gives time for all nodes (including cRIO) to connect and send data
@@ -599,6 +1639,11 @@ class ScriptManager:
                         logger.warning(f"Invalid run_mode: {run_mode}")
                 elif isinstance(run_mode, ScriptRunMode):
                     script.run_mode = run_mode
+
+            # Handle auto_restart with both naming conventions
+            auto_restart = updates.get('autoRestart') or updates.get('auto_restart')
+            if auto_restart is not None:
+                script.auto_restart = bool(auto_restart)
 
             script.modified_at = datetime.now().isoformat()
             logger.info(f"Updated script: {script.name} ({script_id})")
@@ -695,7 +1740,7 @@ class ScriptManager:
         return False
 
     def stop_script(self, script_id: str) -> bool:
-        """Stop a script"""
+        """Stop a script and release its output claims"""
         if script_id not in self.runtimes:
             return False
 
@@ -703,6 +1748,9 @@ class ScriptManager:
         script = self.scripts.get(script_id)
 
         runtime.stop()
+
+        # Auto-release any outputs claimed by this script
+        self.release_all_outputs(script_id)
 
         if script:
             self._emit_event('stopped', script)
@@ -713,6 +1761,78 @@ class ScriptManager:
         """Stop all running scripts"""
         for script_id in list(self.runtimes.keys()):
             self.stop_script(script_id)
+
+    def reload_script(self, script_id: str, new_code: Optional[str] = None) -> bool:
+        """Hot-reload a script without losing persisted state.
+
+        This enables live code updates while acquisition continues running.
+        The script's persisted state (via persist()/restore() API) is preserved
+        across the reload.
+
+        Process:
+        1. Get script's current persisted state (already on disk)
+        2. Stop the running script gracefully
+        3. Update the code if new_code provided
+        4. Restart the script
+        5. Script calls restore() to recover its state
+
+        Args:
+            script_id: ID of the script to reload
+            new_code: Optional new code to use (if None, reloads existing code)
+
+        Returns:
+            True if reload succeeded, False otherwise
+
+        Example:
+            # In script code - state survives hot-reload:
+            counter = restore('counter', 0)
+            while session.active:
+                counter += 1
+                persist('counter', counter)
+                publish('Counter', counter)
+                next_scan()
+        """
+        script = self.scripts.get(script_id)
+        if not script:
+            logger.error(f"Hot-reload failed: Script not found: {script_id}")
+            return False
+
+        was_running = self.is_script_running(script_id)
+        logger.info(f"Hot-reload: {script.name} (was_running={was_running})")
+
+        # Step 1: Stop if running (state is already persisted to disk)
+        if was_running:
+            logger.info(f"Hot-reload: Stopping {script.name} for code swap")
+            self.stop_script(script_id)
+
+            # Brief pause to ensure clean thread shutdown
+            time.sleep(0.1)
+
+        # Step 2: Update code if provided
+        if new_code is not None:
+            script.code = new_code
+            script.modified_at = datetime.now().isoformat()
+            logger.info(f"Hot-reload: Updated code for {script.name}")
+
+        # Step 3: Create fresh runtime (old one may have stale references)
+        if script_id in self.runtimes:
+            del self.runtimes[script_id]
+
+        # Step 4: Restart if it was running
+        if was_running:
+            logger.info(f"Hot-reload: Restarting {script.name}")
+            if self.start_script(script_id):
+                logger.info(f"Hot-reload: {script.name} restarted successfully")
+                self._emit_event('reloaded', script)
+                return True
+            else:
+                logger.error(f"Hot-reload: Failed to restart {script.name}")
+                return False
+        else:
+            # Wasn't running - just updated the code
+            logger.info(f"Hot-reload: {script.name} code updated (not running)")
+            self._emit_event('updated', script)
+            return True
 
     def is_script_running(self, script_id: str) -> bool:
         """Check if a script is running"""
@@ -854,11 +1974,25 @@ class ScriptManager:
             return self.on_has_channel(name)
         return False
 
-    def set_output(self, channel: str, value: Any) -> None:
+    def set_output(self, channel: str, value: Any, script_id: str = None) -> bool:
+        """Set output value. Returns True if command accepted.
+
+        If another script has claimed exclusive control of this channel,
+        the write will be rejected unless script_id matches the claim owner.
+        """
+        # Check if channel is claimed by another script
+        if channel in self._output_claims:
+            claim_owner = self._output_claims[channel]
+            if script_id and claim_owner != script_id:
+                logger.warning(f"Output {channel} blocked: claimed by script {claim_owner}, "
+                             f"write attempted by {script_id}")
+                return False
+
         # Track this channel as script-controlled for session lockout
         self._controlled_outputs.add(channel)
         if self.on_set_output:
-            self.on_set_output(channel, value)
+            return self.on_set_output(channel, value)
+        return False
 
     @property
     def controlled_outputs(self) -> Set[str]:
@@ -882,7 +2016,89 @@ class ScriptManager:
     def clear_controlled_outputs(self) -> None:
         """Clear the controlled outputs tracking. Called when session ends."""
         self._controlled_outputs.clear()
-        logger.debug("Cleared controlled outputs tracking")
+        self._output_claims.clear()
+        logger.debug("Cleared controlled outputs and claims")
+
+    # =========================================================================
+    # OUTPUT ARBITRATION
+    # =========================================================================
+
+    def claim_output(self, channel: str, script_id: str) -> bool:
+        """Claim exclusive control of an output channel.
+
+        Use this to prevent other scripts from writing to the same output.
+        Returns True if claim succeeded, False if already claimed by another script.
+
+        Example in script:
+            if outputs.claim('HeaterRelay'):
+                # We have exclusive control
+                outputs.set('HeaterRelay', 1)
+            else:
+                print("HeaterRelay already claimed by another script!")
+        """
+        with self._lock:
+            if channel in self._output_claims:
+                existing_owner = self._output_claims[channel]
+                if existing_owner != script_id:
+                    logger.info(f"Output claim denied: {channel} already claimed by {existing_owner}")
+                    return False
+                # Already claimed by same script - that's fine
+                return True
+
+            self._output_claims[channel] = script_id
+            logger.info(f"Output claimed: {channel} by script {script_id}")
+            return True
+
+    def release_output(self, channel: str, script_id: str) -> bool:
+        """Release a claimed output channel.
+
+        Only the script that claimed the output can release it.
+        Returns True if released, False if not owned by this script.
+        """
+        with self._lock:
+            if channel not in self._output_claims:
+                return True  # Not claimed, consider it released
+
+            if self._output_claims[channel] != script_id:
+                logger.warning(f"Cannot release {channel}: claimed by {self._output_claims[channel]}, "
+                             f"not {script_id}")
+                return False
+
+            del self._output_claims[channel]
+            logger.info(f"Output released: {channel} by script {script_id}")
+            return True
+
+    def release_all_outputs(self, script_id: str) -> int:
+        """Release all outputs claimed by a script. Returns count released."""
+        with self._lock:
+            to_release = [ch for ch, owner in self._output_claims.items() if owner == script_id]
+            for channel in to_release:
+                del self._output_claims[channel]
+            if to_release:
+                logger.info(f"Released {len(to_release)} outputs for script {script_id}: {to_release}")
+            return len(to_release)
+
+    def is_output_available(self, channel: str, script_id: str = None) -> bool:
+        """Check if an output is available (not claimed by another script).
+
+        If script_id is provided, returns True if the channel is unclaimed
+        OR claimed by the specified script.
+        """
+        with self._lock:
+            if channel not in self._output_claims:
+                return True
+            if script_id and self._output_claims[channel] == script_id:
+                return True
+            return False
+
+    def get_output_claims(self) -> Dict[str, str]:
+        """Get a copy of all current output claims (channel -> script_id)."""
+        with self._lock:
+            return self._output_claims.copy()
+
+    def get_claim_owner(self, channel: str) -> Optional[str]:
+        """Get the script_id that has claimed a channel, or None if unclaimed."""
+        return self._output_claims.get(channel)
 
     def start_acquisition(self) -> None:
         if self.on_start_acquisition:
@@ -924,6 +2140,86 @@ class ScriptManager:
         if self.on_publish_value:
             self.on_publish_value(script_id, name, value, units)
 
+    # User Variables API (for vars.* in scripts)
+    def get_variable_value(self, name: str) -> float:
+        """Get user variable value by name"""
+        if self.on_get_variable_value:
+            return self.on_get_variable_value(name)
+        return 0.0
+
+    def set_variable_value(self, name: str, value: float) -> bool:
+        """Set user variable value by name"""
+        if self.on_set_variable_value:
+            return self.on_set_variable_value(name, value)
+        return False
+
+    def reset_variable(self, name: str) -> bool:
+        """Reset user variable by name"""
+        if self.on_reset_variable:
+            return self.on_reset_variable(name)
+        return False
+
+    def get_variable_names(self) -> List[str]:
+        """Get all user variable names"""
+        if self.on_get_variable_names:
+            return self.on_get_variable_names()
+        return []
+
+    def has_variable(self, name: str) -> bool:
+        """Check if user variable exists"""
+        if self.on_has_variable:
+            return self.on_has_variable(name)
+        return False
+
+    # PID API (for pid.* in scripts)
+    def get_pid_status(self, loop_id: str) -> Optional[dict]:
+        """Get PID loop status by ID"""
+        if self.on_get_pid_status:
+            return self.on_get_pid_status(loop_id)
+        return None
+
+    def set_pid_setpoint(self, loop_id: str, value: float) -> bool:
+        """Set PID loop setpoint"""
+        if self.on_set_pid_setpoint:
+            return self.on_set_pid_setpoint(loop_id, value)
+        return False
+
+    def set_pid_mode(self, loop_id: str, mode: str) -> bool:
+        """Set PID loop mode (auto/manual)"""
+        if self.on_set_pid_mode:
+            return self.on_set_pid_mode(loop_id, mode)
+        return False
+
+    def set_pid_output(self, loop_id: str, value: float) -> bool:
+        """Set PID loop manual output value"""
+        if self.on_set_pid_output:
+            return self.on_set_pid_output(loop_id, value)
+        return False
+
+    def set_pid_enabled(self, loop_id: str, enabled: bool) -> bool:
+        """Enable or disable a PID loop"""
+        if self.on_set_pid_enabled:
+            return self.on_set_pid_enabled(loop_id, enabled)
+        return False
+
+    def set_pid_tuning(self, loop_id: str, kp: float, ki: float, kd: float) -> bool:
+        """Set PID loop tuning parameters"""
+        if self.on_set_pid_tuning:
+            return self.on_set_pid_tuning(loop_id, kp, ki, kd)
+        return False
+
+    def get_pid_loop_ids(self) -> List[str]:
+        """Get all PID loop IDs"""
+        if self.on_get_pid_loop_ids:
+            return self.on_get_pid_loop_ids()
+        return []
+
+    def has_pid_loop(self, loop_id: str) -> bool:
+        """Check if PID loop exists"""
+        if self.on_has_pid_loop:
+            return self.on_has_pid_loop(loop_id)
+        return False
+
     def log_script_output(self, script_id: str, output_type: str, message: str) -> None:
         if self.on_script_output:
             self.on_script_output(script_id, output_type, message)
@@ -952,7 +2248,8 @@ class ScriptManager:
             "script_count": len(self.scripts),
             "running_count": len(running),
             "running_scripts": running,
-            "scripts": {sid: s.to_dict() for sid, s in self.scripts.items()}
+            "scripts": {sid: s.to_dict() for sid, s in self.scripts.items()},
+            "output_claims": self._output_claims.copy()
         }
 
     def shutdown(self) -> None:

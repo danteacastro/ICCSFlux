@@ -176,7 +176,7 @@ const recordingTime = computed(() => {
   padding: 0;
   background: transparent;
   position: relative;
-  z-index: 10;
+  z-index: 100;
 }
 
 .control-group {

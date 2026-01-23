@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import { useWindowSync } from '../composables/useWindowSync'
 
 const store = useDashboardStore()
+const windowSync = useWindowSync()
 
 // UI state
 const showDropdown = ref(false)
+const dropdownPageId = ref<string | null>(null) // Which page the dropdown is for
 const editingPageId = ref<string | null>(null)
 const editingName = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -36,6 +39,11 @@ function addNewPage() {
   store.switchPage(id)
   store.saveLayoutToStorage()
   showDropdown.value = false
+}
+
+function openPageMenu(pageId: string, event: MouseEvent) {
+  dropdownPageId.value = pageId
+  showDropdown.value = true
 }
 
 function startRename(pageId: string, currentName: string) {
@@ -82,9 +90,9 @@ function duplicatePage(pageId: string, event: Event) {
 
 function openInNewWindow(pageId: string, event: Event) {
   event.stopPropagation()
-  const url = new URL(window.location.href)
-  url.searchParams.set('page', pageId)
-  window.open(url.toString(), '_blank', 'width=1200,height=800')
+  const page = pages.value.find(p => p.id === pageId)
+  const pageName = page?.name || 'Page'
+  windowSync.openPageInWindow(pageId, pageName)
   showDropdown.value = false
 }
 
@@ -216,10 +224,31 @@ defineExpose({
           'hover-active': hoveredPageId === page.id
         }"
         @click="selectPage(page.id)"
-        @contextmenu.prevent="startRename(page.id, page.name)"
+        @dblclick.stop="startRename(page.id, page.name)"
+        @contextmenu.prevent="openPageMenu(page.id, $event)"
       >
         <span class="tab-number">{{ index + 1 }}</span>
-        <span class="tab-name">{{ page.name }}</span>
+        <input
+          v-if="editingPageId === page.id"
+          ref="inputRef"
+          v-model="editingName"
+          class="rename-input"
+          @blur="finishRename"
+          @keydown="handleKeydown"
+          @click.stop
+        />
+        <span v-else class="tab-name">{{ page.name }}</span>
+        <!-- Delete button on tab (visible on hover when multiple pages) -->
+        <button
+          v-if="hasMultiplePages"
+          class="tab-delete-btn"
+          @click.stop="deletePage(page.id, $event)"
+          title="Delete page"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
         <!-- Progress indicator during hover -->
         <div v-if="hoveredPageId === page.id" class="hover-progress" />
       </div>
@@ -236,105 +265,74 @@ defineExpose({
       </button>
     </div>
 
-    <!-- Dropdown for page management (on right-click or long press) -->
-    <div v-if="showDropdown && !isDraggingWidget" class="page-dropdown-overlay" @click="showDropdown = false">
-      <div class="page-dropdown" @click.stop>
-        <div class="dropdown-header">
-          <span>Dashboard Pages</span>
-          <button class="add-page-btn" @click="addNewPage" title="Add new page">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-          </button>
-        </div>
-
-        <div class="page-list">
-          <div
-            v-for="page in pages"
-            :key="page.id"
-            class="page-item"
-            :class="{ active: page.id === store.currentPageId }"
-            @click="selectPage(page.id)"
-          >
-            <div class="page-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="18" height="18" rx="2"/>
-                <line x1="3" y1="9" x2="21" y2="9"/>
-              </svg>
-            </div>
-
-            <div class="page-name-container">
-              <input
-                v-if="editingPageId === page.id"
-                ref="inputRef"
-                v-model="editingName"
-                class="rename-input"
-                @blur="finishRename"
-                @keydown="handleKeydown"
-                @click.stop
-              />
-              <span v-else class="page-item-name" @dblclick.stop="startRename(page.id, page.name)">
-                {{ page.name }}
-              </span>
-            </div>
-
-            <div class="page-actions">
-              <button class="action-btn" @click.stop="startRename(page.id, page.name)" title="Rename">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-              </button>
-              <button class="action-btn" @click="openInNewWindow(page.id, $event)" title="Open in new window">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-                  <polyline points="15 3 21 3 21 9"/>
-                  <line x1="10" y1="14" x2="21" y2="3"/>
-                </svg>
-              </button>
-              <button class="action-btn" @click="duplicatePage(page.id, $event)" title="Duplicate page">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                </svg>
-              </button>
-              <button
-                v-if="hasMultiplePages"
-                class="action-btn delete"
-                @click="deletePage(page.id, $event)"
-                title="Delete page"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="dropdown-footer">
-          <span class="hint">Double-click to rename • Drag widgets to tabs to move</span>
-        </div>
+    <!-- Context menu for page actions (on right-click) -->
+    <div v-if="showDropdown && !isDraggingWidget" class="page-context-overlay" @click="showDropdown = false">
+      <div class="page-context-menu" @click.stop>
+        <button class="context-item" @click="startRename(dropdownPageId!, pages.find(p => p.id === dropdownPageId)?.name || ''); showDropdown = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          <span>Rename</span>
+        </button>
+        <button class="context-item" @click="duplicatePage(dropdownPageId!, $event); showDropdown = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+          </svg>
+          <span>Duplicate</span>
+        </button>
+        <button class="context-item" @click="openInNewWindow(dropdownPageId!, $event); showDropdown = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+            <polyline points="15 3 21 3 21 9"/>
+            <line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+          <span>Open in New Window</span>
+        </button>
+        <div v-if="hasMultiplePages" class="context-divider"></div>
+        <button
+          v-if="hasMultiplePages"
+          class="context-item delete"
+          @click="deletePage(dropdownPageId!, $event); showDropdown = false"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+          </svg>
+          <span>Delete Page</span>
+        </button>
       </div>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
-/* Page tabs container - horizontal position under header, top left */
+/* Page tabs container - horizontal position under header */
 .page-tabs-container {
   position: fixed;
-  top: 54px; /* Below header with gap */
+  top: 56px; /* Flush with the 56px header bottom */
   left: 8px;
-  z-index: 50;
+  z-index: 40; /* Below header z-index (100) */
   display: flex;
   flex-direction: row;
   align-items: flex-start;
   gap: 3px;
+  /* Recess when not hovered */
+  transform: translateY(-16px);
+  opacity: 0.4;
+  transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
+.page-tabs-container:hover {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* Highlight during drag mode - also un-recess */
 .page-tabs-container.drag-mode {
+  transform: translateY(0);
+  opacity: 1;
   background: rgba(59, 130, 246, 0.1);
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
   border-radius: 0 0 4px 4px;
@@ -407,6 +405,33 @@ defineExpose({
   white-space: nowrap;
 }
 
+/* Delete button on tab - appears on hover */
+.tab-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-left: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  color: #666;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.page-tab:hover .tab-delete-btn {
+  opacity: 1;
+}
+
+.tab-delete-btn:hover {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
 /* Hover progress indicator - horizontal */
 .hover-progress {
   position: absolute;
@@ -446,160 +471,70 @@ defineExpose({
   color: #3b82f6;
 }
 
-/* Dropdown styles */
-.page-dropdown-overlay {
+/* Context menu styles */
+.page-context-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
 }
 
-.page-dropdown {
+.page-context-menu {
   position: fixed;
-  top: 100px;
+  top: 80px;
   left: 20px;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  min-width: 320px;
-  max-width: 400px;
+  border-radius: 6px;
+  min-width: 180px;
+  padding: 4px 0;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   z-index: 1001;
 }
 
-.dropdown-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
-  font-weight: 600;
-  color: #fff;
-}
-
-.add-page-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: #1e3a5f;
-  border: 1px solid #3b82f6;
-  border-radius: 4px;
-  color: #60a5fa;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.add-page-btn:hover {
-  background: #3b82f6;
-  color: #fff;
-}
-
-.page-list {
-  max-height: 300px;
-  overflow-y: auto;
-  padding: 8px;
-}
-
-.page-item {
+.context-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 4px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.15s;
+  text-align: left;
 }
 
-.page-item:hover {
+.context-item:hover {
   background: #252540;
-}
-
-.page-item.active {
-  background: #1e3a5f;
-}
-
-.page-item.active .page-icon {
-  color: #60a5fa;
-}
-
-.page-icon {
-  color: #666;
-  flex-shrink: 0;
-}
-
-.page-name-container {
-  flex: 1;
-  min-width: 0;
-}
-
-.page-item-name {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #ccc;
-  font-size: 0.9rem;
-}
-
-.page-item.active .page-item-name {
   color: #fff;
-  font-weight: 500;
 }
 
+.context-item.delete {
+  color: #f87171;
+}
+
+.context-item.delete:hover {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.context-divider {
+  height: 1px;
+  background: #2a2a4a;
+  margin: 4px 0;
+}
+
+/* Inline rename input */
 .rename-input {
-  width: 100%;
   padding: 2px 6px;
   background: #0f0f1a;
   border: 1px solid #3b82f6;
   border-radius: 3px;
   color: #fff;
-  font-size: 0.9rem;
+  font-size: 0.7rem;
   outline: none;
-}
-
-.page-actions {
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.page-item:hover .page-actions {
-  opacity: 1;
-}
-
-.action-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: #888;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.action-btn:hover {
-  background: #3a3a5a;
-  color: #fff;
-}
-
-.action-btn.delete:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
-}
-
-.dropdown-footer {
-  padding: 8px 16px;
-  border-top: 1px solid #2a2a4a;
-}
-
-.hint {
-  font-size: 0.75rem;
-  color: #666;
+  width: 60px;
 }
 </style>

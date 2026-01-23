@@ -1,4 +1,4 @@
-# CZFlux Quick Reference Card
+# ICCSFlux Quick Reference Card
 
 ## Control Bar
 
@@ -128,7 +128,7 @@
 
 ## Need Help?
 
-- Full manual: `docs/CZFlux_User_Manual.md`
-- Remote nodes: `docs/CZFlux_Remote_Nodes_Guide.md`
+- Full manual: `docs/ICCSFlux_User_Manual.md`
+- Remote nodes: `docs/ICCSFlux_Remote_Nodes_Guide.md`
 - Login: Contact your system administrator for credentials
 - Support: Contact your system administrator

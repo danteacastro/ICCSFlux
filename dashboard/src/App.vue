@@ -6,6 +6,7 @@ import { useScripts } from './composables/useScripts'
 import { useProjectFiles } from './composables/useProjectFiles'
 import { useAuth } from './composables/useAuth'
 import { usePlayground } from './composables/usePlayground'
+import { useWindowSync } from './composables/useWindowSync'
 import DashboardGrid from './components/DashboardGrid.vue'
 import ControlBar from './components/ControlBar.vue'
 import PidToolbar from './components/PidToolbar.vue'
@@ -28,9 +29,13 @@ const scripts = useScripts()
 const projectFiles = useProjectFiles()
 const auth = useAuth()
 const playground = usePlayground()
+const windowSync = useWindowSync()
 
 // Track if project has been loaded from backend (module-level for access in loadLastProject)
 let projectLoadHandled = false
+
+// Track window position for the current page (multi-monitor support)
+let windowPositionCleanup: (() => void) | null = null
 
 // Login dialog state
 const showLoginDialog = ref(false)
@@ -74,9 +79,15 @@ function updateUrlWithPage(pageId: string) {
   window.history.replaceState({}, '', url.toString())
 }
 
-// Watch for page changes and update URL
+// Watch for page changes and update URL + track window position
 watch(() => store.currentPageId, (newPageId) => {
   updateUrlWithPage(newPageId)
+
+  // Start tracking window position for this page (multi-monitor memory)
+  if (windowPositionCleanup) {
+    windowPositionCleanup()
+  }
+  windowPositionCleanup = windowSync.trackWindowPosition(newPageId)
 })
 
 // Add Widget modal state
@@ -157,20 +168,35 @@ const showStartupDialog = ref(false)
 const hasLastProject = ref(false)
 const projectLoading = ref(false)  // True while loading project from backend
 provide('projectLoading', projectLoading)
-const STARTUP_DIALOG_KEY = 'nisystem-startup-dialog-shown'
+// Last project info for display in dialog
+const lastProjectName = computed(() => projectFiles.currentProjectData.value?.name || 'Unknown Project')
+const lastProjectModified = computed(() => {
+  const modified = projectFiles.currentProjectData.value?.modified
+  if (!modified) return ''
+  try {
+    const date = new Date(modified)
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return modified
+  }
+})
 
-// Check if startup dialog was already shown this session
-function wasStartupDialogShown(): boolean {
-  return sessionStorage.getItem(STARTUP_DIALOG_KEY) === 'true'
-}
-
-function markStartupDialogShown() {
-  sessionStorage.setItem(STARTUP_DIALOG_KEY, 'true')
-}
+// Autosave recovery info
+const hasAutosaveRecovery = computed(() => projectFiles.backendAutosaveStatus.value?.exists === true)
+const autosaveTimestamp = computed(() => {
+  const ts = projectFiles.backendAutosaveStatus.value?.timestamp
+  if (!ts) return ''
+  try {
+    const date = new Date(ts)
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ts
+  }
+})
+const autosaveProjectName = computed(() => projectFiles.backendAutosaveStatus.value?.projectName || 'Unsaved Work')
 
 async function loadLastProject() {
   showStartupDialog.value = false
-  markStartupDialogShown()
   projectLoading.value = true
   console.log('[APP] User chose to load last project')
 
@@ -209,7 +235,6 @@ async function loadLastProject() {
 
 async function startFresh() {
   showStartupDialog.value = false
-  markStartupDialogShown()
   console.log('[APP] User chose to start fresh - clearing all state')
   // Clear everything: frontend state, backend channels, localStorage, layout
   await projectFiles.newProject()
@@ -218,8 +243,38 @@ async function startFresh() {
 
 function continueWithFreshSystem() {
   showStartupDialog.value = false
-  markStartupDialogShown()
   console.log('[APP] User acknowledged fresh system state')
+}
+
+async function recoverFromAutosave() {
+  showStartupDialog.value = false
+  projectLoading.value = true
+  console.log('[APP] User chose to recover from autosave')
+
+  try {
+    const success = await projectFiles.loadFromAutosave()
+    if (success) {
+      console.log('[APP] ✅ Successfully recovered from autosave')
+    } else {
+      console.log('[APP] ❌ Failed to recover from autosave')
+    }
+  } catch (err) {
+    console.error('[APP] Error recovering from autosave:', err)
+  } finally {
+    projectLoading.value = false
+  }
+}
+
+function discardAutosaveAndLoadProject() {
+  projectFiles.discardBackendAutosave()
+  console.log('[APP] User discarded autosave, loading saved project')
+  loadLastProject()
+}
+
+function discardAutosaveAndStartFresh() {
+  projectFiles.discardBackendAutosave()
+  console.log('[APP] User discarded autosave, starting fresh')
+  startFresh()
 }
 
 onMounted(() => {
@@ -300,27 +355,30 @@ onMounted(() => {
       // Ensure we have at least one empty page for the Overview tab
       store.ensureDefaultPage()
 
-      // Request current project from backend to determine system state
-      // ALWAYS show startup dialog to inform user of system state
-      console.log('[APP] ✅ Boot complete - requesting current project from backend...')
+      // Request current project from backend to sync state
+      console.log('[APP] ✅ Boot complete - syncing with backend state...')
       projectFiles.getCurrentProject()
 
-      // Wait for backend to respond, then show dialog if not already shown this session
-      setTimeout(() => {
-        // Only show dialog once per browser session (not on page refresh)
-        if (wasStartupDialogShown()) {
-          console.log('[APP] Startup dialog already shown this session, skipping')
-          return
-        }
+      // Check for autosave recovery (in case browser opened after service restart)
+      // The startup-cleared event only fires when browser is connected during service start
+      // This handles the case where service restarted with autosave, but browser wasn't open
+      projectFiles.checkBackendAutosave()
 
-        if (projectFiles.currentProjectData.value) {
-          console.log('[APP] Backend has project loaded - showing dialog with load/fresh options')
-          hasLastProject.value = true
-        } else {
-          console.log('[APP] Backend has no project - showing dialog with fresh system message')
+      // Wait for responses, then check if we need to show recovery dialog
+      // Only show if: autosave exists AND backend has no project loaded (fresh state)
+      // If backend has a project loaded, the autosave is from current session's dirty state
+      setTimeout(() => {
+        const hasAutosave = projectFiles.backendAutosaveStatus.value?.exists
+        const backendHasProject = !!projectFiles.currentProjectData.value
+        const backendHasChannels = Object.keys(mqtt.channelConfigs.value).length > 0
+
+        // Only show recovery dialog if autosave exists but backend is in fresh state
+        // (no project loaded and no channels configured)
+        if (hasAutosave && !backendHasProject && !backendHasChannels) {
+          console.log('[APP] Autosave recovery available (backend is fresh) - showing dialog')
           hasLastProject.value = false
+          showStartupDialog.value = true
         }
-        showStartupDialog.value = true
       }, 1000)
     }
   }, 100)
@@ -347,36 +405,66 @@ onMounted(() => {
   }, { deep: true })
 
   // Listen for backend startup cleared event
-  // This triggers when the DAQ service restarts and clears all state
+  // This is the ONLY time we show the startup dialog - when the DAQ service starts fresh
+  // Page refreshes just reconnect and use current state (no dialog)
   mqtt.subscribe('nisystem/nodes/+/system/startup-cleared', (payload: any) => {
-    console.log('[APP] Backend cleared startup state, checking system state...')
+    console.log('[APP] Backend service started fresh - showing startup dialog...')
 
-    // Request current project to determine system state
+    // Request current project info to show in dialog
     projectFiles.getCurrentProject()
 
-    // Wait a bit for any project to be loaded, then show dialog if not already shown
+    // Wait a bit for project info, then show dialog
     setTimeout(() => {
-      // Only show dialog once per browser session (not on page refresh)
-      if (wasStartupDialogShown()) {
-        console.log('[APP] Startup dialog already shown this session, skipping (backend restart)')
-        return
-      }
-
       if (projectFiles.currentProjectData.value) {
-        console.log('[APP] Project available after startup - showing dialog with load/fresh options')
+        console.log('[APP] Last project available - showing load/fresh options')
         hasLastProject.value = true
       } else {
-        console.log('[APP] No project after startup - showing dialog with fresh system message')
+        console.log('[APP] No previous project - showing fresh system message')
         hasLastProject.value = false
       }
       showStartupDialog.value = true
     }, 500)
   })
 
+  // ========================================================================
+  // AUTO-SAVE: Watch for layout changes and mark project dirty
+  // ========================================================================
+  watch(() => store.pages, () => {
+    // Only mark dirty if a project is loaded
+    if (projectFiles.currentProject.value) {
+      console.log('[APP] Layout changed, marking project dirty')
+      projectFiles.markDirty()
+    }
+  }, { deep: true })
+
+  // ========================================================================
+  // BEFORE UNLOAD: Warn about unsaved changes
+  // ========================================================================
+  const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (projectFiles.checkUnsavedChanges()) {
+      // Standard way to show browser's "unsaved changes" dialog
+      e.preventDefault()
+      // Chrome requires returnValue to be set
+      e.returnValue = 'You have unsaved changes. Are you sure you want to leave?'
+      return e.returnValue
+    }
+  }
+  window.addEventListener('beforeunload', handleBeforeUnload)
+
   // Cleanup interval on unmount
   onUnmounted(() => {
     clearInterval(checkMqttReady)
+    window.removeEventListener('beforeunload', handleBeforeUnload)
+    if (windowPositionCleanup) {
+      windowPositionCleanup()
+    }
   })
+
+  // Start tracking window position for initial page
+  const initialPageId = getPageFromUrl() || store.currentPageId
+  if (initialPageId) {
+    windowPositionCleanup = windowSync.trackWindowPosition(initialPageId)
+  }
 })
 
 // Control handlers
@@ -416,6 +504,15 @@ function handleRetryConnection() {
   setTimeout(() => {
     mqtt.connect('ws://localhost:9002')
   }, 100)
+}
+
+async function handleManualSave() {
+  const success = await projectFiles.saveNow()
+  if (success) {
+    console.log('[APP] Project saved manually')
+  } else {
+    console.error('[APP] Failed to save project')
+  }
 }
 
 </script>
@@ -532,6 +629,39 @@ function handleRetryConnection() {
           @add-widget="openAddPanel"
         />
 
+        <!-- Project Status / Save Indicator -->
+        <div class="project-status" v-if="projectFiles.currentProject.value">
+          <span class="project-name" :title="projectFiles.currentProject.value">
+            {{ projectFiles.currentProjectData.value?.name || 'Untitled' }}
+          </span>
+          <span
+            v-if="projectFiles.isDirty.value"
+            class="dirty-indicator"
+            title="Unsaved changes - will auto-save shortly"
+          >
+            <span class="dot"></span>
+            Modified
+          </span>
+          <button
+            v-if="projectFiles.isDirty.value"
+            class="btn-save"
+            @click="handleManualSave"
+            title="Save now"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+              <polyline points="17,21 17,13 7,13 7,21"/>
+              <polyline points="7,3 7,8 15,8"/>
+            </svg>
+          </button>
+          <span v-else class="saved-indicator" title="All changes saved">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20,6 9,17 4,12"/>
+            </svg>
+            Saved
+          </span>
+        </div>
+
         <!-- User Auth Section -->
         <div class="user-section">
           <template v-if="auth.authenticated.value && auth.currentUser.value">
@@ -644,14 +774,77 @@ function handleRetryConnection() {
     <Transition name="modal">
       <div v-if="showStartupDialog" class="startup-overlay">
         <div class="startup-dialog">
+          <!-- CRASH RECOVERY: Show if autosave exists -->
+          <template v-if="hasAutosaveRecovery">
+            <div class="startup-header recovery-header">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              <h2>Unsaved Work Detected</h2>
+              <p>The service was shut down unexpectedly. Would you like to recover your unsaved work?</p>
+            </div>
+
+            <!-- Show autosave info -->
+            <div class="last-project-info recovery-info">
+              <div class="project-name">{{ autosaveProjectName }}</div>
+              <div class="project-modified">Autosaved: {{ autosaveTimestamp }}</div>
+            </div>
+
+            <div class="startup-actions">
+              <button class="startup-btn recovery" @click="recoverFromAutosave">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+                <div>
+                  <strong>Recover Unsaved Work</strong>
+                  <span>Restore your work from before shutdown</span>
+                </div>
+              </button>
+
+              <button class="startup-btn secondary" @click="discardAutosaveAndLoadProject" v-if="hasLastProject">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <div>
+                  <strong>Load Saved Project Instead</strong>
+                  <span>Discard unsaved work, load "{{ lastProjectName }}"</span>
+                </div>
+              </button>
+
+              <button class="startup-btn secondary" @click="discardAutosaveAndStartFresh">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+                <div>
+                  <strong>Discard &amp; Start Fresh</strong>
+                  <span>Ignore unsaved work, start with clean slate</span>
+                </div>
+              </button>
+            </div>
+
+            <div class="startup-hint warning">
+              If you don't recover now, the unsaved work will be lost
+            </div>
+          </template>
+
           <!-- Has Last Project: Show choice between Load/Fresh -->
-          <template v-if="hasLastProject">
+          <template v-else-if="hasLastProject">
             <div class="startup-header">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
               <h2>Welcome to NISystem</h2>
               <p>Would you like to load your previous project or start fresh?</p>
+            </div>
+
+            <!-- Show last project info -->
+            <div class="last-project-info" v-if="lastProjectName">
+              <div class="project-name">{{ lastProjectName }}</div>
+              <div class="project-modified" v-if="lastProjectModified">Last modified: {{ lastProjectModified }}</div>
             </div>
 
             <div class="startup-actions">
@@ -661,7 +854,7 @@ function handleRetryConnection() {
                   <polyline points="9 22 9 12 15 12 15 22"/>
                 </svg>
                 <div>
-                  <strong>Load Last Project</strong>
+                  <strong>Load "{{ lastProjectName }}"</strong>
                   <span>Continue where you left off</span>
                 </div>
               </button>
@@ -736,6 +929,8 @@ function handleRetryConnection() {
   background: #0f0f1a;
   border-bottom: 1px solid #2a2a4a;
   flex-shrink: 0;
+  position: relative;
+  z-index: 100;
 }
 
 .header-left {
@@ -970,6 +1165,74 @@ function handleRetryConnection() {
   background: #2563eb;
 }
 
+/* Project Status / Save Indicator */
+.project-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-left: 1px solid #2a2a4a;
+  margin-left: 8px;
+}
+
+.project-name {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dirty-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.dirty-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.saved-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: #22c55e;
+}
+
+.btn-save {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border: 1px solid #fbbf24;
+  border-radius: 4px;
+  color: #fbbf24;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-save:hover {
+  background: rgba(251, 191, 36, 0.2);
+}
+
 /* User Auth Section */
 .user-section {
   display: flex;
@@ -1109,6 +1372,26 @@ function handleRetryConnection() {
   margin: 0;
 }
 
+/* Last Project Info */
+.last-project-info {
+  text-align: center;
+  padding: 16px 40px;
+  background: rgba(59, 130, 246, 0.1);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.project-name {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #60a5fa;
+  margin-bottom: 4px;
+}
+
+.project-modified {
+  font-size: 0.85rem;
+  color: #9ca3af;
+}
+
 .startup-actions {
   padding: 32px 40px;
   display: flex;
@@ -1195,5 +1478,42 @@ function handleRetryConnection() {
   padding: 0 40px 32px;
   font-size: 0.85rem;
   color: #6b7280;
+}
+
+.startup-hint.warning {
+  color: #f59e0b;
+}
+
+/* Recovery dialog styles */
+.recovery-header svg {
+  color: #f59e0b !important;
+}
+
+.recovery-info {
+  background: rgba(245, 158, 11, 0.1) !important;
+  border-color: rgba(245, 158, 11, 0.2) !important;
+}
+
+.recovery-info .project-name {
+  color: #fbbf24 !important;
+}
+
+.startup-btn.recovery {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.startup-btn.recovery:hover {
+  border-color: #fbbf24;
+  background: rgba(245, 158, 11, 0.2);
+  box-shadow: 0 8px 20px rgba(245, 158, 11, 0.2);
+}
+
+.startup-btn.recovery svg {
+  color: #f59e0b;
+}
+
+.startup-btn.recovery:hover svg {
+  color: #fbbf24;
 }
 </style>

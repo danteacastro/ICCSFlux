@@ -10,17 +10,17 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { ref } from 'vue'
 
 // Mock useMqtt before importing useBackendScripts
-const mockSendNodeCommand = vi.fn()
+const mockSendLocalCommand = vi.fn()
 const mockSubscribe = vi.fn()
-const mockConnected = { value: true }
 
 vi.mock('./useMqtt', () => ({
   useMqtt: () => ({
-    sendNodeCommand: mockSendNodeCommand,
+    sendLocalCommand: mockSendLocalCommand,
     subscribe: mockSubscribe,
-    connected: mockConnected
+    connected: ref(true)
   })
 }))
 
@@ -32,8 +32,7 @@ describe('useBackendScripts', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset module state by re-importing
-    vi.resetModules()
+    backendScripts = useBackendScripts()
   })
 
   afterEach(() => {
@@ -45,10 +44,7 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Script ID Preservation', () => {
-    it('should use provided ID when adding a script', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should use provided ID when adding a script', () => {
       const existingId = 'my-existing-script-id-123'
       const returnedId = backendScripts.addScript({
         id: existingId,
@@ -57,36 +53,31 @@ describe('useBackendScripts', () => {
       })
 
       expect(returnedId).toBe(existingId)
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/add', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/add', {
         id: existingId,
         name: 'Test Script',
         code: 'print("hello")',
         description: '',
         run_mode: 'manual',
-        enabled: true
+        enabled: true,
+        auto_restart: false
       })
     })
 
-    it('should generate new ID when none provided', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should generate new ID when none provided', () => {
       const returnedId = backendScripts.addScript({
         name: 'New Script',
         code: 'x = 1'
       })
 
       expect(returnedId).toMatch(/^script_\d+_[a-z0-9]+$/)
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/add', expect.objectContaining({
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/add', expect.objectContaining({
         id: returnedId,
         name: 'New Script'
       }))
     })
 
-    it('should preserve ID across multiple adds (no duplication)', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should preserve ID across multiple adds (no duplication)', () => {
       const scriptId = 'persistent-script-id'
 
       // Simulate project loading - add same script twice with same ID
@@ -94,8 +85,8 @@ describe('useBackendScripts', () => {
       backendScripts.addScript({ id: scriptId, name: 'Script', code: 'x=1' })
 
       // Both calls should use the same ID
-      expect(mockSendNodeCommand).toHaveBeenCalledTimes(2)
-      const calls = mockSendNodeCommand.mock.calls
+      expect(mockSendLocalCommand).toHaveBeenCalledTimes(2)
+      const calls = mockSendLocalCommand.mock.calls
       expect(calls[0][1].id).toBe(scriptId)
       expect(calls[1][1].id).toBe(scriptId)
     })
@@ -106,24 +97,18 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('clearAllScripts', () => {
-    it('should send clear-all command to backend', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should send clear-all command to backend', () => {
       backendScripts.clearAllScripts()
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/clear-all', {})
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/clear-all', {})
     })
 
-    it('should clear local script state', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should clear local script state', () => {
       // Note: scripts.value is readonly in the return, but internal state is cleared
       backendScripts.clearAllScripts()
 
       // Verify command was sent
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/clear-all', {})
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/clear-all', {})
     })
   })
 
@@ -132,10 +117,7 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Script CRUD Operations', () => {
-    it('should add script with all parameters', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should add script with all parameters', () => {
       backendScripts.addScript({
         id: 'full-script',
         name: 'Full Script',
@@ -145,47 +127,39 @@ describe('useBackendScripts', () => {
         enabled: false
       })
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/add', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/add', {
         id: 'full-script',
         name: 'Full Script',
         code: 'for i in range(10): print(i)',
         description: 'A complete script',
         run_mode: 'session',
-        enabled: false
+        enabled: false,
+        auto_restart: false
       })
     })
 
-    it('should update script with partial data', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should update script with partial data', () => {
       backendScripts.updateScript('script-123', { name: 'New Name' })
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/update', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/update', {
         id: 'script-123',
         name: 'New Name'
       })
     })
 
-    it('should update script runMode correctly', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should update script runMode correctly', () => {
       backendScripts.updateScript('script-456', { runMode: 'acquisition' })
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/update', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/update', {
         id: 'script-456',
         run_mode: 'acquisition'
       })
     })
 
-    it('should remove script', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should remove script', () => {
       backendScripts.removeScript('script-to-delete')
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/remove', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/remove', {
         id: 'script-to-delete'
       })
     })
@@ -196,35 +170,26 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Script Execution', () => {
-    it('should start script', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should start script', () => {
       backendScripts.startScript('script-to-start')
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/start', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/start', {
         id: 'script-to-start'
       })
     })
 
-    it('should stop script', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should stop script', () => {
       backendScripts.stopScript('script-to-stop')
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/stop', {
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/stop', {
         id: 'script-to-stop'
       })
     })
 
-    it('should request script list', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should request script list', () => {
       backendScripts.requestScriptList()
 
-      expect(mockSendNodeCommand).toHaveBeenCalledWith('script/list', {})
+      expect(mockSendLocalCommand).toHaveBeenCalledWith('script/list', {})
     })
   })
 
@@ -233,18 +198,12 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Script Output', () => {
-    it('should return empty outputs for unknown script', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should return empty outputs for unknown script', () => {
       const outputs = backendScripts.getScriptOutputs('unknown-script')
       expect(outputs).toEqual([])
     })
 
-    it('should clear script output', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should clear script output', () => {
       // Clear should not throw
       expect(() => backendScripts.clearScriptOutput('some-script')).not.toThrow()
     })
@@ -255,31 +214,19 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Computed Properties', () => {
-    it('should have empty scripts list initially', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should have empty scripts list initially', () => {
       expect(backendScripts.scriptsList.value).toEqual([])
     })
 
-    it('should have zero script count initially', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should have zero script count initially', () => {
       expect(backendScripts.scriptCount.value).toBe(0)
     })
 
-    it('should have zero running count initially', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should have zero running count initially', () => {
       expect(backendScripts.runningCount.value).toBe(0)
     })
 
-    it('should have empty running scripts set initially', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should have empty running scripts set initially', () => {
       expect(backendScripts.runningScriptIds.value.size).toBe(0)
     })
   })
@@ -289,26 +236,17 @@ describe('useBackendScripts', () => {
   // ===========================================================================
 
   describe('Run Mode Filtering', () => {
-    it('should filter acquisition scripts', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should filter acquisition scripts', () => {
       // Initially empty
       expect(backendScripts.acquisitionScripts.value).toEqual([])
     })
 
-    it('should filter session scripts', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should filter session scripts', () => {
       // Initially empty
       expect(backendScripts.sessionScripts.value).toEqual([])
     })
 
-    it('should filter manual scripts', async () => {
-      const { useBackendScripts } = await import('./useBackendScripts')
-      backendScripts = useBackendScripts()
-
+    it('should filter manual scripts', () => {
       // Initially empty
       expect(backendScripts.manualScripts.value).toEqual([])
     })
@@ -320,9 +258,7 @@ describe('useBackendScripts', () => {
 // ===========================================================================
 
 describe('Backend Scripts MQTT Integration', () => {
-  it('should handle empty script status', async () => {
-    vi.resetModules()
-    const { useBackendScripts } = await import('./useBackendScripts')
+  it('should handle empty script status', () => {
     const backendScripts = useBackendScripts()
 
     // Scripts should be empty

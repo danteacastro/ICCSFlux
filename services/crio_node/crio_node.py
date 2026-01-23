@@ -40,6 +40,7 @@ import threading
 import subprocess
 import socket
 import hashlib
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Set
@@ -81,6 +82,259 @@ BUFFER_SIZE = 100
 HEARTBEAT_INTERVAL = 2.0  # seconds
 STATUS_PUBLISH_INTERVAL = 30.0  # seconds - periodic status for discovery
 
+# OPC UA style quality code thresholds
+OPEN_THERMOCOUPLE_THRESHOLD = 1e300  # NI returns huge values for open TC
+MAX_REASONABLE_VALUE = 1e15  # Values beyond this are suspect
+
+
+def get_value_quality(value: Any) -> str:
+    """
+    Get OPC UA style quality status for a value.
+
+    Returns:
+        'good' - Valid, reliable value
+        'bad' - NaN, Inf, None, or open thermocouple
+        'uncertain' - Value exceeds reasonable bounds
+    """
+    if value is None:
+        return 'bad'
+    if not isinstance(value, (int, float)):
+        return 'bad'
+    if math.isnan(value):
+        return 'bad'
+    if math.isinf(value):
+        return 'bad'
+    if abs(value) > OPEN_THERMOCOUPLE_THRESHOLD:
+        return 'bad'
+    if abs(value) > MAX_REASONABLE_VALUE:
+        return 'uncertain'
+    return 'good'
+
+
+# =============================================================================
+# STATE PERSISTENCE FOR SCRIPTS
+# =============================================================================
+
+class StatePersistence:
+    """
+    Persistent state storage for scripts on cRIO.
+    Stores to /var/lib/crio_node/script_state.json
+    """
+    def __init__(self, state_file: Path):
+        self.state_file = Path(state_file)
+        self._lock = threading.Lock()
+        self._state: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    def _load(self):
+        try:
+            if self.state_file.exists():
+                with open(self.state_file, 'r') as f:
+                    self._state = json.load(f)
+                logger.info(f"Loaded script state: {len(self._state)} scripts")
+        except Exception as e:
+            logger.warning(f"Failed to load script state: {e}")
+            self._state = {}
+
+    def _save(self):
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(self._state, f, indent=2)
+            temp_file.replace(self.state_file)
+        except Exception as e:
+            logger.error(f"Failed to save script state: {e}")
+
+    def persist(self, script_id: str, key: str, value: Any) -> bool:
+        with self._lock:
+            if script_id not in self._state:
+                self._state[script_id] = {}
+            self._state[script_id][key] = value
+            self._save()
+            return True
+
+    def restore(self, script_id: str, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._state.get(script_id, {}).get(key, default)
+
+
+# =============================================================================
+# HELPER CLASSES FOR SCRIPTS
+# =============================================================================
+
+class RateCalculator:
+    """Calculate rate of change over a time window."""
+    def __init__(self, window_seconds: float = 60.0):
+        self.window_seconds = window_seconds
+        self._history: List[tuple] = []
+
+    def update(self, value: float) -> float:
+        now = time.time()
+        self._history.append((now, value))
+        cutoff = now - self.window_seconds
+        self._history = [(t, v) for t, v in self._history if t >= cutoff]
+        if len(self._history) < 2:
+            return 0.0
+        t0, v0 = self._history[0]
+        t1, v1 = self._history[-1]
+        dt = t1 - t0
+        return (v1 - v0) / dt if dt > 0 else 0.0
+
+    def reset(self):
+        self._history.clear()
+
+
+class Accumulator:
+    """Track cumulative totals from counter values."""
+    def __init__(self, initial: float = 0.0):
+        self._total = initial
+        self._last_value: Optional[float] = None
+
+    def update(self, value: float) -> float:
+        if self._last_value is not None:
+            delta = value - self._last_value
+            if delta < 0:
+                delta = value
+            self._total += delta
+        self._last_value = value
+        return self._total
+
+    def reset(self, initial: float = 0.0):
+        self._total = initial
+        self._last_value = None
+
+    @property
+    def total(self) -> float:
+        return self._total
+
+
+class EdgeDetector:
+    """Detect rising and falling edges."""
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+        self._last_state: Optional[bool] = None
+
+    def update(self, value: float) -> tuple:
+        current_state = value > self.threshold
+        rising = falling = False
+        if self._last_state is not None:
+            rising = current_state and not self._last_state
+            falling = not current_state and self._last_state
+        self._last_state = current_state
+        return (rising, falling, current_state)
+
+    def reset(self):
+        self._last_state = None
+
+
+class RollingStats:
+    """Calculate running statistics over a sample window."""
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self._buffer: List[float] = []
+
+    def update(self, value: float) -> dict:
+        self._buffer.append(value)
+        if len(self._buffer) > self.window_size:
+            self._buffer = self._buffer[-self.window_size:]
+        if not self._buffer:
+            return {'mean': 0, 'min': 0, 'max': 0, 'std': 0, 'count': 0}
+        n = len(self._buffer)
+        mean = sum(self._buffer) / n
+        if n > 1:
+            variance = sum((x - mean) ** 2 for x in self._buffer) / (n - 1)
+            std = variance ** 0.5
+        else:
+            std = 0.0
+        return {'mean': mean, 'min': min(self._buffer), 'max': max(self._buffer), 'std': std, 'count': n}
+
+    def reset(self):
+        self._buffer.clear()
+
+
+class Scheduler:
+    """Simple job scheduler for timed operations."""
+    def __init__(self):
+        self._jobs: Dict[str, dict] = {}
+
+    def add_interval(self, job_id: str, func, seconds: float = 0, minutes: float = 0, hours: float = 0):
+        interval = seconds + minutes * 60 + hours * 3600
+        self._jobs[job_id] = {'func': func, 'type': 'interval', 'interval': interval,
+                              'next_run': time.time() + interval, 'paused': False}
+
+    def add_cron(self, job_id: str, func, minute: int = None, hour: int = None, day_of_week: int = None):
+        self._jobs[job_id] = {'func': func, 'type': 'cron', 'minute': minute, 'hour': hour,
+                              'day_of_week': day_of_week, 'last_run': None, 'paused': False}
+
+    def add_once(self, job_id: str, func, delay: float):
+        self._jobs[job_id] = {'func': func, 'type': 'once', 'run_at': time.time() + delay, 'done': False, 'paused': False}
+
+    def tick(self):
+        now = time.time()
+        for job_id, job in list(self._jobs.items()):
+            if job.get('paused'):
+                continue
+            if job['type'] == 'interval' and now >= job['next_run']:
+                job['func']()
+                job['next_run'] = now + job['interval']
+            elif job['type'] == 'once' and not job.get('done') and now >= job['run_at']:
+                job['func']()
+                job['done'] = True
+            elif job['type'] == 'cron':
+                dt = datetime.now()
+                if ((job['minute'] is None or dt.minute == job['minute']) and
+                    (job['hour'] is None or dt.hour == job['hour']) and
+                    (job['day_of_week'] is None or dt.weekday() == job['day_of_week'])):
+                    if job['last_run'] != (dt.hour, dt.minute):
+                        job['func']()
+                        job['last_run'] = (dt.hour, dt.minute)
+
+    def pause(self, job_id: str):
+        if job_id in self._jobs:
+            self._jobs[job_id]['paused'] = True
+
+    def resume(self, job_id: str):
+        if job_id in self._jobs:
+            self._jobs[job_id]['paused'] = False
+
+    def remove(self, job_id: str):
+        self._jobs.pop(job_id, None)
+
+    def is_paused(self, job_id: str) -> bool:
+        return self._jobs.get(job_id, {}).get('paused', False)
+
+
+# =============================================================================
+# UNIT CONVERSIONS
+# =============================================================================
+
+def F_to_C(f: float) -> float: return (f - 32) * 5 / 9
+def C_to_F(c: float) -> float: return c * 9 / 5 + 32
+def GPM_to_LPM(gpm: float) -> float: return gpm * 3.78541
+def LPM_to_GPM(lpm: float) -> float: return lpm / 3.78541
+def PSI_to_bar(psi: float) -> float: return psi * 0.0689476
+def bar_to_PSI(bar: float) -> float: return bar / 0.0689476
+def gal_to_L(gal: float) -> float: return gal * 3.78541
+def L_to_gal(l: float) -> float: return l / 3.78541
+def BTU_to_kJ(btu: float) -> float: return btu * 1.055056
+def kJ_to_BTU(kj: float) -> float: return kj / 1.055056
+def lb_to_kg(lb: float) -> float: return lb * 0.453592
+def kg_to_lb(kg: float) -> float: return kg / 0.453592
+
+
+# =============================================================================
+# TIME FUNCTIONS
+# =============================================================================
+
+def now() -> float: return time.time()
+def now_ms() -> int: return int(time.time() * 1000)
+def now_iso() -> str: return datetime.now().isoformat()
+def time_of_day() -> str: return datetime.now().strftime('%H:%M:%S')
+def elapsed_since(start_ts: float) -> float: return time.time() - start_ts
+def format_timestamp(ts_ms: int, fmt: str = '%Y-%m-%d %H:%M:%S') -> str:
+    return datetime.fromtimestamp(ts_ms / 1000).strftime(fmt)
+
 
 class AlarmState(Enum):
     """ISA-18.2 alarm states - evaluated locally on cRIO"""
@@ -109,10 +363,20 @@ class ChannelConfig:
     default_state: bool = False
     invert: bool = False
 
-    # Scaling
+    # Scaling (supports linear, 4-20mA, and map scaling)
     scale_slope: float = 1.0
     scale_offset: float = 0.0
+    scale_type: str = 'none'  # 'none', 'linear', 'four_twenty', 'map'
     engineering_units: str = ''
+    # 4-20mA scaling (current inputs/outputs)
+    four_twenty_scaling: bool = False
+    eng_units_min: Optional[float] = None  # Engineering value at 4mA
+    eng_units_max: Optional[float] = None  # Engineering value at 20mA
+    # Map scaling (voltage inputs/outputs)
+    pre_scaled_min: Optional[float] = None
+    pre_scaled_max: Optional[float] = None
+    scaled_min: Optional[float] = None
+    scaled_max: Optional[float] = None
 
     # ISA-18.2 Alarm Configuration (matches PC daq_service)
     alarm_enabled: bool = False
@@ -159,6 +423,265 @@ class SessionState:
     operator: str = ""
     locked_outputs: List[str] = field(default_factory=list)  # Outputs locked during session
     timeout_minutes: float = 0  # Auto-stop after N minutes (0 = no timeout)
+
+
+class LatchState(Enum):
+    """Safety latch states for local cRIO operation"""
+    SAFE = "safe"          # Latch is disarmed, outputs blocked
+    ARMED = "armed"        # Latch is armed, outputs allowed
+    TRIPPED = "tripped"    # System tripped due to safety violation
+
+
+@dataclass
+class LocalInterlockConfig:
+    """Local interlock configuration for autonomous cRIO operation"""
+    id: str
+    name: str
+    enabled: bool = True
+    conditions: List[Dict[str, Any]] = field(default_factory=list)  # Simplified conditions
+    condition_logic: str = "AND"  # AND or OR
+    output_channels: List[str] = field(default_factory=list)  # Channels blocked when failed
+
+
+class LocalSafetyManager:
+    """
+    Local safety manager for autonomous cRIO operation.
+
+    Provides:
+    - Local interlock evaluation based on channel values
+    - Local latch state machine (SAFE → ARMED → TRIPPED)
+    - Trip actions when safety limits violated while armed
+    - Syncs with PC SafetyManager when connected
+
+    This runs independently on cRIO, ensuring safety logic continues
+    even when PC is disconnected.
+    """
+
+    def __init__(self, get_channel_value, set_output, stop_session, publish):
+        self.get_channel_value = get_channel_value
+        self.set_output = set_output
+        self.stop_session = stop_session
+        self.publish = publish
+
+        self.lock = threading.RLock()
+
+        # Latch state
+        self.latch_state = LatchState.SAFE
+        self.is_tripped = False
+        self.last_trip_time: Optional[str] = None
+        self.last_trip_reason: Optional[str] = None
+
+        # Local interlocks (simplified version of PC interlocks)
+        self.interlocks: Dict[str, LocalInterlockConfig] = {}
+
+        # Previous interlock states for state change detection
+        self._previous_states: Dict[str, bool] = {}
+
+    def arm_latch(self, user: str = "local") -> bool:
+        """Arm the safety latch"""
+        with self.lock:
+            if self.is_tripped:
+                logger.warning("[LocalSafety] Cannot arm - system is tripped")
+                return False
+
+            if self._has_failed_interlocks():
+                logger.warning("[LocalSafety] Cannot arm - interlocks failed")
+                return False
+
+            self.latch_state = LatchState.ARMED
+            self._publish_latch_state(user=user)
+            logger.info(f"[LocalSafety] Latch armed by {user}")
+            return True
+
+    def disarm_latch(self, user: str = "local"):
+        """Disarm the safety latch"""
+        with self.lock:
+            self.latch_state = LatchState.SAFE
+            self._publish_latch_state(user=user)
+            logger.info(f"[LocalSafety] Latch disarmed by {user}")
+
+    def trip_system(self, reason: str):
+        """Trip the system - set outputs to safe state"""
+        with self.lock:
+            logger.critical(f"[LocalSafety] SYSTEM TRIP: {reason}")
+
+            self.is_tripped = True
+            self.last_trip_time = datetime.now(timezone.utc).isoformat()
+            self.last_trip_reason = reason
+            self.latch_state = LatchState.TRIPPED
+
+            # Stop session
+            if self.stop_session:
+                try:
+                    self.stop_session()
+                except Exception as e:
+                    logger.error(f"[LocalSafety] Failed to stop session: {e}")
+
+            # Publish trip event
+            if self.publish:
+                self.publish('safety/trip', {
+                    'reason': reason,
+                    'timestamp': self.last_trip_time
+                })
+
+            self._publish_latch_state(tripped=True, trip_reason=reason)
+
+    def reset_trip(self, user: str = "local") -> bool:
+        """Reset the trip state"""
+        with self.lock:
+            if self._has_failed_interlocks():
+                logger.warning("[LocalSafety] Cannot reset - interlocks still failed")
+                return False
+
+            self.is_tripped = False
+            self.last_trip_reason = None
+            self.latch_state = LatchState.SAFE
+            self._publish_latch_state(user=user)
+            logger.info(f"[LocalSafety] Trip reset by {user}")
+            return True
+
+    def add_interlock(self, interlock: LocalInterlockConfig):
+        """Add or update a local interlock"""
+        with self.lock:
+            self.interlocks[interlock.id] = interlock
+            logger.info(f"[LocalSafety] Interlock added: {interlock.name}")
+
+    def remove_interlock(self, interlock_id: str):
+        """Remove a local interlock"""
+        with self.lock:
+            if interlock_id in self.interlocks:
+                del self.interlocks[interlock_id]
+
+    def evaluate_interlock(self, interlock: LocalInterlockConfig) -> bool:
+        """Evaluate a local interlock and return True if satisfied"""
+        if not interlock.enabled:
+            return True
+
+        results = []
+        for condition in interlock.conditions:
+            satisfied = self._evaluate_condition(condition)
+            results.append(satisfied)
+
+        if interlock.condition_logic == 'OR':
+            return any(results) if results else True
+        else:  # AND
+            return all(results) if results else True
+
+    def _evaluate_condition(self, condition: Dict[str, Any]) -> bool:
+        """Evaluate a single interlock condition"""
+        cond_type = condition.get('type', 'channel_value')
+
+        if cond_type == 'channel_value':
+            channel = condition.get('channel')
+            operator = condition.get('operator')
+            threshold = condition.get('value')
+
+            if not channel or operator is None or threshold is None:
+                return True  # Invalid condition - assume satisfied
+
+            value = self.get_channel_value(channel)
+            if value is None:
+                return False  # No value - assume not satisfied
+
+            return self._compare_values(float(value), operator, float(threshold))
+
+        elif cond_type == 'digital_input':
+            channel = condition.get('channel')
+            expected = condition.get('value', True)
+            invert = condition.get('invert', False)
+
+            value = self.get_channel_value(channel)
+            if value is None:
+                return False
+
+            raw_state = value != 0
+            actual_state = not raw_state if invert else raw_state
+            return actual_state == expected
+
+        return True  # Unknown condition type - assume satisfied
+
+    def _compare_values(self, current: float, operator: str, threshold: float) -> bool:
+        """Compare values using the specified operator"""
+        if operator == '<':
+            return current < threshold
+        elif operator == '<=':
+            return current <= threshold
+        elif operator == '>':
+            return current > threshold
+        elif operator == '>=':
+            return current >= threshold
+        elif operator in ('=', '=='):
+            return current == threshold
+        elif operator in ('!=', '<>'):
+            return current != threshold
+        return False
+
+    def _has_failed_interlocks(self) -> bool:
+        """Check if any interlocks have failed"""
+        for interlock in self.interlocks.values():
+            if interlock.enabled and not self.evaluate_interlock(interlock):
+                return True
+        return False
+
+    def get_failed_interlocks(self) -> List[LocalInterlockConfig]:
+        """Get list of failed interlocks"""
+        failed = []
+        for interlock in self.interlocks.values():
+            if interlock.enabled and not self.evaluate_interlock(interlock):
+                failed.append(interlock)
+        return failed
+
+    def evaluate_all(self):
+        """Evaluate all interlocks and update latch state"""
+        with self.lock:
+            any_failed = self._has_failed_interlocks()
+
+            # Check if we should trip (armed + interlock failed)
+            if any_failed and self.latch_state == LatchState.ARMED and not self.is_tripped:
+                failed = self.get_failed_interlocks()
+                reason = f"Interlock failed: {', '.join([i.name for i in failed])}"
+                self.trip_system(reason)
+
+    def is_output_blocked(self, channel: str) -> bool:
+        """Check if an output channel is blocked by any interlock"""
+        for interlock in self.interlocks.values():
+            if not interlock.enabled:
+                continue
+            if not self.evaluate_interlock(interlock):
+                if channel in interlock.output_channels:
+                    return True
+        return False
+
+    def _publish_latch_state(self, user: str = None, tripped: bool = False, trip_reason: str = None):
+        """Publish latch state via MQTT"""
+        if not self.publish:
+            return
+
+        self.publish('safety/latch/state', {
+            'latchId': 'local',
+            'state': self.latch_state.value,
+            'armed': self.latch_state == LatchState.ARMED,
+            'tripped': tripped,
+            'tripReason': trip_reason,
+            'user': user,
+            'source': 'crio_local',
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current safety status"""
+        with self.lock:
+            failed = self.get_failed_interlocks()
+            return {
+                'latchState': self.latch_state.value,
+                'isTripped': self.is_tripped,
+                'lastTripTime': self.last_trip_time,
+                'lastTripReason': self.last_trip_reason,
+                'hasFailedInterlocks': len(failed) > 0,
+                'failedInterlockNames': [i.name for i in failed],
+                'interlockCount': len(self.interlocks),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
 
 
 @dataclass
@@ -215,6 +738,8 @@ class CRIONodeService:
         self.watchdog_task: Optional[Any] = None
         self._watchdog_channels: List[str] = []  # For software watchdog fallback
         self._watchdog_last_pet: float = 0.0
+        self._task_swap_lock = threading.Lock()  # Lock for seamless task swap
+        self._task_swap_in_progress = False  # Flag to pause scan loop during swap
 
         # Threads
         self.scan_thread: Optional[threading.Thread] = None
@@ -227,6 +752,13 @@ class CRIONodeService:
         self.scripts: Dict[str, Dict[str, Any]] = {}
         self.script_threads: Dict[str, threading.Thread] = {}
 
+        # Interactive console (IPython-like REPL) - persistent namespace
+        self._console_namespace: Optional[Dict[str, Any]] = None
+
+        # Script state persistence
+        state_dir = config_dir / 'state'
+        self.script_persistence = StatePersistence(state_dir / 'script_state.json')
+
         # Safety state tracking (for autonomous operation)
         self.safety_triggered: Dict[str, bool] = {}  # channel_name -> triggered state
         self.safety_lock = threading.Lock()
@@ -237,6 +769,9 @@ class CRIONodeService:
 
         # Session state (for autonomous operation)
         self.session = SessionState()
+
+        # Local safety manager (interlocks, latch state, trip logic)
+        self.local_safety: Optional[LocalSafetyManager] = None
 
         # Status
         self.last_pc_contact = time.time()
@@ -918,6 +1453,7 @@ class CRIONodeService:
                 (f"{base}/system/#", 1),      # System commands
                 (f"{base}/safety/#", 1),      # Safety commands (trigger, clear)
                 (f"{base}/session/#", 1),     # Session commands (start, stop)
+                (f"{base}/console/#", 1),     # Interactive console (IPython-like)
                 # Global discovery ping - respond when PC scans for devices
                 (f"{mqtt_base}/discovery/ping", 1),
             ]
@@ -974,6 +1510,8 @@ class CRIONodeService:
                 self._handle_safety_message(topic, payload)
             elif topic.startswith(f"{base}/session/"):
                 self._handle_session_message(topic, payload)
+            elif topic.startswith(f"{base}/console/"):
+                self._handle_console_message(topic, payload)
 
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
@@ -1121,8 +1659,10 @@ class CRIONodeService:
             'terminal_config', 'cjc_source',
             # Output settings
             'default_state', 'invert',
-            # Scaling
-            'scale_slope', 'scale_offset', 'engineering_units',
+            # Scaling (linear, 4-20mA, and map scaling)
+            'scale_slope', 'scale_offset', 'scale_type', 'engineering_units',
+            'four_twenty_scaling', 'eng_units_min', 'eng_units_max',
+            'pre_scaled_min', 'pre_scaled_max', 'scaled_min', 'scaled_max',
             # ISA-18.2 Alarm Configuration (full support)
             'alarm_enabled', 'hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit',
             'alarm_priority', 'alarm_deadband', 'alarm_delay_sec',
@@ -1263,6 +1803,77 @@ class CRIONodeService:
             logger.info(f"Removed script: {script_id}")
             self._publish_script_status()
 
+        elif topic.endswith('/update'):
+            # Update script code (does not affect running instance)
+            script_id = payload.get('id')
+            if script_id and script_id in self.scripts:
+                if 'code' in payload:
+                    self.scripts[script_id]['code'] = payload['code']
+                if 'name' in payload:
+                    self.scripts[script_id]['name'] = payload['name']
+                if 'run_mode' in payload:
+                    self.scripts[script_id]['run_mode'] = payload['run_mode']
+                if 'enabled' in payload:
+                    self.scripts[script_id]['enabled'] = payload['enabled']
+                logger.info(f"Updated script: {script_id}")
+                self._publish_script_status()
+
+        elif topic.endswith('/reload'):
+            # Hot-reload: stop running script, update code, restart
+            script_id = payload.get('id')
+            new_code = payload.get('code')
+            self._reload_script(script_id, new_code)
+
+    def _reload_script(self, script_id: str, new_code: str = None):
+        """Hot-reload a script without losing persisted state.
+
+        This enables live code updates while acquisition continues running.
+        The script's persisted state (via persist()/restore() API) is preserved.
+
+        Process:
+        1. Script's persisted state is already on disk
+        2. Stop the running script gracefully
+        3. Update the code if provided
+        4. Restart the script
+        5. Script calls restore() to recover its state
+        """
+        if script_id not in self.scripts:
+            logger.warning(f"Hot-reload failed: Script not found: {script_id}")
+            return
+
+        script = self.scripts[script_id]
+        was_running = script_id in self.script_threads and self.script_threads[script_id].is_alive()
+
+        logger.info(f"Hot-reload: {script.get('name', script_id)} (was_running={was_running})")
+
+        # Step 1: Stop if running (state is already persisted to disk)
+        if was_running:
+            logger.info(f"Hot-reload: Stopping script for code swap")
+            self._stop_script(script_id)
+
+            # Wait for thread to stop
+            thread = self.script_threads.get(script_id)
+            if thread:
+                thread.join(timeout=5.0)
+            time.sleep(0.1)
+
+        # Step 2: Update code if provided
+        if new_code is not None:
+            script['code'] = new_code
+            logger.info(f"Hot-reload: Updated code for {script.get('name', script_id)}")
+
+        # Step 3: Clear stop flag for restart
+        script['_stop_requested'] = False
+        script['_timeout_exceeded'] = False
+
+        # Step 4: Restart if it was running
+        if was_running:
+            logger.info(f"Hot-reload: Restarting script")
+            self._start_script(script_id)
+            logger.info(f"Hot-reload: {script.get('name', script_id)} restarted successfully")
+
+        self._publish_script_status()
+
     def _handle_system_message(self, topic: str, payload: Dict[str, Any]):
         """Handle system commands from NISystem"""
         if topic.endswith('/acquire/start'):
@@ -1273,6 +1884,54 @@ class CRIONodeService:
             self._reset()
         elif topic.endswith('/safe-state'):
             self._set_safe_state(payload.get('reason', 'command'))
+        elif topic.endswith('/channel/add'):
+            # Dynamic channel addition (seamless task swap)
+            success = self.add_channel_dynamic(payload)
+            self._publish(f"{self.get_topic_base()}/channel/response", {
+                'action': 'add',
+                'success': success,
+                'channel': payload.get('name', ''),
+                'message': 'Channel added' if success else 'Failed to add channel'
+            })
+        elif topic.endswith('/channel/remove'):
+            # Dynamic channel removal (seamless task swap)
+            channel_name = payload.get('name', payload.get('channel', ''))
+            success = self.remove_channel_dynamic(channel_name)
+            self._publish(f"{self.get_topic_base()}/channel/response", {
+                'action': 'remove',
+                'success': success,
+                'channel': channel_name,
+                'message': 'Channel removed' if success else 'Failed to remove channel'
+            })
+        elif topic.endswith('/channels/update'):
+            # Full channel reconfiguration (seamless task swap)
+            channels_data = payload.get('channels', [])
+            new_channels = []
+            for ch_data in channels_data:
+                try:
+                    ch = ChannelConfig(
+                        name=ch_data['name'],
+                        channel_type=ch_data.get('channel_type', 'voltage'),
+                        physical_channel=ch_data.get('physical_channel', ''),
+                        enabled=ch_data.get('enabled', True),
+                        units=ch_data.get('units', ''),
+                        min_value=ch_data.get('min_value', 0),
+                        max_value=ch_data.get('max_value', 100),
+                        thermocouple_type=ch_data.get('thermocouple_type', 'K'),
+                        voltage_range=ch_data.get('voltage_range', 10.0),
+                        terminal_config=ch_data.get('terminal_config', 'DIFF')
+                    )
+                    new_channels.append(ch)
+                except Exception as e:
+                    logger.warning(f"Invalid channel config: {e}")
+
+            success = self.seamless_task_swap(new_channels)
+            self._publish(f"{self.get_topic_base()}/channel/response", {
+                'action': 'update',
+                'success': success,
+                'count': len(new_channels),
+                'message': f'Updated {len(new_channels)} channels' if success else 'Failed to update channels'
+            })
 
     def _handle_safety_message(self, topic: str, payload: Dict[str, Any]):
         """Handle safety-related MQTT commands"""
@@ -1287,6 +1946,49 @@ class CRIONodeService:
                     if channel in self.safety_triggered:
                         del self.safety_triggered[channel]
                         logger.info(f"Cleared safety trigger state for {channel}")
+        elif topic.endswith('/latch/arm'):
+            # Arm the local safety latch
+            if self.local_safety:
+                user = payload.get('user', 'remote')
+                self.local_safety.arm_latch(user)
+        elif topic.endswith('/latch/disarm'):
+            # Disarm the local safety latch
+            if self.local_safety:
+                user = payload.get('user', 'remote')
+                self.local_safety.disarm_latch(user)
+        elif topic.endswith('/trip/reset'):
+            # Reset trip state
+            if self.local_safety:
+                user = payload.get('user', 'remote')
+                self.local_safety.reset_trip(user)
+        elif topic.endswith('/status/request'):
+            # Publish current safety status
+            self._publish_safety_status()
+        elif topic.endswith('/interlock/sync'):
+            # Sync an interlock from PC
+            if self.local_safety:
+                interlock = LocalInterlockConfig(
+                    id=payload.get('id', ''),
+                    name=payload.get('name', ''),
+                    enabled=payload.get('enabled', True),
+                    conditions=payload.get('conditions', []),
+                    condition_logic=payload.get('conditionLogic', 'AND'),
+                    output_channels=payload.get('outputChannels', [])
+                )
+                self.local_safety.add_interlock(interlock)
+        elif topic.endswith('/interlock/remove'):
+            # Remove an interlock
+            if self.local_safety:
+                interlock_id = payload.get('id')
+                if interlock_id:
+                    self.local_safety.remove_interlock(interlock_id)
+
+    def _publish_safety_status(self):
+        """Publish current local safety status"""
+        if self.local_safety:
+            status = self.local_safety.get_status()
+            status['nodeId'] = self.config.node_id
+            self._publish(f"{self.get_topic_base()}/safety/status", status)
 
     def _handle_session_message(self, topic: str, payload: Dict[str, Any]):
         """Handle session commands from NISystem"""
@@ -1317,6 +2019,9 @@ class CRIONodeService:
 
         self._publish_session_status()
 
+        # Auto-start scripts with run_mode='session'
+        self._auto_start_scripts('session')
+
     def _stop_session(self, reason: str = 'command'):
         """Stop the current session"""
         if not self.session.active:
@@ -1324,6 +2029,9 @@ class CRIONodeService:
 
         duration = time.time() - (self.session.start_time or time.time())
         logger.info(f"SESSION STOPPED: {self.session.name} after {duration:.1f}s (reason: {reason})")
+
+        # Auto-stop session scripts
+        self._auto_stop_scripts('session')
 
         self.session.active = False
         self.session.locked_outputs = []
@@ -1353,6 +2061,843 @@ class CRIONodeService:
             if elapsed > self.session.timeout_minutes * 60:
                 logger.warning(f"Session timeout after {elapsed/60:.1f} minutes")
                 self._stop_session('timeout')
+
+    # =========================================================================
+    # INTERACTIVE CONSOLE (IPython-like REPL with Persistent Namespace)
+    # =========================================================================
+
+    # Names that are part of the base API (not user-defined variables)
+    _CONSOLE_BUILTINS = {
+        # Core API
+        'tags', 'outputs', 'session', 'time', 'math', 'datetime', 'json',
+        'np', 'numpy', 'scipy', 'statistics', 're',
+        # Math builtins
+        'abs', 'min', 'max', 'sum', 'round', 'pow',
+        'sin', 'cos', 'tan', 'sqrt', 'log', 'log10', 'pi', 'e',
+        # Python builtins
+        'print', 'len', 'range', 'list', 'dict', 'tuple', 'set',
+        'str', 'int', 'float', 'bool', 'True', 'False', 'None',
+        'sorted', 'enumerate', 'zip', 'map', 'filter', 'any', 'all',
+        'isinstance', 'type', 'dir', 'help', 'getattr', 'setattr', 'hasattr',
+        '__builtins__', '__name__', '__doc__',
+        # Helper classes
+        'RateCalculator', 'Accumulator', 'EdgeDetector', 'RollingStats', 'Scheduler',
+        # Unit conversion functions
+        'F_to_C', 'C_to_F', 'GPM_to_LPM', 'LPM_to_GPM', 'PSI_to_bar', 'bar_to_PSI',
+        'gal_to_L', 'L_to_gal', 'BTU_to_kJ', 'kJ_to_BTU', 'lb_to_kg', 'kg_to_lb',
+        # Time utility functions
+        'now', 'now_ms', 'now_iso', 'time_of_day', 'elapsed_since', 'format_timestamp',
+    }
+
+    def _get_console_namespace(self) -> dict:
+        """Get or create the persistent console namespace."""
+        if self._console_namespace is None:
+            self._console_namespace = self._build_console_namespace()
+        return self._console_namespace
+
+    def _handle_console_message(self, topic: str, payload: Dict[str, Any]):
+        """Handle interactive console commands"""
+        if topic.endswith('/execute'):
+            self._handle_console_execute(payload)
+        elif topic.endswith('/variables'):
+            self._handle_console_variables(payload)
+        elif topic.endswith('/complete'):
+            self._handle_console_complete(payload)
+        elif topic.endswith('/reset'):
+            self._handle_console_reset(payload)
+
+    def _handle_console_execute(self, payload: dict) -> None:
+        """Execute a single Python command from the interactive console widget."""
+        code = payload.get('code', '').strip()
+        if not code:
+            return
+
+        base = self.get_topic_base()
+        result = {'success': False, 'output': '', 'result': '', 'error': ''}
+
+        # Handle magic commands
+        if code.startswith('%'):
+            result = self._handle_magic_command(code)
+            self._publish(f"{base}/console/result", result)
+            return
+
+        try:
+            import io
+            import contextlib
+
+            # Capture stdout
+            stdout_capture = io.StringIO()
+
+            # Get persistent namespace
+            namespace = self._get_console_namespace()
+
+            # Execute with stdout capture
+            with contextlib.redirect_stdout(stdout_capture):
+                try:
+                    compiled = compile(code, '<console>', 'eval')
+                    exec_result = eval(compiled, namespace)
+                    result['result'] = repr(exec_result) if exec_result is not None else ''
+                except SyntaxError:
+                    compiled = compile(code, '<console>', 'exec')
+                    exec(compiled, namespace)
+                    result['result'] = ''
+
+            result['output'] = stdout_capture.getvalue()
+            result['success'] = True
+
+        except Exception as e:
+            result['error'] = f"{type(e).__name__}: {str(e)}"
+            result['success'] = False
+            logger.debug(f"Console error: {e}")
+
+        self._publish(f"{base}/console/result", result)
+
+    def _handle_magic_command(self, code: str) -> dict:
+        """Handle IPython-like magic commands."""
+        result = {'success': True, 'output': '', 'result': '', 'error': ''}
+
+        parts = code.split(None, 1)
+        magic = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ''
+
+        try:
+            if magic == '%who':
+                namespace = self._get_console_namespace()
+                user_vars = [k for k in namespace.keys() if k not in self._CONSOLE_BUILTINS]
+                if user_vars:
+                    result['output'] = '  '.join(sorted(user_vars)) + '\n'
+                else:
+                    result['output'] = 'No user-defined variables.\n'
+
+            elif magic == '%whos':
+                namespace = self._get_console_namespace()
+                user_vars = {k: v for k, v in namespace.items() if k not in self._CONSOLE_BUILTINS}
+                if user_vars:
+                    lines = ['Variable     Type        Value']
+                    lines.append('-' * 50)
+                    for name, value in sorted(user_vars.items()):
+                        type_name = type(value).__name__
+                        val_str = repr(value)
+                        if len(val_str) > 30:
+                            val_str = val_str[:27] + '...'
+                        lines.append(f'{name:<12} {type_name:<10} {val_str}')
+                    result['output'] = '\n'.join(lines) + '\n'
+                else:
+                    result['output'] = 'No user-defined variables.\n'
+
+            elif magic == '%reset':
+                self._console_namespace = None
+                result['output'] = 'Namespace reset. All user variables cleared.\n'
+
+            elif magic == '%time':
+                if not args:
+                    result['error'] = 'Usage: %time <statement>'
+                    result['success'] = False
+                else:
+                    import io
+                    import contextlib
+
+                    namespace = self._get_console_namespace()
+                    stdout_capture = io.StringIO()
+
+                    start = time.perf_counter()
+                    with contextlib.redirect_stdout(stdout_capture):
+                        try:
+                            compiled = compile(args, '<console>', 'eval')
+                            exec_result = eval(compiled, namespace)
+                        except SyntaxError:
+                            compiled = compile(args, '<console>', 'exec')
+                            exec(compiled, namespace)
+                            exec_result = None
+                    elapsed = time.perf_counter() - start
+
+                    output = stdout_capture.getvalue()
+                    if output:
+                        result['output'] = output
+
+                    if elapsed < 0.001:
+                        time_str = f'{elapsed * 1000000:.1f} us'
+                    elif elapsed < 1:
+                        time_str = f'{elapsed * 1000:.2f} ms'
+                    else:
+                        time_str = f'{elapsed:.3f} s'
+
+                    result['result'] = f'Wall time: {time_str}'
+                    if exec_result is not None:
+                        result['result'] += f'\nResult: {repr(exec_result)}'
+
+            elif magic == '%vars':
+                return self._handle_magic_command('%whos')
+
+            elif magic == '%store':
+                result = self._handle_store_command(args)
+
+            elif magic == '%help':
+                help_text = """Available magic commands:
+  %who     - List user-defined variable names
+  %whos    - Detailed variable list (name, type, value)
+  %vars    - Alias for %whos
+  %reset   - Clear all user-defined variables
+  %time    - Time execution of a statement
+  %store   - Persist variables across sessions
+             %store          - List stored variables
+             %store x y      - Store variables x and y
+             %store -r       - Restore all stored variables
+             %store -r x     - Restore variable x
+             %store -d x     - Delete stored variable x
+             %store -z       - Clear all stored variables
+  %help    - Show this help message
+
+Available APIs:
+  tags     - Read channel values: tags.Temperature or tags['Temperature']
+  outputs  - Set outputs: outputs.set('Relay1', True)
+  session  - Session state: session.active
+
+Helper classes:
+  RateCalculator, Accumulator, EdgeDetector, RollingStats, Scheduler
+
+Unit conversions:
+  F_to_C, C_to_F, GPM_to_LPM, LPM_to_GPM, PSI_to_bar, bar_to_PSI, etc.
+
+Time functions:
+  now, now_ms, now_iso, time_of_day, elapsed_since, format_timestamp
+"""
+                result['output'] = help_text
+
+            else:
+                result['error'] = f"Unknown magic command: {magic}\nType %help for available commands."
+                result['success'] = False
+
+        except Exception as e:
+            result['error'] = f"{type(e).__name__}: {str(e)}"
+            result['success'] = False
+
+        return result
+
+    def _handle_store_command(self, args: str) -> dict:
+        """Handle %store magic command for persisting variables.
+
+        Like Spyder's %store:
+        - %store          - List stored variables
+        - %store x y      - Store variables x and y
+        - %store -r       - Restore all stored variables
+        - %store -r x     - Restore variable x
+        - %store -d x     - Delete stored variable x
+        - %store -z       - Clear all stored variables
+        """
+        import pickle
+        import base64
+        from pathlib import Path
+
+        result = {'success': True, 'output': '', 'result': '', 'error': ''}
+
+        # Storage file location - use data directory on cRIO
+        data_dir = Path('/home/admin/nisystem/data')
+        store_file = data_dir / 'console_store.json'
+
+        # Load existing stored data
+        stored_data = {}
+        if store_file.exists():
+            try:
+                with open(store_file, 'r') as f:
+                    stored_data = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load stored variables: {e}")
+
+        def save_store():
+            """Save stored data to file"""
+            try:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                with open(store_file, 'w') as f:
+                    json.dump(stored_data, f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save stored variables: {e}")
+
+        def serialize_value(value):
+            """Serialize a Python value to storable format"""
+            # Try JSON first for simple types
+            try:
+                json.dumps(value)
+                return {'type': 'json', 'data': value}
+            except (TypeError, ValueError):
+                pass
+
+            # Fall back to pickle for complex types (numpy arrays, etc.)
+            try:
+                pickled = pickle.dumps(value)
+                return {'type': 'pickle', 'data': base64.b64encode(pickled).decode('ascii')}
+            except Exception as e:
+                raise ValueError(f"Cannot serialize: {e}")
+
+        def deserialize_value(stored):
+            """Deserialize a stored value back to Python"""
+            if stored['type'] == 'json':
+                return stored['data']
+            elif stored['type'] == 'pickle':
+                pickled = base64.b64decode(stored['data'])
+                return pickle.loads(pickled)
+            else:
+                raise ValueError(f"Unknown storage type: {stored['type']}")
+
+        args_parts = args.split()
+        namespace = self._get_console_namespace()
+
+        try:
+            if not args_parts:
+                # List stored variables
+                if not stored_data:
+                    result['output'] = 'No stored variables.\n'
+                else:
+                    lines = ['Stored variables:']
+                    for name, info in sorted(stored_data.items()):
+                        type_hint = info.get('type_hint', 'unknown')
+                        lines.append(f'  {name} ({type_hint})')
+                    result['output'] = '\n'.join(lines) + '\n'
+
+            elif args_parts[0] == '-r':
+                # Restore variables
+                var_names = args_parts[1:] if len(args_parts) > 1 else list(stored_data.keys())
+
+                if not var_names:
+                    result['output'] = 'No stored variables to restore.\n'
+                else:
+                    restored = []
+                    for name in var_names:
+                        if name in stored_data:
+                            try:
+                                value = deserialize_value(stored_data[name])
+                                namespace[name] = value
+                                restored.append(name)
+                            except Exception as e:
+                                result['output'] += f"Failed to restore '{name}': {e}\n"
+                        else:
+                            result['output'] += f"Variable '{name}' not found in store.\n"
+
+                    if restored:
+                        result['output'] += f"Restored: {', '.join(restored)}\n"
+
+            elif args_parts[0] == '-d':
+                # Delete stored variables
+                if len(args_parts) < 2:
+                    result['error'] = 'Usage: %store -d <varname>'
+                    result['success'] = False
+                else:
+                    deleted = []
+                    for name in args_parts[1:]:
+                        if name in stored_data:
+                            del stored_data[name]
+                            deleted.append(name)
+                        else:
+                            result['output'] += f"Variable '{name}' not in store.\n"
+
+                    if deleted:
+                        save_store()
+                        result['output'] += f"Deleted from store: {', '.join(deleted)}\n"
+
+            elif args_parts[0] == '-z':
+                # Clear all stored variables
+                count = len(stored_data)
+                stored_data.clear()
+                save_store()
+                result['output'] = f'Cleared {count} stored variable(s).\n'
+
+            else:
+                # Store variables
+                stored = []
+                for name in args_parts:
+                    if name.startswith('-'):
+                        result['error'] = f"Unknown option: {name}"
+                        result['success'] = False
+                        return result
+
+                    if name not in namespace:
+                        result['output'] += f"Variable '{name}' not found in namespace.\n"
+                        continue
+
+                    if name in self._CONSOLE_BUILTINS:
+                        result['output'] += f"Cannot store built-in '{name}'.\n"
+                        continue
+
+                    try:
+                        value = namespace[name]
+                        stored_data[name] = serialize_value(value)
+                        stored_data[name]['type_hint'] = type(value).__name__
+                        stored.append(name)
+                    except ValueError as e:
+                        result['output'] += f"Cannot store '{name}': {e}\n"
+
+                if stored:
+                    save_store()
+                    result['output'] += f"Stored: {', '.join(stored)}\n"
+
+        except Exception as e:
+            result['error'] = f"{type(e).__name__}: {str(e)}"
+            result['success'] = False
+
+        return result
+
+    def _handle_console_variables(self, payload: dict) -> None:
+        """Return list of variables in the console namespace for Variable Explorer."""
+        base = self.get_topic_base()
+
+        try:
+            namespace = self._get_console_namespace()
+            variables = []
+
+            for name, value in namespace.items():
+                if name in self._CONSOLE_BUILTINS:
+                    continue
+
+                var_info = {
+                    'name': name,
+                    'type': type(value).__name__,
+                    'value': None,
+                    'size': None,
+                    'shape': None,
+                    'dtype': None,
+                }
+
+                try:
+                    if hasattr(value, 'shape') and hasattr(value, 'dtype'):
+                        var_info['shape'] = list(value.shape)
+                        var_info['dtype'] = str(value.dtype)
+                        var_info['size'] = value.nbytes if hasattr(value, 'nbytes') else None
+                        if value.size <= 10:
+                            var_info['value'] = value.tolist()
+                        else:
+                            var_info['value'] = f'array({value.shape}, dtype={value.dtype})'
+                    elif isinstance(value, (list, tuple)):
+                        var_info['size'] = len(value)
+                        if len(value) <= 10:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = f'{type(value).__name__}[{len(value)} items]'
+                    elif isinstance(value, dict):
+                        var_info['size'] = len(value)
+                        if len(value) <= 5:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = f'dict({len(value)} keys)'
+                    elif isinstance(value, str):
+                        var_info['size'] = len(value)
+                        if len(value) <= 50:
+                            var_info['value'] = repr(value)
+                        else:
+                            var_info['value'] = repr(value[:47] + '...')
+                    else:
+                        var_info['value'] = repr(value)
+                        if len(str(var_info['value'])) > 100:
+                            var_info['value'] = str(var_info['value'])[:97] + '...'
+                except Exception:
+                    var_info['value'] = '<error reading value>'
+
+                variables.append(var_info)
+
+            variables.sort(key=lambda v: v['name'])
+
+            self._publish(f"{base}/console/variables/result", {'success': True, 'variables': variables})
+
+        except Exception as e:
+            self._publish(f"{base}/console/variables/result", {'success': False, 'error': str(e), 'variables': []})
+
+    def _handle_console_complete(self, payload: dict) -> None:
+        """Provide tab completion suggestions for console input."""
+        base = self.get_topic_base()
+        text = payload.get('text', '')
+        cursor_pos = payload.get('cursor_pos', len(text))
+
+        try:
+            completions = []
+
+            word_start = cursor_pos
+            while word_start > 0 and text[word_start - 1] not in ' \t\n.([{=+-*/%<>!&|^~,':
+                word_start -= 1
+            partial = text[word_start:cursor_pos]
+
+            if word_start > 0 and text[word_start - 1] == '.':
+                obj_end = word_start - 1
+                obj_start = obj_end
+                while obj_start > 0 and text[obj_start - 1] not in ' \t\n([{=+-*/%<>!&|^~,':
+                    obj_start -= 1
+                obj_name = text[obj_start:obj_end]
+
+                namespace = self._get_console_namespace()
+                if obj_name in namespace:
+                    obj = namespace[obj_name]
+                    for attr in dir(obj):
+                        if not attr.startswith('_') and attr.lower().startswith(partial.lower()):
+                            completions.append({
+                                'text': attr,
+                                'type': 'attribute',
+                                'start': word_start,
+                                'end': cursor_pos
+                            })
+            else:
+                namespace = self._get_console_namespace()
+                for name in namespace.keys():
+                    if name.lower().startswith(partial.lower()) and not name.startswith('_'):
+                        comp_type = 'variable'
+                        if callable(namespace[name]):
+                            comp_type = 'function'
+                        elif name in ('tags', 'outputs', 'session'):
+                            comp_type = 'api'
+                        completions.append({
+                            'text': name,
+                            'type': comp_type,
+                            'start': word_start,
+                            'end': cursor_pos
+                        })
+
+                keywords = ['if', 'else', 'elif', 'for', 'while', 'try', 'except',
+                           'finally', 'with', 'def', 'class', 'return', 'yield',
+                           'import', 'from', 'as', 'lambda', 'and', 'or', 'not',
+                           'in', 'is', 'True', 'False', 'None', 'pass', 'break',
+                           'continue', 'raise', 'assert', 'del', 'global', 'nonlocal']
+                for kw in keywords:
+                    if kw.lower().startswith(partial.lower()):
+                        completions.append({
+                            'text': kw,
+                            'type': 'keyword',
+                            'start': word_start,
+                            'end': cursor_pos
+                        })
+
+            completions.sort(key=lambda c: c['text'].lower())
+            completions = completions[:50]
+
+            self._publish(f"{base}/console/complete/result", {'success': True, 'completions': completions})
+
+        except Exception as e:
+            self._publish(f"{base}/console/complete/result", {'success': False, 'error': str(e), 'completions': []})
+
+    def _handle_console_reset(self, payload: dict) -> None:
+        """Reset the console namespace."""
+        base = self.get_topic_base()
+        self._console_namespace = None
+        self._publish(f"{base}/console/result", {
+            'success': True,
+            'output': 'Namespace reset. All user variables cleared.\n',
+            'result': '',
+            'error': ''
+        })
+
+    def _build_console_namespace(self) -> dict:
+        """Build the initial namespace for console commands."""
+        import math
+        from datetime import datetime
+
+        service = self
+
+        class TagsAPI:
+            def __init__(self, svc):
+                self._service = svc
+
+            def __getattr__(self, name: str):
+                return self._service.channel_values.get(name, 0.0)
+
+            def __getitem__(self, name: str):
+                return self._service.channel_values.get(name, 0.0)
+
+            def keys(self):
+                return list(self._service.channel_values.keys())
+
+            def values(self):
+                return list(self._service.channel_values.values())
+
+            def items(self):
+                return list(self._service.channel_values.items())
+
+            def get(self, name: str, default=0.0):
+                return self._service.channel_values.get(name, default)
+
+            def __repr__(self):
+                return f'<TagsAPI: {len(self.keys())} channels>'
+
+        class OutputsAPI:
+            def __init__(self, svc):
+                self._service = svc
+
+            def set(self, channel: str, value):
+                self._service._write_output(channel, value)
+
+            def __setitem__(self, name: str, value):
+                self.set(name, value)
+
+            def __repr__(self):
+                return '<OutputsAPI: outputs.set(channel, value)>'
+
+        class SessionAPI:
+            def __init__(self, svc):
+                self._service = svc
+
+            @property
+            def active(self):
+                return self._service.session.active
+
+            @property
+            def elapsed(self):
+                if self._service.session.start_time:
+                    return time.time() - self._service.session.start_time
+                return 0.0
+
+            def __repr__(self):
+                return f'<SessionAPI: active={self.active}>'
+
+        namespace = {
+            'tags': TagsAPI(service),
+            'outputs': OutputsAPI(service),
+            'session': SessionAPI(service),
+            'time': time,
+            'math': math,
+            'datetime': datetime,
+            'json': json,
+            're': __import__('re'),
+            'statistics': __import__('statistics'),
+            'abs': abs, 'min': min, 'max': max, 'sum': sum,
+            'round': round, 'pow': pow,
+            'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
+            'sqrt': math.sqrt, 'log': math.log, 'log10': math.log10,
+            'pi': math.pi, 'e': math.e,
+            'print': print,
+            'len': len, 'range': range, 'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
+            'str': str, 'int': int, 'float': float, 'bool': bool,
+            'True': True, 'False': False, 'None': None,
+            'sorted': sorted, 'enumerate': enumerate, 'zip': zip,
+            'map': map, 'filter': filter, 'any': any, 'all': all,
+            'isinstance': isinstance, 'type': type, 'dir': dir, 'help': help,
+            'getattr': getattr, 'setattr': setattr, 'hasattr': hasattr,
+        }
+
+        try:
+            import numpy as np
+            namespace['np'] = np
+            namespace['numpy'] = np
+        except ImportError:
+            pass
+
+        try:
+            import scipy
+            namespace['scipy'] = scipy
+        except ImportError:
+            pass
+
+        # =====================================================================
+        # Helper Classes (available in console for interactive use)
+        # =====================================================================
+
+        class RateCalculator:
+            """Calculate rate of change over a time window."""
+            def __init__(self, window_seconds: float = 60.0):
+                self.window_seconds = window_seconds
+                self._history = []
+
+            def update(self, value: float) -> float:
+                """Update with new value and return rate (units per second)."""
+                now = time.time()
+                self._history.append((now, value))
+                cutoff = now - self.window_seconds
+                self._history = [(t, v) for t, v in self._history if t >= cutoff]
+                if len(self._history) < 2:
+                    return 0.0
+                t0, v0 = self._history[0]
+                t1, v1 = self._history[-1]
+                dt = t1 - t0
+                return (v1 - v0) / dt if dt > 0 else 0.0
+
+            def reset(self):
+                self._history.clear()
+
+        class Accumulator:
+            """Track cumulative totals from counter values."""
+            def __init__(self, initial: float = 0.0):
+                self._total = initial
+                self._last_value = None
+
+            def update(self, value: float) -> float:
+                if self._last_value is not None:
+                    delta = value - self._last_value
+                    if delta < 0:
+                        delta = value
+                    self._total += delta
+                self._last_value = value
+                return self._total
+
+            def reset(self, initial: float = 0.0):
+                self._total = initial
+                self._last_value = None
+
+            @property
+            def total(self) -> float:
+                return self._total
+
+        class EdgeDetector:
+            """Detect rising and falling edges."""
+            def __init__(self, threshold: float = 0.5):
+                self.threshold = threshold
+                self._last_state = None
+
+            def update(self, value: float) -> tuple:
+                current_state = value > self.threshold
+                rising = falling = False
+                if self._last_state is not None:
+                    rising = current_state and not self._last_state
+                    falling = not current_state and self._last_state
+                self._last_state = current_state
+                return (rising, falling, current_state)
+
+            def reset(self):
+                self._last_state = None
+
+        class RollingStats:
+            """Calculate running statistics over a sample window."""
+            def __init__(self, window_size: int = 100):
+                self.window_size = window_size
+                self._buffer = []
+
+            def update(self, value: float) -> dict:
+                self._buffer.append(value)
+                if len(self._buffer) > self.window_size:
+                    self._buffer = self._buffer[-self.window_size:]
+                if not self._buffer:
+                    return {'mean': 0, 'min': 0, 'max': 0, 'std': 0, 'count': 0}
+                n = len(self._buffer)
+                mean = sum(self._buffer) / n
+                min_val = min(self._buffer)
+                max_val = max(self._buffer)
+                if n > 1:
+                    variance = sum((x - mean) ** 2 for x in self._buffer) / (n - 1)
+                    std = variance ** 0.5
+                else:
+                    std = 0.0
+                return {'mean': mean, 'min': min_val, 'max': max_val, 'std': std, 'count': n}
+
+            def reset(self):
+                self._buffer.clear()
+
+        class Scheduler:
+            """Simple job scheduler for timed operations."""
+            def __init__(self):
+                self._jobs = {}
+
+            def add_interval(self, job_id: str, func, seconds: float = 0,
+                           minutes: float = 0, hours: float = 0):
+                interval = seconds + (minutes * 60) + (hours * 3600)
+                self._jobs[job_id] = {
+                    'type': 'interval', 'func': func, 'interval': interval,
+                    'last_run': 0, 'paused': False, 'run_count': 0
+                }
+
+            def tick(self):
+                now = time.time()
+                for job_id, job in self._jobs.items():
+                    if job['paused']:
+                        continue
+                    if job['type'] == 'interval':
+                        if now - job['last_run'] >= job['interval']:
+                            try:
+                                job['func']()
+                                job['run_count'] += 1
+                            except Exception as e:
+                                logger.debug(f"Scheduler job {job_id} error: {e}")
+                            job['last_run'] = now
+
+            def pause(self, job_id: str):
+                if job_id in self._jobs:
+                    self._jobs[job_id]['paused'] = True
+
+            def resume(self, job_id: str):
+                if job_id in self._jobs:
+                    self._jobs[job_id]['paused'] = False
+
+            def remove(self, job_id: str):
+                self._jobs.pop(job_id, None)
+
+        namespace.update({
+            'RateCalculator': RateCalculator,
+            'Accumulator': Accumulator,
+            'EdgeDetector': EdgeDetector,
+            'RollingStats': RollingStats,
+            'Scheduler': Scheduler,
+        })
+
+        # =====================================================================
+        # Unit Conversion Functions
+        # =====================================================================
+
+        def F_to_C(f: float) -> float:
+            return (f - 32) * 5 / 9
+
+        def C_to_F(c: float) -> float:
+            return c * 9 / 5 + 32
+
+        def GPM_to_LPM(gpm: float) -> float:
+            return gpm * 3.78541
+
+        def LPM_to_GPM(lpm: float) -> float:
+            return lpm / 3.78541
+
+        def PSI_to_bar(psi: float) -> float:
+            return psi * 0.0689476
+
+        def bar_to_PSI(bar: float) -> float:
+            return bar / 0.0689476
+
+        def gal_to_L(gal: float) -> float:
+            return gal * 3.78541
+
+        def L_to_gal(l: float) -> float:
+            return l / 3.78541
+
+        def BTU_to_kJ(btu: float) -> float:
+            return btu * 1.05506
+
+        def kJ_to_BTU(kj: float) -> float:
+            return kj / 1.05506
+
+        def lb_to_kg(lb: float) -> float:
+            return lb * 0.453592
+
+        def kg_to_lb(kg: float) -> float:
+            return kg / 0.453592
+
+        namespace.update({
+            'F_to_C': F_to_C, 'C_to_F': C_to_F,
+            'GPM_to_LPM': GPM_to_LPM, 'LPM_to_GPM': LPM_to_GPM,
+            'PSI_to_bar': PSI_to_bar, 'bar_to_PSI': bar_to_PSI,
+            'gal_to_L': gal_to_L, 'L_to_gal': L_to_gal,
+            'BTU_to_kJ': BTU_to_kJ, 'kJ_to_BTU': kJ_to_BTU,
+            'lb_to_kg': lb_to_kg, 'kg_to_lb': kg_to_lb,
+        })
+
+        # =====================================================================
+        # Time Utility Functions
+        # =====================================================================
+
+        def now() -> float:
+            return time.time()
+
+        def now_ms() -> int:
+            return int(time.time() * 1000)
+
+        def now_iso() -> str:
+            return datetime.now().isoformat()
+
+        def time_of_day() -> str:
+            return datetime.now().strftime('%H:%M:%S')
+
+        def elapsed_since(start_ts: float) -> float:
+            return time.time() - start_ts
+
+        def format_timestamp(ts_ms: int, fmt: str = '%Y-%m-%d %H:%M:%S') -> str:
+            return datetime.fromtimestamp(ts_ms / 1000).strftime(fmt)
+
+        namespace.update({
+            'now': now, 'now_ms': now_ms, 'now_iso': now_iso,
+            'time_of_day': time_of_day, 'elapsed_since': elapsed_since,
+            'format_timestamp': format_timestamp,
+        })
+
+        return namespace
 
     def _set_safe_state(self, reason: str = 'command'):
         """Set all outputs to safe state (DO=0, AO=0)"""
@@ -1456,6 +3001,29 @@ class CRIONodeService:
 
         logger.info(f"Manual safety trigger: {action_name} (reason: {reason})")
         self._execute_safety_action(action_name, f"manual:{reason}")
+
+    def _init_local_safety(self):
+        """Initialize the local safety manager for autonomous operation"""
+        def get_channel_value(channel: str) -> Optional[float]:
+            with self.values_lock:
+                return self.channel_values.get(channel)
+
+        def set_output(channel: str, value: Any):
+            self._set_output(channel, value)
+
+        def stop_session():
+            self._stop_session()
+
+        def publish(topic: str, data: Dict[str, Any]):
+            self._publish(f"{self.get_topic_base()}/{topic}", data)
+
+        self.local_safety = LocalSafetyManager(
+            get_channel_value=get_channel_value,
+            set_output=set_output,
+            stop_session=stop_session,
+            publish=publish
+        )
+        logger.info("[LocalSafety] Local safety manager initialized")
 
     def _check_safety_limits(self, channel_name: str, value: float):
         """
@@ -1793,6 +3361,10 @@ class CRIONodeService:
         tc_channels = []
         voltage_channels = []
         current_channels = []
+        rtd_channels = []
+        counter_channels = []
+        strain_channels = []
+        iepe_channels = []
         di_channels = []
         do_channels = []
         ao_channels = []
@@ -1804,6 +3376,14 @@ class CRIONodeService:
                 voltage_channels.append(ch)
             elif ch.channel_type == 'current':
                 current_channels.append(ch)
+            elif ch.channel_type == 'rtd':
+                rtd_channels.append(ch)
+            elif ch.channel_type == 'counter':
+                counter_channels.append(ch)
+            elif ch.channel_type == 'strain':
+                strain_channels.append(ch)
+            elif ch.channel_type == 'iepe':
+                iepe_channels.append(ch)
             elif ch.channel_type == 'digital_input':
                 di_channels.append(ch)
             elif ch.channel_type == 'digital_output':
@@ -1818,6 +3398,14 @@ class CRIONodeService:
             self._create_voltage_task(voltage_channels)
         if current_channels:
             self._create_current_task(current_channels)
+        if rtd_channels:
+            self._create_rtd_task(rtd_channels)
+        if counter_channels:
+            self._create_counter_tasks(counter_channels)
+        if strain_channels:
+            self._create_strain_task(strain_channels)
+        if iepe_channels:
+            self._create_iepe_task(iepe_channels)
         if di_channels:
             self._create_digital_input_task(di_channels)
 
@@ -1997,6 +3585,263 @@ class CRIONodeService:
         except Exception as e:
             task.close()
             logger.error(f"Failed to create DI task: {e}")
+
+    def _create_rtd_task(self, channels: List[ChannelConfig]):
+        """Create RTD (Resistance Temperature Detector) input task"""
+        from nidaqmx.constants import RTDType, ResistanceConfiguration, ExcitationSource
+
+        task = nidaqmx.Task('RTD_Input')
+        channel_names = []
+
+        try:
+            # Map RTD type string to nidaqmx constant
+            rtd_type_map = {
+                'Pt100': RTDType.PT_3750, 'PT100': RTDType.PT_3750,
+                'Pt385': RTDType.PT_3851, 'PT385': RTDType.PT_3851,
+                'Pt3851': RTDType.PT_3851, 'PT3851': RTDType.PT_3851,
+                'Pt3916': RTDType.PT_3916, 'PT3916': RTDType.PT_3916,
+                'Pt500': RTDType.PT_3750, 'PT500': RTDType.PT_3750,
+                'Pt1000': RTDType.PT_3750, 'PT1000': RTDType.PT_3750,
+            }
+
+            # Map wiring configuration
+            wiring_map = {
+                '2-wire': ResistanceConfiguration.TWO_WIRE,
+                '3-wire': ResistanceConfiguration.THREE_WIRE,
+                '4-wire': ResistanceConfiguration.FOUR_WIRE,
+                '2_wire': ResistanceConfiguration.TWO_WIRE,
+                '3_wire': ResistanceConfiguration.THREE_WIRE,
+                '4_wire': ResistanceConfiguration.FOUR_WIRE,
+            }
+
+            for ch in channels:
+                safe_name = ch.name.replace('/', '_')
+
+                # Get RTD type (default to Pt100)
+                rtd_type_str = getattr(ch, 'rtd_type', 'Pt100') or 'Pt100'
+                rtd_type = rtd_type_map.get(rtd_type_str, RTDType.PT_3750)
+
+                # Get wiring configuration (default to 4-wire)
+                wiring_str = getattr(ch, 'rtd_wiring', '4-wire') or '4-wire'
+                wiring = wiring_map.get(wiring_str, ResistanceConfiguration.FOUR_WIRE)
+
+                # Get R0 resistance (default 100 ohms for Pt100)
+                r0 = getattr(ch, 'rtd_resistance', 100.0) or 100.0
+
+                # Get excitation current (default 1mA)
+                current = getattr(ch, 'rtd_current', 0.001) or 0.001
+
+                task.ai_channels.add_ai_rtd_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    rtd_type=rtd_type,
+                    resistance_config=wiring,
+                    current_excit_source=ExcitationSource.INTERNAL,
+                    current_excit_val=current,
+                    r_0=r0
+                )
+                channel_names.append(ch.name)
+                logger.info(f"Added RTD channel: {ch.name} -> {ch.physical_channel} "
+                           f"(type={rtd_type_str}, wiring={wiring_str}, R0={r0})")
+
+            # Configure continuous acquisition
+            task.timing.cfg_samp_clk_timing(
+                rate=self.config.scan_rate_hz,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            reader = AnalogMultiChannelReader(task.in_stream)
+            self.input_tasks['rtd'] = {
+                'task': task,
+                'reader': reader,
+                'channels': channel_names
+            }
+
+        except Exception as e:
+            task.close()
+            logger.error(f"Failed to create RTD task: {e}")
+
+    def _create_counter_tasks(self, channels: List[ChannelConfig]):
+        """Create counter/frequency input tasks (one per channel)"""
+        from nidaqmx.constants import Edge, CountDirection
+        from nidaqmx.stream_readers import CounterReader
+
+        for ch in channels:
+            try:
+                safe_task_name = f"Counter_{ch.name.replace('/', '_')}"
+                task = nidaqmx.Task(safe_task_name)
+
+                # Get counter configuration
+                counter_mode = getattr(ch, 'counter_mode', 'frequency') or 'frequency'
+                min_freq = getattr(ch, 'counter_min_freq', 0.1) or 0.1
+                max_freq = getattr(ch, 'counter_max_freq', 1000.0) or 1000.0
+                edge_str = getattr(ch, 'counter_edge', 'rising') or 'rising'
+                edge = Edge.RISING if edge_str.lower() == 'rising' else Edge.FALLING
+
+                if counter_mode == 'frequency':
+                    # Frequency measurement
+                    task.ci_channels.add_ci_freq_chan(
+                        ch.physical_channel,
+                        name_to_assign_to_channel=ch.name.replace('/', '_'),
+                        min_val=min_freq,
+                        max_val=max_freq,
+                        edge=edge
+                    )
+                    logger.info(f"Added frequency counter: {ch.name} -> {ch.physical_channel} "
+                               f"(range={min_freq}-{max_freq}Hz)")
+
+                elif counter_mode == 'count':
+                    # Edge counting
+                    task.ci_channels.add_ci_count_edges_chan(
+                        ch.physical_channel,
+                        name_to_assign_to_channel=ch.name.replace('/', '_'),
+                        edge=edge,
+                        initial_count=0,
+                        count_direction=CountDirection.COUNT_UP
+                    )
+                    logger.info(f"Added edge counter: {ch.name} -> {ch.physical_channel}")
+
+                elif counter_mode == 'period':
+                    # Period measurement
+                    min_period = 1.0 / max_freq if max_freq > 0 else 0.001
+                    max_period = 1.0 / min_freq if min_freq > 0 else 10.0
+                    task.ci_channels.add_ci_period_chan(
+                        ch.physical_channel,
+                        name_to_assign_to_channel=ch.name.replace('/', '_'),
+                        min_val=min_period,
+                        max_val=max_period,
+                        edge=edge
+                    )
+                    logger.info(f"Added period counter: {ch.name} -> {ch.physical_channel}")
+
+                # Store task (counters are read on-demand, not continuous)
+                self.input_tasks[f'counter_{ch.name}'] = {
+                    'task': task,
+                    'reader': CounterReader(task.in_stream),
+                    'channels': [ch.name],
+                    'mode': counter_mode
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to create counter task for {ch.name}: {e}")
+                try:
+                    task.close()
+                except:
+                    pass
+
+    def _create_strain_task(self, channels: List[ChannelConfig]):
+        """Create strain gauge input task with CONTINUOUS acquisition"""
+        from nidaqmx.constants import (
+            StrainGageBridgeType, BridgeConfiguration, ExcitationSource
+        )
+
+        task = nidaqmx.Task('Strain_Input')
+        channel_names = []
+
+        # Map bridge config
+        bridge_map = {
+            'full-bridge': BridgeConfiguration.FULL_BRIDGE,
+            'full_bridge': BridgeConfiguration.FULL_BRIDGE,
+            'half-bridge': BridgeConfiguration.HALF_BRIDGE,
+            'half_bridge': BridgeConfiguration.HALF_BRIDGE,
+            'quarter-bridge': BridgeConfiguration.QUARTER_BRIDGE,
+            'quarter_bridge': BridgeConfiguration.QUARTER_BRIDGE,
+        }
+
+        try:
+            for ch in channels:
+                safe_name = ch.name.replace('/', '_')
+
+                # Get strain configuration
+                strain_config = getattr(ch, 'strain_config', 'full-bridge') or 'full-bridge'
+                bridge_config = bridge_map.get(strain_config.lower(), BridgeConfiguration.FULL_BRIDGE)
+
+                # Get strain parameters
+                excit_voltage = getattr(ch, 'strain_excitation_voltage', 2.5) or 2.5
+                gage_factor = getattr(ch, 'strain_gage_factor', 2.0) or 2.0
+                resistance = getattr(ch, 'strain_resistance', 350.0) or 350.0
+
+                task.ai_channels.add_ai_strain_gage_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    strain_config=bridge_config,
+                    voltage_excit_source=ExcitationSource.INTERNAL,
+                    voltage_excit_val=excit_voltage,
+                    gage_factor=gage_factor,
+                    nominal_gage_resistance=resistance
+                )
+                channel_names.append(ch.name)
+                logger.info(f"Added strain channel: {ch.name} -> {ch.physical_channel} "
+                           f"(config={strain_config}, GF={gage_factor})")
+
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.config.scan_rate_hz,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            reader = AnalogMultiChannelReader(task.in_stream)
+            self.input_tasks['strain'] = {
+                'task': task,
+                'reader': reader,
+                'channels': channel_names
+            }
+
+        except Exception as e:
+            task.close()
+            logger.error(f"Failed to create strain task: {e}")
+
+    def _create_iepe_task(self, channels: List[ChannelConfig]):
+        """Create IEPE (accelerometer/microphone) input task with CONTINUOUS acquisition"""
+        from nidaqmx.constants import ExcitationSource, Coupling
+
+        task = nidaqmx.Task('IEPE_Input')
+        channel_names = []
+
+        try:
+            for ch in channels:
+                safe_name = ch.name.replace('/', '_')
+
+                # Get IEPE configuration
+                sensitivity = getattr(ch, 'iepe_sensitivity', 100.0) or 100.0  # mV/g
+                coupling_str = getattr(ch, 'iepe_coupling', 'AC') or 'AC'
+                coupling = Coupling.AC if coupling_str.upper() == 'AC' else Coupling.DC
+                current = getattr(ch, 'iepe_current', 0.002) or 0.002  # 2mA default
+
+                # Add accelerometer channel with IEPE excitation
+                task.ai_channels.add_ai_accel_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    sensitivity=sensitivity,
+                    current_excit_source=ExcitationSource.INTERNAL,
+                    current_excit_val=current
+                )
+                # Set coupling
+                task.ai_channels[safe_name].ai_coupling = coupling
+
+                channel_names.append(ch.name)
+                logger.info(f"Added IEPE channel: {ch.name} -> {ch.physical_channel} "
+                           f"(sensitivity={sensitivity} mV/g, coupling={coupling_str})")
+
+            # Configure CONTINUOUS acquisition with hardware timing
+            task.timing.cfg_samp_clk_timing(
+                rate=self.config.scan_rate_hz,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=BUFFER_SIZE
+            )
+
+            reader = AnalogMultiChannelReader(task.in_stream)
+            self.input_tasks['iepe'] = {
+                'task': task,
+                'reader': reader,
+                'channels': channel_names
+            }
+
+        except Exception as e:
+            task.close()
+            logger.error(f"Failed to create IEPE task: {e}")
 
     def _create_analog_output_tasks(self, channels: List[ChannelConfig]):
         """Create analog output tasks (one per channel for independent control)"""
@@ -2264,6 +4109,9 @@ class CRIONodeService:
         self._publish_status()
         logger.info("Acquisition started")
 
+        # Auto-start scripts with run_mode='acquisition'
+        self._auto_start_scripts('acquisition')
+
     def _stop_acquisition(self):
         """Stop data acquisition"""
         if not self._acquiring.is_set():
@@ -2283,9 +4131,532 @@ class CRIONodeService:
             except Exception as e:
                 logger.debug(f"Error stopping task {name}: {e}")
 
+        # Auto-stop acquisition scripts
+        self._auto_stop_scripts('acquisition')
+
         # Publish status
         self._publish_status()
         logger.info("Acquisition stopped")
+
+    # =========================================================================
+    # SEAMLESS TASK SWAP - Dynamic channel reconfiguration
+    # =========================================================================
+
+    def _rebuild_input_task(self, task_type: str, channels: List['ChannelConfig']) -> Optional[Dict[str, Any]]:
+        """Build a new input task without starting it.
+
+        This creates a task in parallel while acquisition continues,
+        preparing for seamless swap.
+
+        Args:
+            task_type: Type of task ('thermocouple', 'voltage', 'current', 'digital_input')
+            channels: List of channel configurations
+
+        Returns:
+            Task info dict or None if creation failed
+        """
+        if not channels:
+            return None
+
+        if not NIDAQMX_AVAILABLE:
+            logger.warning(f"Cannot rebuild {task_type} task - nidaqmx not available")
+            return None
+
+        try:
+            if task_type == 'thermocouple':
+                return self._build_thermocouple_task(channels)
+            elif task_type == 'voltage':
+                return self._build_voltage_task(channels)
+            elif task_type == 'current':
+                return self._build_current_task(channels)
+            elif task_type == 'rtd':
+                return self._build_rtd_task(channels)
+            elif task_type == 'counter':
+                return self._build_counter_tasks(channels)
+            elif task_type == 'strain':
+                return self._build_strain_task(channels)
+            elif task_type == 'iepe':
+                return self._build_iepe_task(channels)
+            elif task_type == 'digital_input':
+                return self._build_digital_input_task(channels)
+            else:
+                logger.error(f"Unknown task type: {task_type}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to rebuild {task_type} task: {e}")
+            return None
+
+    def _build_thermocouple_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build thermocouple task (internal helper for rebuild)"""
+        task = nidaqmx.Task(f'TC_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        for ch in channels:
+            tc_type_map = {
+                'J': NI_TCType.J, 'K': NI_TCType.K, 'T': NI_TCType.T,
+                'E': NI_TCType.E, 'N': NI_TCType.N, 'R': NI_TCType.R,
+                'S': NI_TCType.S, 'B': NI_TCType.B
+            }
+            tc_type = tc_type_map.get(ch.thermocouple_type.upper(), NI_TCType.K)
+            safe_name = ch.name.replace('/', '_')
+            task.ai_channels.add_ai_thrmcpl_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name,
+                thermocouple_type=tc_type
+            )
+            channel_names.append(ch.name)
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_voltage_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build voltage task (internal helper for rebuild)"""
+        task = nidaqmx.Task(f'Voltage_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            term_configs_to_try = []
+            if ch.terminal_config.upper() == 'RSE':
+                term_configs_to_try = [TerminalConfiguration.RSE, TerminalConfiguration.DIFF]
+            elif ch.terminal_config.upper() == 'DIFF':
+                term_configs_to_try = [TerminalConfiguration.DIFF]
+            elif ch.terminal_config.upper() == 'NRSE':
+                term_configs_to_try = [TerminalConfiguration.NRSE, TerminalConfiguration.DIFF]
+            else:
+                term_configs_to_try = [TerminalConfiguration.DIFF]
+
+            for term_config in term_configs_to_try:
+                try:
+                    task.ai_channels.add_ai_voltage_chan(
+                        ch.physical_channel,
+                        name_to_assign_to_channel=safe_name,
+                        terminal_config=term_config,
+                        min_val=-ch.voltage_range,
+                        max_val=ch.voltage_range
+                    )
+                    channel_names.append(ch.name)
+                    break
+                except Exception:
+                    continue
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_current_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build current (4-20mA) task (internal helper for rebuild)"""
+        from nidaqmx.constants import CurrentShuntResistorLocation
+        task = nidaqmx.Task(f'Current_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            task.ai_channels.add_ai_current_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name,
+                min_val=0.004,
+                max_val=0.020,
+                shunt_resistor_loc=CurrentShuntResistorLocation.INTERNAL
+            )
+            channel_names.append(ch.name)
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_digital_input_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build digital input task (internal helper for rebuild)"""
+        from nidaqmx.stream_readers import DigitalMultiChannelReader
+        task = nidaqmx.Task(f'DI_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            task.di_channels.add_di_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name
+            )
+            channel_names.append(ch.name)
+
+        reader = DigitalMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_rtd_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build RTD task (internal helper for rebuild)"""
+        from nidaqmx.constants import RTDType, ResistanceConfiguration, ExcitationSource
+
+        task = nidaqmx.Task(f'RTD_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        rtd_type_map = {
+            'Pt100': RTDType.PT_3750, 'PT100': RTDType.PT_3750,
+            'Pt385': RTDType.PT_3851, 'PT385': RTDType.PT_3851,
+            'Pt3851': RTDType.PT_3851, 'PT3851': RTDType.PT_3851,
+            'Pt3916': RTDType.PT_3916, 'PT3916': RTDType.PT_3916,
+        }
+
+        wiring_map = {
+            '2-wire': ResistanceConfiguration.TWO_WIRE,
+            '3-wire': ResistanceConfiguration.THREE_WIRE,
+            '4-wire': ResistanceConfiguration.FOUR_WIRE,
+        }
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            rtd_type = rtd_type_map.get(getattr(ch, 'rtd_type', 'Pt100'), RTDType.PT_3750)
+            wiring = wiring_map.get(getattr(ch, 'rtd_wiring', '4-wire'), ResistanceConfiguration.FOUR_WIRE)
+            r0 = getattr(ch, 'rtd_resistance', 100.0) or 100.0
+            current = getattr(ch, 'rtd_current', 0.001) or 0.001
+
+            task.ai_channels.add_ai_rtd_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name,
+                rtd_type=rtd_type,
+                resistance_config=wiring,
+                current_excit_source=ExcitationSource.INTERNAL,
+                current_excit_val=current,
+                r_0=r0
+            )
+            channel_names.append(ch.name)
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_strain_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build strain gauge task (internal helper for rebuild)"""
+        from nidaqmx.constants import (
+            StrainGageBridgeType, BridgeConfiguration, ExcitationSource
+        )
+
+        task = nidaqmx.Task(f'Strain_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        bridge_map = {
+            'full-bridge': BridgeConfiguration.FULL_BRIDGE,
+            'full_bridge': BridgeConfiguration.FULL_BRIDGE,
+            'half-bridge': BridgeConfiguration.HALF_BRIDGE,
+            'half_bridge': BridgeConfiguration.HALF_BRIDGE,
+            'quarter-bridge': BridgeConfiguration.QUARTER_BRIDGE,
+            'quarter_bridge': BridgeConfiguration.QUARTER_BRIDGE,
+        }
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            strain_config = getattr(ch, 'strain_config', 'full-bridge') or 'full-bridge'
+            bridge_config = bridge_map.get(strain_config.lower(), BridgeConfiguration.FULL_BRIDGE)
+            excit_voltage = getattr(ch, 'strain_excitation_voltage', 2.5) or 2.5
+            gage_factor = getattr(ch, 'strain_gage_factor', 2.0) or 2.0
+            resistance = getattr(ch, 'strain_resistance', 350.0) or 350.0
+
+            task.ai_channels.add_ai_strain_gage_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name,
+                strain_config=bridge_config,
+                voltage_excit_source=ExcitationSource.INTERNAL,
+                voltage_excit_val=excit_voltage,
+                gage_factor=gage_factor,
+                nominal_gage_resistance=resistance
+            )
+            channel_names.append(ch.name)
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_iepe_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build IEPE (accelerometer) task (internal helper for rebuild)"""
+        from nidaqmx.constants import ExcitationSource, Coupling
+
+        task = nidaqmx.Task(f'IEPE_Input_{int(time.time()*1000)}')
+        channel_names = []
+
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            sensitivity = getattr(ch, 'iepe_sensitivity', 100.0) or 100.0
+            coupling_str = getattr(ch, 'iepe_coupling', 'AC') or 'AC'
+            coupling = Coupling.AC if coupling_str.upper() == 'AC' else Coupling.DC
+            current = getattr(ch, 'iepe_current', 0.002) or 0.002
+
+            task.ai_channels.add_ai_accel_chan(
+                ch.physical_channel,
+                name_to_assign_to_channel=safe_name,
+                sensitivity=sensitivity,
+                current_excit_source=ExcitationSource.INTERNAL,
+                current_excit_val=current
+            )
+            task.ai_channels[safe_name].ai_coupling = coupling
+            channel_names.append(ch.name)
+
+        task.timing.cfg_samp_clk_timing(
+            rate=self.config.scan_rate_hz,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=BUFFER_SIZE
+        )
+
+        reader = AnalogMultiChannelReader(task.in_stream)
+        return {'task': task, 'reader': reader, 'channels': channel_names}
+
+    def _build_counter_tasks(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
+        """Build counter tasks (internal helper for rebuild) - returns dict of tasks"""
+        from nidaqmx.constants import Edge, CountDirection
+        from nidaqmx.stream_readers import CounterReader
+
+        # Counter tasks are individual per channel, return a dict
+        tasks = {}
+        for ch in channels:
+            safe_name = ch.name.replace('/', '_')
+            task = nidaqmx.Task(f'Counter_{safe_name}_{int(time.time()*1000)}')
+
+            counter_mode = getattr(ch, 'counter_mode', 'frequency') or 'frequency'
+            min_freq = getattr(ch, 'counter_min_freq', 0.1) or 0.1
+            max_freq = getattr(ch, 'counter_max_freq', 1000.0) or 1000.0
+            edge_str = getattr(ch, 'counter_edge', 'rising') or 'rising'
+            edge = Edge.RISING if edge_str.lower() == 'rising' else Edge.FALLING
+
+            if counter_mode == 'frequency':
+                task.ci_channels.add_ci_freq_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    min_val=min_freq,
+                    max_val=max_freq,
+                    edge=edge
+                )
+            elif counter_mode == 'count':
+                task.ci_channels.add_ci_count_edges_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    edge=edge,
+                    initial_count=0,
+                    count_direction=CountDirection.COUNT_UP
+                )
+            elif counter_mode == 'period':
+                min_period = 1.0 / max_freq if max_freq > 0 else 0.001
+                max_period = 1.0 / min_freq if min_freq > 0 else 10.0
+                task.ci_channels.add_ci_period_chan(
+                    ch.physical_channel,
+                    name_to_assign_to_channel=safe_name,
+                    min_val=min_period,
+                    max_val=max_period,
+                    edge=edge
+                )
+
+            tasks[f'counter_{ch.name}'] = {
+                'task': task,
+                'reader': CounterReader(task.in_stream),
+                'channels': [ch.name],
+                'mode': counter_mode
+            }
+
+        return tasks
+
+    def seamless_task_swap(self, new_channels: List['ChannelConfig']) -> bool:
+        """Perform a seamless task swap with minimal acquisition downtime.
+
+        This method:
+        1. Builds new tasks in parallel (while acquisition continues)
+        2. Briefly pauses the scan loop
+        3. Stops old tasks
+        4. Swaps in new tasks
+        5. Starts new tasks
+        6. Resumes scan loop
+
+        Total downtime is typically <100ms.
+
+        Args:
+            new_channels: Complete list of channel configurations
+
+        Returns:
+            True if swap succeeded, False otherwise
+        """
+        logger.info(f"Seamless task swap requested with {len(new_channels)} channels")
+
+        with self._task_swap_lock:
+            try:
+                # Step 1: Group channels by type
+                tc_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'TC']
+                voltage_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('VOLTAGE', 'ANALOG')]
+                current_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('CURRENT', '4-20MA')]
+                rtd_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'RTD']
+                counter_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'COUNTER']
+                strain_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'STRAIN']
+                iepe_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'IEPE']
+                di_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('DI', 'DIGITAL_INPUT')]
+
+                # Step 2: Build new tasks in parallel (acquisition still running)
+                logger.info("Building new tasks...")
+                new_tasks = {}
+
+                if tc_channels:
+                    task_info = self._rebuild_input_task('thermocouple', tc_channels)
+                    if task_info:
+                        new_tasks['thermocouple'] = task_info
+
+                if voltage_channels:
+                    task_info = self._rebuild_input_task('voltage', voltage_channels)
+                    if task_info:
+                        new_tasks['voltage'] = task_info
+
+                if current_channels:
+                    task_info = self._rebuild_input_task('current', current_channels)
+                    if task_info:
+                        new_tasks['current'] = task_info
+
+                if rtd_channels:
+                    task_info = self._rebuild_input_task('rtd', rtd_channels)
+                    if task_info:
+                        new_tasks['rtd'] = task_info
+
+                if counter_channels:
+                    # Counter returns a dict of tasks (one per channel)
+                    counter_tasks = self._build_counter_tasks(counter_channels)
+                    if counter_tasks:
+                        new_tasks.update(counter_tasks)
+
+                if strain_channels:
+                    task_info = self._rebuild_input_task('strain', strain_channels)
+                    if task_info:
+                        new_tasks['strain'] = task_info
+
+                if iepe_channels:
+                    task_info = self._rebuild_input_task('iepe', iepe_channels)
+                    if task_info:
+                        new_tasks['iepe'] = task_info
+
+                if di_channels:
+                    task_info = self._rebuild_input_task('digital_input', di_channels)
+                    if task_info:
+                        new_tasks['digital_input'] = task_info
+
+                # Step 3: Signal scan loop to pause
+                logger.info("Pausing scan loop for swap...")
+                self._task_swap_in_progress = True
+                time.sleep(0.05)  # Allow current scan iteration to complete
+
+                # Step 4: Stop and close old tasks
+                old_tasks = self.input_tasks
+                for name, task_info in old_tasks.items():
+                    try:
+                        task_info['task'].stop()
+                        task_info['task'].close()
+                    except Exception as e:
+                        logger.warning(f"Error closing old task {name}: {e}")
+
+                # Step 5: Swap in new tasks
+                self.input_tasks = new_tasks
+
+                # Step 6: Start new tasks
+                for name, task_info in self.input_tasks.items():
+                    try:
+                        task_info['task'].start()
+                        logger.debug(f"Started new task: {name}")
+                    except Exception as e:
+                        logger.error(f"Failed to start new task {name}: {e}")
+
+                # Step 7: Resume scan loop
+                self._task_swap_in_progress = False
+                logger.info(f"Seamless task swap complete: {len(self.input_tasks)} input tasks active")
+
+                # Update channel configurations
+                self.channels = {ch.name: ch for ch in new_channels}
+
+                # Publish updated status
+                self._publish_status()
+                return True
+
+            except Exception as e:
+                logger.error(f"Seamless task swap failed: {e}")
+                self._task_swap_in_progress = False
+                return False
+
+    def add_channel_dynamic(self, channel_config: Dict[str, Any]) -> bool:
+        """Add a channel dynamically without stopping acquisition.
+
+        This is a convenience method that adds a single channel to the
+        existing configuration and performs a seamless task swap.
+
+        Args:
+            channel_config: Channel configuration dict
+
+        Returns:
+            True if channel was added successfully
+        """
+        try:
+            # Create ChannelConfig from dict
+            new_ch = ChannelConfig(
+                name=channel_config['name'],
+                channel_type=channel_config.get('channel_type', 'voltage'),
+                physical_channel=channel_config.get('physical_channel', ''),
+                enabled=channel_config.get('enabled', True),
+                units=channel_config.get('units', ''),
+                min_value=channel_config.get('min_value', 0),
+                max_value=channel_config.get('max_value', 100),
+                thermocouple_type=channel_config.get('thermocouple_type', 'K'),
+                voltage_range=channel_config.get('voltage_range', 10.0),
+                terminal_config=channel_config.get('terminal_config', 'DIFF')
+            )
+
+            # Add to existing channels
+            current_channels = list(self.channels.values())
+            current_channels.append(new_ch)
+
+            # Perform seamless swap
+            return self.seamless_task_swap(current_channels)
+
+        except Exception as e:
+            logger.error(f"Failed to add channel dynamically: {e}")
+            return False
+
+    def remove_channel_dynamic(self, channel_name: str) -> bool:
+        """Remove a channel dynamically without stopping acquisition.
+
+        Args:
+            channel_name: Name of channel to remove
+
+        Returns:
+            True if channel was removed successfully
+        """
+        try:
+            if channel_name not in self.channels:
+                logger.warning(f"Channel not found for removal: {channel_name}")
+                return False
+
+            # Remove from current channels
+            current_channels = [ch for ch in self.channels.values() if ch.name != channel_name]
+
+            # Perform seamless swap
+            return self.seamless_task_swap(current_channels)
+
+        except Exception as e:
+            logger.error(f"Failed to remove channel dynamically: {e}")
+            return False
 
     def _scan_loop(self):
         """Main data acquisition loop"""
@@ -2297,6 +4668,11 @@ class CRIONodeService:
         while self._acquiring.is_set():
             loop_start = time.time()
 
+            # Pause during seamless task swap
+            if self._task_swap_in_progress:
+                time.sleep(0.01)  # Brief sleep while swap completes
+                continue
+
             try:
                 # Pet the hardware watchdog
                 self._pet_watchdog()
@@ -2304,8 +4680,9 @@ class CRIONodeService:
                 # Read all inputs
                 now = time.time()
 
-                # Read analog inputs
-                for task_name, task_info in self.input_tasks.items():
+                # Read analog inputs (take snapshot of tasks to avoid race condition)
+                current_input_tasks = dict(self.input_tasks)
+                for task_name, task_info in current_input_tasks.items():
                     if task_info['reader'] is not None:
                         try:
                             task = task_info['task']
@@ -2381,6 +4758,13 @@ class CRIONodeService:
                     except Exception as e:
                         logger.error(f"Alarm/safety check error for {ch_name}: {e}")
 
+                # Evaluate local interlocks (trips if armed + interlock failed)
+                if self.local_safety:
+                    try:
+                        self.local_safety.evaluate_all()
+                    except Exception as e:
+                        logger.error(f"Local safety evaluation error: {e}")
+
             except Exception as e:
                 logger.error(f"Scan loop error: {e}")
 
@@ -2391,6 +4775,46 @@ class CRIONodeService:
                 time.sleep(sleep_time)
 
         logger.info("Scan loop stopped")
+
+    def _reverse_scale_output(self, ch_config: ChannelConfig, eng_value: float) -> float:
+        """
+        Reverse scaling: convert engineering units to raw output value (V or mA).
+
+        For outputs, we receive values in engineering units (%, RPM, PSI, etc.)
+        and need to convert to the raw electrical signal (0-10V, 4-20mA, etc.)
+
+        Examples:
+            - 50% → 5.0V (linear 0-100% to 0-10V)
+            - 250 RPM → 5.0V (map 0-500 RPM to 0-10V)
+            - 75 PSI → 16mA (4-20mA scaling 0-100 PSI)
+        """
+        # 4-20mA scaling (current outputs)
+        if ch_config.four_twenty_scaling and ch_config.eng_units_min is not None and ch_config.eng_units_max is not None:
+            span = ch_config.eng_units_max - ch_config.eng_units_min
+            if span != 0:
+                normalized = (eng_value - ch_config.eng_units_min) / span
+                raw_ma = 4.0 + (normalized * 16.0)  # 4-20mA range
+                return raw_ma / 1000.0  # Convert mA to A if needed, or return mA directly
+            return 0.004  # 4mA minimum
+
+        # Map scaling (voltage outputs)
+        if ch_config.scale_type == 'map':
+            if (ch_config.scaled_min is not None and ch_config.scaled_max is not None and
+                ch_config.pre_scaled_min is not None and ch_config.pre_scaled_max is not None):
+                scaled_span = ch_config.scaled_max - ch_config.scaled_min
+                if scaled_span != 0:
+                    normalized = (eng_value - ch_config.scaled_min) / scaled_span
+                    raw = ch_config.pre_scaled_min + (normalized * (ch_config.pre_scaled_max - ch_config.pre_scaled_min))
+                    return raw
+            return ch_config.pre_scaled_min or 0.0
+
+        # Linear scaling (y = mx + b → x = (y - b) / m)
+        if ch_config.scale_slope != 0:
+            raw = (eng_value - ch_config.scale_offset) / ch_config.scale_slope
+            return raw
+
+        # No scaling - pass through
+        return eng_value
 
     def _write_output(self, channel_name: str, value: Any, source: str = 'manual') -> bool:
         """Write to an output channel (digital or analog)
@@ -2411,16 +4835,28 @@ class CRIONodeService:
             logger.warning(f"Write blocked - channel '{channel_name}' is session-locked")
             return False
 
+        # SIL 1: Redundant interlock check at edge node (PC SafetyManager also validates)
+        # Safety source bypasses this - safety actions ARE the interlock response
+        if source != 'safety' and self.local_safety and self.local_safety.is_output_blocked(channel_name):
+            logger.warning(f"Write blocked - channel '{channel_name}' blocked by interlock (SIL 1)")
+            return False
+
         try:
             task = self.output_tasks[channel_name]
             ch_config = self.config.channels.get(channel_name)
 
             if ch_config and ch_config.channel_type == 'analog_output':
-                # Analog output - write float value
-                float_value = float(value) if value is not None else 0.0
-                task.write(float_value)
-                self.output_values[channel_name] = float_value
-                logger.debug(f"Wrote AO {channel_name} = {float_value}")
+                # Analog output - apply REVERSE scaling (engineering units → raw V/mA)
+                eng_value = float(value) if value is not None else 0.0
+                raw_value = self._reverse_scale_output(ch_config, eng_value)
+
+                # Clamp to hardware range
+                v_range = ch_config.voltage_range or 10.0
+                raw_value = max(0.0, min(v_range, raw_value))
+
+                task.write(raw_value)
+                self.output_values[channel_name] = eng_value  # Store engineering value for display
+                logger.debug(f"Wrote AO {channel_name}: eng={eng_value} → raw={raw_value:.4f}")
             else:
                 # Digital output - write boolean
                 bool_value = bool(value) if not isinstance(value, bool) else value
@@ -2442,6 +4878,24 @@ class CRIONodeService:
     # =========================================================================
     # SCRIPT EXECUTION
     # =========================================================================
+
+    def _auto_start_scripts(self, run_mode: str):
+        """Auto-start scripts matching the given run_mode (acquisition or session)"""
+        for script_id, script in self.scripts.items():
+            script_run_mode = script.get('run_mode', 'manual')
+            enabled = script.get('enabled', True)
+            if enabled and script_run_mode == run_mode:
+                logger.info(f"Auto-starting {run_mode} script: {script_id}")
+                self._start_script(script_id)
+
+    def _auto_stop_scripts(self, run_mode: str):
+        """Auto-stop scripts matching the given run_mode"""
+        for script_id, script in self.scripts.items():
+            script_run_mode = script.get('run_mode', 'manual')
+            if script_run_mode == run_mode:
+                if script_id in self.script_threads and self.script_threads[script_id].is_alive():
+                    logger.info(f"Auto-stopping {run_mode} script: {script_id}")
+                    self._stop_script(script_id)
 
     def _start_script(self, script_id: str, max_runtime_seconds: float = 300.0):
         """Start executing a Python script with timeout
@@ -2570,6 +5024,30 @@ class CRIONodeService:
             'wait_until': wait_until,
             'should_stop': lambda: script.get('_stop_requested', False),
 
+            # State persistence
+            'persist': lambda key, value: self.script_persistence.persist(script_id, key, value),
+            'restore': lambda key, default=None: self.script_persistence.restore(script_id, key, default),
+
+            # Helper classes
+            'RateCalculator': RateCalculator,
+            'Accumulator': Accumulator,
+            'EdgeDetector': EdgeDetector,
+            'RollingStats': RollingStats,
+            'Scheduler': Scheduler,
+
+            # Unit conversions
+            'F_to_C': F_to_C, 'C_to_F': C_to_F,
+            'GPM_to_LPM': GPM_to_LPM, 'LPM_to_GPM': LPM_to_GPM,
+            'PSI_to_bar': PSI_to_bar, 'bar_to_PSI': bar_to_PSI,
+            'gal_to_L': gal_to_L, 'L_to_gal': L_to_gal,
+            'BTU_to_kJ': BTU_to_kJ, 'kJ_to_BTU': kJ_to_BTU,
+            'lb_to_kg': lb_to_kg, 'kg_to_lb': kg_to_lb,
+
+            # Time functions
+            'now': now, 'now_ms': now_ms, 'now_iso': now_iso,
+            'time_of_day': time_of_day, 'elapsed_since': elapsed_since,
+            'format_timestamp': format_timestamp,
+
             # Standard library (safe subset)
             'time': time,
             'math': __import__('math'),
@@ -2592,20 +5070,27 @@ class CRIONodeService:
             'filter': filter,
             'float': float,
             'int': int,
+            'isinstance': isinstance,
             'len': len,
             'list': list,
             'map': map,
             'max': max,
             'min': min,
+            'pow': pow,
             'print': lambda *args: logger.info(f"[Script {script_id}] {' '.join(str(a) for a in args)}"),
             'range': range,
+            'reversed': reversed,
             'round': round,
             'set': set,
             'sorted': sorted,
             'str': str,
             'sum': sum,
             'tuple': tuple,
+            'type': type,
             'zip': zip,
+            'True': True,
+            'False': False,
+            'None': None,
 
             # Safety functions
             'trigger_safe_state': lambda reason='script': self._set_safe_state(reason),
@@ -2745,12 +5230,17 @@ class CRIONodeService:
         """Publish channel values to MQTT as a single batched message"""
         with self.values_lock:
             # Batch all channel values into a single message to reduce MQTT load
-            # Format: { "channel_name": {"value": x, "timestamp": t}, ... }
+            # Format: { "channel_name": {"value": x, "timestamp": t, "acquisition_ts_us": us, "quality": q}, ... }
             batch = {}
             for name, value in self.channel_values.items():
+                timestamp = self.channel_timestamps.get(name, 0)
                 batch[name] = {
                     'value': value,
-                    'timestamp': self.channel_timestamps.get(name, 0)
+                    'timestamp': timestamp,
+                    # SOE: Source timestamp in microseconds for sequence-of-events analysis
+                    'acquisition_ts_us': int(timestamp * 1_000_000),
+                    # OPC UA style quality code
+                    'quality': get_value_quality(value)
                 }
 
             if batch:
@@ -2914,6 +5404,9 @@ class CRIONodeService:
         # Configure hardware
         if self.config.channels:
             self._configure_hardware()
+
+        # Initialize local safety manager
+        self._init_local_safety()
 
         # Start heartbeat
         self.heartbeat_thread = threading.Thread(

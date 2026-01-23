@@ -43,7 +43,7 @@ class ChannelSimulator:
             self.state.noise_level = 0.5
             self.state.trend = 0.0
 
-        elif ch.channel_type == ChannelType.VOLTAGE:
+        elif ch.channel_type == ChannelType.VOLTAGE_INPUT:
             # Start at mid-range
             if ch.low_limit is not None and ch.high_limit is not None:
                 mid = (ch.low_limit + ch.high_limit) / 2
@@ -52,7 +52,7 @@ class ChannelSimulator:
                 self.state.value = 0.0
             self.state.noise_level = 0.02
 
-        elif ch.channel_type == ChannelType.CURRENT:
+        elif ch.channel_type == ChannelType.CURRENT_INPUT:
             # Simulate 4-20mA sensor behavior
             if ch.low_limit is not None and ch.high_limit is not None:
                 mid = (ch.low_limit + ch.high_limit) / 2
@@ -96,7 +96,7 @@ class ChannelSimulator:
         elif ch.channel_type == ChannelType.DIGITAL_OUTPUT:
             self.state.value = 1.0 if ch.default_state else 0.0
 
-        elif ch.channel_type == ChannelType.ANALOG_OUTPUT:
+        elif ch.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             self.state.value = ch.default_value
 
         self.state.last_update = time.time()
@@ -112,10 +112,10 @@ class ChannelSimulator:
         if ch.channel_type == ChannelType.THERMOCOUPLE:
             return self._simulate_temperature(dt)
 
-        elif ch.channel_type == ChannelType.VOLTAGE:
+        elif ch.channel_type == ChannelType.VOLTAGE_INPUT:
             return self._simulate_voltage(dt)
 
-        elif ch.channel_type == ChannelType.CURRENT:
+        elif ch.channel_type == ChannelType.CURRENT_INPUT:
             return self._simulate_current(dt)
 
         elif ch.channel_type == ChannelType.RTD:
@@ -136,7 +136,7 @@ class ChannelSimulator:
         elif ch.channel_type == ChannelType.DIGITAL_INPUT:
             return self._simulate_digital_input()
 
-        elif ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+        elif ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             return self.state.value
 
         return 0.0
@@ -149,7 +149,7 @@ class ChannelSimulator:
             self.state.value = 1.0 if value else 0.0
             return True
 
-        elif ch.channel_type == ChannelType.ANALOG_OUTPUT:
+        elif ch.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             self.state.value = float(value)
             return True
 
@@ -460,8 +460,8 @@ class HardwareSimulator:
         for name, sim in self.channel_simulators.items():
             if sim.channel.channel_type in (
                 ChannelType.THERMOCOUPLE,
-                ChannelType.VOLTAGE,
-                ChannelType.CURRENT,
+                ChannelType.VOLTAGE_INPUT,
+                ChannelType.CURRENT_INPUT,
                 ChannelType.RTD,
                 ChannelType.STRAIN,
                 ChannelType.IEPE,
@@ -478,7 +478,8 @@ class HardwareSimulator:
         for name, sim in self.channel_simulators.items():
             if sim.channel.channel_type in (
                 ChannelType.DIGITAL_OUTPUT,
-                ChannelType.ANALOG_OUTPUT
+                ChannelType.VOLTAGE_OUTPUT,
+                ChannelType.CURRENT_OUTPUT
             ):
                 values[name] = sim.read()
         return values
@@ -558,9 +559,9 @@ if __name__ == "__main__":
         temps = {k: v for k, v in values.items()
                  if config.channels[k].channel_type == ChannelType.THERMOCOUPLE}
         voltages = {k: v for k, v in values.items()
-                    if config.channels[k].channel_type == ChannelType.VOLTAGE}
+                    if config.channels[k].channel_type == ChannelType.VOLTAGE_INPUT}
         currents = {k: v for k, v in values.items()
-                    if config.channels[k].channel_type == ChannelType.CURRENT}
+                    if config.channels[k].channel_type == ChannelType.CURRENT_INPUT}
         di = {k: v for k, v in values.items()
               if config.channels[k].channel_type == ChannelType.DIGITAL_INPUT}
         do = {k: v for k, v in values.items()

@@ -73,6 +73,10 @@ class DAQWatchdog:
         self.failsafe_triggered = False
         self.failsafe_trigger_time: Optional[datetime] = None
 
+        # Acquisition state tracking - prevents warning spam
+        self._expected_acquiring: Optional[bool] = None
+        self._warned_acquisition_stop: bool = False  # Only warn once per stop event
+
         # Fail-safe outputs should only come from config - no hardcoded defaults
         # If no failsafe outputs are configured, the watchdog will only log/alarm
         # but not attempt to set any outputs (since we don't know what outputs exist)
@@ -225,11 +229,17 @@ class DAQWatchdog:
 
         # Check if acquisition unexpectedly stopped
         acquiring = payload.get("acquiring", None)
-        expected_acquiring = getattr(self, '_expected_acquiring', None)
 
-        if expected_acquiring is True and acquiring is False:
-            logger.warning("Acquisition unexpectedly stopped - service may be frozen")
-            self._publish_watchdog_event("acquisition_stopped", "Acquisition unexpectedly stopped")
+        # Reset warning flag when acquisition starts
+        if acquiring is True:
+            self._warned_acquisition_stop = False
+
+        # Only warn ONCE when acquisition stops (prevents spam on every heartbeat)
+        if self._expected_acquiring is True and acquiring is False:
+            if not self._warned_acquisition_stop:
+                logger.warning("Acquisition stopped - monitoring for recovery")
+                self._publish_watchdog_event("acquisition_stopped", "Acquisition stopped")
+                self._warned_acquisition_stop = True
 
         # Track expected state for next heartbeat
         self._expected_acquiring = acquiring

@@ -94,7 +94,7 @@ class MockCRIONode:
             {
                 "name": f"{mod}/ao{i}",
                 "display_name": f"{self.device_name}/{mod}/ao{i}",
-                "channel_type": "analog_output",
+                "channel_type": "voltage_output",
                 "category": "voltage"
             }
             for i in range(count)

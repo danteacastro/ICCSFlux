@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useSafety } from '../composables/useSafety'
 
 defineProps<{
+  title?: string
   compact?: boolean
   showBypassButtons?: boolean
 }>()
@@ -34,6 +35,9 @@ function toggleBypass(id: string) {
 
 <template>
   <div class="interlock-status-widget" :class="{ compact, 'has-blocked': blockedCount > 0 }">
+    <!-- Widget title -->
+    <div v-if="title" class="widget-title">{{ title }}</div>
+
     <!-- No interlocks configured -->
     <div v-if="!hasInterlocks" class="no-interlocks">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -120,6 +124,16 @@ function toggleBypass(id: string) {
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 6px;
+}
+
+.widget-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #2a2a4a;
 }
 
 .interlock-status-widget.has-blocked {

@@ -15,8 +15,8 @@ logger = logging.getLogger('ConfigParser')
 
 class ChannelType(Enum):
     THERMOCOUPLE = "thermocouple"
-    VOLTAGE = "voltage"
-    CURRENT = "current"
+    VOLTAGE_INPUT = "voltage_input"
+    CURRENT_INPUT = "current_input"
     RTD = "rtd"                      # Resistance Temperature Detector
     STRAIN = "strain"                # Strain gauge / bridge
     IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones
@@ -24,10 +24,24 @@ class ChannelType(Enum):
     COUNTER = "counter"              # Pulse/frequency counter
     DIGITAL_INPUT = "digital_input"
     DIGITAL_OUTPUT = "digital_output"
-    ANALOG_OUTPUT = "analog_output"
+    VOLTAGE_OUTPUT = "voltage_output"
+    CURRENT_OUTPUT = "current_output"
     # Modbus channel types
     MODBUS_REGISTER = "modbus_register"  # Modbus holding/input register
     MODBUS_COIL = "modbus_coil"          # Modbus coil/discrete input
+
+    @classmethod
+    def _missing_(cls, value):
+        """Handle backwards compatibility for old channel type names."""
+        # Map old names to new names
+        legacy_map = {
+            "voltage": cls.VOLTAGE_INPUT,
+            "current": cls.CURRENT_INPUT,
+            "analog_output": cls.VOLTAGE_OUTPUT,
+        }
+        if value in legacy_map:
+            return legacy_map[value]
+        return None
 
 
 class ThermocoupleType(Enum):
@@ -650,21 +664,29 @@ def get_channels_by_type(config: NISystemConfig, channel_type: ChannelType) -> L
 
 
 def get_input_channels(config: NISystemConfig) -> List[ChannelConfig]:
-    """Get all input channels (AI, DI, thermocouple, current)"""
+    """Get all input channels (AI, DI, thermocouple, current, RTD, etc.)"""
     input_types = [
         ChannelType.THERMOCOUPLE,
-        ChannelType.VOLTAGE,
-        ChannelType.CURRENT,
-        ChannelType.DIGITAL_INPUT
+        ChannelType.VOLTAGE_INPUT,
+        ChannelType.CURRENT_INPUT,
+        ChannelType.RTD,
+        ChannelType.STRAIN,
+        ChannelType.IEPE,
+        ChannelType.RESISTANCE,
+        ChannelType.COUNTER,
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.MODBUS_REGISTER,
+        ChannelType.MODBUS_COIL,
     ]
     return [ch for ch in config.channels.values() if ch.channel_type in input_types]
 
 
 def get_output_channels(config: NISystemConfig) -> List[ChannelConfig]:
-    """Get all output channels (AO, DO)"""
+    """Get all output channels (voltage/current outputs, digital outputs)"""
     output_types = [
         ChannelType.DIGITAL_OUTPUT,
-        ChannelType.ANALOG_OUTPUT
+        ChannelType.VOLTAGE_OUTPUT,
+        ChannelType.CURRENT_OUTPUT,
     ]
     return [ch for ch in config.channels.values() if ch.channel_type in output_types]
 
@@ -769,7 +791,8 @@ def validate_config(config: NISystemConfig, strict: bool = True) -> ValidationRe
             else:
                 # Verify target is an output channel
                 target = config.channels[target_channel]
-                if target.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.ANALOG_OUTPUT):
+                output_types = (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT)
+                if target.channel_type not in output_types:
                     errors.append(
                         f"SAFETY CRITICAL: Safety action '{action_name}' targets input channel "
                         f"'{target_channel}' (type={target.channel_type.value}) - cannot write to inputs!"

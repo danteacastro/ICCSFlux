@@ -478,7 +478,7 @@
     },
     "tag_28": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai0",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 0",
@@ -495,7 +495,7 @@
     },
     "tag_29": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai1",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 1",
@@ -512,7 +512,7 @@
     },
     "tag_30": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai2",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 2",
@@ -529,7 +529,7 @@
     },
     "tag_31": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai3",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 3",
@@ -546,7 +546,7 @@
     },
     "tag_32": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai4",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 4",
@@ -563,7 +563,7 @@
     },
     "tag_33": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai5",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 5",
@@ -580,7 +580,7 @@
     },
     "tag_34": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai6",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 6",
@@ -597,7 +597,7 @@
     },
     "tag_35": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai7",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 7",
@@ -614,7 +614,7 @@
     },
     "tag_36": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai8",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 8",
@@ -631,7 +631,7 @@
     },
     "tag_37": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai9",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 9",
@@ -648,7 +648,7 @@
     },
     "tag_38": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai10",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 10",
@@ -665,7 +665,7 @@
     },
     "tag_39": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai11",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 11",
@@ -682,7 +682,7 @@
     },
     "tag_40": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai12",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 12",
@@ -699,7 +699,7 @@
     },
     "tag_41": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai13",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 13",
@@ -716,7 +716,7 @@
     },
     "tag_42": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai14",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 14",
@@ -733,7 +733,7 @@
     },
     "tag_43": {
       "physical_channel": "cDAQ-9189-DHWSIMMod7/ai15",
-      "channel_type": "current",
+      "channel_type": "current_input",
       "unit": "mA",
       "group": "Current Inputs",
       "description": "NI 9207 - Analog Input 15",

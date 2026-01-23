@@ -92,6 +92,9 @@ const layoutItems = computed({
     h: w.h,
     minW: w.minW || 1,
     minH: w.minH || 1,
+    // Include these for reactivity - when they change, Vue re-renders the widget
+    label: w.label,
+    channel: w.channel,
   })),
   set: (newLayout) => {
     // Update store when grid-layout-plus modifies the layout
@@ -165,6 +168,48 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.showUnits !== undefined) props.showUnits = widget.showUnits
   if (widget.showStatus !== undefined) props.showStatus = widget.showStatus
   if (widget.maxRows !== undefined) props.maxRows = widget.maxRows
+
+  // Gauge/BarGraph/Sparkline props
+  if (widget.minValue !== undefined) props.minValue = widget.minValue
+  if (widget.maxValue !== undefined) props.maxValue = widget.maxValue
+  if (widget.historyLength !== undefined) props.historyLength = widget.historyLength
+  if (widget.showMinMax !== undefined) props.showMinMax = widget.showMinMax
+  if (widget.orientation !== undefined) props.orientation = widget.orientation
+
+  // LED props
+  if (widget.invert !== undefined) props.invert = widget.invert
+  if (widget.ledSize !== undefined) props.ledSize = widget.ledSize
+  if (widget.onColor !== undefined) props.onColor = widget.onColor
+  if (widget.offColor !== undefined) props.offColor = widget.offColor
+
+  // Toggle/Switch props
+  if (widget.onLabel !== undefined) props.onLabel = widget.onLabel
+  if (widget.offLabel !== undefined) props.offLabel = widget.offLabel
+  if (widget.confirmOn !== undefined) props.confirmOn = widget.confirmOn
+  if (widget.confirmOff !== undefined) props.confirmOff = widget.confirmOff
+
+  // Setpoint props
+  if (widget.setpointMin !== undefined) props.setpointMin = widget.setpointMin
+  if (widget.setpointMax !== undefined) props.setpointMax = widget.setpointMax
+
+  // Title widget props
+  if (widget.title !== undefined) props.text = widget.title  // Map title -> text for TitleLabel
+  if (widget.subtitle !== undefined) props.subtitle = widget.subtitle
+
+  // Clock props
+  if (widget.showDate !== undefined) props.showDate = widget.showDate
+  if (widget.showElapsed !== undefined) props.showElapsed = widget.showElapsed
+
+  // Alarm/ValueTable props
+  if (widget.maxItems !== undefined) props.maxItems = widget.maxItems
+  if (widget.filterPriority !== undefined) props.filterPriority = widget.filterPriority
+
+  // Alarm Summary / Interlock Status props
+  if (widget.showAckButton !== undefined) props.showAckButton = widget.showAckButton
+  if (widget.showBypassButtons !== undefined) props.showBypassButtons = widget.showBypassButtons
+
+  // General title prop (for widgets that support it like alarm_summary, interlock_status)
+  if (widget.title !== undefined && widget.type !== 'title') props.title = widget.title
 
   return props
 }
@@ -363,7 +408,7 @@ function handlePidPipeSelect(id: string | null) {
     >
       <GridItem
         v-for="item in layoutItems"
-        :key="`${item.i}-${getWidget(item.i)?.label || ''}-${getWidget(item.i)?.channel || ''}`"
+        :key="`${store.layoutVersion}-${item.i}-${item.label || ''}-${item.channel || ''}`"
         :x="item.x"
         :y="item.y"
         :w="item.w"

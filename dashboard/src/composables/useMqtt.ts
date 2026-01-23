@@ -1374,7 +1374,8 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   // Discovery functions
-  function scanDevices() {
+  // mode: 'cdaq' | 'crio' | 'opto22' | 'all' - limits which device types to discover
+  function scanDevices(mode: 'cdaq' | 'crio' | 'opto22' | 'all' = 'all') {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
@@ -1389,7 +1390,8 @@ export function useMqtt(prefix: string = 'nisystem') {
     discoveryResult.value = null
     discoveryChannels.value = []
     // Discovery scan is always handled by local DAQ service
-    sendLocalCommand('discovery/scan', {})
+    // Pass mode to limit which device types are scanned
+    sendLocalCommand('discovery/scan', { mode })
 
     // Set timeout to automatically reset scanning state if no response
     scanTimeoutId = setTimeout(() => {
@@ -1411,8 +1413,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     console.log('Discovery scan cancelled')
   }
 
-  function onDiscovery(callback: (result: any) => void) {
+  function onDiscovery(callback: (result: any) => void): () => void {
     discoveryCallbacks.push(callback)
+    return () => {
+      const idx = discoveryCallbacks.indexOf(callback)
+      if (idx > -1) discoveryCallbacks.splice(idx, 1)
+    }
   }
 
   // Config update functions - always go to local DAQ service
@@ -1439,8 +1445,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     console.log('Config save requested')
   }
 
-  function onConfigUpdate(callback: (result: any) => void) {
+  function onConfigUpdate(callback: (result: any) => void): () => void {
     configUpdateCallbacks.push(callback)
+    return () => {
+      const idx = configUpdateCallbacks.indexOf(callback)
+      if (idx > -1) configUpdateCallbacks.splice(idx, 1)
+    }
   }
 
   function createChannel(name: string, config: any) {
@@ -1479,12 +1489,20 @@ export function useMqtt(prefix: string = 'nisystem') {
     console.log('Bulk create sent:', channels.length, 'channels')
   }
 
-  function onChannelDeleted(callback: (channelName: string) => void) {
+  function onChannelDeleted(callback: (channelName: string) => void): () => void {
     channelDeletedCallbacks.push(callback)
+    return () => {
+      const idx = channelDeletedCallbacks.indexOf(callback)
+      if (idx > -1) channelDeletedCallbacks.splice(idx, 1)
+    }
   }
 
-  function onChannelCreated(callback: (channels: string[]) => void) {
+  function onChannelCreated(callback: (channels: string[]) => void): () => void {
     channelCreatedCallbacks.push(callback)
+    return () => {
+      const idx = channelCreatedCallbacks.indexOf(callback)
+      if (idx > -1) channelCreatedCallbacks.splice(idx, 1)
+    }
   }
 
   function onConfigCurrent(callback: (config: any) => void): () => void {
@@ -1539,12 +1557,20 @@ export function useMqtt(prefix: string = 'nisystem') {
     sendLocalCommand('recording/script-values', { values })
   }
 
-  function onRecordingResponse(callback: (result: any) => void) {
+  function onRecordingResponse(callback: (result: any) => void): () => void {
     recordingCallbacks.push(callback)
+    return () => {
+      const idx = recordingCallbacks.indexOf(callback)
+      if (idx > -1) recordingCallbacks.splice(idx, 1)
+    }
   }
 
-  function onSystemUpdate(callback: (result: any) => void) {
+  function onSystemUpdate(callback: (result: any) => void): () => void {
     systemUpdateCallbacks.push(callback)
+    return () => {
+      const idx = systemUpdateCallbacks.indexOf(callback)
+      if (idx > -1) systemUpdateCallbacks.splice(idx, 1)
+    }
   }
 
   // =========================================================================
@@ -1590,16 +1616,26 @@ export function useMqtt(prefix: string = 'nisystem') {
 
   /**
    * Register callback for cRIO operation responses.
+   * Returns unsubscribe function to prevent memory leaks.
    */
-  function onCrioResponse(callback: (result: any) => void) {
+  function onCrioResponse(callback: (result: any) => void): () => void {
     crioCallbacks.push(callback)
+    return () => {
+      const idx = crioCallbacks.indexOf(callback)
+      if (idx > -1) crioCallbacks.splice(idx, 1)
+    }
   }
 
   /**
    * Register callback for cRIO list responses.
+   * Returns unsubscribe function to prevent memory leaks.
    */
-  function onCrioList(callback: (result: any) => void) {
+  function onCrioList(callback: (result: any) => void): () => void {
     crioListCallbacks.push(callback)
+    return () => {
+      const idx = crioListCallbacks.indexOf(callback)
+      if (idx > -1) crioListCallbacks.splice(idx, 1)
+    }
   }
 
   /**
@@ -1618,23 +1654,28 @@ export function useMqtt(prefix: string = 'nisystem') {
     crioListCallbacks.forEach(cb => cb(payload))
   }
 
-  // Event subscription
-  function onData(callback: (data: Record<string, number>) => void) {
+  // Event subscription - all functions return unsubscribe function to prevent memory leaks
+  function onData(callback: (data: Record<string, number>) => void): () => void {
     dataCallbacks.push(callback)
+    return () => {
+      const idx = dataCallbacks.indexOf(callback)
+      if (idx > -1) dataCallbacks.splice(idx, 1)
+    }
   }
 
-  function onStatus(callback: (status: SystemStatus) => void) {
+  function onStatus(callback: (status: SystemStatus) => void): () => void {
     statusCallbacks.push(callback)
+    return () => {
+      const idx = statusCallbacks.indexOf(callback)
+      if (idx > -1) statusCallbacks.splice(idx, 1)
+    }
   }
 
   function onAlarm(callback: (alarm: any, event: 'triggered' | 'updated' | 'cleared') => void): () => void {
     alarmCallbacks.push(callback)
-    // Return unsubscribe function
     return () => {
       const idx = alarmCallbacks.indexOf(callback)
-      if (idx > -1) {
-        alarmCallbacks.splice(idx, 1)
-      }
+      if (idx > -1) alarmCallbacks.splice(idx, 1)
     }
   }
 

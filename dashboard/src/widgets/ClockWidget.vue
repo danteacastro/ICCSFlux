@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
+import type { WidgetStyle } from '../types'
 
 const props = defineProps<{
   label?: string
   showDate?: boolean
   showElapsed?: boolean
   format24h?: boolean
+  style?: WidgetStyle
 }>()
+
+const containerStyle = computed(() => {
+  const s: Record<string, string> = {}
+  if (props.style?.backgroundColor && props.style.backgroundColor !== 'transparent') {
+    s.backgroundColor = props.style.backgroundColor
+  }
+  return s
+})
 
 const store = useDashboardStore()
 
@@ -75,7 +85,7 @@ const elapsedTime = computed(() => {
 </script>
 
 <template>
-  <div class="clock-widget">
+  <div class="clock-widget" :style="containerStyle">
     <div v-if="displayLabel" class="label">{{ displayLabel }}</div>
 
     <div class="time">{{ timeString }}</div>
@@ -96,53 +106,59 @@ const elapsedTime = computed(() => {
   justify-content: center;
   align-items: center;
   height: 100%;
-  padding: 8px;
+  padding: 2px 4px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
+  overflow: hidden;
+  container-type: size;
 }
 
 .label {
-  font-size: 0.65rem;
+  font-size: clamp(0.5rem, 2cqh, 0.65rem);
   color: #888;
   text-transform: uppercase;
-  margin-bottom: 2px;
+  line-height: 1;
 }
 
 .time {
-  font-size: 1.4rem;
+  font-size: clamp(1rem, 45cqh, 4rem);
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   color: #4ade80;
   letter-spacing: 1px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .date {
-  font-size: 0.7rem;
+  font-size: clamp(0.5rem, 15cqh, 1rem);
   color: #888;
-  margin-top: 2px;
+  line-height: 1;
 }
 
 .elapsed {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 3px 8px;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 2px 6px;
   background: rgba(59, 130, 246, 0.2);
   border-radius: 3px;
 }
 
 .elapsed-label {
-  font-size: 0.55rem;
+  font-size: clamp(0.45rem, 8cqh, 0.55rem);
   font-weight: 700;
   color: #3b82f6;
   letter-spacing: 0.5px;
+  line-height: 1;
 }
 
 .elapsed-time {
-  font-size: 0.75rem;
+  font-size: clamp(0.55rem, 10cqh, 0.75rem);
   font-family: 'JetBrains Mono', monospace;
   color: #60a5fa;
+  line-height: 1;
 }
 </style>

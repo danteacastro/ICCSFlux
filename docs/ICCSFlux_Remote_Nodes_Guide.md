@@ -1,4 +1,4 @@
-# CZFlux Remote Nodes Guide
+# ICCSFlux Remote Nodes Guide
 
 **Complete Guide to cRIO and Opto22 Remote Data Acquisition**
 
@@ -21,7 +21,7 @@
 
 ### 1.1 What are Remote Nodes?
 
-CZFlux remote nodes are standalone data acquisition services that run on embedded hardware (NI cRIO or Opto22 groov EPIC/RIO). They communicate with the central CZFlux PC via MQTT, enabling:
+ICCSFlux remote nodes are standalone data acquisition services that run on embedded hardware (NI cRIO or Opto22 groov EPIC/RIO). They communicate with the central ICCSFlux PC via MQTT, enabling:
 
 - **Distributed I/O** - Place hardware where sensors are located
 - **Autonomous Operation** - Continue running if PC disconnects
@@ -32,14 +32,14 @@ CZFlux remote nodes are standalone data acquisition services that run on embedde
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    CZFlux Dashboard (Browser)                    │
+│                    ICCSFlux Dashboard (Browser)                    │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │
 │  │   Widgets   │ │   Charts    │ │  Controls   │                │
 │  └─────────────┘ └─────────────┘ └─────────────┘                │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ WebSocket/MQTT
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                    CZFlux Backend (PC)                           │
+│                    ICCSFlux Backend (PC)                           │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
 │  │   DAQ    │ │  Alarms  │ │ Scripts  │ │ Recording│           │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
@@ -145,11 +145,11 @@ scp -r services/crio_node admin@<crio-ip>:/home/admin/
 ssh admin@<crio-ip>
 cd /home/admin/crio_node
 chmod +x install.sh
-./install.sh <CZFLUX_PC_IP> [NODE_ID]
+./install.sh <ICCSFLUX_PC_IP> [NODE_ID]
 ```
 
 **Parameters:**
-- `CZFLUX_PC_IP` - IP address of the CZFlux PC (required)
+- `ICCSFLUX_PC_IP` - IP address of the ICCSFlux PC (required)
 - `NODE_ID` - Unique identifier for this node (default: `crio-001`)
 
 **Example:**
@@ -169,7 +169,7 @@ journalctl -u crio_node -f
 Configuration file: `/home/admin/nisystem/crio_node.env`
 
 ```bash
-# MQTT Broker - CZFlux PC
+# MQTT Broker - ICCSFlux PC
 MQTT_BROKER=192.168.1.100
 
 # MQTT Port
@@ -257,11 +257,11 @@ scp -r services/opto22_node dev@<epic-ip>:/home/dev/
 ssh dev@<epic-ip>
 cd /home/dev/opto22_node
 chmod +x install.sh
-./install.sh <CZFLUX_PC_IP> [NODE_ID] [API_KEY]
+./install.sh <ICCSFLUX_PC_IP> [NODE_ID] [API_KEY]
 ```
 
 **Parameters:**
-- `CZFLUX_PC_IP` - IP address of the CZFlux PC (required)
+- `ICCSFLUX_PC_IP` - IP address of the ICCSFlux PC (required)
 - `NODE_ID` - Unique identifier for this node (default: `opto22-001`)
 - `API_KEY` - groov API key if authentication required (optional)
 
@@ -282,7 +282,7 @@ journalctl -u opto22_node -f
 Configuration file: `/home/dev/nisystem/opto22_node.env`
 
 ```bash
-# MQTT Broker - CZFlux PC
+# MQTT Broker - ICCSFlux PC
 MQTT_BROKER=192.168.1.100
 
 # MQTT Port
@@ -302,7 +302,7 @@ If your groov EPIC requires authentication:
 1. Open groov Manage in browser: `https://<epic-ip>`
 2. Navigate to **Accounts** → **API Keys**
 3. Click **Create API Key**
-4. Give it a name (e.g., "CZFlux Node")
+4. Give it a name (e.g., "ICCSFlux Node")
 5. Ensure **I/O Access** permission is enabled
 6. Copy the generated key
 7. Add to environment file:
@@ -358,7 +358,7 @@ Channel naming follows this pattern:
 
 ```
                        ┌─────────────────┐
-                       │   CZFlux PC     │
+                       │   ICCSFlux PC     │
                        │  MQTT Broker    │
                        │  192.168.1.100  │
                        └────────┬────────┘
@@ -413,6 +413,18 @@ For multi-node systems, include the node ID in tag names:
 
 ## 6. Autonomy & Failover
 
+### Why Edge Nodes Are the First Line of Defense
+
+For safety-critical applications, remote nodes (cRIO, Opto22) provide autonomous protection that operates independently of the PC:
+
+| Layer | Location | Role |
+|-------|----------|------|
+| **Primary** | Edge Node | Hardware watchdog, local interlock checks, safe state |
+| **Supervisory** | PC Backend | ISA-18.2 alarms, coordination, audit trail |
+| **Display** | Browser | Visualization only - no safety decisions |
+
+> **SIL Consideration**: ICCSFlux implements SIL 1 redundant validation - both the edge node AND the PC backend check interlocks before allowing output writes. This provides defense-in-depth: if either layer detects a safety condition, the output is blocked.
+
 ### 6.1 What Runs Locally on Remote Nodes
 
 | Feature | Runs on Node | Runs on PC |
@@ -429,7 +441,7 @@ For multi-node systems, include the node ID in tag names:
 
 ### 6.2 PC Disconnect Behavior
 
-When the CZFlux PC goes offline:
+When the ICCSFlux PC goes offline:
 
 1. **Detection** (30 seconds)
    - Node monitors PC heartbeat
@@ -636,11 +648,11 @@ cd /home/dev/opto22_node
 ## Support
 
 For technical support:
-- User Manual: `docs/CZFlux_User_Manual.md`
-- Administrator Guide: `docs/CZFlux_Administrator_Guide.md`
+- User Manual: `docs/ICCSFlux_User_Manual.md`
+- Administrator Guide: `docs/ICCSFlux_Administrator_Guide.md`
 - Contact your system administrator
 
 ---
 
-**CZFlux Remote Nodes Guide v1.0**
+**ICCSFlux Remote Nodes Guide v1.0**
 *Last Updated: January 2026*

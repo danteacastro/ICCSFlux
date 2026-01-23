@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
 import { useMqtt } from '../composables/useMqtt'
 import { useScripts } from '../composables/useScripts'
-import type { ButtonAction } from '../types'
+import { useBackendScripts } from '../composables/useBackendScripts'
+import type { ButtonAction, ButtonBehavior, ButtonStyle } from '../types'
 
 const props = defineProps<{
   widgetId: string
@@ -12,12 +13,17 @@ const props = defineProps<{
   buttonAction?: ButtonAction
   requireConfirmation?: boolean
   buttonColor?: string
+  buttonBehavior?: ButtonBehavior    // 'momentary' | 'toggle' | 'latching' | 'one_shot'
+  buttonVisualStyle?: ButtonStyle    // 'standard' | 'round' | 'square' | 'emergency' | 'flat'
+  buttonActiveColor?: string         // Color when active/pressed
+  buttonSize?: 'small' | 'medium' | 'large'
 }>()
 
 const store = useDashboardStore()
 const safety = useSafety()
 const mqtt = useMqtt('nisystem')
 const scripts = useScripts()
+const backendScripts = useBackendScripts()
 
 // Check if this button is blocked by interlocks
 const blockStatus = computed(() => safety.isButtonBlocked(props.widgetId))
@@ -28,8 +34,31 @@ const blockedBy = computed(() => blockStatus.value.blockedBy.map(s => s.name).jo
 const showConfirm = ref(false)
 const isExecuting = ref(false)
 
+// Button behavior state
+const isPressed = ref(false)           // Currently pressed (for momentary)
+const isLatched = ref(false)           // Latched on (for toggle/latching)
+let momentaryTimeout: ReturnType<typeof setTimeout> | null = null
+
 const displayLabel = computed(() => props.label || 'Action')
 const bgColor = computed(() => props.buttonColor || '#3b82f6')
+const activeColor = computed(() => props.buttonActiveColor || '#22c55e')  // Green when active
+const behavior = computed(() => props.buttonBehavior || 'one_shot')
+const visualStyle = computed(() => props.buttonVisualStyle || 'standard')
+const buttonSize = computed(() => props.buttonSize || 'medium')
+
+// Is button currently "active" (lit up)?
+const isActive = computed(() => {
+  if (behavior.value === 'momentary') return isPressed.value
+  if (behavior.value === 'toggle' || behavior.value === 'latching') return isLatched.value
+  return isExecuting.value  // one_shot shows brief feedback
+})
+
+// Dynamic button color based on active state
+const currentBgColor = computed(() => {
+  if (isDisabled.value) return '#374151'
+  if (isActive.value) return activeColor.value
+  return bgColor.value
+})
 
 const isDisabled = computed(() => {
   if (isBlocked.value) return true
@@ -46,8 +75,40 @@ const statusText = computed(() => {
   return ''
 })
 
+// Handle mouse/touch down
+function handlePointerDown() {
+  if (isDisabled.value) return
+
+  if (behavior.value === 'momentary') {
+    isPressed.value = true
+    executeAction()  // Execute on press
+  }
+}
+
+// Handle mouse/touch up
+function handlePointerUp() {
+  if (behavior.value === 'momentary') {
+    isPressed.value = false
+    // For digital outputs, turn off when released
+    if (props.buttonAction?.type === 'digital_output' && props.buttonAction.channel) {
+      const offValue = (props.buttonAction.setValue ?? 1) === 1 ? 0 : 1
+      mqtt.setOutput(props.buttonAction.channel, offValue)
+    }
+  }
+}
+
+// Handle pointer leave (in case mouse leaves while pressed)
+function handlePointerLeave() {
+  if (behavior.value === 'momentary' && isPressed.value) {
+    handlePointerUp()
+  }
+}
+
 function handleClick() {
   if (isDisabled.value) return
+
+  // Momentary behavior handles action in pointer down/up
+  if (behavior.value === 'momentary') return
 
   if (props.requireConfirmation && !showConfirm.value) {
     showConfirm.value = true
@@ -58,12 +119,49 @@ function handleClick() {
     return
   }
 
+  // Handle toggle behavior
+  if (behavior.value === 'toggle') {
+    isLatched.value = !isLatched.value
+    executeAction()
+    return
+  }
+
+  // Handle latching behavior (sets on, requires external reset)
+  if (behavior.value === 'latching') {
+    if (!isLatched.value) {
+      isLatched.value = true
+      executeAction()
+    }
+    // Already latched - do nothing (need external reset)
+    return
+  }
+
+  // Default one_shot behavior
   executeAction()
 }
 
 function cancelConfirm() {
   showConfirm.value = false
 }
+
+// External reset for latched buttons
+function resetLatch() {
+  if (behavior.value === 'latching') {
+    isLatched.value = false
+    // For digital outputs, turn off
+    if (props.buttonAction?.type === 'digital_output' && props.buttonAction.channel) {
+      const offValue = (props.buttonAction.setValue ?? 1) === 1 ? 0 : 1
+      mqtt.setOutput(props.buttonAction.channel, offValue)
+    }
+  }
+}
+
+// Cleanup on unmount
+onUnmounted(() => {
+  if (momentaryTimeout) {
+    clearTimeout(momentaryTimeout)
+  }
+})
 
 async function executeAction() {
   if (!props.buttonAction || isDisabled.value) return
@@ -99,6 +197,30 @@ async function executeAction() {
       case 'script_run':
         if (action.sequenceId) {
           scripts.startSequence(action.sequenceId)
+        }
+        break
+
+      case 'script_oneshot':
+        // Run a script once (one-shot execution)
+        if (action.scriptName) {
+          backendScripts.startScript(action.scriptName)
+        }
+        break
+
+      case 'variable_set':
+        // Set a user variable to a specific value
+        if (action.variableId && action.variableValue !== undefined) {
+          mqtt.sendCommand('variables/set', {
+            id: action.variableId,
+            value: action.variableValue
+          })
+        }
+        break
+
+      case 'variable_reset':
+        // Reset a user variable (counter, timer, etc.)
+        if (action.variableId) {
+          mqtt.sendCommand('variables/reset', { id: action.variableId })
         }
         break
 
@@ -139,20 +261,41 @@ async function executeAction() {
 </script>
 
 <template>
-  <div class="action-button-widget" :class="{ blocked: isBlocked, disabled: isDisabled, executing: isExecuting }">
+  <div
+    class="action-button-widget"
+    :class="[
+      `style-${visualStyle}`,
+      `size-${buttonSize}`,
+      {
+        blocked: isBlocked,
+        disabled: isDisabled,
+        executing: isExecuting,
+        active: isActive
+      }
+    ]"
+  >
     <!-- Normal state -->
     <button
       v-if="!showConfirm"
       class="action-btn"
-      :style="{ backgroundColor: isDisabled ? '#374151' : bgColor }"
+      :style="{ backgroundColor: currentBgColor }"
       :disabled="isDisabled"
       @click="handleClick"
+      @pointerdown="handlePointerDown"
+      @pointerup="handlePointerUp"
+      @pointerleave="handlePointerLeave"
       :title="statusText"
     >
       <span class="label">{{ displayLabel }}</span>
       <span v-if="isBlocked" class="blocked-icon">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </span>
+      <!-- Latched indicator -->
+      <span v-if="behavior === 'latching' && isLatched" class="latch-indicator" title="Latched - click to reset">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
         </svg>
       </span>
     </button>
@@ -197,8 +340,9 @@ async function executeAction() {
   font-weight: 600;
   font-size: 0.8rem;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.15s;
   text-transform: uppercase;
+  position: relative;
 }
 
 .action-btn:hover:not(:disabled) {
@@ -225,6 +369,158 @@ async function executeAction() {
   opacity: 0.8;
 }
 
+.latch-indicator {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0.8;
+}
+
+/* ==================== */
+/* SIZE VARIANTS        */
+/* ==================== */
+.size-small .action-btn {
+  font-size: 0.65rem;
+  padding: 4px 8px;
+}
+
+.size-medium .action-btn {
+  font-size: 0.8rem;
+  padding: 6px 12px;
+}
+
+.size-large .action-btn {
+  font-size: 1rem;
+  padding: 10px 16px;
+}
+
+/* ==================== */
+/* VISUAL STYLE VARIANTS */
+/* ==================== */
+
+/* Standard - default rectangular button */
+.style-standard .action-btn {
+  border-radius: 4px;
+}
+
+/* Round - circular button like indicator lamp */
+.style-round {
+  padding: 4px;
+  aspect-ratio: 1;
+}
+
+.style-round .action-btn {
+  border-radius: 50%;
+  aspect-ratio: 1;
+  min-width: 40px;
+  min-height: 40px;
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.style-round .action-btn::after {
+  content: '';
+  position: absolute;
+  top: 15%;
+  left: 25%;
+  width: 30%;
+  height: 20%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0) 100%);
+  border-radius: 50%;
+}
+
+.style-round.active .action-btn {
+  box-shadow:
+    0 0 12px currentColor,
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.style-round .label {
+  font-size: 0.6rem;
+}
+
+/* Square - square button */
+.style-square {
+  padding: 4px;
+  aspect-ratio: 1;
+}
+
+.style-square .action-btn {
+  border-radius: 4px;
+  aspect-ratio: 1;
+  min-width: 40px;
+  min-height: 40px;
+}
+
+/* Emergency - prominent red emergency style */
+.style-emergency {
+  padding: 4px;
+  aspect-ratio: 1;
+}
+
+.style-emergency .action-btn {
+  border-radius: 50%;
+  aspect-ratio: 1;
+  min-width: 60px;
+  min-height: 60px;
+  background: #dc2626 !important;
+  border: 4px solid #fcd34d;
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    inset 0 -4px 8px rgba(0, 0, 0, 0.3),
+    inset 0 2px 0 rgba(255, 255, 255, 0.2);
+  text-transform: uppercase;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.style-emergency .action-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow:
+    0 0 20px rgba(220, 38, 38, 0.6),
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    inset 0 -4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.style-emergency .action-btn:active:not(:disabled) {
+  transform: scale(0.95);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.4),
+    inset 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.style-emergency.active .action-btn {
+  background: #991b1b !important;
+  animation: emergency-pulse 0.5s infinite;
+}
+
+@keyframes emergency-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(220, 38, 38, 0.8), 0 4px 8px rgba(0, 0, 0, 0.4); }
+  50% { box-shadow: 0 0 25px rgba(220, 38, 38, 1), 0 4px 8px rgba(0, 0, 0, 0.4); }
+}
+
+/* Flat - minimal flat style */
+.style-flat .action-btn {
+  border-radius: 4px;
+  background: transparent !important;
+  border: 2px solid currentColor;
+  color: inherit;
+}
+
+.style-flat .action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.style-flat.active .action-btn {
+  background: rgba(255, 255, 255, 0.2) !important;
+}
+
+/* ==================== */
+/* STATE VARIANTS       */
+/* ==================== */
+
 /* Blocked state */
 .blocked .action-btn {
   background: #374151 !important;
@@ -232,6 +528,11 @@ async function executeAction() {
 
 .blocked {
   border-color: #78350f;
+}
+
+/* Active state glow */
+.active:not(.style-emergency):not(.style-flat) .action-btn {
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.5);
 }
 
 /* Executing state */
@@ -244,7 +545,9 @@ async function executeAction() {
   50% { opacity: 0.7; }
 }
 
-/* Confirmation state */
+/* ==================== */
+/* CONFIRMATION STATE   */
+/* ==================== */
 .confirm-state {
   flex: 1;
   display: flex;

@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import ModbusAddressChanger from './ModbusAddressChanger.vue'
 
 const mqtt = useMqtt()
+
+// Address changer modal
+const showAddressChanger = ref(false)
 
 // Props
 const props = defineProps<{
@@ -275,16 +279,29 @@ watch(() => mqtt.channelConfigs.value, () => {
         <span class="icon">🔌</span>
         Modbus Devices
       </h3>
-      <button
-        v-if="editMode"
-        class="add-btn"
-        @click="openAddDevice"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        Add Device
-      </button>
+      <div class="header-actions">
+        <button
+          class="tool-btn"
+          @click="showAddressChanger = true"
+          title="Change device slave address"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          Address Changer
+        </button>
+        <button
+          v-if="editMode"
+          class="add-btn"
+          @click="openAddDevice"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          Add Device
+        </button>
+      </div>
     </div>
 
     <!-- Feedback message -->
@@ -596,6 +613,12 @@ watch(() => mqtt.channelConfigs.value, () => {
         </div>
       </div>
     </div>
+
+    <!-- Address Changer Modal -->
+    <ModbusAddressChanger
+      v-if="showAddressChanger"
+      @close="showAddressChanger = false"
+    />
   </div>
 </template>
 
@@ -626,6 +649,29 @@ watch(() => mqtt.channelConfigs.value, () => {
 
 .section-header .icon {
   font-size: 1.2rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.8rem;
+  background: #374151;
+  color: #d1d5db;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.tool-btn:hover {
+  background: #4b5563;
+  color: white;
 }
 
 .add-btn {

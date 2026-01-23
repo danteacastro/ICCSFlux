@@ -1,3 +1,0 @@
-paho-mqtt>=1.6.0
-pyinstaller>=5.0
-psutil>=5.9.0  # Required for process cleanup in service_manager.py

@@ -143,12 +143,12 @@ def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:
         return scale_counter(raw_value, channel.pulses_per_unit, channel.counter_mode)
 
     # For 4-20mA current inputs with scaling enabled
-    if channel.channel_type == ChannelType.CURRENT and channel.four_twenty_scaling:
+    if channel.channel_type == ChannelType.CURRENT_INPUT and channel.four_twenty_scaling:
         if channel.eng_units_min is not None and channel.eng_units_max is not None:
             return scale_four_twenty(raw_value, channel.eng_units_min, channel.eng_units_max)
 
     # For voltage inputs with map scaling
-    if channel.channel_type == ChannelType.VOLTAGE and channel.scale_type == 'map':
+    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
             return scale_map(
@@ -308,7 +308,7 @@ def reverse_scaling(channel: ChannelConfig, eng_value: float) -> float:
         The raw value (mA, V, etc.)
     """
     # For 4-20mA with scaling
-    if channel.channel_type == ChannelType.CURRENT and channel.four_twenty_scaling:
+    if channel.channel_type == ChannelType.CURRENT_INPUT and channel.four_twenty_scaling:
         if channel.eng_units_min is not None and channel.eng_units_max is not None:
             span = channel.eng_units_max - channel.eng_units_min
             if span != 0:
@@ -317,7 +317,7 @@ def reverse_scaling(channel: ChannelConfig, eng_value: float) -> float:
             return 4.0
 
     # For map scaling
-    if channel.channel_type == ChannelType.VOLTAGE and channel.scale_type == 'map':
+    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
             scaled_span = channel.scaled_max - channel.scaled_min
@@ -353,7 +353,7 @@ def get_scaling_info(channel: ChannelConfig) -> dict:
         'example': None
     }
 
-    if channel.channel_type == ChannelType.CURRENT and channel.four_twenty_scaling:
+    if channel.channel_type == ChannelType.CURRENT_INPUT and channel.four_twenty_scaling:
         if channel.eng_units_min is not None and channel.eng_units_max is not None:
             info['type'] = '4-20mA'
             info['formula'] = f'value = {channel.eng_units_min} + ((mA - 4) / 16) * {channel.eng_units_max - channel.eng_units_min}'
@@ -364,7 +364,7 @@ def get_scaling_info(channel: ChannelConfig) -> dict:
             info['example'] = f'12mA -> {mid_eng} {channel.units}'
             return info
 
-    if channel.channel_type == ChannelType.VOLTAGE and channel.scale_type == 'map':
+    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
             info['type'] = 'map'
@@ -379,9 +379,9 @@ def get_scaling_info(channel: ChannelConfig) -> dict:
     if channel.scale_slope != 1.0 or channel.scale_offset != 0.0:
         info['type'] = 'linear'
         info['formula'] = f'value = (raw * {channel.scale_slope}) + {channel.scale_offset}'
-        if channel.channel_type == ChannelType.VOLTAGE:
+        if channel.channel_type == ChannelType.VOLTAGE_INPUT:
             info['raw_range'] = (-channel.voltage_range, channel.voltage_range)
-        elif channel.channel_type == ChannelType.CURRENT:
+        elif channel.channel_type == ChannelType.CURRENT_INPUT:
             info['raw_range'] = (0, channel.current_range_ma)
         # Example at 1 unit input
         example_val = apply_scaling(channel, 1.0)
@@ -398,7 +398,7 @@ def validate_scaling_config(channel: ChannelConfig) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if channel.channel_type == ChannelType.CURRENT and channel.four_twenty_scaling:
+    if channel.channel_type == ChannelType.CURRENT_INPUT and channel.four_twenty_scaling:
         if channel.eng_units_min is None or channel.eng_units_max is None:
             return False, "4-20mA scaling enabled but eng_units_min/max not set"
         if channel.eng_units_min == channel.eng_units_max:

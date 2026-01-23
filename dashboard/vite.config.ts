@@ -22,8 +22,26 @@ export default defineConfig({
     }
   },
   build: {
-    // Increase chunk size warning limit for Pyodide
-    chunkSizeWarningLimit: 2000
+    // Monaco editor creates large chunks (~3-4MB) - this is expected
+    // The warning is informational, not an error
+    chunkSizeWarningLimit: 5000,
+    rollupOptions: {
+      // Pyodide loads dynamically from CDN - mark as external to suppress warning
+      external: ['pyodide'],
+      output: {
+        // Use function-based manual chunks for better code splitting
+        manualChunks(id) {
+          // Split Monaco editor into its own chunk
+          if (id.includes('monaco-editor')) {
+            return 'monaco'
+          }
+          // Split node_modules into vendor chunk
+          if (id.includes('node_modules')) {
+            return 'vendor'
+          }
+        }
+      }
+    }
   },
   optimizeDeps: {
     // Don't pre-bundle pyodide - it loads dynamically

@@ -24,7 +24,7 @@ import pytest
 import json
 import time
 from typing import Dict, Any, Optional
-from conftest import MQTTTestHarness, SYSTEM_PREFIX, MQTT_HOST, MQTT_PORT
+from test_helpers import MQTTTestHarness, SYSTEM_PREFIX, MQTT_HOST, MQTT_PORT
 
 
 class TestUserVariables:

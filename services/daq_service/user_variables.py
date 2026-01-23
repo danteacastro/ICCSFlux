@@ -15,6 +15,9 @@ from typing import Dict, Any, Optional, List, Callable
 
 logger = logging.getLogger('UserVariables')
 
+# Safety limits to prevent memory exhaustion
+MAX_ROLLING_BUFFER_SAMPLES = 100000  # Max samples in rolling buffer (prevents unbounded growth at high scan rates)
+MAX_RATE_SAMPLES = 1000  # Max samples for rate calculation averaging
 
 # =============================================================================
 # DATA CLASSES
@@ -40,13 +43,20 @@ class UserVariable:
     - peak_to_peak: Difference between max and min values
     - expression: Calculated from formula (like existing CalculatedParam but persistent)
     - rolling: Sliding window accumulator (e.g., last 24 hours) - stores timestamped samples
+    - string: Text value for notes, batch IDs, operator input, etc.
+
+    Data Types:
+    - number (default): Numeric value (float)
+    - string: Text value for operator input, notes, batch IDs, etc.
     """
     id: str
     name: str
     display_name: str
-    variable_type: str  # 'constant', 'manual', 'accumulator', 'timer', 'counter', 'sum', 'average', 'min', 'max', 'expression'
+    variable_type: str  # 'constant', 'manual', 'accumulator', 'timer', 'counter', 'sum', 'average', 'min', 'max', 'expression', 'string'
     description: str = ""  # User description of the variable
-    value: float = 0.0
+    value: float = 0.0  # Numeric value
+    string_value: str = ""  # String value (for data_type='string')
+    data_type: str = "number"  # 'number' or 'string'
     units: str = ""
     persistent: bool = True  # Survives restarts
 
@@ -100,6 +110,8 @@ class UserVariable:
             'variable_type': self.variable_type,
             'description': self.description,
             'value': self.value,
+            'string_value': self.string_value,
+            'data_type': self.data_type,
             'units': self.units,
             'persistent': self.persistent,
             'source_channel': self.source_channel,
@@ -125,6 +137,11 @@ class UserVariable:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'UserVariable':
         """Create from dictionary"""
+        # Infer data_type from variable_type if not specified
+        data_type = data.get('data_type', 'number')
+        if data.get('variable_type') == 'string':
+            data_type = 'string'
+
         var = cls(
             id=data['id'],
             name=data['name'],
@@ -132,6 +149,8 @@ class UserVariable:
             variable_type=data['variable_type'],
             description=data.get('description', ''),
             value=data.get('value', 0.0),
+            string_value=data.get('string_value', ''),
+            data_type=data_type,
             units=data.get('units', ''),
             persistent=data.get('persistent', True),
             source_channel=data.get('source_channel'),
@@ -225,6 +244,8 @@ class TestSessionConfig:
     # Safety interlock requirements
     require_latch_armed: bool = False  # If True, all latched alarms must be cleared to start
     require_no_active_alarms: bool = False  # If True, no active alarms allowed to start
+    # Session timeout (autonomous operation protection)
+    timeout_minutes: int = 0  # 0 = no timeout, >0 = auto-stop session after N minutes
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -240,6 +261,7 @@ class TestSessionConfig:
             stop_sequence_id=data.get('stop_sequence_id'),
             require_latch_armed=data.get('require_latch_armed', False),
             require_no_active_alarms=data.get('require_no_active_alarms', False),
+            timeout_minutes=data.get('timeout_minutes', 0),
         )
 
 
@@ -451,14 +473,25 @@ class UserVariableManager:
         """Get all variables"""
         return list(self.variables.values())
 
-    def set_variable_value(self, var_id: str, value: float) -> bool:
-        """Manually set a variable's value (for manual type or override)"""
+    def set_variable_value(self, var_id: str, value: Any) -> bool:
+        """Manually set a variable's value (for manual type or override).
+
+        Args:
+            var_id: Variable ID
+            value: Value to set (float for numeric, str for string variables)
+        """
         with self.lock:
             if var_id not in self.variables:
                 return False
 
             var = self.variables[var_id]
-            var.value = value
+
+            # Handle string vs numeric values
+            if var.data_type == 'string' or var.variable_type == 'string':
+                var.string_value = str(value)
+            else:
+                var.value = float(value)
+
             var._last_update = datetime.now().timestamp()
 
             if var.persistent:
@@ -467,13 +500,19 @@ class UserVariableManager:
             return True
 
     def reset_variable(self, var_id: str) -> bool:
-        """Reset a variable to 0"""
+        """Reset a variable to default (0 for numeric, empty string for string)"""
         with self.lock:
             if var_id not in self.variables:
                 return False
 
             var = self.variables[var_id]
-            var.value = 0.0
+
+            # Reset to appropriate default based on data type
+            if var.data_type == 'string' or var.variable_type == 'string':
+                var.string_value = ''
+            else:
+                var.value = 0.0
+
             var.last_reset = datetime.now().isoformat()
             var._last_source_value = None  # Reset edge detection
 
@@ -605,6 +644,10 @@ class UserVariableManager:
         # Prune samples older than the window
         cutoff = now_ts - SAMPLE_WINDOW_S
         var._rate_samples = [(t, v) for t, v in var._rate_samples if t > cutoff]
+
+        # Safety limit: prevent unbounded growth if time pruning fails
+        if len(var._rate_samples) > MAX_RATE_SAMPLES:
+            var._rate_samples = var._rate_samples[-MAX_RATE_SAMPLES:]
 
         # Initialize last calculation time if needed
         if var._last_rate_calc is None:
@@ -802,6 +845,13 @@ class UserVariableManager:
         # Prune samples outside the rolling window
         cutoff = now_ts - var.rolling_window_s
         var._rolling_buffer = [(t, v) for t, v in var._rolling_buffer if t > cutoff]
+
+        # Safety limit: prevent unbounded growth at high scan rates
+        # At 100Hz with 24h window = 8.64M samples. Cap at 100K to prevent memory exhaustion.
+        if len(var._rolling_buffer) > MAX_ROLLING_BUFFER_SAMPLES:
+            # Keep most recent samples
+            var._rolling_buffer = var._rolling_buffer[-MAX_ROLLING_BUFFER_SAMPLES:]
+            logger.warning(f"Rolling buffer for {var.name} capped at {MAX_ROLLING_BUFFER_SAMPLES} samples")
 
         # Calculate sum of all samples in window
         var.value = sum(v for _, v in var._rolling_buffer)
@@ -1128,6 +1178,55 @@ class UserVariableManager:
                     pass
             return status
 
+    def check_session_timeout(self) -> Optional[Dict[str, Any]]:
+        """
+        Check if session has timed out (autonomous operation protection).
+
+        Returns:
+            None if no timeout occurred, or dict with stop result if session was stopped
+        """
+        with self.lock:
+            if not self.session.active:
+                return None
+
+            timeout_minutes = self.session.config.timeout_minutes
+            if timeout_minutes <= 0:
+                return None  # No timeout configured
+
+            if not self.session.started_at:
+                return None
+
+            try:
+                started = datetime.fromisoformat(self.session.started_at)
+                elapsed_seconds = (datetime.now() - started).total_seconds()
+                timeout_seconds = timeout_minutes * 60
+
+                if elapsed_seconds >= timeout_seconds:
+                    logger.warning(f"Session timeout after {elapsed_seconds/60:.1f} minutes (limit: {timeout_minutes})")
+                    # Release lock before calling stop_session (it acquires lock)
+                    # Store values needed for stop
+                    pass
+            except Exception as e:
+                logger.error(f"Error checking session timeout: {e}")
+                return None
+
+        # Outside lock - call stop_session which acquires its own lock
+        if self.session.active:
+            try:
+                started = datetime.fromisoformat(self.session.started_at)
+                elapsed_seconds = (datetime.now() - started).total_seconds()
+                timeout_seconds = self.session.config.timeout_minutes * 60
+                if elapsed_seconds >= timeout_seconds:
+                    result = self.stop_session()
+                    if result.get('success'):
+                        result['reason'] = 'timeout'
+                        result['timeout_minutes'] = self.session.config.timeout_minutes
+                    return result
+            except:
+                pass
+
+        return None
+
     # =========================================================================
     # DATA EXPORT
     # =========================================================================
@@ -1137,15 +1236,28 @@ class UserVariableManager:
         with self.lock:
             result = {}
             for var in self.variables.values():
+                # Use appropriate value field based on data type
+                if var.data_type == 'string' or var.variable_type == 'string':
+                    display_value = var.string_value
+                else:
+                    display_value = var.value
+
                 result[var.id] = {
                     'name': var.name,
                     'display_name': var.display_name,
-                    'value': var.value,
+                    'value': display_value,
                     'units': var.units,
                     'variable_type': var.variable_type,
+                    'data_type': var.data_type,
                     'last_reset': var.last_reset,
                     'last_update': var._last_update,
                 }
+                # Include both values for flexibility
+                if var.data_type == 'string' or var.variable_type == 'string':
+                    result[var.id]['string_value'] = var.string_value
+                else:
+                    result[var.id]['numeric_value'] = var.value
+
                 if var.variable_type == 'timer':
                     result[var.id]['timer_running'] = var.timer_running
                     # Format timer as HH:MM:SS

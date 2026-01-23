@@ -27,6 +27,7 @@
 
 import { ref, computed, readonly, watch } from 'vue'
 import { useMqtt } from './useMqtt'
+import { useScripts } from './useScripts'
 
 // =============================================================================
 // TYPES
@@ -44,6 +45,7 @@ export interface BackendScript {
   runMode: ScriptRunMode
   createdAt: string
   modifiedAt: string
+  autoRestart: boolean  // Auto-restart if script times out
   // Runtime state (from backend)
   state: ScriptState
   startedAt: number | null
@@ -78,6 +80,37 @@ export interface ScriptStatus {
     started_at: number | null
     iterations: number
   }>
+}
+
+// =============================================================================
+// TRACEBACK PARSING
+// =============================================================================
+
+/**
+ * Parse Python traceback to extract error details including line number
+ *
+ * Python tracebacks look like:
+ *   File "<script:My Script>", line 15, in <module>
+ *     x = tags.nonexistent
+ *   AttributeError: ...
+ */
+export function parseTraceback(errorMessage: string): {
+  lineNumber?: number
+  errorType?: string
+  shortMessage: string
+} {
+  // Match: File "<script:name>", line X
+  const lineMatch = errorMessage.match(/File\s+"<script:[^"]+>",\s+line\s+(\d+)/i)
+  const lineNumber = lineMatch && lineMatch[1] ? parseInt(lineMatch[1], 10) : undefined
+
+  // Match common Python error types at the start of a line
+  const errorTypeMatch = errorMessage.match(/^(\w+Error|\w+Exception):\s*(.*)$/m)
+  const errorType = errorTypeMatch && errorTypeMatch[1] ? errorTypeMatch[1] : undefined
+  const shortMessage = errorTypeMatch && errorTypeMatch[2]
+    ? errorTypeMatch[2].trim() || errorMessage
+    : errorMessage
+
+  return { lineNumber, errorType, shortMessage }
 }
 
 // =============================================================================
@@ -131,21 +164,78 @@ export function useBackendScripts() {
   function handleScriptStatus(data: ScriptStatus) {
     if (!data || !Array.isArray(data.scripts)) return
 
+    // Debug: log status updates to diagnose blinking (check browser console)
+    console.log('[ScriptStatus] Received:', data.scripts.length, 'scripts', data.scripts.map(s => `${s.name}:${s.state}`))
+
     // Build set of current script IDs from backend
     const backendIds = new Set<string>()
+    const scriptsComposable = useScripts()
 
     // Update scripts from backend (array format)
     for (const scriptData of data.scripts) {
       if (scriptData.id) {
         backendIds.add(scriptData.id)
-        scripts.value[scriptData.id] = normalizeScript(scriptData)
+
+        const normalizedScript = normalizeScript(scriptData)
+        const existingScript = scripts.value[scriptData.id]
+
+        // Only update if data actually changed (prevents unnecessary re-renders/blinking)
+        const hasChanged = !existingScript ||
+          existingScript.state !== normalizedScript.state ||
+          existingScript.iterations !== normalizedScript.iterations ||
+          existingScript.errorMessage !== normalizedScript.errorMessage ||
+          existingScript.startedAt !== normalizedScript.startedAt ||
+          existingScript.enabled !== normalizedScript.enabled ||
+          existingScript.name !== normalizedScript.name ||
+          existingScript.runMode !== normalizedScript.runMode ||
+          existingScript.autoRestart !== normalizedScript.autoRestart
+
+        // Detect state transition to 'error'
+        const previousState = existingScript?.state
+        const newState = normalizedScript.state
+
+        if (hasChanged) {
+          // Update script data
+          scripts.value[scriptData.id] = normalizedScript
+
+          // Show notification if script just entered error state
+          if (newState === 'error' && previousState !== 'error') {
+            const scriptName = scriptData.name || scriptData.id
+            let errorMsg = scriptData.error || 'Unknown error'
+
+            // Parse error for better formatting
+            const parsed = parseTraceback(errorMsg)
+            if (parsed.lineNumber) {
+              errorMsg = `Line ${parsed.lineNumber}: ${parsed.shortMessage}`
+            } else {
+              errorMsg = parsed.shortMessage
+            }
+
+            scriptsComposable.addNotification('error', `Script Failed: ${scriptName}`, errorMsg)
+          }
+
+          // Check for timeout and handle auto-restart
+          if (newState === 'error' && normalizedScript.autoRestart && scriptData.error?.includes('timeout')) {
+            // Auto-restart after a brief delay
+            setTimeout(() => {
+              if (scripts.value[scriptData.id]?.state === 'error') {
+                console.log(`[BackendScripts] Auto-restarting timed out script: ${scriptData.name}`)
+                scriptsComposable.addNotification('info', `Auto-Restart: ${scriptData.name}`, 'Restarting script after timeout')
+                startScript(scriptData.id)
+              }
+            }, 2000) // 2 second delay before restart
+          }
+        }
       }
     }
 
     // Remove scripts that are no longer in backend
-    for (const id of Object.keys(scripts.value)) {
-      if (!backendIds.has(id)) {
-        delete scripts.value[id]
+    // But only if backend sent a non-empty list (empty list during transitions causes blinking)
+    if (backendIds.size > 0) {
+      for (const id of Object.keys(scripts.value)) {
+        if (!backendIds.has(id)) {
+          delete scripts.value[id]
+        }
       }
     }
   }
@@ -169,11 +259,19 @@ export function useBackendScripts() {
   function handleScriptOutput(data: { script_id: string; type: string; message: string }) {
     if (!data || !data.script_id) return
 
+    // Parse traceback for line numbers if this is an error
+    let lineNumber: number | undefined
+    if (data.type === 'error') {
+      const parsed = parseTraceback(data.message)
+      lineNumber = parsed.lineNumber
+    }
+
     const output: ScriptOutput = {
       scriptId: data.script_id,
       type: data.type as ScriptOutput['type'],
       message: data.message,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      lineNumber
     }
 
     if (!scriptOutputs.value[data.script_id]) {
@@ -185,6 +283,26 @@ export function useBackendScripts() {
     // Limit output history
     if (scriptOutputs.value[data.script_id]!.length > 1000) {
       scriptOutputs.value[data.script_id] = scriptOutputs.value[data.script_id]!.slice(-500)
+    }
+
+    // Show toast notification for errors
+    if (data.type === 'error') {
+      const script = scripts.value[data.script_id]
+      const scriptName = script?.name || data.script_id
+      const parsed = parseTraceback(data.message)
+
+      // Build notification message
+      let notifMessage = parsed.shortMessage
+      if (parsed.lineNumber) {
+        notifMessage = `Line ${parsed.lineNumber}: ${notifMessage}`
+      }
+      if (parsed.errorType) {
+        notifMessage = `${parsed.errorType} - ${notifMessage}`
+      }
+
+      // Use the notification system from useScripts
+      const scriptsComposable = useScripts()
+      scriptsComposable.addNotification('error', `Script Error: ${scriptName}`, notifMessage)
     }
   }
 
@@ -198,10 +316,12 @@ export function useBackendScripts() {
       runMode: data.runMode || data.run_mode || 'manual',
       createdAt: data.createdAt || data.created_at || '',
       modifiedAt: data.modifiedAt || data.modified_at || '',
+      autoRestart: data.autoRestart || data.auto_restart || false,
       state: data.state || 'idle',
       startedAt: data.startedAt || data.started_at || null,
       iterations: data.iterations || 0,
-      errorMessage: data.errorMessage || data.error_message || null
+      // Backend sends 'error', accept all variations
+      errorMessage: data.errorMessage || data.error_message || data.error || null
     }
   }
 
@@ -216,6 +336,7 @@ export function useBackendScripts() {
     description?: string
     runMode?: ScriptRunMode
     enabled?: boolean
+    autoRestart?: boolean
   }): string {
     // Use provided ID or generate new one
     const id = script.id || `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
@@ -226,7 +347,8 @@ export function useBackendScripts() {
       code: script.code,
       description: script.description || '',
       run_mode: script.runMode || 'manual',
-      enabled: script.enabled !== false
+      enabled: script.enabled !== false,
+      auto_restart: script.autoRestart || false
     })
 
     return id
@@ -238,6 +360,7 @@ export function useBackendScripts() {
     description: string
     runMode: ScriptRunMode
     enabled: boolean
+    autoRestart: boolean
   }>) {
     const payload: any = { id }
 
@@ -246,6 +369,7 @@ export function useBackendScripts() {
     if (updates.description !== undefined) payload.description = updates.description
     if (updates.runMode !== undefined) payload.run_mode = updates.runMode
     if (updates.enabled !== undefined) payload.enabled = updates.enabled
+    if (updates.autoRestart !== undefined) payload.auto_restart = updates.autoRestart
 
     mqtt.sendLocalCommand('script/update', payload)
   }
@@ -277,6 +401,29 @@ export function useBackendScripts() {
     }
   }
 
+  /**
+   * Hot-reload a script without stopping acquisition.
+   *
+   * This sends the reload command which:
+   * 1. Stops the running script gracefully
+   * 2. Updates the code
+   * 3. Restarts the script
+   * 4. Script recovers state via restore() calls
+   *
+   * Use this instead of updateScript when you want to apply code changes
+   * to a running script without losing its persisted state.
+   *
+   * @param id - Script ID to reload
+   * @param code - New code to use (optional - if omitted, reloads existing code)
+   */
+  function reloadScript(id: string, code?: string) {
+    const payload: { id: string; code?: string } = { id }
+    if (code !== undefined) {
+      payload.code = code
+    }
+    mqtt.sendLocalCommand('script/reload', payload)
+  }
+
   function clearAllScripts() {
     // Send clear-all command to backend - this ensures ALL scripts are cleared
     // even if frontend state is stale or empty (e.g., after page refresh)
@@ -306,6 +453,12 @@ export function useBackendScripts() {
 
   function clearScriptOutput(id: string) {
     scriptOutputs.value[id] = []
+  }
+
+  function clearAllOutput() {
+    for (const id of Object.keys(scriptOutputs.value)) {
+      scriptOutputs.value[id] = []
+    }
   }
 
   // ===========================================================================
@@ -380,11 +533,13 @@ export function useBackendScripts() {
     startScript,
     stopScript,
     stopAllScripts,
+    reloadScript,
     clearAllScripts,
 
     // Output
     getScriptOutputs,
     clearScriptOutput,
+    clearAllOutput,
 
     // Queries
     requestScriptList

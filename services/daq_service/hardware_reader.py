@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from queue import Queue
 
 from config_parser import NISystemConfig, ChannelConfig, ChannelType, ThermocoupleType, ModuleConfig
+from scaling import reverse_scaling
 
 # Try to import nidaqmx
 try:
@@ -315,7 +316,7 @@ class HardwareReader:
 
         # Analog input types that can share a continuous task
         ANALOG_INPUT_TYPES = {
-            ChannelType.THERMOCOUPLE, ChannelType.VOLTAGE, ChannelType.CURRENT,
+            ChannelType.THERMOCOUPLE, ChannelType.VOLTAGE_INPUT, ChannelType.CURRENT_INPUT,
             ChannelType.RTD, ChannelType.STRAIN, ChannelType.IEPE, ChannelType.RESISTANCE
         }
 
@@ -359,7 +360,8 @@ class HardwareReader:
             analog_channels = [c for c in channels if c.channel_type in ANALOG_INPUT_TYPES]
             digital_in_channels = [c for c in channels if c.channel_type == ChannelType.DIGITAL_INPUT]
             digital_out_channels = [c for c in channels if c.channel_type == ChannelType.DIGITAL_OUTPUT]
-            analog_out_channels = [c for c in channels if c.channel_type == ChannelType.ANALOG_OUTPUT]
+            voltage_out_channels = [c for c in channels if c.channel_type == ChannelType.VOLTAGE_OUTPUT]
+            current_out_channels = [c for c in channels if c.channel_type == ChannelType.CURRENT_OUTPUT]
             counter_channels = [c for c in channels if c.channel_type == ChannelType.COUNTER]
 
             # Create ONE continuous task for ALL analog inputs on this module
@@ -381,9 +383,13 @@ class HardwareReader:
             if digital_out_channels:
                 self._create_digital_output_tasks(digital_out_channels)
 
-            # Analog outputs (individual tasks per channel)
-            if analog_out_channels:
-                self._create_analog_output_tasks(analog_out_channels)
+            # Voltage outputs (individual tasks per channel)
+            if voltage_out_channels:
+                self._create_voltage_output_tasks(voltage_out_channels)
+
+            # Current outputs (individual tasks per channel)
+            if current_out_channels:
+                self._create_current_output_tasks(current_out_channels)
 
             # Counters (individual tasks per channel)
             if counter_channels:
@@ -436,8 +442,8 @@ class HardwareReader:
                         logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
                         logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type == ChannelType.VOLTAGE:
-                    # Voltage
+                elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
+                    # Voltage input
                     v_range = channel.voltage_range or 10.0
                     term_config = get_terminal_config(channel.terminal_config)
 
@@ -448,10 +454,10 @@ class HardwareReader:
                         min_val=-v_range,
                         max_val=v_range
                     )
-                    logger.info(f"Added voltage: {channel.name} -> {phys_chan}")
+                    logger.info(f"Added voltage input: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type == ChannelType.CURRENT:
-                    # Current (4-20mA)
+                elif channel.channel_type == ChannelType.CURRENT_INPUT:
+                    # Current input (4-20mA)
                     max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
                     term_config = get_terminal_config(channel.terminal_config)
 
@@ -463,7 +469,7 @@ class HardwareReader:
                         max_val=max_current,
                         shunt_resistor_loc=CurrentShuntResistorLocation.INTERNAL
                     )
-                    logger.info(f"Added current: {channel.name} -> {phys_chan}")
+                    logger.info(f"Added current input: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.RTD:
                     # RTD
@@ -567,7 +573,7 @@ class HardwareReader:
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.VOLTAGE,  # Generic - we track per-channel in channel_types
+                channel_type=ChannelType.VOLTAGE_INPUT,  # Generic - we track per-channel in channel_types
                 is_continuous=True,
                 reader=reader,
                 channel_types=channel_types  # Per-channel types for post-processing (e.g., current mA conversion)
@@ -678,7 +684,7 @@ class HardwareReader:
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.VOLTAGE,
+                channel_type=ChannelType.VOLTAGE_INPUT,
                 is_continuous=True,
                 reader=reader
             )
@@ -731,7 +737,7 @@ class HardwareReader:
                 task=task,
                 channel_names=channel_names,
                 module_name=module_name,
-                channel_type=ChannelType.CURRENT,
+                channel_type=ChannelType.CURRENT_INPUT,
                 is_continuous=True,
                 reader=reader
             )
@@ -1039,12 +1045,12 @@ class HardwareReader:
             except Exception as e:
                 logger.error(f"Failed to create DO task for {channel.name}: {e}")
 
-    def _create_analog_output_tasks(self, channels: List[ChannelConfig]):
-        """Create individual analog output tasks"""
+    def _create_voltage_output_tasks(self, channels: List[ChannelConfig]):
+        """Create individual voltage output tasks (0-10V, ±10V modules like NI 9263, NI 9264)"""
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"AO_{channel.name}")
+                task = nidaqmx.Task(f"VO_{channel.name}")
 
                 v_range = channel.voltage_range or 10.0
                 task.ao_channels.add_ao_voltage_chan(
@@ -1061,15 +1067,50 @@ class HardwareReader:
                     # Restore previous state
                     preserved_value = self.output_values[channel.name]
                     task.write(preserved_value)
-                    logger.info(f"Added analog output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value})")
+                    logger.info(f"Added voltage output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value})")
                 else:
                     # First time - use default value
                     self.output_values[channel.name] = channel.default_value or 0.0
                     task.write(channel.default_value or 0.0)
-                    logger.info(f"Added analog output channel: {channel.name} -> {phys_chan} (default: {channel.default_value or 0.0})")
+                    logger.info(f"Added voltage output channel: {channel.name} -> {phys_chan} (default: {channel.default_value or 0.0})")
 
             except Exception as e:
-                logger.error(f"Failed to create AO task for {channel.name}: {e}")
+                logger.error(f"Failed to create voltage output task for {channel.name}: {e}")
+
+    def _create_current_output_tasks(self, channels: List[ChannelConfig]):
+        """Create individual current output tasks (0-20mA, 4-20mA modules like NI 9265, NI 9266)"""
+        for channel in channels:
+            try:
+                phys_chan = self._get_physical_channel_path(channel)
+                task = nidaqmx.Task(f"CO_{channel.name}")
+
+                # Current outputs are typically 0-20mA or 0-24mA
+                max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
+
+                task.ao_channels.add_ao_current_chan(
+                    phys_chan,
+                    name_to_assign_to_channel=channel.name,
+                    min_val=0.0,
+                    max_val=max_current
+                )
+
+                self.output_tasks[channel.name] = task
+
+                # Preserve existing output state across reinitializations
+                if channel.name in self.output_values:
+                    # Restore previous state (stored in mA)
+                    preserved_value = self.output_values[channel.name]
+                    task.write(preserved_value / 1000.0)  # Convert mA to Amps for hardware
+                    logger.info(f"Added current output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value}mA)")
+                else:
+                    # First time - use default value
+                    default_ma = channel.default_value or 0.0
+                    self.output_values[channel.name] = default_ma
+                    task.write(default_ma / 1000.0)  # Convert mA to Amps for hardware
+                    logger.info(f"Added current output channel: {channel.name} -> {phys_chan} (default: {default_ma}mA)")
+
+            except Exception as e:
+                logger.error(f"Failed to create current output task for {channel.name}: {e}")
 
     def _create_counter_tasks(self, channels: List[ChannelConfig]):
         """Create counter/frequency input tasks"""
@@ -1220,7 +1261,7 @@ class HardwareReader:
                                     # Convert current from Amps to mA
                                     # Use per-channel type from channel_types dict if available
                                     ch_type = task_group.channel_types.get(name, task_group.channel_type)
-                                    if ch_type == ChannelType.CURRENT:
+                                    if ch_type == ChannelType.CURRENT_INPUT:
                                         value = value * 1000.0
 
                                     self.latest_values[name] = value
@@ -1407,26 +1448,64 @@ class HardwareReader:
                         logger.warning(f"DO readback failed for {channel_name}: {rb_err}")
                         self.output_values[channel_name] = 1.0 if bool_value else 0.0
 
-                elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
-                    float_value = float(value)
-                    # Clamp to valid range
+                elif channel.channel_type == ChannelType.VOLTAGE_OUTPUT:
+                    eng_value = float(value)  # Engineering units from user (%, RPM, PSI, etc.)
+
+                    # Apply REVERSE scaling: convert engineering units → raw voltage
+                    # Example: 50% → 5.0V (if 0-100% maps to 0-10V)
+                    raw_value = reverse_scaling(channel, eng_value)
+
+                    # Clamp raw output to valid hardware range
                     v_range = channel.voltage_range or 10.0
-                    float_value = max(0.0, min(v_range, float_value))
-                    task.write(float_value)
+                    raw_value = max(0.0, min(v_range, raw_value))
+                    task.write(raw_value)
+
+                    logger.debug(f"VO {channel_name}: eng={eng_value} → raw={raw_value:.4f}V")
 
                     # READBACK: Verify actual hardware state
                     try:
-                        actual_value = task.read()
-                        self.output_values[channel_name] = actual_value
+                        actual_raw = task.read()
+                        # Store engineering value for display (what user sees)
+                        self.output_values[channel_name] = eng_value
                         # Check for significant mismatch (tolerance for DAC precision)
-                        if abs(actual_value - float_value) > 0.01:
-                            logger.warning(f"AO mismatch {channel_name}: commanded={float_value:.4f}, actual={actual_value:.4f}")
+                        if abs(actual_raw - raw_value) > 0.01:
+                            logger.warning(f"VO mismatch {channel_name}: commanded={raw_value:.4f}V, actual={actual_raw:.4f}V")
                         else:
-                            logger.debug(f"AO {channel_name}: wrote={float_value:.4f}, readback={actual_value:.4f}")
+                            logger.debug(f"VO {channel_name}: wrote={raw_value:.4f}V, readback={actual_raw:.4f}V")
                     except Exception as rb_err:
-                        # Readback failed - use commanded value as fallback
-                        logger.warning(f"AO readback failed for {channel_name}: {rb_err}")
-                        self.output_values[channel_name] = float_value
+                        # Readback failed - use commanded engineering value as fallback
+                        logger.warning(f"VO readback failed for {channel_name}: {rb_err}")
+                        self.output_values[channel_name] = eng_value
+
+                elif channel.channel_type == ChannelType.CURRENT_OUTPUT:
+                    eng_value = float(value)  # Engineering units from user (%, RPM, PSI, etc.)
+
+                    # Apply REVERSE scaling: convert engineering units → raw mA
+                    raw_ma = reverse_scaling(channel, eng_value)
+
+                    # Clamp raw output to valid hardware range (in mA)
+                    max_ma = channel.current_range_ma or 20.0
+                    raw_ma = max(0.0, min(max_ma, raw_ma))
+                    raw_amps = raw_ma / 1000.0  # Convert to Amps for hardware
+                    task.write(raw_amps)
+
+                    logger.debug(f"CO {channel_name}: eng={eng_value} → raw={raw_ma:.3f}mA")
+
+                    # READBACK: Verify actual hardware state
+                    try:
+                        actual_amps = task.read()
+                        actual_ma = actual_amps * 1000.0
+                        # Store engineering value for display (what user sees)
+                        self.output_values[channel_name] = eng_value
+                        # Check for significant mismatch (tolerance for DAC precision)
+                        if abs(actual_ma - raw_ma) > 0.05:  # 0.05mA tolerance
+                            logger.warning(f"CO mismatch {channel_name}: commanded={raw_ma:.3f}mA, actual={actual_ma:.3f}mA")
+                        else:
+                            logger.debug(f"CO {channel_name}: wrote={raw_ma:.3f}mA, readback={actual_ma:.3f}mA")
+                    except Exception as rb_err:
+                        # Readback failed - use commanded engineering value as fallback
+                        logger.warning(f"CO readback failed for {channel_name}: {rb_err}")
+                        self.output_values[channel_name] = eng_value
 
                 logger.debug(f"Wrote {value} to {channel_name}")
                 return True
@@ -1463,8 +1542,12 @@ class HardwareReader:
                             actual_value = not actual_value
                         refreshed[channel_name] = 1.0 if actual_value else 0.0
 
-                    elif channel.channel_type == ChannelType.ANALOG_OUTPUT:
+                    elif channel.channel_type == ChannelType.VOLTAGE_OUTPUT:
                         refreshed[channel_name] = float(actual_value)
+
+                    elif channel.channel_type == ChannelType.CURRENT_OUTPUT:
+                        # Convert Amps to mA for display
+                        refreshed[channel_name] = float(actual_value) * 1000.0
 
                     # Check for drift from cached value
                     cached = self.output_values.get(channel_name)

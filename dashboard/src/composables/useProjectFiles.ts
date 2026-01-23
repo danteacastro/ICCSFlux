@@ -163,6 +163,26 @@ const isLoading = ref(false)
 const error = ref<string | null>(null)
 const initialized = ref(false)
 
+// Auto-save state
+const isDirty = ref(false)
+const lastSaveTime = ref<number>(0)
+const autoSaveEnabled = ref(true)
+const AUTO_SAVE_DEBOUNCE_MS = 3000  // 3 seconds debounce
+let autoSaveTimeout: ReturnType<typeof setTimeout> | null = null
+// Guard to ignore changes immediately after project load (prevents save-on-load loop)
+let ignoreNextChange = false
+const IGNORE_CHANGES_AFTER_LOAD_MS = 1500  // Ignore changes for 1.5 seconds after load
+
+// Backend autosave state (crash recovery)
+const BACKEND_AUTOSAVE_INTERVAL_MS = 30000  // 30 seconds
+let backendAutosaveInterval: ReturnType<typeof setInterval> | null = null
+const backendAutosaveStatus = ref<{
+  exists: boolean
+  timestamp?: string
+  sourceProject?: string
+  projectName?: string
+} | null>(null)
+
 // Callbacks for project events
 const projectLoadedCallbacks: ((data: ProjectData) => void)[] = []
 
@@ -257,6 +277,20 @@ export function useProjectFiles() {
     mqtt.subscribe(`${nodePrefix}/config/list/response`, (payload: any) => {
       configs.value = payload.configs || []
     })
+
+    // Subscribe to autosave status (crash recovery)
+    mqtt.subscribe(`${nodePrefix}/project/autosave/status`, (payload: any) => {
+      console.log('[AUTOSAVE] Received autosave status:', payload)
+      backendAutosaveStatus.value = {
+        exists: payload.exists,
+        timestamp: payload.timestamp,
+        sourceProject: payload.source_project,
+        projectName: payload.project_name
+      }
+    })
+
+    // Start backend autosave interval
+    startBackendAutosave()
   }
 
   // List available projects
@@ -342,6 +376,93 @@ export function useProjectFiles() {
       })
 
       mqtt.sendLocalCommand('project/delete', { filename })
+    })
+  }
+
+  // =========================================================================
+  // BACKEND AUTOSAVE (Crash Recovery)
+  // =========================================================================
+
+  // Send current state to backend for autosave (crash recovery)
+  function autosaveToBackend() {
+    if (!isDirty.value) return  // Only autosave when dirty
+
+    const projectData = collectCurrentState()
+    projectData.name = currentProjectData.value?.name || 'Unsaved Project'
+
+    mqtt.sendLocalCommand('project/autosave', { data: projectData })
+    console.log('[AUTOSAVE] Sent state to backend for crash recovery')
+  }
+
+  // Start periodic backend autosave
+  function startBackendAutosave() {
+    if (backendAutosaveInterval) return  // Already running
+
+    backendAutosaveInterval = setInterval(() => {
+      if (isDirty.value) {
+        autosaveToBackend()
+      }
+    }, BACKEND_AUTOSAVE_INTERVAL_MS)
+
+    console.log('[AUTOSAVE] Backend autosave started (every 30s when dirty)')
+  }
+
+  // Stop periodic backend autosave
+  function stopBackendAutosave() {
+    if (backendAutosaveInterval) {
+      clearInterval(backendAutosaveInterval)
+      backendAutosaveInterval = null
+    }
+  }
+
+  // Check if backend has autosave available
+  function checkBackendAutosave() {
+    mqtt.sendLocalCommand('project/autosave/check')
+  }
+
+  // Discard backend autosave (user chose not to recover)
+  function discardBackendAutosave() {
+    mqtt.sendLocalCommand('project/autosave/discard')
+    backendAutosaveStatus.value = null
+  }
+
+  // Load project from backend autosave
+  function loadFromAutosave(): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!backendAutosaveStatus.value?.exists) {
+        resolve(false)
+        return
+      }
+
+      isLoading.value = true
+
+      // Fetch the autosave file content by requesting it from backend
+      const timeout = setTimeout(() => {
+        isLoading.value = false
+        resolve(false)
+      }, 10000)
+
+      // The autosave is loaded by sending a special load command
+      const unsubscribe = mqtt.subscribe('nisystem/nodes/+/project/loaded', async (payload: any) => {
+        clearTimeout(timeout)
+        unsubscribe()
+
+        if (payload.success && payload.project) {
+          currentProjectData.value = payload.project
+          await applyProjectData(payload.project)
+
+          // Clear the autosave after successful recovery
+          discardBackendAutosave()
+
+          console.log('[AUTOSAVE] Successfully recovered from autosave')
+        }
+
+        isLoading.value = false
+        resolve(payload.success)
+      })
+
+      // Load from autosave file
+      mqtt.sendLocalCommand('project/load', { filename: '.autosave.json' })
     })
   }
 
@@ -711,6 +832,17 @@ export function useProjectFiles() {
     }
 
     currentProjectData.value = data
+
+    // Reset dirty state - we just loaded a fresh project
+    isDirty.value = false
+
+    // Set guard to ignore changes immediately after load
+    // This prevents the auto-save from triggering due to Vue reactivity
+    ignoreNextChange = true
+    setTimeout(() => {
+      ignoreNextChange = false
+      console.log('[AUTO-SAVE] Now tracking changes for auto-save')
+    }, IGNORE_CHANGES_AFTER_LOAD_MS)
   }
 
   // Register callback for when a project is loaded
@@ -814,6 +946,77 @@ export function useProjectFiles() {
     console.log('[PROJECT] ✅ Clean slate ready - all state cleared')
   }
 
+  // ============================================================================
+  // AUTO-SAVE FUNCTIONALITY
+  // ============================================================================
+
+  // Mark the project as dirty (has unsaved changes)
+  function markDirty() {
+    if (!currentProject.value) return
+
+    // Ignore changes immediately after project load to prevent save-on-load loop
+    if (ignoreNextChange) {
+      console.log('[AUTO-SAVE] Ignoring change (project just loaded)')
+      return
+    }
+
+    isDirty.value = true
+    scheduleAutoSave()
+  }
+
+  // Schedule an auto-save with debouncing
+  function scheduleAutoSave() {
+    if (!autoSaveEnabled.value || !currentProject.value) return
+
+    // Clear any existing timeout
+    if (autoSaveTimeout) {
+      clearTimeout(autoSaveTimeout)
+    }
+
+    // Schedule new auto-save
+    autoSaveTimeout = setTimeout(async () => {
+      if (!currentProject.value || !isDirty.value) return
+
+      console.log('[AUTO-SAVE] Saving project...', currentProject.value)
+      const success = await saveProject(currentProject.value)
+      if (success) {
+        isDirty.value = false
+        lastSaveTime.value = Date.now()
+        console.log('[AUTO-SAVE] ✅ Project saved successfully')
+      } else {
+        console.error('[AUTO-SAVE] ❌ Failed to save project')
+      }
+    }, AUTO_SAVE_DEBOUNCE_MS)
+  }
+
+  // Force an immediate save (bypass debounce)
+  async function saveNow(): Promise<boolean> {
+    if (!currentProject.value) {
+      console.log('[AUTO-SAVE] No project loaded, cannot save')
+      return false
+    }
+
+    // Clear any pending auto-save
+    if (autoSaveTimeout) {
+      clearTimeout(autoSaveTimeout)
+      autoSaveTimeout = null
+    }
+
+    console.log('[AUTO-SAVE] Force saving project...', currentProject.value)
+    const success = await saveProject(currentProject.value)
+    if (success) {
+      isDirty.value = false
+      lastSaveTime.value = Date.now()
+      console.log('[AUTO-SAVE] ✅ Project saved')
+    }
+    return success
+  }
+
+  // Check if there are unsaved changes that would be lost
+  function checkUnsavedChanges(): boolean {
+    return isDirty.value && currentProject.value !== null
+  }
+
   // Initialize on first use
   setupSubscriptions()
 
@@ -826,6 +1029,14 @@ export function useProjectFiles() {
     isLoading: computed(() => isLoading.value),
     error: computed(() => error.value),
 
+    // Auto-save state
+    isDirty: computed(() => isDirty.value),
+    lastSaveTime: computed(() => lastSaveTime.value),
+    autoSaveEnabled,
+
+    // Backend autosave state (crash recovery)
+    backendAutosaveStatus: computed(() => backendAutosaveStatus.value),
+
     // Actions
     listProjects,
     listConfigs,
@@ -837,6 +1048,17 @@ export function useProjectFiles() {
     collectCurrentState,
     applyProjectData,
     hasUnsavedChanges,
+
+    // Auto-save actions
+    markDirty,
+    saveNow,
+    checkUnsavedChanges,
+
+    // Backend autosave actions (crash recovery)
+    checkBackendAutosave,
+    discardBackendAutosave,
+    loadFromAutosave,
+    autosaveToBackend,
 
     // Events
     onProjectLoaded

@@ -1,4 +1,4 @@
-# CZFlux Administrator Guide
+# ICCSFlux Administrator Guide
 
 **System Installation, Configuration & Maintenance**
 
@@ -62,11 +62,11 @@
 ### 2.1 Quick Install
 
 ```batch
-# 1. Extract CZFlux package
-unzip czflux-v1.0.zip -d C:\CZFlux
+# 1. Extract ICCSFlux package
+unzip iccsflux-v1.0.zip -d C:\ICCSFlux
 
 # 2. Install Python dependencies
-cd C:\CZFlux
+cd C:\ICCSFlux
 pip install -r requirements.txt
 
 # 3. Install Node dependencies
@@ -84,7 +84,7 @@ start.bat
 ### 2.2 Directory Structure
 
 ```
-C:\CZFlux\
+C:\ICCSFlux\
 ├── dashboard\           # Vue.js frontend
 │   ├── src\
 │   ├── dist\           # Production build
@@ -156,7 +156,7 @@ port = 1883
 ws_port = 9002
 username =
 password =
-client_id = czflux-daq
+client_id = iccsflux-daq
 
 [acquisition]
 scan_rate = 10          # Hz
@@ -274,20 +274,20 @@ netstat -ano | findstr :5173
 
 ### 4.4 Windows Service Installation
 
-To run CZFlux as a Windows service:
+To run ICCSFlux as a Windows service:
 
 ```batch
 # Install as service (run as Administrator)
-nssm install CZFlux-DAQ "C:\Python312\python.exe" "C:\CZFlux\services\daq_service\daq_service.py"
-nssm set CZFlux-DAQ AppDirectory "C:\CZFlux\services\daq_service"
-nssm set CZFlux-DAQ AppStdout "C:\CZFlux\data\logs\daq_stdout.log"
-nssm set CZFlux-DAQ AppStderr "C:\CZFlux\data\logs\daq_stderr.log"
+nssm install ICCSFlux-DAQ "C:\Python312\python.exe" "C:\ICCSFlux\services\daq_service\daq_service.py"
+nssm set ICCSFlux-DAQ AppDirectory "C:\ICCSFlux\services\daq_service"
+nssm set ICCSFlux-DAQ AppStdout "C:\ICCSFlux\data\logs\daq_stdout.log"
+nssm set ICCSFlux-DAQ AppStderr "C:\ICCSFlux\data\logs\daq_stderr.log"
 
 # Start service
-net start CZFlux-DAQ
+net start ICCSFlux-DAQ
 
 # Stop service
-net stop CZFlux-DAQ
+net stop ICCSFlux-DAQ
 ```
 
 ### 4.5 Scheduled Restart
@@ -296,7 +296,7 @@ For long-term stability, schedule weekly restarts:
 
 ```batch
 # Create scheduled task (run as Administrator)
-schtasks /create /tn "CZFlux Weekly Restart" /tr "C:\CZFlux\restart_daq.ps1" /sc weekly /d SUN /st 03:00 /ru SYSTEM
+schtasks /create /tn "ICCSFlux Weekly Restart" /tr "C:\ICCSFlux\restart_daq.ps1" /sc weekly /d SUN /st 03:00 /ru SYSTEM
 ```
 
 ---
@@ -371,7 +371,7 @@ lockout_duration = 300      # seconds (5 minutes)
 
 ```batch
 @echo off
-set BACKUP_DIR=D:\Backups\CZFlux\%date:~-4,4%%date:~-10,2%%date:~-7,2%
+set BACKUP_DIR=D:\Backups\ICCSFlux\%date:~-4,4%%date:~-10,2%%date:~-7,2%
 
 mkdir %BACKUP_DIR%
 xcopy /E /Y config %BACKUP_DIR%\config\
@@ -382,7 +382,7 @@ echo Backup completed to %BACKUP_DIR%
 
 ### 6.3 Recovery Procedure
 
-1. Stop all CZFlux services
+1. Stop all ICCSFlux services
 2. Restore configuration files
 3. Restore user database
 4. Restart services
@@ -390,8 +390,8 @@ echo Backup completed to %BACKUP_DIR%
 
 ```batch
 # Restore from backup
-xcopy /E /Y D:\Backups\CZFlux\20260104\config C:\CZFlux\config\
-copy D:\Backups\CZFlux\20260104\users.db C:\CZFlux\data\
+xcopy /E /Y D:\Backups\ICCSFlux\20260104\config C:\ICCSFlux\config\
+copy D:\Backups\ICCSFlux\20260104\users.db C:\ICCSFlux\data\
 ```
 
 ### 6.4 Project Export/Import
@@ -488,7 +488,7 @@ The dashboard can view any node:
 
 ## 8. Remote Node Administration
 
-This chapter covers the deployment and maintenance of remote CZFlux nodes (cRIO and Opto22).
+This chapter covers the deployment and maintenance of remote ICCSFlux nodes (cRIO and Opto22).
 
 ### 8.1 cRIO Node Deployment
 
@@ -525,7 +525,7 @@ The cRIO node service consists of:
    ssh admin@<crio-ip>
    cd /home/admin/crio_node
    chmod +x install.sh
-   ./install.sh <CZFLUX_PC_IP> [NODE_ID]
+   ./install.sh <ICCSFLUX_PC_IP> [NODE_ID]
    ```
 
    Example:
@@ -544,7 +544,7 @@ The cRIO node service consists of:
 Location: `/home/admin/nisystem/crio_node.env`
 
 ```bash
-# MQTT Broker - CZFlux PC
+# MQTT Broker - ICCSFlux PC
 MQTT_BROKER=192.168.1.100
 
 # MQTT Port
@@ -615,7 +615,7 @@ Default settings:
    ssh dev@<epic-ip>
    cd /home/dev/opto22_node
    chmod +x install.sh
-   ./install.sh <CZFLUX_PC_IP> [NODE_ID] [API_KEY]
+   ./install.sh <ICCSFLUX_PC_IP> [NODE_ID] [API_KEY]
    ```
 
    Example:
@@ -648,7 +648,7 @@ If your groov EPIC requires authentication:
 Location: `/home/dev/nisystem/opto22_node.env`
 
 ```bash
-# MQTT Broker - CZFlux PC
+# MQTT Broker - ICCSFlux PC
 MQTT_BROKER=192.168.1.100
 
 # MQTT Port
@@ -667,7 +667,7 @@ API_KEY=
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
-│   CZFlux PC     │◄───────►│  Remote Node    │
+│   ICCSFlux PC     │◄───────►│  Remote Node    │
 │  MQTT Broker    │  MQTT   │  (cRIO/Opto22)  │
 │  Port 1883      │         │                 │
 └─────────────────┘         └─────────────────┘
@@ -677,7 +677,7 @@ API_KEY=
 
 ```
                        ┌─────────────────┐
-                       │   CZFlux PC     │
+                       │   ICCSFlux PC     │
                        │  MQTT Broker    │
                        │  192.168.1.100  │
                        └────────┬────────┘
@@ -700,7 +700,7 @@ API_KEY=
 
 ```batch
 # Windows Firewall - allow MQTT inbound
-netsh advfirewall firewall add rule name="CZFlux MQTT" dir=in action=allow protocol=TCP localport=1883
+netsh advfirewall firewall add rule name="ICCSFlux MQTT" dir=in action=allow protocol=TCP localport=1883
 ```
 
 ### 8.4 Node Health Monitoring
@@ -814,10 +814,10 @@ systemctl restart crio_node.service
 ```conf
 # mosquitto.conf
 allow_anonymous false
-password_file C:\CZFlux\config\mqtt_passwd
+password_file C:\ICCSFlux\config\mqtt_passwd
 
 # Generate password file
-mosquitto_passwd -c C:\CZFlux\config\mqtt_passwd czflux
+mosquitto_passwd -c C:\ICCSFlux\config\mqtt_passwd iccsflux
 ```
 
 ### 9.2 TLS/SSL Encryption
@@ -825,9 +825,9 @@ mosquitto_passwd -c C:\CZFlux\config\mqtt_passwd czflux
 ```conf
 # mosquitto.conf
 listener 8883
-cafile C:\CZFlux\certs\ca.crt
-certfile C:\CZFlux\certs\server.crt
-keyfile C:\CZFlux\certs\server.key
+cafile C:\ICCSFlux\certs\ca.crt
+certfile C:\ICCSFlux\certs\server.crt
+keyfile C:\ICCSFlux\certs\server.key
 require_certificate false
 ```
 
@@ -843,8 +843,8 @@ require_certificate false
 
 ```batch
 # Windows Firewall rules
-netsh advfirewall firewall add rule name="CZFlux MQTT" dir=in action=allow protocol=TCP localport=1883
-netsh advfirewall firewall add rule name="CZFlux Dashboard" dir=in action=allow protocol=TCP localport=5173
+netsh advfirewall firewall add rule name="ICCSFlux MQTT" dir=in action=allow protocol=TCP localport=1883
+netsh advfirewall firewall add rule name="ICCSFlux Dashboard" dir=in action=allow protocol=TCP localport=5173
 ```
 
 ### 9.4 Network Isolation
@@ -861,7 +861,7 @@ For production systems:
 
 ### 10.1 Requirements Checklist
 
-| Requirement | CZFlux Implementation |
+| Requirement | ICCSFlux Implementation |
 |-------------|----------------------|
 | Electronic signatures | User authentication required |
 | Audit trail | Immutable event log |
@@ -996,7 +996,7 @@ type data\logs\daq_service.log | more
 
 ```batch
 @echo off
-echo === CZFlux Health Check ===
+echo === ICCSFlux Health Check ===
 echo.
 echo Checking services...
 tasklist | findstr python && echo [OK] Python running || echo [FAIL] Python not running
@@ -1043,5 +1043,5 @@ health_check.bat
 
 ---
 
-**CZFlux Administrator Guide v1.0**
+**ICCSFlux Administrator Guide v1.0**
 *Last Updated: January 2026*

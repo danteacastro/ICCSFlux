@@ -1,5 +1,5 @@
 #!/bin/bash
-# CZFlux Startup Script
+# ICCSFlux Startup Script
 # Ensures clean state and starts all services in correct order
 
 set -e
@@ -152,7 +152,7 @@ verify_system() {
 # Main
 main() {
     echo "========================================"
-    echo "  CZFlux Startup"
+    echo "  ICCSFlux Startup"
     echo "========================================"
 
     stop_services
@@ -162,7 +162,7 @@ main() {
     verify_system
 
     echo "========================================"
-    log_info "CZFlux ready"
+    log_info "ICCSFlux ready"
     echo "  DAQ Service PID: $(cat $PID_FILE)"
     echo "  Dashboard PID: $(cat $DASHBOARD_PID_FILE 2>/dev/null || echo 'N/A')"
     echo "  DAQ Log: /tmp/nisystem-daq.log"

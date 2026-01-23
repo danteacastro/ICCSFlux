@@ -2,8 +2,8 @@
 
 export type ChannelType =
   | 'thermocouple'
-  | 'voltage'
-  | 'current'
+  | 'voltage_input'
+  | 'current_input'
   | 'rtd'
   | 'strain'
   | 'iepe'
@@ -11,9 +11,14 @@ export type ChannelType =
   | 'resistance'
   | 'digital_input'
   | 'digital_output'
-  | 'analog_output'
+  | 'voltage_output'
+  | 'current_output'
   | 'modbus_register'
   | 'modbus_coil'
+  // Legacy aliases for backwards compatibility
+  | 'voltage'       // Maps to voltage_input
+  | 'current'       // Maps to current_input
+  | 'analog_output' // Maps to voltage_output
 
 /**
  * Project mode determines system architecture:
@@ -199,6 +204,7 @@ export interface ChannelConfig {
 
   // UI settings
   step?: number  // Step increment for setpoint widgets
+  decimals?: number  // Number of decimal places for display
 }
 
 export interface ChannelValue {
@@ -261,6 +267,13 @@ export interface SystemStatus {
   node_name?: string // Human-readable node name
   // Project mode (cdaq = PC is PLC, crio = cRIO is PLC)
   project_mode?: ProjectMode
+  // Resource monitoring
+  resource_monitoring?: boolean
+  cpu_percent?: number
+  memory_mb?: number
+  disk_percent?: number
+  disk_used_gb?: number
+  disk_total_gb?: number
 }
 
 // Recording configuration matching Python backend
@@ -311,6 +324,7 @@ export interface WidgetStyle {
   // Title/Label styling
   fontSize?: 'small' | 'medium' | 'large' | 'xlarge'
   textAlign?: 'left' | 'center' | 'right'
+  verticalAlign?: 'top' | 'center' | 'bottom'
   textColor?: string
   backgroundColor?: string
   // LED/Indicator styling
@@ -354,11 +368,36 @@ export interface ChartYAxis {
   color?: string         // Axis color (matches trace if single trace)
 }
 
+export interface ChartThreshold {
+  value: number          // Y-axis value where line is drawn
+  label?: string         // Optional label shown at right edge
+  color?: string         // Line color (default: #ef4444 red)
+  style?: 'solid' | 'dashed' | 'dotted'  // Line style (default: dashed)
+}
+
 export type ButtonActionType =
   | 'mqtt_publish'      // Publish to MQTT topic
   | 'digital_output'    // Set digital output (pulse or toggle)
-  | 'script_run'        // Run a script
+  | 'script_run'        // Run a script/sequence
+  | 'script_oneshot'    // Run a script once (one-shot execution)
+  | 'variable_set'      // Set a user variable to a value
+  | 'variable_reset'    // Reset a user variable (counter, timer, etc.)
   | 'system_command'    // System command (start/stop acquisition, recording)
+
+// Button mechanical action (similar to LabVIEW Boolean controls)
+export type ButtonBehavior =
+  | 'momentary'         // Switch When Pressed - active while held, returns to off when released
+  | 'toggle'            // Switch When Released - alternates state on each press
+  | 'latching'          // Latch When Pressed - sets ON and stays until external reset
+  | 'one_shot'          // Latch Until Released - pulses once per press (default)
+
+// Button visual style
+export type ButtonStyle =
+  | 'standard'          // Default rectangular button
+  | 'round'             // Circular button (like indicator lamps)
+  | 'square'            // Square button
+  | 'emergency'         // Emergency stop style (red, prominent, round)
+  | 'flat'              // Flat/minimal style
 
 export type SystemCommandType =
   | 'acquisition_start'
@@ -379,6 +418,11 @@ export interface ButtonAction {
   setValue?: number     // Value to set (0 or 1)
   // For script_run (sequence)
   sequenceId?: string
+  // For script_oneshot
+  scriptName?: string   // Script name to run once
+  // For variable_set / variable_reset
+  variableId?: string   // User variable ID
+  variableValue?: number // Value to set (for variable_set)
   // For system_command
   command?: SystemCommandType
 }
@@ -397,7 +441,8 @@ export interface WidgetConfig {
   // Chart-specific
   timeRange?: number      // seconds (X-axis range)
   historySize?: number    // Max data points to keep (default 1024)
-  updateMode?: ChartUpdateMode  // strip, scope, sweep (default strip)
+  updateMode?: ChartUpdateMode  // strip, scope, sweep
+  chartMode?: 'time' | 'xy'     // 'time' (default) or 'xy' for XY graph (default strip)
   // Y-axis settings
   yAxisAuto?: boolean     // Auto-scale Y axis (default true)
   yAxisMin?: number       // Manual Y min (when yAxisAuto=false)
@@ -422,6 +467,10 @@ export interface WidgetConfig {
   buttonAction?: ButtonAction
   requireConfirmation?: boolean
   buttonColor?: string
+  buttonBehavior?: ButtonBehavior  // Mechanical action (momentary, toggle, etc.)
+  buttonVisualStyle?: ButtonStyle  // Visual style (round, square, etc.)
+  buttonActiveColor?: string    // Color when active/pressed
+  buttonSize?: 'small' | 'medium' | 'large'  // Button size
   // Clock-specific
   showDate?: boolean
   showElapsed?: boolean
@@ -433,6 +482,9 @@ export interface WidgetConfig {
   // BarGraph-specific
   orientation?: 'horizontal' | 'vertical'
   showValue?: boolean
+  barGraphStyle?: 'bar' | 'tank' | 'thermometer'
+  // Setpoint-specific visual style
+  setpointStyle?: 'standard' | 'knob'
   // Divider-specific
   lineColor?: string
   lineStyle?: 'solid' | 'dashed' | 'dotted'
@@ -443,8 +495,10 @@ export interface WidgetConfig {
   accentColor?: string
   symbolSize?: 'small' | 'medium' | 'large'
   rotation?: 0 | 90 | 180 | 270  // Symbol rotation
-  // Text Label-specific
+  // Text Label/Title-specific
   text?: string             // Static text content
+  title?: string            // Title text (for title_label, alarm_summary)
+  subtitle?: string         // Subtitle text (for alarm_summary)
   fontSize?: 'small' | 'medium' | 'large' | 'xlarge'
   textAlign?: 'left' | 'center' | 'right'
   textColor?: string
@@ -455,6 +509,27 @@ export interface WidgetConfig {
   showUnits?: boolean       // Show unit column in tables
   showStatus?: boolean      // Show status indicator
   maxRows?: number          // Limit visible rows
+  // Alarm Summary-specific
+  maxItems?: number         // Max alarms to display
+  filterPriority?: string   // Filter by priority level
+  showAckButton?: boolean   // Show acknowledge button
+  showBypassButtons?: boolean // Show bypass controls
+  // Toggle Switch-specific
+  onLabel?: string          // Label for ON state
+  offLabel?: string         // Label for OFF state
+  confirmOn?: boolean       // Require confirmation for ON
+  confirmOff?: boolean      // Require confirmation for OFF
+  // LED Indicator-specific
+  invert?: boolean          // Invert on/off logic
+  ledSize?: 'small' | 'medium' | 'large'
+  onColor?: string          // Color when ON
+  offColor?: string         // Color when OFF
+  // Numeric Display-specific
+  historyLength?: number    // Length of value history for sparkline
+  showMinMax?: boolean      // Show min/max values
+  // Setpoint-specific
+  setpointMin?: number      // Min setpoint value
+  setpointMax?: number      // Max setpoint value
   // Script Monitor-specific
   items?: Array<{
     tag: string
@@ -532,6 +607,35 @@ export interface PidSymbol {
   decimals?: number
   // Z-index for layering
   zIndex?: number
+  // === Enhanced Features (Phase 1+) ===
+  // Grouping
+  groupId?: string
+  // Faceplate/popup configuration
+  faceplateId?: string
+  // Tank fill animation (Phase 2)
+  fillLevel?: number         // 0-100% static fill level (for design mode)
+  fillChannel?: string       // Channel to bind fill level to (runtime)
+  fillColor?: string         // Fill color (default: blue gradient)
+  // Flow direction indicator (for pumps, compressors)
+  flowDirection?: 'forward' | 'reverse' | 'stopped'
+  flowChannel?: string       // Channel to determine flow state
+  // Locked symbol cannot be moved/resized
+  locked?: boolean
+  // Runtime state (set by channel binding)
+  runtimeState?: 'on' | 'off' | 'fault' | 'manual' | 'auto'
+  stateChannel?: string      // Channel to determine state
+  // ISA-101 grayscale mode override
+  useGrayscale?: boolean
+  // Custom pipe connection ports (in addition to built-in ports)
+  customPorts?: Array<{
+    id: string
+    x: number  // Relative position 0-1
+    y: number  // Relative position 0-1
+    direction: 'left' | 'right' | 'top' | 'bottom'
+    label?: string
+  }>
+  // Hidden built-in ports (by port ID)
+  hiddenPorts?: string[]
 }
 
 // Free-form pipe (bezier/polyline, not orthogonal-only)
@@ -552,6 +656,25 @@ export interface PidPipe {
   endArrow?: boolean
   // Z-index for layering
   zIndex?: number
+  // === Enhanced Features (Phase 1+) ===
+  // Grouping
+  groupId?: string
+  // Snap-to-port connections (Phase 1)
+  startConnection?: PidPipeConnection
+  endConnection?: PidPipeConnection
+  // Legacy port binding (kept for backwards compatibility)
+  startSymbolId?: string
+  startPortId?: string
+  endSymbolId?: string
+  endPortId?: string
+  // Enhanced flow animation (Phase 2)
+  flowChannel?: string       // Channel to determine flow rate/direction
+  flowSpeed?: number         // Animation speed multiplier (default 1)
+  flowDirection?: 'forward' | 'reverse' | 'stopped'
+  // Pipe medium/type indicator
+  medium?: 'water' | 'steam' | 'gas' | 'air' | 'oil' | 'chemical' | 'electrical' | 'signal' | 'custom'
+  // ISA-5.1 line coding
+  lineCode?: string          // e.g., 'pneumatic', 'hydraulic', 'electrical'
 }
 
 // P&ID layer data for a page
@@ -562,7 +685,200 @@ export interface PidLayerData {
   visible?: boolean
   // Layer opacity (for showing behind grid widgets)
   opacity?: number
+  // Text annotations (Phase 1)
+  textAnnotations?: PidTextAnnotation[]
+  // Symbol groups (Phase 2)
+  groups?: PidGroup[]
+  // Background image (Phase 3)
+  backgroundImage?: PidBackgroundImage
+  // Grid snapping options (Phase 4)
+  gridSnap?: boolean
+  gridSize?: number
 }
+
+// ============================================================================
+// P&ID Enhanced Types (FactoryTalk/ISA-101 Compliant Features)
+// ============================================================================
+
+/**
+ * Text annotation for P&ID canvas labels, notes, and callouts
+ */
+export interface PidTextAnnotation {
+  id: string
+  text: string
+  x: number
+  y: number
+  fontSize: number
+  fontWeight?: 'normal' | 'bold'
+  color?: string
+  backgroundColor?: string
+  rotation?: number
+  textAlign?: 'left' | 'center' | 'right'
+  // Optional border/callout
+  border?: boolean
+  borderColor?: string
+  // Z-index for layering
+  zIndex?: number
+  // Grouping
+  groupId?: string
+}
+
+/**
+ * Command for Undo/Redo system (Command Pattern)
+ * Stores state before and after each operation
+ */
+export interface PidCommand {
+  id: string
+  type: 'add' | 'delete' | 'modify' | 'move' | 'resize' | 'group' | 'ungroup' | 'paste' | 'batch'
+  timestamp: number
+  description: string
+  // State snapshots for undo/redo
+  beforeState: {
+    symbols?: PidSymbol[]
+    pipes?: PidPipe[]
+    textAnnotations?: PidTextAnnotation[]
+    groups?: PidGroup[]
+  }
+  afterState: {
+    symbols?: PidSymbol[]
+    pipes?: PidPipe[]
+    textAnnotations?: PidTextAnnotation[]
+    groups?: PidGroup[]
+  }
+  // For batch operations, store sub-commands
+  subCommands?: PidCommand[]
+}
+
+/**
+ * Group of P&ID elements that move/resize together
+ */
+export interface PidGroup {
+  id: string
+  name?: string
+  // IDs of grouped elements
+  symbolIds: string[]
+  pipeIds: string[]
+  textAnnotationIds: string[]
+  // Group bounding box (computed from members)
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  // Locked group cannot be ungrouped or modified
+  locked?: boolean
+  // Z-index for layering
+  zIndex?: number
+}
+
+/**
+ * Background image configuration for P&ID layer
+ */
+export interface PidBackgroundImage {
+  url: string
+  x: number
+  y: number
+  width: number
+  height: number
+  opacity: number
+  locked: boolean
+}
+
+/**
+ * P&ID Template - reusable symbol group
+ * Similar to FactoryTalk global objects
+ */
+export interface PidTemplate {
+  id: string
+  name: string
+  description?: string
+  category?: string
+  // Template content (relative positions)
+  symbols: Array<Omit<PidSymbol, 'id'> & { offsetX: number; offsetY: number }>
+  pipes: Array<Omit<PidPipe, 'id'> & { offsetPoints: { x: number; y: number }[] }>
+  textAnnotations: Array<Omit<PidTextAnnotation, 'id'> & { offsetX: number; offsetY: number }>
+  // Preview thumbnail (data URL)
+  thumbnail?: string
+  // Metadata
+  createdAt: string
+  updatedAt?: string
+}
+
+/**
+ * Faceplate configuration for runtime symbol popups
+ * Similar to FactoryTalk View faceplates
+ */
+export interface FaceplateConfig {
+  id: string
+  name: string
+  // Symbol types this faceplate applies to
+  symbolTypes: string[]
+  // Layout
+  width: number
+  height: number
+  // Sections to display
+  sections: FaceplateSection[]
+}
+
+export type FaceplateSectionType =
+  | 'header'        // Symbol name, status, channel binding
+  | 'value'         // Current value with unit
+  | 'controls'      // Toggle, setpoint controls
+  | 'trend'         // Mini trend chart
+  | 'alarms'        // Active alarms for this channel
+  | 'diagnostics'   // Device status, quality, timestamps
+  | 'custom'        // Custom HTML/template
+
+export interface FaceplateSection {
+  type: FaceplateSectionType
+  label?: string
+  height?: number
+  // For value section
+  decimals?: number
+  showUnit?: boolean
+  // For controls section
+  controlType?: 'toggle' | 'setpoint' | 'button'
+  // For trend section
+  timeRange?: number  // seconds
+  // For custom section
+  template?: string
+}
+
+/**
+ * Port definition for symbol connection points
+ * Used for pipe snap-to-port feature
+ */
+export interface SymbolPort {
+  id: string
+  name: string
+  // Position relative to symbol (0-1 normalized)
+  x: number
+  y: number
+  // Direction the pipe should exit
+  direction: 'up' | 'down' | 'left' | 'right'
+  // Port type for compatibility checking
+  type?: 'inlet' | 'outlet' | 'bidirectional'
+}
+
+/**
+ * Pipe connection to symbol port
+ * Extends PidPipe with port binding info
+ */
+export interface PidPipeConnection {
+  symbolId: string
+  portId: string
+  // Computed world position (updated when symbol moves)
+  x?: number
+  y?: number
+}
+
+/**
+ * ISA-101 Display Hierarchy Levels
+ * L1: Overview - Plant-wide status, key KPIs
+ * L2: Area - Unit operation P&IDs
+ * L3: Equipment - Faceplates, detailed equipment views
+ * L4: Diagnostics - Troubleshooting, raw data, trends
+ */
+export type DisplayHierarchyLevel = 'L1' | 'L2' | 'L3' | 'L4'
 
 // Dashboard Page - each page has its own widget layout
 export interface DashboardPage {
@@ -573,6 +889,13 @@ export interface DashboardPage {
   pidLayer?: PidLayerData   // New: free-form P&ID layer
   order: number             // Sort order
   createdAt?: string
+  // ISA-101 Display Hierarchy
+  hierarchyLevel?: DisplayHierarchyLevel
+  // Navigation links to other pages
+  linkedPages?: {
+    parentId?: string       // Link to parent L1/L2 page
+    childIds?: string[]     // Links to child L3/L4 pages
+  }
 }
 
 export interface LayoutConfig {
@@ -1060,6 +1383,11 @@ export type UserVariableType =
   | 'dwell'         // Time in a state/condition
   | 'conditional_average'  // Average only when condition true
   | 'cross_channel' // Min/max/delta across multiple channels
+  | 'string'        // Text value (notes, batch ID, operator input)
+
+export type UserVariableDataType =
+  | 'number'        // Numeric value (float)
+  | 'string'        // Text value
 
 export type ResetMode =
   | 'manual'        // Only reset manually
@@ -1086,7 +1414,9 @@ export interface UserVariable {
   name: string
   displayName: string
   variableType: UserVariableType
-  value: number
+  dataType?: UserVariableDataType  // 'number' (default) or 'string'
+  value: number                    // Numeric value
+  stringValue?: string             // String value (for dataType='string')
   units: string
   persistent: boolean
 
@@ -1162,9 +1492,12 @@ export interface TestSession {
 export interface UserVariableValue {
   name: string
   display_name: string
-  value: number
+  value: number | string           // Number for numeric, string for string variables
   units: string
   variable_type: UserVariableType
+  data_type?: UserVariableDataType // 'number' or 'string'
+  string_value?: string            // String value (for data_type='string')
+  numeric_value?: number           // Numeric value (for data_type='number')
   last_reset?: string
   last_update?: number
   timer_running?: boolean

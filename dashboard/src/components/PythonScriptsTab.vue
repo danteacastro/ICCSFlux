@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
+import { useProjectFiles } from '../composables/useProjectFiles'
 import { useDashboardStore } from '../stores/dashboard'
 import type { PythonScript, ScriptOutput } from '../types/python-scripts'
 import { SCRIPT_TEMPLATES, DEFAULT_SCRIPT_CODE } from '../types/python-scripts'
@@ -12,6 +13,8 @@ const store = useDashboardStore()
 const pythonScripts = usePythonScripts()
 // Backend scripts - actual execution happens server-side
 const backendScripts = useBackendScripts()
+// Project file management - for persisting scripts to project
+const projectFiles = useProjectFiles()
 
 // =============================================================================
 // STATE
@@ -280,6 +283,13 @@ function createNewScript() {
 
   showNewScriptModal.value = false
   selectedScriptId.value = scriptId
+
+  // Persist to project file
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
 }
 
 function createFromTemplate(templateId: string) {
@@ -304,19 +314,42 @@ function createFromTemplate(templateId: string) {
     lastSavedCode.value = template.code
     isDirty.value = false
   }
+
+  // Persist to project file
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
 }
 
-function saveScript() {
+async function saveScript() {
   if (!selectedScriptId.value || !editor) return
 
   const code = editor.getValue()
-  // Send update to backend via MQTT
-  backendScripts.updateScript(selectedScriptId.value, { code })
+
+  // If script is running, use hot-reload to swap code without losing state
+  // If not running, just update the code
+  if (isScriptRunning.value) {
+    // Hot-reload: stops, updates code, restarts - preserving persisted state
+    backendScripts.reloadScript(selectedScriptId.value, code)
+  } else {
+    // Normal update: just saves the code
+    backendScripts.updateScript(selectedScriptId.value, { code })
+  }
+
   lastSavedCode.value = code
   isDirty.value = false
+
+  // Persist to project file (small delay to ensure backend processes MQTT first)
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
 }
 
-function deleteScript() {
+async function deleteScript() {
   if (!selectedScriptId.value) return
 
   if (!confirm('Delete this script? This cannot be undone.')) {
@@ -330,6 +363,13 @@ function deleteScript() {
   if (editor) {
     editor.setValue('')
   }
+
+  // Persist to project file (small delay to ensure backend processes MQTT first)
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
 }
 
 // =============================================================================
@@ -419,6 +459,27 @@ function updateRunMode(event: Event) {
   const mode = target.value as 'manual' | 'acquisition' | 'session'
   // Update run mode on backend
   backendScripts.updateScript(selectedScriptId.value, { runMode: mode })
+
+  // Persist to project file
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
+}
+
+function updateAutoRestart(event: Event) {
+  if (!selectedScriptId.value) return
+  const target = event.target as HTMLInputElement
+  // Update auto-restart on backend
+  backendScripts.updateScript(selectedScriptId.value, { autoRestart: target.checked })
+
+  // Persist to project file
+  setTimeout(async () => {
+    if (projectFiles.currentProject.value) {
+      await projectFiles.saveNow()
+    }
+  }, 100)
 }
 
 function clearConsole() {
@@ -598,6 +659,14 @@ function getScriptStateClass(id: string): string {
             <option value="acquisition">Run with Acquisition</option>
             <option value="session">Run with Session</option>
           </select>
+          <label class="auto-restart-label" title="Automatically restart the script if it times out">
+            <input
+              type="checkbox"
+              :checked="selectedScript?.autoRestart || false"
+              @change="updateAutoRestart"
+            />
+            <span>Auto-restart</span>
+          </label>
           <button
             class="btn btn-secondary"
             @click="openImportDataModal"
@@ -693,6 +762,7 @@ function getScriptStateClass(id: string): string {
           >
             <span class="console-time">{{ formatTimestamp(output.timestamp) }}</span>
             <span class="console-type">[{{ output.type }}]</span>
+            <span v-if="output.lineNumber" class="console-line-num" title="Click to go to line">Line {{ output.lineNumber }}:</span>
             <span class="console-message">{{ output.message }}</span>
           </div>
           <div v-if="currentScriptOutputs.length === 0" class="console-empty">
@@ -1007,6 +1077,28 @@ function getScriptStateClass(id: string): string {
   color: var(--text-primary, #e2e8f0);
 }
 
+.auto-restart-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #9ca3af);
+  cursor: pointer;
+  margin-right: 8px;
+  user-select: none;
+}
+
+.auto-restart-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+}
+
+.auto-restart-label:hover {
+  color: var(--text-primary, #e0e0e0);
+}
+
 /* Validation Panel */
 .validation-panel {
   background: var(--bg-tertiary, #0f172a);
@@ -1175,6 +1267,18 @@ function getScriptStateClass(id: string): string {
 }
 
 .output-error .console-message { color: #ef4444; }
+
+.console-line-num {
+  color: #f59e0b;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 2px;
+}
+
+.console-line-num:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
 
 .console-empty {
   color: var(--text-tertiary, #6b7280);

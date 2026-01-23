@@ -1,4 +1,4 @@
-# CZFlux User Manual
+# ICCSFlux User Manual
 
 **Version 1.0**
 **Industrial Data Acquisition & Control System**
@@ -27,9 +27,9 @@
 
 ## 1. Introduction
 
-### 1.1 What is CZFlux?
+### 1.1 What is ICCSFlux?
 
-CZFlux is an industrial-grade data acquisition and control system designed for laboratory testing, manufacturing, and process monitoring. It provides:
+ICCSFlux is an industrial-grade data acquisition and control system designed for laboratory testing, manufacturing, and process monitoring. It provides:
 
 - **Real-time data visualization** with customizable dashboards
 - **Multi-channel data acquisition** supporting thermocouples, RTDs, voltage/current inputs, digital I/O, and more
@@ -42,14 +42,14 @@ CZFlux is an industrial-grade data acquisition and control system designed for l
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    CZFlux Dashboard (Browser)                    │
+│                    ICCSFlux Dashboard (Browser)                    │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │
 │  │   Widgets   │ │   Charts    │ │  Controls   │                │
 │  └─────────────┘ └─────────────┘ └─────────────┘                │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ WebSocket/MQTT
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                    CZFlux Backend (PC)                           │
+│                    ICCSFlux Backend (PC)                           │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
 │  │   DAQ    │ │  Alarms  │ │ Scripts  │ │ Recording│           │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
@@ -72,14 +72,14 @@ CZFlux is an industrial-grade data acquisition and control system designed for l
 | Safety Interlocks | Condition-based output gating with bypass audit |
 | Alarm Management | ISA-18.2 compliant with first-out detection |
 | Data Recording | CSV/TDMS with trigger-based capture |
-| Python Scripting | Full Python 3.11+ in browser via Pyodide |
+| Python Scripting | Server-side Python scripts with full ecosystem |
 | Compliance | 21 CFR Part 11 audit trail support |
 
 ---
 
 ## 2. Getting Started
 
-### 2.1 Launching CZFlux
+### 2.1 Launching ICCSFlux
 
 1. **Start the backend service:**
    ```
@@ -117,7 +117,7 @@ CZFlux is an industrial-grade data acquisition and control system designed for l
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ [Logo] CZFlux │ Overview │ Config │ Scripts │ Data │ Safety │ ... │
+│ [Logo] ICCSFlux │ Overview │ Config │ Scripts │ Data │ Safety │ ... │
 ├────────────────────────────────────────────────────────────────────┤
 │              [START] [RECORD] [SESSION] │ [+Widget] [Edit] │ User │
 └────────────────────────────────────────────────────────────────────┘
@@ -147,7 +147,7 @@ CZFlux is an industrial-grade data acquisition and control system designed for l
 
 ### 3.2 Page Selector
 
-CZFlux supports multiple dashboard pages for organizing different views:
+ICCSFlux supports multiple dashboard pages for organizing different views:
 
 - Click the page dropdown next to "Overview"
 - Select a page or create a new one
@@ -456,7 +456,7 @@ Define actions that can be triggered by alarms or interlocks:
 
 ## 6. Remote Nodes
 
-CZFlux supports three hardware platforms for data acquisition. This chapter explains how to configure and use remote nodes for distributed I/O.
+ICCSFlux supports three hardware platforms for data acquisition. This chapter explains how to configure and use remote nodes for distributed I/O.
 
 ### 6.1 Hardware Platform Overview
 
@@ -516,7 +516,7 @@ To set the project mode:
 The cRIO will now:
 - Auto-start on boot
 - Read I/O via NI-DAQmx
-- Publish values to CZFlux PC via MQTT
+- Publish values to ICCSFlux PC via MQTT
 - Execute safety logic locally
 
 #### cRIO Configuration
@@ -524,7 +524,7 @@ The cRIO will now:
 After installation, edit `/home/admin/nisystem/crio_node.env`:
 
 ```bash
-# MQTT Broker - CZFlux PC
+# MQTT Broker - ICCSFlux PC
 MQTT_BROKER=192.168.1.100
 
 # MQTT Port
@@ -578,7 +578,7 @@ NODE_ID=crio-001
 The groov EPIC will now:
 - Auto-start on boot
 - Read I/O via local REST API
-- Publish values to CZFlux PC via MQTT
+- Publish values to ICCSFlux PC via MQTT
 - Reconnect automatically if network drops
 
 #### Opto22 API Key (Optional)
@@ -641,11 +641,11 @@ When adding a channel, select the source type and node:
 
 ### 6.7 Multi-Node Systems
 
-CZFlux supports multiple remote nodes simultaneously:
+ICCSFlux supports multiple remote nodes simultaneously:
 
 ```
                            ┌──────────────┐
-                           │   CZFlux PC  │
+                           │   ICCSFlux PC  │
                            │ MQTT Broker  │
                            └──────┬───────┘
                                   │
@@ -782,48 +782,52 @@ Build automated test procedures with step-by-step execution.
 
 ### 7.4 Python Scripts
 
-Write custom logic using full Python 3.11+ syntax.
+Write custom logic using server-side Python with full ecosystem access.
 
 #### Script Template
 
 ```python
-# CZFlux Python Script
+# ICCSFlux Python Script
 # Runs while session is active
 
 while session.active:
-    # Read channel values
-    temp = channels['TC001']
-    pressure = channels['PT001']
+    # Read channel values (from any hardware: cDAQ, cRIO, Opto22)
+    temp = tags.TC001        # Attribute style
+    pressure = tags['PT001'] # Dictionary style
 
     # Calculate derived value
     efficiency = (temp - 70) / (pressure * 0.1)
 
-    # Publish result
+    # Publish result (appears as py.Efficiency)
     publish('Efficiency', efficiency, units='%')
 
     # Control output based on condition
     if temp > 180:
-        set_output('ALARM_LIGHT', True)
+        outputs.set('ALARM_LIGHT', True)
     else:
-        set_output('ALARM_LIGHT', False)
+        outputs.set('ALARM_LIGHT', False)
 
-    # Wait for next scan
-    sleep(1.0)
+    # Wait for next scan cycle
+    next_scan()
 ```
 
 #### Python API Reference
 
 | Function | Description |
 |----------|-------------|
-| `channels['TAG']` | Read channel value |
-| `timestamps['TAG']` | Get last update time |
-| `set_output(tag, value)` | Set digital/analog output |
-| `publish(name, value, units)` | Create py.* output |
+| `tags.TC001` or `tags['TC001']` | Read channel value |
+| `tags.timestamp('TC001')` | Get last update timestamp |
+| `outputs.set(tag, value)` | Set digital/analog output |
+| `publish(name, value, units)` | Create py.* computed tag |
 | `session.active` | Check if session running |
 | `session.elapsed` | Get elapsed time (seconds) |
-| `start_recording(filename)` | Begin data capture |
-| `stop_recording()` | End data capture |
-| `sleep(seconds)` | Wait between iterations |
+| `session.start_recording(filename)` | Begin data capture |
+| `session.stop_recording()` | End data capture |
+| `next_scan()` | Wait for next scan cycle |
+| `persist(key, value)` | Save value across restarts |
+| `restore(key, default)` | Restore persisted value |
+
+> **Note:** For comprehensive scripting documentation, see `docs/ICCSFlux_Python_Scripting_Guide.md`
 
 ### 7.5 User Variables
 
@@ -872,6 +876,39 @@ Configure sequential valve operations for flow testing:
 ---
 
 ## 8. Safety System Tab
+
+### Safety Architecture
+
+ICCSFlux uses a **defense-in-depth** safety architecture where safety-critical logic is evaluated at multiple levels:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Level 1: Edge Nodes (cRIO/Opto22) - FIRST LINE OF DEFENSE      │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Hardware watchdog (cRIO)                                  │ │
+│ │ • Local interlock checks before every output write          │ │
+│ │ • Safe state activation on PC disconnect                    │ │
+│ │ • Operates independently - no PC required                   │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────┤
+│ Level 2: Backend (daq_service) - SUPERVISORY SAFETY            │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • ISA-18.2 alarm management                                 │ │
+│ │ • Interlock coordination across nodes                       │ │
+│ │ • Audit trail and alarm history                             │ │
+│ │ • Backend-authoritative latch state                         │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────┤
+│ Level 3: Dashboard (Browser) - DISPLAY & COMMANDS ONLY         │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Displays safety status from backend                       │ │
+│ │ • Sends commands to backend (backend validates)             │ │
+│ │ • Never makes safety decisions                              │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+> **Key Principle**: The browser dashboard is for visualization and commands only. All safety decisions are made by the backend and edge nodes. If you close the browser, safety continues to operate.
 
 ### 8.1 Alarm Configuration
 
@@ -1171,7 +1208,7 @@ When viewing a tab without edit permission:
 1. Check that backend service is running
 2. Verify MQTT broker is accessible
 3. Check firewall settings for ports 1883/9002
-4. Restart the CZFlux service
+4. Restart the ICCSFlux service
 
 ### 14.2 No Data Updating
 
@@ -1263,11 +1300,12 @@ When viewing a tab without edit permission:
 ## Support
 
 For technical support:
-- Email: support@example.com
-- Documentation: https://docs.example.com
-- Issue Tracker: https://github.com/example/dcflux/issues
+- Contact your system administrator
+- Full documentation: `docs/` folder
+- Remote nodes guide: `docs/ICCSFlux_Remote_Nodes_Guide.md`
+- Python scripting: `docs/ICCSFlux_Python_Scripting_Guide.md`
 
 ---
 
-**CZFlux User Manual v1.0**
+**ICCSFlux User Manual v1.0**
 *Last Updated: January 2026*

@@ -1492,67 +1492,64 @@ export function useSafety() {
   }
 
   /**
-   * Trip the system - set all outputs to safe state
-   * Called when an interlock fails while latch is armed
+   * Trip the system - send command to backend
+   * Backend handles the actual trip logic (stop session, reset outputs)
+   * This ensures safety logic runs even if browser closes
    */
   function tripSystem(reason: string) {
-    console.log(`[SAFETY] SYSTEM TRIP: ${reason}`)
+    console.log(`[SAFETY] Requesting system trip: ${reason}`)
 
+    // Optimistically update local state (will be confirmed by backend)
     isTripped.value = true
     lastTripTime.value = new Date().toISOString()
     lastTripReason.value = reason
 
-    const config = safeStateConfig.value
-
-    // Stop session first
-    if (config.stopSession) {
-      mqtt.sendCommand('test-session/stop', {})
-    }
-
-    // Reset digital outputs to OFF
-    if (config.resetDigitalOutputs) {
-      const doChannels = config.digitalOutputChannels.length > 0
-        ? config.digitalOutputChannels
-        : Object.keys(store.channels).filter(ch => store.channels[ch]?.channel_type === 'digital_output')
-
-      for (const channel of doChannels) {
-        mqtt.setOutput(channel, 0)
-      }
-    }
-
-    // Reset analog outputs to safe value
-    if (config.resetAnalogOutputs) {
-      const aoChannels = config.analogOutputChannels.length > 0
-        ? config.analogOutputChannels
-        : Object.keys(store.channels).filter(ch => store.channels[ch]?.channel_type === 'analog_output')
-
-      for (const channel of aoChannels) {
-        mqtt.setOutput(channel, config.analogSafeValue)
-      }
-    }
-
-    // Publish trip event
+    // Send trip command to backend (backend handles the actual trip logic)
     mqtt.sendCommand('safety/trip', {
       reason,
       timestamp: lastTripTime.value,
-      resetDigitalOutputs: config.resetDigitalOutputs,
-      resetAnalogOutputs: config.resetAnalogOutputs,
-      stoppedSession: config.stopSession
+      safeStateConfig: safeStateConfig.value
     })
   }
 
   /**
-   * Reset the trip state (after operator acknowledges and clears interlocks)
+   * Reset the trip state - send command to backend
    */
   function resetTrip() {
-    if (hasFailedInterlocks.value) {
-      console.log('[SAFETY] Cannot reset trip - interlocks still failed')
-      return false
-    }
-    isTripped.value = false
-    lastTripReason.value = null
-    console.log('[SAFETY] Trip state reset')
-    return true
+    // Send reset command to backend
+    mqtt.sendCommand('safety/trip/reset', {
+      user: 'dashboard',
+      timestamp: new Date().toISOString()
+    })
+
+    // Note: Backend will verify interlocks are clear before allowing reset
+    // The actual state change will come from the backend status update
+    console.log('[SAFETY] Sent trip reset request to backend')
+    return true  // Return true to indicate request was sent
+  }
+
+  /**
+   * Arm the safety latch - send command to backend
+   * Backend is authoritative for latch state
+   */
+  function armLatch(user: string = 'dashboard'): boolean {
+    mqtt.sendCommand('safety/latch/arm', {
+      user,
+      timestamp: new Date().toISOString()
+    })
+    console.log(`[SAFETY] Sent latch arm request to backend (user: ${user})`)
+    return true  // Request sent, backend will confirm
+  }
+
+  /**
+   * Disarm the safety latch - send command to backend
+   */
+  function disarmLatch(user: string = 'dashboard') {
+    mqtt.sendCommand('safety/latch/disarm', {
+      user,
+      timestamp: new Date().toISOString()
+    })
+    console.log(`[SAFETY] Sent latch disarm request to backend (user: ${user})`)
   }
 
   // Load safe state config on init
@@ -1878,6 +1875,34 @@ export function useSafety() {
       clearAllSafetyState(reason)
     })
 
+    // Subscribe to backend safety status (backend-authoritative safety logic)
+    mqtt.subscribe('nisystem/nodes/+/safety/status', (payload: any) => {
+      handleBackendSafetyStatus(payload)
+    })
+
+    // Subscribe to backend latch state changes
+    mqtt.subscribe('nisystem/nodes/+/safety/latch/state', (payload: any) => {
+      handleBackendLatchState(payload)
+    })
+
+    // Subscribe to backend trip events
+    mqtt.subscribe('nisystem/nodes/+/safety/trip', (payload: any) => {
+      handleBackendTripEvent(payload)
+    })
+
+    // Subscribe to interlock list response from backend
+    mqtt.subscribe('nisystem/nodes/+/interlocks/list/response', (payload: any) => {
+      handleBackendInterlockList(payload)
+    })
+
+    // Subscribe to interlock updates from backend
+    mqtt.subscribe('nisystem/nodes/+/interlocks/updated', (payload: any) => {
+      handleBackendInterlockUpdate(payload)
+    })
+
+    // Request initial safety status from backend
+    mqtt.sendCommand('safety/status/request', {})
+
     initialized = true
   }
 
@@ -1903,6 +1928,118 @@ export function useSafety() {
       console.warn(`[SAFETY] Successfully executed safety action: ${actionId}`)
     } else {
       console.error(`[SAFETY] Failed to execute safety action: ${actionId}`)
+    }
+  }
+
+  /**
+   * Handle safety status updates from backend (backend-authoritative)
+   * The backend evaluates all interlocks and latch state - frontend is display-only
+   */
+  function handleBackendSafetyStatus(payload: any) {
+    if (!payload) return
+
+    // Update latch state from backend
+    if (payload.latchState) {
+      // Store for reference (frontend doesn't change this directly)
+      console.log(`[SAFETY] Backend latch state: ${payload.latchState}`)
+    }
+
+    // Update trip state from backend
+    if (payload.isTripped !== undefined) {
+      isTripped.value = payload.isTripped
+      lastTripTime.value = payload.lastTripTime || null
+      lastTripReason.value = payload.lastTripReason || null
+    }
+
+    // Update interlock statuses from backend (replace local evaluation)
+    if (payload.interlockStatuses && Array.isArray(payload.interlockStatuses)) {
+      // Update local interlocks with backend-evaluated status
+      for (const status of payload.interlockStatuses) {
+        const local = interlocks.value.find(i => i.id === status.id)
+        if (local) {
+          // Store the backend-evaluated status
+          (local as any)._backendSatisfied = status.satisfied
+          (local as any)._backendFailedConditions = status.failedConditions
+        }
+      }
+    }
+  }
+
+  /**
+   * Handle latch state changes from backend
+   */
+  function handleBackendLatchState(payload: any) {
+    if (!payload) return
+
+    console.log(`[SAFETY] Backend latch state change: ${payload.state} (armed: ${payload.armed}, tripped: ${payload.tripped})`)
+
+    // Update trip state if tripped
+    if (payload.tripped) {
+      isTripped.value = true
+      lastTripTime.value = payload.timestamp || new Date().toISOString()
+      lastTripReason.value = payload.tripReason || 'Interlock failed'
+    }
+  }
+
+  /**
+   * Handle trip events from backend
+   */
+  function handleBackendTripEvent(payload: any) {
+    if (!payload) return
+
+    console.warn(`[SAFETY] Backend trip event: ${payload.reason}`)
+    isTripped.value = true
+    lastTripTime.value = payload.timestamp || new Date().toISOString()
+    lastTripReason.value = payload.reason || 'System trip'
+  }
+
+  /**
+   * Handle interlock list from backend (for syncing)
+   */
+  function handleBackendInterlockList(payload: any) {
+    if (!payload?.interlocks) return
+
+    console.log(`[SAFETY] Received ${payload.interlocks.length} interlocks from backend`)
+
+    // Merge backend interlocks with local (backend is authoritative)
+    for (const backendInterlock of payload.interlocks) {
+      const existing = interlocks.value.find(i => i.id === backendInterlock.id)
+      if (existing) {
+        // Update existing
+        Object.assign(existing, backendInterlock)
+      } else {
+        // Add new (convert from backend format)
+        interlocks.value.push({
+          id: backendInterlock.id,
+          name: backendInterlock.name,
+          description: backendInterlock.description || '',
+          enabled: backendInterlock.enabled,
+          conditions: backendInterlock.conditions || [],
+          conditionLogic: backendInterlock.conditionLogic || 'AND',
+          controls: backendInterlock.controls || [],
+          bypassAllowed: backendInterlock.bypassAllowed || false,
+          bypassed: backendInterlock.bypassed || false,
+          bypassedBy: backendInterlock.bypassedBy,
+          bypassedAt: backendInterlock.bypassedAt,
+          bypassReason: backendInterlock.bypassReason,
+          demandCount: backendInterlock.demandCount || 0,
+          lastDemandTime: backendInterlock.lastDemandTime,
+          lastProofTest: backendInterlock.lastProofTest
+        } as Interlock)
+      }
+    }
+  }
+
+  /**
+   * Handle individual interlock updates from backend
+   */
+  function handleBackendInterlockUpdate(payload: any) {
+    if (!payload?.id) return
+
+    const existing = interlocks.value.find(i => i.id === payload.id)
+    if (existing) {
+      Object.assign(existing, payload)
+      console.log(`[SAFETY] Updated interlock from backend: ${payload.name}`)
     }
   }
 
@@ -2100,6 +2237,10 @@ export function useSafety() {
     tripSystem,
     resetTrip,
     updateSafeStateConfig,
+
+    // Latch control (backend-authoritative)
+    armLatch,
+    disarmLatch,
 
     // Safety Actions (ISA-18.2 automatic responses)
     safetyActions: readonly(safetyActions),
