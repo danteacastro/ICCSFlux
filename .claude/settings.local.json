@@ -223,7 +223,12 @@
       "Bash(powershell.exe -Command \"Set-Location ''c:\\\\Users\\\\User\\\\Documents\\\\Projects\\\\NISystem''; & ''.\\\\deploy_crio_v2.bat''\")",
       "Bash(powershell.exe -Command:*)",
       "Bash(git log:*)",
-      "Bash(venvScriptspython -m pytest tests/ -x -q --co)"
+      "Bash(venvScriptspython -m pytest tests/ -x -q --co)",
+      "Bash(git config:*)",
+      "Bash(sort:*)",
+      "Read(//c/Users/User/Documents/Projects/NISystem/**)",
+      "Bash(git remote set-url:*)",
+      "Bash(./venv/Scripts/python.exe:*)"
     ],
     "additionalDirectories": [
       "c:\\users\\user\\documents\\projects\\nisystem\\%temp%\\nidaqmx_pkg"

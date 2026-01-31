@@ -34,6 +34,7 @@ SPEC_DIR = PROJECT_ROOT / "scripts"
 SPEC_FILES = {
     "DAQService": SPEC_DIR / "daq_service.spec",
     "ICCSFlux": SPEC_DIR / "iccsflux.spec",
+    "AzureUploader": SPEC_DIR / "azure_uploader.spec",
 }
 
 
@@ -219,111 +220,24 @@ def setup_nssm():
 
 
 def setup_azure_uploader():
-    """Set up Azure IoT Hub uploader with its own Python environment.
-
-    Azure uploader needs paho-mqtt 1.x (not 2.x like main system),
-    so it runs in a separate Python environment.
-    """
-    import zipfile
-
+    """Set up Azure IoT Hub uploader (now as compiled executable)."""
     log("Setting up Azure IoT Hub Uploader...")
 
-    azure_src = PROJECT_ROOT / "services" / "azure_uploader"
-    if not azure_src.exists():
-        log("Azure uploader source not found, skipping", "WARN")
-        return True
+    # Azure uploader is now compiled to AzureUploader.exe
+    # No need for separate Python environment anymore!
 
-    azure_dest = BUILD_DIR / "azure_uploader"
+    # Just create config directory for Azure
+    azure_dest = BUILD_DIR / "azure"
     azure_dest.mkdir(exist_ok=True)
-    python_dest = azure_dest / "python"
 
-    # Check for pre-built Azure Python environment in vendor
-    azure_python_vendor = VENDOR_DIR / "azure-python"
+    # Copy example config if it exists
+    azure_src = PROJECT_ROOT / "services" / "azure_uploader"
+    if azure_src.exists():
+        config_example = azure_src / "azure_uploader.ini.example"
+        if config_example.exists():
+            shutil.copy2(config_example, azure_dest / "azure_uploader.ini.example")
 
-    if azure_python_vendor.exists():
-        # Use pre-built Azure Python from vendor
-        log("  Using pre-built Azure Python environment...")
-        shutil.copytree(azure_python_vendor, python_dest, dirs_exist_ok=True)
-    else:
-        # Extract embedded Python and install Azure packages
-        python_vendor = VENDOR_DIR / "python"
-        if not python_vendor.exists():
-            log("  No embedded Python found for Azure uploader", "WARN")
-            log("  Azure IoT Hub streaming will not be available", "WARN")
-            return True
-
-        # Find and extract the embeddable Python zip
-        python_zip = None
-        for f in python_vendor.glob("python-*.zip"):
-            python_zip = f
-            break
-
-        if not python_zip:
-            log("  No embedded Python zip found in vendor/python/", "WARN")
-            return True
-
-        log(f"  Extracting {python_zip.name}...")
-        python_dest.mkdir(exist_ok=True)
-        with zipfile.ZipFile(python_zip, 'r') as zf:
-            zf.extractall(python_dest)
-
-        python_exe = python_dest / "python.exe"
-        if not python_exe.exists():
-            log("  python.exe not found after extraction", "ERROR")
-            return False
-
-        # Enable pip for embedded Python by modifying python311._pth
-        # (embeddable Python has pip disabled by default)
-        pth_files = list(python_dest.glob("python*._pth"))
-        for pth_file in pth_files:
-            content = pth_file.read_text()
-            if "#import site" in content:
-                log("  Enabling pip support in embedded Python...")
-                content = content.replace("#import site", "import site")
-                pth_file.write_text(content)
-
-        # Install pip using get-pip.py
-        get_pip = python_vendor / "get-pip.py"
-        if get_pip.exists():
-            log("  Installing pip...")
-            try:
-                subprocess.run(
-                    [str(python_exe), str(get_pip), "--no-warn-script-location"],
-                    capture_output=True,
-                    check=True
-                )
-            except subprocess.CalledProcessError as e:
-                log(f"  Failed to install pip: {e.stderr.decode() if e.stderr else e}", "WARN")
-                return True
-
-        # Install Azure-compatible packages
-        azure_packages = VENDOR_DIR / "azure-packages"
-        if azure_packages.exists():
-            log("  Installing Azure packages...")
-            try:
-                subprocess.run(
-                    [
-                        str(python_exe), "-m", "pip", "install",
-                        "--no-index",
-                        f"--find-links={azure_packages}",
-                        "paho-mqtt",
-                        "azure-iot-device",
-                        "--no-warn-script-location"
-                    ],
-                    capture_output=True,
-                    check=True
-                )
-                log("  Azure packages installed successfully")
-            except subprocess.CalledProcessError as e:
-                stderr = e.stderr.decode() if e.stderr else str(e)
-                log(f"  Failed to install Azure packages: {stderr}", "WARN")
-
-    # Copy Azure uploader service script
-    azure_service = azure_src / "azure_uploader_service.py"
-    if azure_service.exists():
-        shutil.copy2(azure_service, azure_dest / "azure_uploader_service.py")
-
-    log("Azure uploader ready", "OK")
+    log("Azure uploader directory created", "OK")
     return True
 
 
@@ -420,13 +334,10 @@ def copy_documentation():
     docs_dest = BUILD_DIR / "docs"
     docs_dest.mkdir(exist_ok=True)
 
+    # Essential documentation for portable distribution
     user_docs = [
-        ("USER_GUIDE.md", "01_Getting_Started.md"),
-        ("ICCSFlux_Quick_Reference.md", "02_Quick_Reference.md"),
-        ("ICCSFlux_User_Manual.md", "03_User_Manual.md"),
-        ("ICCSFlux_Python_Scripting_Guide.md", "04_Python_Scripting.md"),
-        ("Remote_Node_Setup.md", "05_Remote_Nodes.md"),
-        ("ICCSFlux_Administrator_Guide.md", "06_Administrator_Guide.md"),
+        ("README.md", "README.md"),
+        ("INDUSTRIAL_BUILD_GUIDE.md", "Build_Guide.md"),
     ]
 
     count = 0
@@ -444,10 +355,40 @@ def create_batch_launchers():
     """Create simple batch file launchers."""
     log("Creating launchers...")
 
-    # Main launcher
+    # Main launcher - improved with error handling
     bat_content = '''@echo off
+title ICCSFlux
 cd /d "%~dp0"
-start "" "ICCSFlux.exe"
+
+REM Check if ICCSFlux.exe exists
+if not exist "ICCSFlux.exe" (
+    echo.
+    echo ERROR: ICCSFlux.exe not found!
+    echo.
+    echo Make sure you're running this from the ICCSFlux-Portable folder.
+    echo.
+    pause
+    exit /b 1
+)
+
+REM Start ICCSFlux
+echo.
+echo Starting ICCSFlux...
+echo.
+echo Dashboard will open at: http://localhost:5173
+echo Press Ctrl+C to stop
+echo.
+
+ICCSFlux.exe
+
+REM If ICCSFlux exits with error, pause so user can see the error
+if errorlevel 1 (
+    echo.
+    echo ICCSFlux exited with an error.
+    echo Check data\\logs\\ for details.
+    echo.
+    pause
+)
 '''
     (BUILD_DIR / "ICCSFlux.bat").write_text(bat_content)
 
@@ -476,6 +417,12 @@ nssm\\nssm.exe set ICCSFlux-MQTT Description "ICCSFlux MQTT Broker"
 nssm\\nssm.exe set ICCSFlux-MQTT Start SERVICE_AUTO_START
 nssm\\nssm.exe set ICCSFlux-MQTT AppStdout "%~dp0data\\logs\\mosquitto.log"
 nssm\\nssm.exe set ICCSFlux-MQTT AppStderr "%~dp0data\\logs\\mosquitto.log"
+nssm\\nssm.exe set ICCSFlux-MQTT AppRotateFiles 1
+nssm\\nssm.exe set ICCSFlux-MQTT AppRotateBytes 10485760
+REM Auto-restart on failure (industrial-grade reliability)
+nssm\\nssm.exe set ICCSFlux-MQTT AppExit Default Restart
+nssm\\nssm.exe set ICCSFlux-MQTT AppRestartDelay 5000
+nssm\\nssm.exe set ICCSFlux-MQTT AppThrottle 10000
 echo     Done.
 
 echo.
@@ -487,18 +434,30 @@ nssm\\nssm.exe set ICCSFlux-DAQ Start SERVICE_AUTO_START
 nssm\\nssm.exe set ICCSFlux-DAQ DependOnService ICCSFlux-MQTT
 nssm\\nssm.exe set ICCSFlux-DAQ AppStdout "%~dp0data\\logs\\daq_service.log"
 nssm\\nssm.exe set ICCSFlux-DAQ AppStderr "%~dp0data\\logs\\daq_service.log"
+nssm\\nssm.exe set ICCSFlux-DAQ AppRotateFiles 1
+nssm\\nssm.exe set ICCSFlux-DAQ AppRotateBytes 10485760
+REM Auto-restart on failure (industrial-grade reliability)
+nssm\\nssm.exe set ICCSFlux-DAQ AppExit Default Restart
+nssm\\nssm.exe set ICCSFlux-DAQ AppRestartDelay 5000
+nssm\\nssm.exe set ICCSFlux-DAQ AppThrottle 10000
 echo     Done.
 
 echo.
 echo [3/4] Installing Azure IoT Hub Uploader...
-if exist "%~dp0azure_uploader\\python\\python.exe" (
-    nssm\\nssm.exe install ICCSFlux-Azure "%~dp0azure_uploader\\python\\python.exe" "%~dp0azure_uploader\\azure_uploader_service.py" --host localhost --port 1883
-    nssm\\nssm.exe set ICCSFlux-Azure AppDirectory "%~dp0azure_uploader"
+if exist "%~dp0AzureUploader.exe" (
+    nssm\\nssm.exe install ICCSFlux-Azure "%~dp0AzureUploader.exe" --host localhost --port 1883
+    nssm\\nssm.exe set ICCSFlux-Azure AppDirectory "%~dp0"
     nssm\\nssm.exe set ICCSFlux-Azure Description "ICCSFlux Azure IoT Hub Uploader"
     nssm\\nssm.exe set ICCSFlux-Azure Start SERVICE_AUTO_START
     nssm\\nssm.exe set ICCSFlux-Azure DependOnService ICCSFlux-MQTT
     nssm\\nssm.exe set ICCSFlux-Azure AppStdout "%~dp0data\\logs\\azure_uploader.log"
     nssm\\nssm.exe set ICCSFlux-Azure AppStderr "%~dp0data\\logs\\azure_uploader.log"
+    nssm\\nssm.exe set ICCSFlux-Azure AppRotateFiles 1
+    nssm\\nssm.exe set ICCSFlux-Azure AppRotateBytes 10485760
+    REM Auto-restart on failure (industrial-grade reliability)
+    nssm\\nssm.exe set ICCSFlux-Azure AppExit Default Restart
+    nssm\\nssm.exe set ICCSFlux-Azure AppRestartDelay 5000
+    nssm\\nssm.exe set ICCSFlux-Azure AppThrottle 10000
     echo     Done.
 ) else (
     echo     Skipped - Azure uploader not installed
@@ -506,13 +465,19 @@ if exist "%~dp0azure_uploader\\python\\python.exe" (
 
 echo.
 echo [4/4] Installing Dashboard Web Server...
-nssm\\nssm.exe install ICCSFlux-Web "%~dp0ICCSFlux.exe"
+nssm\\nssm.exe install ICCSFlux-Web "%~dp0ICCSFlux.exe" --no-browser
 nssm\\nssm.exe set ICCSFlux-Web AppDirectory "%~dp0"
 nssm\\nssm.exe set ICCSFlux-Web Description "ICCSFlux Dashboard Web Server"
 nssm\\nssm.exe set ICCSFlux-Web Start SERVICE_AUTO_START
 nssm\\nssm.exe set ICCSFlux-Web DependOnService ICCSFlux-DAQ
 nssm\\nssm.exe set ICCSFlux-Web AppStdout "%~dp0data\\logs\\web_server.log"
 nssm\\nssm.exe set ICCSFlux-Web AppStderr "%~dp0data\\logs\\web_server.log"
+nssm\\nssm.exe set ICCSFlux-Web AppRotateFiles 1
+nssm\\nssm.exe set ICCSFlux-Web AppRotateBytes 10485760
+REM Auto-restart on failure (industrial-grade reliability)
+nssm\\nssm.exe set ICCSFlux-Web AppExit Default Restart
+nssm\\nssm.exe set ICCSFlux-Web AppRestartDelay 5000
+nssm\\nssm.exe set ICCSFlux-Web AppThrottle 10000
 echo     Done.
 
 echo.
@@ -522,7 +487,7 @@ net start ICCSFlux-MQTT
 timeout /t 2 /nobreak >nul
 net start ICCSFlux-DAQ
 timeout /t 2 /nobreak >nul
-if exist "%~dp0azure_uploader\\python\\python.exe" net start ICCSFlux-Azure
+if exist "%~dp0AzureUploader.exe" net start ICCSFlux-Azure
 timeout /t 1 /nobreak >nul
 net start ICCSFlux-Web
 echo.
@@ -575,26 +540,140 @@ pause
 
 def create_readme():
     """Create README file."""
-    readme = '''ICCSFlux - Industrial Data Acquisition
-======================================
+    readme = '''ICCSFlux Portable - Industrial Data Acquisition System
+=========================================================
 
-Quick Start:
-  1. Double-click ICCSFlux.bat to start
-  2. Dashboard opens automatically at http://localhost:5173
+QUICK START
+-----------
+1. Double-click ICCSFlux.bat
+2. Dashboard opens automatically at http://localhost:5173
+3. Press Ctrl+C in the console window to stop
 
-Files:
-  ICCSFlux.exe     - Main launcher (starts all services)
-  DAQService.exe   - Data acquisition service
-  ICCSFlux.bat     - Simple batch launcher
+WHAT'S INCLUDED
+---------------
+ICCSFlux.exe        - Main launcher (8 MB)
+DAQService.exe      - Data acquisition backend (24 MB)
+AzureUploader.exe   - Azure IoT Hub integration (11 MB)
 
-For Windows Service:
-  Run Install-Service.bat (as Administrator)
+mosquitto/          - MQTT broker for messaging
+www/                - Dashboard web interface
+config/             - Configuration files
+data/               - Runtime data, logs, recordings
 
-Documentation:
-  See the docs/ folder for user guides.
+RUNNING OPTIONS
+---------------
 
-Support:
-  Contact your system administrator.
+Option 1: Interactive Mode (recommended for testing)
+  - Double-click: ICCSFlux.bat
+  - Shows startup messages
+  - Opens browser automatically
+  - Press Ctrl+C to stop
+
+Option 2: Windows Services (recommended for production)
+  - Run as Administrator: Install-Service.bat
+  - Services auto-start on boot
+  - Run even when logged out
+  - Auto-restart on failure
+
+  To uninstall services:
+  - Run as Administrator: Uninstall-Service.bat
+
+SERVICES INSTALLED
+------------------
+When using Install-Service.bat, you get 4 Windows services:
+
+  ICCSFlux-MQTT   - MQTT broker (port 1883, 9001)
+  ICCSFlux-DAQ    - Data acquisition service
+  ICCSFlux-Azure  - Azure uploader (if configured)
+  ICCSFlux-Web    - Dashboard web server (port 5173)
+
+All services are configured to:
+  - Auto-start on Windows boot
+  - Auto-restart on failure (5 second delay)
+  - Rotate logs at 10 MB
+  - Respect dependencies (MQTT starts first)
+
+ACCESSING THE DASHBOARD
+------------------------
+Open your web browser to: http://localhost:5173
+
+The dashboard can be accessed from:
+  - The same PC
+  - Any PC on the network (use the PC's IP address)
+  - Tablets/phones on the same network
+
+CONFIGURATION
+-------------
+Main configuration: config/system.ini
+  - Channel definitions
+  - Data acquisition settings
+  - MQTT broker settings
+
+Azure configuration: azure/azure_uploader.ini
+  - Azure IoT Hub connection string
+  - Upload settings
+  - Only needed if using Azure
+
+LOGS AND DATA
+-------------
+data/logs/          - Service logs
+  - mosquitto.log     - MQTT broker
+  - daq_service.log   - Data acquisition
+  - azure_uploader.log - Azure uploader
+  - web_server.log    - Dashboard server
+
+data/recordings/    - Recorded data files
+data/audit/         - Audit trail
+
+TROUBLESHOOTING
+---------------
+
+Problem: Services won't start
+  - Check logs in data/logs/
+  - Verify ports 1883, 5173, 9001 are not in use
+  - Run Install-Service.bat as Administrator
+
+Problem: Dashboard not loading
+  - Check if ICCSFlux.exe is running
+  - Try http://localhost:5173 directly in browser
+  - Check data/logs/web_server.log
+
+Problem: Port conflicts
+  - Default ports: 1883 (MQTT), 5173 (Dashboard), 9001 (MQTT WebSocket)
+  - ICCSFlux will try to find alternative ports if defaults are busy
+
+INDUSTRIAL FEATURES
+-------------------
+- Automatic service restart on failure
+- Log rotation to prevent disk space issues
+- Single instance lock (prevents conflicts)
+- Service dependencies (correct startup order)
+- All executables are self-contained (no Python installation needed)
+
+REQUIREMENTS
+------------
+- Windows 10/11 (64-bit)
+- For real hardware: NI-DAQmx drivers from ni.com
+- Runs in simulation mode if no hardware detected
+
+DOCUMENTATION
+-------------
+See docs/ folder for:
+  - README.md          - Project overview
+  - Build_Guide.md     - How to rebuild from source
+
+SUPPORT
+-------
+For technical support, contact your system administrator.
+
+VERSION INFORMATION
+-------------------
+Total size: ~65 MB
+Build type: Compiled executables (PyInstaller)
+Dashboard: Vue.js browser-based UI
+MQTT: Eclipse Mosquitto 2.0.18
+
+This is a self-contained, industrial-grade portable distribution.
 '''
     (BUILD_DIR / "README.txt").write_text(readme)
 

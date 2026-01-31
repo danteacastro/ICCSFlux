@@ -231,6 +231,84 @@ const hasCrioOutOfSync = computed(() => {
   return false
 })
 
+// Validation report
+interface ValidationIssue {
+  channel: string
+  severity: 'error' | 'warning' | 'info'
+  category: string
+  message: string
+}
+
+interface ValidationReport {
+  timestamp: string
+  totalChannels: number
+  validChannels: number
+  issues: ValidationIssue[]
+}
+
+const showValidationModal = ref(false)
+const validationReport = ref<ValidationReport | null>(null)
+const isValidating = ref(false)
+
+// Import preview
+interface ImportAnalysis {
+  newChannels: string[]
+  overwriteChannels: string[]
+  physicalChannelConflicts: Array<{channel: string, physicalChannel: string, conflictsWith: string[]}>
+  totalChannels: number
+  projectData: any
+  file: File
+}
+
+const showImportPreview = ref(false)
+const importAnalysis = ref<ImportAnalysis | null>(null)
+
+// cRIO connection status - check if any cRIO nodes are offline or out of sync
+const crioStatus = computed(() => {
+  const nodes = mqtt.getNodeList()
+  const crioNodes = nodes.filter(n => n.nodeId.startsWith('crio'))
+
+  if (crioNodes.length === 0) {
+    return { state: 'none', message: 'No cRIO nodes', color: 'gray' }
+  }
+
+  // Check for offline nodes
+  const now = Date.now()
+  const offlineNodes = crioNodes.filter(n => {
+    // Consider offline if no heartbeat in last 10 seconds
+    return !n.lastSeen || (now - n.lastSeen) > 10000
+  })
+
+  if (offlineNodes.length > 0) {
+    return {
+      state: 'offline',
+      message: `${offlineNodes.length} cRIO offline`,
+      color: 'red',
+      details: offlineNodes.map(n => n.nodeId).join(', ')
+    }
+  }
+
+  // Check for out of sync nodes
+  const syncStatus = mqtt.crioSyncStatus.value
+  const outOfSyncNodes = crioNodes.filter(n => !syncStatus[n.nodeId])
+
+  if (outOfSyncNodes.length > 0) {
+    return {
+      state: 'out-of-sync',
+      message: `${outOfSyncNodes.length} cRIO out of sync`,
+      color: 'yellow',
+      details: outOfSyncNodes.map(n => n.nodeId).join(', ')
+    }
+  }
+
+  return {
+    state: 'synced',
+    message: `${crioNodes.length} cRIO synced`,
+    color: 'green',
+    details: crioNodes.map(n => n.nodeId).join(', ')
+  }
+})
+
 // Toggle edit mode with permission check
 function toggleEditMode() {
   if (!hasEditPermission.value) {
@@ -268,15 +346,118 @@ async function handleImportFile(event: Event) {
   const file = input.files?.[0]
   if (!file) return
 
-  const result = await projectManager.loadProjectFromFile(file)
+  try {
+    // Read and parse the file
+    const text = await file.text()
+    const projectData = JSON.parse(text)
+
+    // Analyze the import
+    const analysis = analyzeImport(projectData, file)
+    importAnalysis.value = analysis
+
+    // Show preview modal
+    showImportPreview.value = true
+  } catch (e: any) {
+    showFeedback('error', `Failed to read project file: ${e.message}`)
+  }
+
+  // Reset input so same file can be selected again
+  input.value = ''
+}
+
+function analyzeImport(projectData: any, file: File): ImportAnalysis {
+  const newChannels: string[] = []
+  const overwriteChannels: string[] = []
+  const physicalChannelConflicts: Array<{channel: string, physicalChannel: string, conflictsWith: string[]}> = []
+
+  // Extract channels from project file
+  const importChannels = projectData.channels || {}
+  const totalChannels = Object.keys(importChannels).length
+
+  // Track physical channel usage in import
+  const importPhysicalMap = new Map<string, string[]>() // physical_channel -> tag_names[]
+
+  for (const [tagName, config] of Object.entries(importChannels)) {
+    const channelConfig = config as any
+
+    // Check if this tag already exists in current config
+    if (store.channels[tagName]) {
+      overwriteChannels.push(tagName)
+    } else {
+      newChannels.push(tagName)
+    }
+
+    // Track physical channel usage
+    if (channelConfig.physical_channel) {
+      const pc = channelConfig.physical_channel
+      if (!importPhysicalMap.has(pc)) {
+        importPhysicalMap.set(pc, [])
+      }
+      importPhysicalMap.get(pc)!.push(tagName)
+    }
+  }
+
+  // Check for physical channel conflicts with CURRENT config
+  for (const [tagName, config] of Object.entries(importChannels)) {
+    const channelConfig = config as any
+    if (channelConfig.physical_channel) {
+      const pc = channelConfig.physical_channel
+      const conflictsWith: string[] = []
+
+      // Check if this physical channel is used in current config by a DIFFERENT tag
+      for (const [currentTag, currentConfig] of Object.entries(store.channels)) {
+        if (currentConfig.physical_channel === pc && currentTag !== tagName) {
+          conflictsWith.push(currentTag)
+        }
+      }
+
+      if (conflictsWith.length > 0) {
+        physicalChannelConflicts.push({
+          channel: tagName,
+          physicalChannel: pc,
+          conflictsWith
+        })
+      }
+    }
+  }
+
+  return {
+    newChannels,
+    overwriteChannels,
+    physicalChannelConflicts,
+    totalChannels,
+    projectData,
+    file
+  }
+}
+
+async function confirmImport() {
+  if (!importAnalysis.value) return
+
+  // Auto-export current config as backup before importing
+  try {
+    await projectManager.downloadProject(store.systemName)
+    showFeedback('info', 'Created backup before import')
+  } catch (e) {
+    console.warn('Failed to create backup:', e)
+  }
+
+  // Proceed with import
+  const result = await projectManager.loadProjectFromFile(importAnalysis.value.file)
   if (result.success) {
     showFeedback('success', result.message)
   } else {
     showFeedback('error', result.message)
   }
 
-  // Reset input so same file can be selected again
-  input.value = ''
+  // Close preview
+  showImportPreview.value = false
+  importAnalysis.value = null
+}
+
+function cancelImport() {
+  showImportPreview.value = false
+  importAnalysis.value = null
 }
 
 // Configuration dirty state tracking
@@ -378,15 +559,25 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
   const nodeId = newChannelForm.value.node_id
   const channels: Array<{value: string, label: string, type: string}> = []
 
+  // Build map of physical channels already assigned in current config
+  const usedChannels = new Map<string, string>() // physical_channel -> tag_name
+  for (const [tagName, config] of Object.entries(store.channels)) {
+    if (config.physical_channel) {
+      usedChannels.set(config.physical_channel, tagName)
+    }
+  }
+
   if (sourceType === 'cdaq') {
     // cDAQ: get channels from chassis/modules
     if (discoveryResult.value?.chassis) {
       for (const chassis of discoveryResult.value.chassis) {
         for (const module of chassis.modules || []) {
           for (const ch of module.channels || []) {
+            const assignedTo = usedChannels.get(ch.name)
+            const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${ch.type})`,
+              label: `${ch.name} (${ch.type})${usageLabel}`,
               type: ch.type
             })
           }
@@ -397,9 +588,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
     if (discoveryResult.value?.standalone_devices) {
       for (const device of discoveryResult.value.standalone_devices) {
         for (const ch of device.channels || []) {
+          const assignedTo = usedChannels.get(ch.name)
+          const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${ch.type})`,
+            label: `${ch.name} (${ch.type})${usageLabel}`,
             type: ch.type
           })
         }
@@ -410,11 +603,14 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
     const crioChannels = crioDiscoveryChannels.value[nodeId]
     if (crioChannels?.length) {
       for (const ch of crioChannels) {
-        // Mark in-use channels
-        const inUseLabel = ch.in_use ? ' [IN USE]' : ''
+        // Check both cRIO's in_use flag AND local config usage
+        const assignedTo = usedChannels.get(ch.physical_channel)
+        const usageLabel = assignedTo
+          ? ` [USED BY: ${assignedTo}]`
+          : (ch.in_use ? ' [IN USE]' : '')
         channels.push({
           value: ch.physical_channel,
-          label: `${ch.physical_channel} (${ch.channel_type})${inUseLabel}`,
+          label: `${ch.physical_channel} (${ch.channel_type})${usageLabel}`,
           type: ch.channel_type
         })
       }
@@ -424,9 +620,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
       if (node?.modules) {
         for (const module of node.modules) {
           for (const ch of module.channels || []) {
+            const assignedTo = usedChannels.get(ch.name)
+            const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${ch.type})`,
+              label: `${ch.name} (${ch.type})${usageLabel}`,
               type: ch.type
             })
           }
@@ -439,9 +637,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
     if (node?.modules) {
       for (const module of node.modules) {
         for (const ch of module.channels || []) {
+          const assignedTo = usedChannels.get(ch.name)
+          const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${ch.type})`,
+            label: `${ch.name} (${ch.type})${usageLabel}`,
             type: ch.type
           })
         }
@@ -450,6 +650,62 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
   }
 
   return channels
+}
+
+// Get available physical channels filtered by channel type (for inline editing and add modal)
+function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{value: string, label: string, type: string}> {
+  const allChannels = getAvailablePhysicalChannels()
+  if (allChannels.length === 0) return []
+
+  // Get channel type from config object or use as direct type string
+  const channelType = typeof channelConfigOrType === 'string'
+    ? channelConfigOrType
+    : (channelConfigOrType?.channel_type || newChannelForm.value.channel_type)
+  const compatibleTypes: string[] = []
+
+  // Map channel type to compatible discovery types
+  switch (channelType) {
+    case 'voltage_input':
+    case 'analog_input':
+      compatibleTypes.push('analog_input', 'voltage_input', 'AI')
+      break
+    case 'thermocouple':
+      compatibleTypes.push('thermocouple', 'TC', 'analog_input')
+      break
+    case 'rtd':
+      compatibleTypes.push('rtd', 'RTD', 'analog_input')
+      break
+    case 'current_input':
+      compatibleTypes.push('current_input', 'AI')
+      break
+    case 'digital_input':
+      compatibleTypes.push('digital_input', 'DI')
+      break
+    case 'voltage_output':
+    case 'analog_output':
+      compatibleTypes.push('analog_output', 'voltage_output', 'AO')
+      break
+    case 'current_output':
+      compatibleTypes.push('current_output', 'AO')
+      break
+    case 'digital_output':
+      compatibleTypes.push('digital_output', 'DO')
+      break
+    case 'counter':
+      compatibleTypes.push('counter', 'CTR')
+      break
+    default:
+      // Unknown type - show all channels
+      return allChannels
+  }
+
+  // Filter channels by compatible types
+  return allChannels.filter(ch =>
+    compatibleTypes.some(type =>
+      ch.type.toLowerCase().includes(type.toLowerCase()) ||
+      type.toLowerCase().includes(ch.type.toLowerCase())
+    )
+  )
 }
 
 // Check if we have discovery data for the current source type
@@ -1039,6 +1295,201 @@ function resetCounter(channelName: string) {
   // Send reset command to backend
   mqtt.resetCounter(channelName)
   showFeedback('info', `Resetting counter: ${channelName}`)
+}
+
+// Validate entire configuration and generate report
+function validateConfiguration() {
+  isValidating.value = true
+  const issues: ValidationIssue[] = []
+  const channels = Object.entries(store.channels)
+
+  try {
+    // Track used physical channels to detect conflicts
+    const physicalChannelMap = new Map<string, string[]>() // physical_channel -> tag_names[]
+
+    for (const [tagName, config] of channels) {
+      // Check 1: Required fields
+      if (!tagName || tagName.trim() === '') {
+        issues.push({
+          channel: tagName || '(unnamed)',
+          severity: 'error',
+          category: 'Required Fields',
+          message: 'Tag name is empty'
+        })
+      }
+
+      if (!config.channel_type) {
+        issues.push({
+          channel: tagName,
+          severity: 'error',
+          category: 'Required Fields',
+          message: 'Channel type is missing'
+        })
+      }
+
+      if (!config.physical_channel || config.physical_channel.trim() === '') {
+        issues.push({
+          channel: tagName,
+          severity: 'warning',
+          category: 'Required Fields',
+          message: 'Physical channel is not assigned'
+        })
+      } else {
+        // Track physical channel usage
+        const pc = config.physical_channel
+        if (!physicalChannelMap.has(pc)) {
+          physicalChannelMap.set(pc, [])
+        }
+        physicalChannelMap.get(pc)!.push(tagName)
+      }
+
+      // Check 2: Tag name format
+      if (tagName && !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tagName)) {
+        issues.push({
+          channel: tagName,
+          severity: 'error',
+          category: 'Naming',
+          message: 'Tag name must start with a letter and contain only letters, numbers, and underscores'
+        })
+      }
+
+      // Check 3: Range validation (min <= max)
+      if (config.min_value !== undefined && config.max_value !== undefined) {
+        if (parseFloat(config.min_value as any) > parseFloat(config.max_value as any)) {
+          issues.push({
+            channel: tagName,
+            severity: 'error',
+            category: 'Range',
+            message: `Min value (${config.min_value}) is greater than max value (${config.max_value})`
+          })
+        }
+      }
+
+      // Check 4: Engineering unit validation
+      if (config.eu_min !== undefined && config.eu_max !== undefined) {
+        if (parseFloat(config.eu_min as any) > parseFloat(config.eu_max as any)) {
+          issues.push({
+            channel: tagName,
+            severity: 'error',
+            category: 'Engineering Units',
+            message: `EU min (${config.eu_min}) is greater than EU max (${config.eu_max})`
+          })
+        }
+      }
+
+      // Check 5: Thermocouple type required
+      if (config.channel_type === 'thermocouple' && !config.thermocouple_type) {
+        issues.push({
+          channel: tagName,
+          severity: 'error',
+          category: 'Type Configuration',
+          message: 'Thermocouple type is required for thermocouple channels'
+        })
+      }
+
+      // Check 6: RTD type required
+      if (config.channel_type === 'rtd' && !config.rtd_type) {
+        issues.push({
+          channel: tagName,
+          severity: 'error',
+          category: 'Type Configuration',
+          message: 'RTD type is required for RTD channels'
+        })
+      }
+
+      // Check 7: Source type validation
+      if (config.source_type === 'crio' && !config.node_id) {
+        issues.push({
+          channel: tagName,
+          severity: 'warning',
+          category: 'Source Configuration',
+          message: 'cRIO source selected but no node_id specified'
+        })
+      }
+
+      // Check 8: Disabled channels notice
+      if (config.enabled === false) {
+        issues.push({
+          channel: tagName,
+          severity: 'info',
+          category: 'Status',
+          message: 'Channel is disabled'
+        })
+      }
+
+      // Check 9: Alarm configuration validation
+      if (config.hi_alarm !== undefined && config.hihi_alarm !== undefined) {
+        const hi = parseFloat(config.hi_alarm as any)
+        const hihi = parseFloat(config.hihi_alarm as any)
+        if (!isNaN(hi) && !isNaN(hihi) && hi > hihi) {
+          issues.push({
+            channel: tagName,
+            severity: 'warning',
+            category: 'Alarms',
+            message: `HI alarm (${hi}) is greater than HIHI alarm (${hihi})`
+          })
+        }
+      }
+
+      if (config.lo_alarm !== undefined && config.lolo_alarm !== undefined) {
+        const lo = parseFloat(config.lo_alarm as any)
+        const lolo = parseFloat(config.lolo_alarm as any)
+        if (!isNaN(lo) && !isNaN(lolo) && lo < lolo) {
+          issues.push({
+            channel: tagName,
+            severity: 'warning',
+            category: 'Alarms',
+            message: `LO alarm (${lo}) is less than LOLO alarm (${lolo})`
+          })
+        }
+      }
+    }
+
+    // Check 10: Physical channel conflicts (multiple tags using same physical channel)
+    for (const [physicalChannel, tagNames] of physicalChannelMap.entries()) {
+      if (tagNames.length > 1) {
+        for (const tagName of tagNames) {
+          issues.push({
+            channel: tagName,
+            severity: 'error',
+            category: 'Physical Channel Conflict',
+            message: `Physical channel "${physicalChannel}" is used by multiple tags: ${tagNames.join(', ')}`
+          })
+        }
+      }
+    }
+
+    // Sort issues by severity (error > warning > info) then by channel name
+    const severityOrder = { error: 0, warning: 1, info: 2 }
+    issues.sort((a, b) => {
+      const severityDiff = severityOrder[a.severity] - severityOrder[b.severity]
+      if (severityDiff !== 0) return severityDiff
+      return a.channel.localeCompare(b.channel)
+    })
+
+    // Generate report
+    const errorCount = issues.filter(i => i.severity === 'error').length
+    validationReport.value = {
+      timestamp: new Date().toISOString(),
+      totalChannels: channels.length,
+      validChannels: channels.length - new Set(issues.map(i => i.channel)).size,
+      issues
+    }
+
+    showValidationModal.value = true
+
+    if (errorCount === 0) {
+      showFeedback('success', `Validation complete: ${issues.length} issue(s) found`)
+    } else {
+      showFeedback('warning', `Validation found ${errorCount} error(s)`)
+    }
+  } finally {
+    isValidating.value = false
+  }
+}
+
+function closeValidationModal() {
+  showValidationModal.value = false
 }
 
 // Open system settings
@@ -2736,14 +3187,27 @@ function reloadConfig() {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
+
+  // Warn if there are unsaved changes
+  let confirmMessage = 'Reload configuration from disk?\n\nThis will discard any changes made in the backend that haven\'t been saved to disk.'
+
+  if (configDirty.value) {
+    confirmMessage = 'WARNING: You have unsaved changes!\n\nReloading will discard all unsaved changes in both the UI and backend.\n\nReload anyway?'
+  }
+
+  if (!confirm(confirmMessage)) {
+    return
+  }
+
   isReloading.value = true
   mqtt.sendCommand('config/reload', {})
   showFeedback('info', 'Reloading configuration from disk...')
 
-  // Reset after a delay
+  // Reset dirty flag and reload delay
   setTimeout(() => {
     isReloading.value = false
-    showFeedback('success', 'Configuration reload requested')
+    configDirty.value = false
+    showFeedback('success', 'Configuration reloaded from disk')
   }, 1500)
 }
 
@@ -3135,6 +3599,14 @@ watch(
           {{ isSaving ? 'Saving...' : 'Save' }}
           <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
+        <button class="action-btn" @click="reloadConfig" :disabled="isReloading || !mqtt.connected.value" title="Reload configuration from disk (discard unsaved changes)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/>
+            <polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          {{ isReloading ? 'Reloading...' : 'Reload' }}
+        </button>
         <button class="action-btn" @click="exportProject" :disabled="isExporting" title="Save a timestamped copy to config/projects/">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/>
@@ -3158,6 +3630,13 @@ watch(
           style="display: none"
           @change="handleImportFile"
         />
+        <button class="action-btn" @click="validateConfiguration" :disabled="isValidating" title="Validate all channel configurations">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 11l3 3L22 4"/>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          {{ isValidating ? 'Validating...' : 'Validate' }}
+        </button>
 
         <div class="toolbar-divider"></div>
 
@@ -3189,6 +3668,22 @@ watch(
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
           </svg>
           SIM MODE
+        </div>
+        <div v-if="crioStatus.state !== 'none'" class="crio-status-indicator" :class="crioStatus.state" :title="crioStatus.details">
+          <svg v-if="crioStatus.state === 'offline'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+          </svg>
+          <svg v-else-if="crioStatus.state === 'out-of-sync'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          {{ crioStatus.message }}
         </div>
       </div>
     </div>
@@ -3356,16 +3851,35 @@ watch(
                 <span v-if="config.source_type === 'crio'" class="source-badge crio" title="Remote cRIO node">cRIO</span>
                 <span v-else-if="config.source_type === 'opto22'" class="source-badge opto22" title="Remote Opto22 node">Opto22</span>
               </td>
-              <!-- CHANNEL - cDAQ physical location -->
+              <!-- CHANNEL - physical channel with dropdown when discovery available -->
               <td class="col-channel editable-cell" @click.stop>
+                <select
+                  v-if="getAvailablePhysicalChannelsForType(config).length > 0"
+                  :value="config.physical_channel || ''"
+                  @change="updateChannelField(name, 'physical_channel', ($event.target as HTMLSelectElement).value)"
+                  class="inline-select channel-select"
+                  :disabled="!canEdit"
+                  :title="`${getAvailablePhysicalChannelsForType(config).length} compatible channels found`"
+                >
+                  <option value="">-- Select Channel --</option>
+                  <option
+                    v-for="ch in getAvailablePhysicalChannelsForType(config)"
+                    :key="ch.value"
+                    :value="ch.value"
+                  >
+                    {{ ch.label }}
+                  </option>
+                </select>
                 <input
+                  v-else
                   type="text"
                   :value="config.physical_channel || ''"
                   @blur="updateChannelField(name, 'physical_channel', ($event.target as HTMLInputElement).value)"
                   @keyup.enter="($event.target as HTMLInputElement).blur()"
                   class="inline-input channel-input"
-                  placeholder="cDAQ1Mod1/ai0"
+                  :placeholder="getPhysicalChannelHint(config.source_type || 'local')"
                   :disabled="!canEdit"
+                  :title="getAvailablePhysicalChannels().length > 0 ? 'No compatible channels found - manual entry' : 'No discovery data - manual entry'"
                 />
               </td>
               <!-- DESCRIPTION - long text -->
@@ -5432,12 +5946,12 @@ watch(
                 Physical Channel
                 <span v-if="isScanning" class="scanning-indicator">(scanning...)</span>
               </label>
-              <!-- Show dropdown if discovery data available -->
-              <template v-if="getAvailablePhysicalChannels().length > 0">
+              <!-- Show dropdown if compatible channels available for this type -->
+              <template v-if="getAvailablePhysicalChannelsForType().length > 0">
                 <select v-model="newChannelForm.physical_channel" class="physical-channel-select">
-                  <option value="">-- Select from discovered channels --</option>
+                  <option value="">-- Select compatible channel --</option>
                   <option
-                    v-for="ch in getAvailablePhysicalChannels()"
+                    v-for="ch in getAvailablePhysicalChannelsForType()"
                     :key="ch.value"
                     :value="ch.value"
                   >
@@ -5454,20 +5968,24 @@ watch(
                   class="manual-channel-input"
                 />
               </template>
-              <!-- Fallback to manual entry if no discovery data -->
+              <!-- Fallback to manual entry if no compatible channels -->
               <template v-else>
                 <input
                   type="text"
                   v-model="newChannelForm.physical_channel"
                   :placeholder="getPhysicalChannelHint(newChannelForm.source_type)"
                 />
-                <span class="form-hint" v-if="!isScanning">
+                <span class="form-hint" v-if="!isScanning && getAvailablePhysicalChannels().length > 0">
+                  No compatible {{ newChannelForm.channel_type }} channels found.
+                  <button class="btn-link" @click="scanDevices">Re-scan</button>
+                </span>
+                <span class="form-hint" v-else-if="!isScanning">
                   No channels discovered.
                   <button class="btn-link" @click="scanDevices">Scan for hardware</button>
                 </span>
               </template>
-              <span class="form-hint" v-if="getAvailablePhysicalChannels().length > 0">
-                {{ getAvailablePhysicalChannels().length }} channels available from discovery
+              <span class="form-hint" v-if="getAvailablePhysicalChannelsForType().length > 0">
+                {{ getAvailablePhysicalChannelsForType().length }} compatible {{ newChannelForm.channel_type }} channels found
               </span>
             </div>
 
@@ -6098,6 +6616,244 @@ watch(
         </div>
       </div>
     </Transition>
+
+    <!-- Validation Report Modal -->
+    <Transition name="modal">
+      <div v-if="showValidationModal" class="discovery-overlay" @click.self="closeValidationModal">
+        <div class="validation-dialog">
+          <div class="discovery-header">
+            <h3>Configuration Validation Report</h3>
+            <button class="close-btn" @click="closeValidationModal">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div v-if="validationReport" class="validation-content">
+            <!-- Summary -->
+            <div class="validation-summary">
+              <div class="summary-stat">
+                <span class="stat-label">Total Channels:</span>
+                <span class="stat-value">{{ validationReport.totalChannels }}</span>
+              </div>
+              <div class="summary-stat">
+                <span class="stat-label">Valid Channels:</span>
+                <span class="stat-value success">{{ validationReport.validChannels }}</span>
+              </div>
+              <div class="summary-stat">
+                <span class="stat-label">Channels with Issues:</span>
+                <span class="stat-value warning">{{ validationReport.totalChannels - validationReport.validChannels }}</span>
+              </div>
+              <div class="summary-stat">
+                <span class="stat-label">Total Issues:</span>
+                <span class="stat-value">{{ validationReport.issues.length }}</span>
+              </div>
+            </div>
+
+            <!-- Issue breakdown -->
+            <div class="issue-breakdown">
+              <div class="breakdown-stat error">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="15" y1="9" x2="9" y2="15"/>
+                  <line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+                {{ validationReport.issues.filter(i => i.severity === 'error').length }} Errors
+              </div>
+              <div class="breakdown-stat warning">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                {{ validationReport.issues.filter(i => i.severity === 'warning').length }} Warnings
+              </div>
+              <div class="breakdown-stat info">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="16" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                {{ validationReport.issues.filter(i => i.severity === 'info').length }} Info
+              </div>
+            </div>
+
+            <!-- Issues list -->
+            <div v-if="validationReport.issues.length === 0" class="no-issues">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+              <p>No issues found!</p>
+              <p class="hint">All {{ validationReport.totalChannels }} channels passed validation.</p>
+            </div>
+
+            <div v-else class="issues-list">
+              <div
+                v-for="(issue, idx) in validationReport.issues"
+                :key="idx"
+                class="issue-item"
+                :class="issue.severity"
+              >
+                <div class="issue-icon">
+                  <svg v-if="issue.severity === 'error'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="15" y1="9" x2="9" y2="15"/>
+                    <line x1="9" y1="9" x2="15" y2="15"/>
+                  </svg>
+                  <svg v-else-if="issue.severity === 'warning'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                </div>
+                <div class="issue-details">
+                  <div class="issue-header">
+                    <span class="issue-channel">{{ issue.channel }}</span>
+                    <span class="issue-category">{{ issue.category }}</span>
+                  </div>
+                  <div class="issue-message">{{ issue.message }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="validation-footer">
+            <button class="btn btn-primary" @click="closeValidationModal">Close</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Import Preview Modal -->
+    <Transition name="modal">
+      <div v-if="showImportPreview" class="discovery-overlay" @click.self="cancelImport">
+        <div class="import-preview-dialog">
+          <div class="discovery-header">
+            <h3>Import Preview</h3>
+            <button class="close-btn" @click="cancelImport">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div v-if="importAnalysis" class="import-preview-content">
+            <!-- Summary -->
+            <div class="import-summary">
+              <div class="summary-header">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <div>
+                  <h4>Importing {{ importAnalysis.totalChannels }} channel{{ importAnalysis.totalChannels !== 1 ? 's' : '' }}</h4>
+                  <p class="summary-hint">Review the changes before confirming</p>
+                </div>
+              </div>
+
+              <div class="import-stats">
+                <div class="import-stat new">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  {{ importAnalysis.newChannels.length }} New
+                </div>
+                <div class="import-stat overwrite">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M16 3h5v5"/>
+                    <path d="M8 3H3v5"/>
+                    <path d="M12 22v-7"/>
+                    <path d="M3 7l5 5 5-5"/>
+                    <path d="M16 7l5 5"/>
+                  </svg>
+                  {{ importAnalysis.overwriteChannels.length }} Overwrite
+                </div>
+                <div v-if="importAnalysis.physicalChannelConflicts.length > 0" class="import-stat conflict">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  {{ importAnalysis.physicalChannelConflicts.length }} Conflicts
+                </div>
+              </div>
+            </div>
+
+            <!-- Warnings -->
+            <div v-if="importAnalysis.overwriteChannels.length > 0 || importAnalysis.physicalChannelConflicts.length > 0" class="import-warnings">
+              <div v-if="importAnalysis.overwriteChannels.length > 0" class="warning-section">
+                <div class="warning-header">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <strong>These channels will be overwritten:</strong>
+                </div>
+                <div class="channel-list">
+                  <div v-for="channel in importAnalysis.overwriteChannels.slice(0, 10)" :key="channel" class="channel-tag">
+                    {{ channel }}
+                  </div>
+                  <div v-if="importAnalysis.overwriteChannels.length > 10" class="channel-tag more">
+                    +{{ importAnalysis.overwriteChannels.length - 10 }} more
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="importAnalysis.physicalChannelConflicts.length > 0" class="warning-section conflict">
+                <div class="warning-header">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="15" y1="9" x2="9" y2="15"/>
+                    <line x1="9" y1="9" x2="15" y2="15"/>
+                  </svg>
+                  <strong>Physical channel conflicts detected:</strong>
+                </div>
+                <div class="conflicts-list">
+                  <div v-for="conflict in importAnalysis.physicalChannelConflicts" :key="conflict.channel" class="conflict-item">
+                    <span class="conflict-channel">{{ conflict.channel }}</span>
+                    uses
+                    <span class="conflict-physical">{{ conflict.physicalChannel }}</span>
+                    which is already used by
+                    <span class="conflict-existing">{{ conflict.conflictsWith.join(', ') }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Backup notice -->
+            <div class="backup-notice">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              A backup of your current configuration will be created before import
+            </div>
+          </div>
+
+          <div class="import-preview-footer">
+            <button class="btn btn-secondary" @click="cancelImport">Cancel</button>
+            <button
+              class="btn btn-primary"
+              @click="confirmImport"
+              :class="{ 'btn-danger': importAnalysis && importAnalysis.physicalChannelConflicts.length > 0 }"
+            >
+              {{ importAnalysis && importAnalysis.physicalChannelConflicts.length > 0 ? 'Import Anyway' : 'Confirm Import' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -6617,6 +7373,43 @@ watch(
 
 .inline-input[type="number"] {
   max-width: 70px;
+}
+
+.inline-select {
+  background: #0f0f1a;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #ccc;
+  font-size: 0.75rem;
+  padding: 2px 4px;
+  width: 100%;
+  cursor: pointer;
+}
+
+.inline-select:hover:not(:disabled) {
+  border-color: #3b82f6;
+}
+
+.inline-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: #1a1a2e;
+}
+
+.inline-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inline-select option {
+  background: #1a1a2e;
+  color: #ccc;
+}
+
+/* Channel select - monospace for cDAQ paths */
+.col-channel .inline-select {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
 }
 
 /* Channel input - monospace for cDAQ paths */
@@ -7153,6 +7946,39 @@ input[type="checkbox"] {
   width: 14px;
   height: 14px;
   fill: currentColor;
+}
+
+.crio-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.crio-status-indicator.synced {
+  background: #064e3b;
+  color: #34d399;
+}
+
+.crio-status-indicator.out-of-sync {
+  background: #78350f;
+  color: #fbbf24;
+}
+
+.crio-status-indicator.offline {
+  background: #7f1d1d;
+  color: #f87171;
+}
+
+.crio-status-indicator svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
 }
 
 /* Spinner */
@@ -8580,6 +9406,401 @@ input[type="checkbox"] {
   padding: 12px 16px;
   border-top: 1px solid #2a2a4a;
   justify-content: flex-end;
+}
+
+/* Validation Report Modal */
+.validation-dialog {
+  width: 800px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.validation-content {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.validation-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+}
+
+.summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.stat-value.success {
+  color: #22c55e;
+}
+
+.stat-value.warning {
+  color: #f59e0b;
+}
+
+.issue-breakdown {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+}
+
+.breakdown-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.breakdown-stat.error {
+  color: #ef4444;
+}
+
+.breakdown-stat.warning {
+  color: #f59e0b;
+}
+
+.breakdown-stat.info {
+  color: #3b82f6;
+}
+
+.no-issues {
+  padding: 40px;
+  text-align: center;
+}
+
+.no-issues svg {
+  margin-bottom: 16px;
+}
+
+.no-issues p {
+  margin: 0 0 8px;
+  color: #fff;
+  font-size: 1rem;
+}
+
+.no-issues .hint {
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.issues-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.issue-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-left: 3px solid;
+  border-radius: 4px;
+}
+
+.issue-item.error {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.issue-item.warning {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.issue-item.info {
+  border-left-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.issue-icon {
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.issue-item.error .issue-icon svg {
+  stroke: #ef4444;
+}
+
+.issue-item.warning .issue-icon svg {
+  stroke: #f59e0b;
+}
+
+.issue-item.info .issue-icon svg {
+  stroke: #3b82f6;
+}
+
+.issue-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.issue-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.issue-channel {
+  font-weight: 600;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+.issue-category {
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+.issue-message {
+  color: #ccc;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.validation-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #2a2a4a;
+  justify-content: flex-end;
+}
+
+/* Import Preview Modal */
+.import-preview-dialog {
+  width: 700px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: #0f0f1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-preview-content {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.import-summary {
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.summary-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.summary-header svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.summary-header h4 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.summary-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.import-stats {
+  display: flex;
+  gap: 12px;
+}
+
+.import-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.import-stat.new {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.import-stat.overwrite {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.import-stat.conflict {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.import-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.warning-section {
+  padding: 12px;
+  background: rgba(245, 158, 11, 0.05);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 6px;
+}
+
+.warning-section.conflict {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.warning-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #f59e0b;
+  font-size: 0.9rem;
+}
+
+.warning-section.conflict .warning-header {
+  color: #ef4444;
+}
+
+.channel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.channel-tag {
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-family: 'Courier New', monospace;
+  color: #ccc;
+}
+
+.channel-tag.more {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+  font-family: inherit;
+}
+
+.conflicts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.conflict-item {
+  font-size: 0.85rem;
+  color: #ccc;
+  line-height: 1.5;
+}
+
+.conflict-channel {
+  font-weight: 600;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+}
+
+.conflict-physical {
+  font-weight: 500;
+  color: #fbbf24;
+  font-family: 'Courier New', monospace;
+}
+
+.conflict-existing {
+  font-weight: 500;
+  color: #ef4444;
+  font-family: 'Courier New', monospace;
+}
+
+.backup-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #3b82f6;
+}
+
+.import-preview-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #2a2a4a;
+  justify-content: flex-end;
+}
+
+.btn-danger {
+  background: #7f1d1d !important;
+  border-color: #ef4444 !important;
+  color: #ef4444 !important;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #991b1b !important;
+  border-color: #f87171 !important;
 }
 
 /* Project Manager Styles */

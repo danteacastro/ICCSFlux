@@ -35,8 +35,7 @@ else:
 MOSQUITTO = ROOT / "mosquitto" / "mosquitto.exe"
 MOSQUITTO_CONF = ROOT / "mosquitto" / "mosquitto.conf"
 DAQ_SERVICE = ROOT / "DAQService.exe"
-AZURE_PYTHON = ROOT / "azure_uploader" / "python" / "python.exe"
-AZURE_SERVICE = ROOT / "azure_uploader" / "azure_uploader_service.py"
+AZURE_UPLOADER = ROOT / "AzureUploader.exe"
 CONFIG = ROOT / "config" / "system.ini"
 WWW = ROOT / "www"
 DATA = ROOT / "data"
@@ -211,7 +210,7 @@ def start_daq_service():
 
 def start_azure_uploader():
     """Start Azure IoT Hub uploader service (runs idle, waiting for commands)"""
-    if not AZURE_PYTHON.exists() or not AZURE_SERVICE.exists():
+    if not AZURE_UPLOADER.exists():
         # Azure uploader not available (normal if not installed)
         return None
 
@@ -219,10 +218,10 @@ def start_azure_uploader():
 
     # Start Azure uploader - it connects to MQTT and waits for commands
     proc = subprocess.Popen(
-        [str(AZURE_PYTHON), str(AZURE_SERVICE), "--host", "localhost", "--port", "1883"],
-        cwd=str(AZURE_SERVICE.parent),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        [str(AZURE_UPLOADER), "--host", "localhost", "--port", "1883"],
+        cwd=str(ROOT),
+        stdout=subprocess.DEVNULL if SERVICE_MODE else None,
+        stderr=subprocess.DEVNULL if SERVICE_MODE else None,
     )
     processes.append(proc)
 

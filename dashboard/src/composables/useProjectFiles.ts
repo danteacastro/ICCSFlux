@@ -682,12 +682,21 @@ export function useProjectFiles() {
         await new Promise(resolve => setTimeout(resolve, 500))
       }
 
-      // CRITICAL: Send channels to backend so it knows about the new channel config
-      // Without this, the backend still has the old channel list and won't publish the new channel values
-      console.log('[PROJECT LOADING] Sending channels to backend via bulk-create...')
-      const channelArray = Object.values(channelConfigs)
-      mqtt.bulkCreateChannels(channelArray)
-      console.log('[PROJECT LOADING] ✅ Channels sent to backend:', channelArray.length, 'channels')
+      // CRITICAL: Only send channels to backend if they're not already loaded
+      // After import + reload, backend already has channels from project/import/json command
+      // Check if backend channels match - if they do, skip bulk-create to avoid "Already exists" errors
+      const backendChannelCount = Object.keys(store.channels).length
+      const projectChannelCount = Object.keys(channelConfigs).length
+
+      if (backendChannelCount === 0 || backendChannelCount !== projectChannelCount) {
+        // Backend doesn't have channels or count mismatch - need to sync
+        console.log('[PROJECT LOADING] Sending channels to backend via bulk-create...')
+        const channelArray = Object.values(channelConfigs)
+        mqtt.bulkCreateChannels(channelArray)
+        console.log('[PROJECT LOADING] ✅ Channels sent to backend:', channelArray.length, 'channels')
+      } else {
+        console.log('[PROJECT LOADING] ⏭️  Skipping bulk-create - backend already has', backendChannelCount, 'channels')
+      }
 
       // Wait for backend to process channels before restarting acquisition
       await new Promise(resolve => setTimeout(resolve, 1000))
