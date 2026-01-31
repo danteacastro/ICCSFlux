@@ -58,6 +58,9 @@ class SimpleScheduler:
         self._last_stop_trigger = None
         self._is_scheduled_running = False  # Track if we started acquisition via schedule
 
+        # DST protection: minimum time between same triggers (prevents double-trigger during fall-back)
+        self._DST_GUARD_MINUTES = 60
+
     def configure(self, config: Dict[str, Any]) -> None:
         """
         Configure the scheduler from a dictionary.
@@ -144,7 +147,11 @@ class SimpleScheduler:
         return self._is_active_day(dt) and self._is_in_active_window(dt)
 
     def _check_schedule(self) -> None:
-        """Check if we need to start or stop acquisition based on schedule."""
+        """Check if we need to start or stop acquisition based on schedule.
+
+        Includes DST protection: won't re-trigger start/stop within _DST_GUARD_MINUTES
+        to prevent double-triggers during DST "fall back" when clocks repeat an hour.
+        """
         if not self.enabled:
             return
 
@@ -153,6 +160,13 @@ class SimpleScheduler:
 
         with self._lock:
             if should_run and not self._is_scheduled_running:
+                # DST guard: prevent double-trigger within guard window
+                if self._last_start_trigger:
+                    elapsed = (now - self._last_start_trigger).total_seconds() / 60
+                    if elapsed < self._DST_GUARD_MINUTES:
+                        logger.debug(f"Schedule START suppressed (DST guard: {elapsed:.1f}min < {self._DST_GUARD_MINUTES}min)")
+                        return
+
                 # Time to start
                 logger.info(f"Schedule triggered START at {now.strftime('%H:%M:%S')}")
                 self._last_start_trigger = now
@@ -169,6 +183,13 @@ class SimpleScheduler:
                     logger.error(f"Error starting scheduled acquisition: {e}")
 
             elif not should_run and self._is_scheduled_running:
+                # DST guard: prevent double-trigger within guard window
+                if self._last_stop_trigger:
+                    elapsed = (now - self._last_stop_trigger).total_seconds() / 60
+                    if elapsed < self._DST_GUARD_MINUTES:
+                        logger.debug(f"Schedule STOP suppressed (DST guard: {elapsed:.1f}min < {self._DST_GUARD_MINUTES}min)")
+                        return
+
                 # Time to stop
                 logger.info(f"Schedule triggered STOP at {now.strftime('%H:%M:%S')}")
                 self._last_stop_trigger = now

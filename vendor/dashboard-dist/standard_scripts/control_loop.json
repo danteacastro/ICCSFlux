@@ -1,0 +1,49 @@
+{
+  "name": "Control Loop Schedule",
+  "description": "Continuous control loop - runs repeatedly, checking conditions and adjusting outputs",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Control Sequences",
+  "config": {
+    "controls": {
+      "type": "array",
+      "default": [
+        {
+          "name": "Temperature Control",
+          "sensor": "Temperature_1",
+          "output": "Heater_Enable",
+          "type": "on_off",
+          "setpoint": 50,
+          "hysteresis": 2
+        },
+        {
+          "name": "Pressure Relief",
+          "sensor": "Pressure_In",
+          "output": "Valve_Relief",
+          "type": "threshold",
+          "threshold": 100
+        }
+      ],
+      "description": "List of control configurations"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable/disable all controls"
+    }
+  },
+  "subscribed_tags": ["Temperature_1", "Pressure_In"],
+  "published_tags": [
+    {
+      "name": "py.Loop_Active",
+      "unit": "",
+      "description": "1 if loop is running"
+    },
+    {
+      "name": "py.Loop_Iterations",
+      "unit": "",
+      "description": "Number of loop iterations"
+    }
+  ],
+  "code": "# Control Loop Schedule\n# Runs continuously, checking sensor values and controlling outputs\n# Supports: on_off (thermostat), threshold, pid control types\n\nimport time\n\ncontrols = config.get('controls', [])\nenabled = config.get('enabled', True)\n\n# Initialize state\nif 'iterations' not in state:\n    state['iterations'] = 0\n    state['output_states'] = {}\n    state['pid_integral'] = {}\n    state['pid_last_error'] = {}\n    state['last_time'] = time.time()\n\nif not enabled:\n    publish('py.Loop_Active', 0)\n    publish('py.Loop_Iterations', state['iterations'])\nelse:\n    now = time.time()\n    dt = now - state['last_time']\n    state['last_time'] = now\n    state['iterations'] += 1\n    \n    for ctrl in controls:\n        sensor_tag = ctrl.get('sensor', '')\n        output_tag = ctrl.get('output', '')\n        ctrl_type = ctrl.get('type', 'on_off')\n        \n        # Get current sensor value\n        pv = tags.get(sensor_tag, 0)\n        \n        # Get current output state\n        current_state = state['output_states'].get(output_tag, False)\n        \n        if ctrl_type == 'on_off':\n            # On/Off control with hysteresis (thermostat)\n            setpoint = ctrl.get('setpoint', 50)\n            hysteresis = ctrl.get('hysteresis', 2)\n            \n            if current_state:  # Currently ON\n                # Turn OFF if above setpoint + hysteresis\n                if pv >= setpoint + hysteresis:\n                    new_state = False\n                else:\n                    new_state = True\n            else:  # Currently OFF\n                # Turn ON if below setpoint - hysteresis\n                if pv <= setpoint - hysteresis:\n                    new_state = True\n                else:\n                    new_state = False\n            \n            output(output_tag, new_state)\n            state['output_states'][output_tag] = new_state\n            \n        elif ctrl_type == 'threshold':\n            # Simple threshold control\n            threshold = ctrl.get('threshold', 100)\n            above = ctrl.get('above', True)  # True = activate when above\n            \n            if above:\n                new_state = pv > threshold\n            else:\n                new_state = pv < threshold\n            \n            output(output_tag, new_state)\n            state['output_states'][output_tag] = new_state\n            \n        elif ctrl_type == 'pid':\n            # PID control for analog outputs\n            setpoint = ctrl.get('setpoint', 50)\n            kp = ctrl.get('kp', 1.0)\n            ki = ctrl.get('ki', 0.1)\n            kd = ctrl.get('kd', 0.05)\n            out_min = ctrl.get('min', 0)\n            out_max = ctrl.get('max', 100)\n            \n            error = setpoint - pv\n            \n            # Initialize PID state for this control\n            if output_tag not in state['pid_integral']:\n                state['pid_integral'][output_tag] = 0\n                state['pid_last_error'][output_tag] = error\n            \n            # PID calculations\n            state['pid_integral'][output_tag] += error * dt\n            derivative = (error - state['pid_last_error'][output_tag]) / dt if dt > 0 else 0\n            state['pid_last_error'][output_tag] = error\n            \n            output_val = kp * error + ki * state['pid_integral'][output_tag] + kd * derivative\n            output_val = max(out_min, min(out_max, output_val))\n            \n            output(output_tag, output_val)\n            state['output_states'][output_tag] = output_val\n    \n    publish('py.Loop_Active', 1)\n    publish('py.Loop_Iterations', state['iterations'])"
+}

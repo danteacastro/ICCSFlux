@@ -1293,6 +1293,7 @@ function getControlDescription(ctrl: InterlockControl): string {
                   >
                     <option value="auto_clear">Auto</option>
                     <option value="latch">Latch</option>
+                    <option value="timed_latch">Timed Latch</option>
                   </select>
                 </td>
                 <td>

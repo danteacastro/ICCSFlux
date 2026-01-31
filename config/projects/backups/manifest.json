@@ -23,7 +23,87 @@
       "file_hash": "f586cf72402da357b30dfe70c101137b4024e82361a54de27ecaa03a362906d0",
       "size_bytes": 70180,
       "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153355.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:33:55.899377",
+      "file_hash": "1d744884228bd263974901f423878ea44d8d31dc8c037ebe77c846e4323273fd",
+      "size_bytes": 90963,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153355.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:33:55.967955",
+      "file_hash": "eb8e368269531842cd1c69f6ee938ab32bf464df53bce7217fdc8ed62e0179af",
+      "size_bytes": 96248,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153356.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:33:56.033279",
+      "file_hash": "40a591015c529d0d764842429b1097077dbab6e7e20dd40e4e465ca1f85fb4de",
+      "size_bytes": 96248,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153503.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:35:03.903905",
+      "file_hash": "d7fcb6faf42e47da74a37732482c26599afe20eba054ee593cd551477f5f73f7",
+      "size_bytes": 97094,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153503.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:35:03.993891",
+      "file_hash": "5edad0ccc3132b48f03267826ac4bfe6e78b6e66eb2414b3f1dd485baca4cff6",
+      "size_bytes": 91135,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153504.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:35:04.072283",
+      "file_hash": "69b617a1c7d1a018c1d03bfb8768591298d4c419aec7c47f2c59be8bf6db1e3b",
+      "size_bytes": 96572,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_153504.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T15:35:04.144087",
+      "file_hash": "b02989820c5da7705c3c7ee2d42d9d84f69d6ce04d505da15eb7cb9b362d66cb",
+      "size_bytes": 96572,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_170436.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T17:04:36.752683",
+      "file_hash": "635b1905bde24024e706e8dddde1f0ee4ce0e366686a95980876b2fdd6486000",
+      "size_bytes": 97266,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_170436.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T17:04:36.980808",
+      "file_hash": "53fe4a2871172a86f2ac09b703cd6fde38cb9332ef7d034a4d4bfdc257c7b322",
+      "size_bytes": 194261,
+      "reason": "pre_save"
+    },
+    {
+      "backup_path": "config\\projects\\backups\\H2-Ready_Boiler_Combustion_Research_20260129_170438.json",
+      "original_path": "config\\projects\\H2-Ready_Boiler_Combustion_Research.json",
+      "timestamp": "2026-01-29T17:04:38.487012",
+      "file_hash": "bdf339a61b74e40d3c89cd53ff89bb1f7946306fb9d9d9048738cb8a222a67cb",
+      "size_bytes": 194261,
+      "reason": "pre_save"
     }
   ],
-  "updated": "2026-01-08T13:38:59.252835"
+  "updated": "2026-01-29T17:04:38.527715"
 }

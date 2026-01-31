@@ -20,6 +20,7 @@ import json
 import time
 import signal
 import sys
+import platform
 import logging
 import argparse
 import subprocess
@@ -234,10 +235,10 @@ class DAQWatchdog:
         if acquiring is True:
             self._warned_acquisition_stop = False
 
-        # Only warn ONCE when acquisition stops (prevents spam on every heartbeat)
+        # Only log ONCE when acquisition stops (not a warning - user may have stopped intentionally)
         if self._expected_acquiring is True and acquiring is False:
             if not self._warned_acquisition_stop:
-                logger.warning("Acquisition stopped - monitoring for recovery")
+                logger.debug("Acquisition stopped - monitoring for recovery")
                 self._publish_watchdog_event("acquisition_stopped", "Acquisition stopped")
                 self._warned_acquisition_stop = True
 
@@ -345,21 +346,53 @@ class DAQWatchdog:
                 logger.error(f"Failed to set failsafe output {channel_name}: {e}")
 
     def _attempt_restart(self):
-        """Attempt to restart the DAQ service"""
+        """Attempt to restart the DAQ service (cross-platform)"""
         logger.warning(f"Attempting to restart service: {self.config.service_name}")
 
         try:
-            result = subprocess.run(
-                ["systemctl", "restart", self.config.service_name],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                logger.info("Service restart command sent successfully")
-                self._publish_watchdog_event("service_restart", "Restart command sent")
+            if platform.system() == "Windows":
+                # Windows: Try to restart via sc.exe (if installed as Windows service)
+                # First try stopping, then starting
+                service_name = f"NISystem_{self.config.service_name}"
+
+                # Try sc.exe for Windows services
+                stop_result = subprocess.run(
+                    ["sc", "stop", service_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                time.sleep(2)  # Wait for service to stop
+
+                start_result = subprocess.run(
+                    ["sc", "start", service_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if start_result.returncode == 0:
+                    logger.info("Windows service restart command sent successfully")
+                    self._publish_watchdog_event("service_restart", "Restart command sent")
+                else:
+                    # Service may not be installed as Windows service - log for manual restart
+                    logger.warning(f"Windows service not found or restart failed: {start_result.stderr}")
+                    logger.warning("Manual restart may be required: python services/daq_service/daq_service.py")
+                    self._publish_watchdog_event("service_restart_failed",
+                        f"Auto-restart failed - manual restart required")
             else:
-                logger.error(f"Service restart failed: {result.stderr}")
+                # Linux: Use systemctl
+                result = subprocess.run(
+                    ["systemctl", "restart", self.config.service_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    logger.info("Service restart command sent successfully")
+                    self._publish_watchdog_event("service_restart", "Restart command sent")
+                else:
+                    logger.error(f"Service restart failed: {result.stderr}")
         except Exception as e:
             logger.error(f"Failed to restart service: {e}")
 

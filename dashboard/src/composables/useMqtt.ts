@@ -41,6 +41,7 @@ const channelOwners = new Map<string, string>()
 // Discovery state (shared)
 const discoveryResult = ref<any>(null)
 const discoveryChannels = ref<any[]>([])
+const crioDiscoveryChannels = ref<Record<string, any[]>>({}) // nodeId -> channels
 const isScanning = ref(false)
 let scanTimeoutId: ReturnType<typeof setTimeout> | null = null
 const SCAN_TIMEOUT_MS = 30000 // 30 second timeout for device scan
@@ -301,6 +302,8 @@ export function useMqtt(prefix: string = 'nisystem') {
             handleDiscoveryChannels(payload)
           } else if (restOfTopic === 'discovery/crio-found') {
             handleCrioDiscovered(payload)
+          } else if (restOfTopic === 'discovery/channels/response') {
+            handleCrioChannelDiscovery(nodeId, payload)
           } else if (restOfTopic.startsWith('alarms/')) {
             handleAlarm(topic, payload)
           } else if (restOfTopic === 'config/current') {
@@ -376,13 +379,10 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleChannelValue(channelName: string, payload: any, nodeId?: string) {
-    const effectiveNodeId = nodeId || payload.node_id || 'node-001'
+    // Don't process channel data when not acquiring
+    if (!systemStatus.value?.acquiring) return
 
-    // Skip cRIO data when main acquisition is not active
-    // cRIO runs in background but dashboard only shows values when acquiring
-    if (effectiveNodeId.startsWith('crio') && !systemStatus.value?.acquiring) {
-      return
-    }
+    const effectiveNodeId = nodeId || payload.node_id || 'node-001'
 
     // Check channel ownership - prevent value collision between nodes
     // If a channel is owned by a cRIO node, don't let main DAQ overwrite it
@@ -451,16 +451,13 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleBatchChannelValues(payload: Record<string, { value: number, timestamp: number }>, nodeId?: string) {
+    // Don't process channel data when not acquiring
+    if (!systemStatus.value?.acquiring) return
+
     // Handle batched channel values from cRIO nodes
     // cRIO publishes with physical channel names (e.g., "Mod5/ai0") when no config is pushed
     // Dashboard needs to map these back to TAG names using channelConfigs
     const effectiveNodeId = nodeId || 'crio-001'
-
-    // Skip cRIO data when main acquisition is not active
-    // cRIO runs in background but dashboard only shows values when acquiring
-    if (effectiveNodeId.startsWith('crio') && !systemStatus.value?.acquiring) {
-      return
-    }
 
     const aggregatedData: Record<string, number> = {}
 
@@ -574,7 +571,18 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleStatus(status: SystemStatus, nodeId?: string) {
-    console.log('[MQTT] Received status update:', { nodeId, acquiring: status.acquiring, recording: status.recording })
+    // Calculate message latency for diagnostics
+    const latencyMs = status.timestamp
+      ? Date.now() - new Date(status.timestamp).getTime()
+      : null
+    console.log('[MQTT] Status received:', {
+      nodeId,
+      acquiring: status.acquiring,
+      recording: status.recording,
+      acquisition_state: status.acquisition_state,
+      latency_ms: latencyMs
+    })
+
     // Add node info to status
     if (nodeId || status.node_id) {
       status.node_id = nodeId || status.node_id
@@ -773,6 +781,18 @@ export function useMqtt(prefix: string = 'nisystem') {
         scanDevices()
       }
     }, 500)
+  }
+
+  function handleCrioChannelDiscovery(nodeId: string, payload: any) {
+    // Handle channel discovery response from a specific cRIO node
+    const effectiveNodeId = payload.node_id || nodeId
+    console.log(`[MQTT] Received cRIO channel discovery from ${effectiveNodeId}:`, payload.channels?.length || 0, 'channels')
+
+    // Store the channels keyed by node ID
+    crioDiscoveryChannels.value = {
+      ...crioDiscoveryChannels.value,
+      [effectiveNodeId]: payload.channels || []
+    }
   }
 
   function handleConfigResponse(payload: any) {
@@ -1091,7 +1111,21 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleCommandAck(payload: any) {
-    const { request_id, success, error: errorMsg } = payload
+    const { command, request_id, success, error: errorMsg } = payload
+    console.log('[MQTT] Command ack received:', { command, success, request_id })
+
+    // Optimistic UI update for acquire commands - faster than waiting for full status
+    if (success && command && systemStatus.value) {
+      if (command === 'acquire/start') {
+        console.log('[MQTT] Optimistic update: acquiring=true')
+        systemStatus.value = { ...systemStatus.value, acquiring: true, acquisition_state: 'running' }
+        statusCallbacks.forEach(cb => cb(systemStatus.value!))
+      } else if (command === 'acquire/stop') {
+        console.log('[MQTT] Optimistic update: acquiring=false')
+        systemStatus.value = { ...systemStatus.value, acquiring: false, acquisition_state: 'stopped' }
+        statusCallbacks.forEach(cb => cb(systemStatus.value!))
+      }
+    }
 
     if (request_id && pendingCommands.has(request_id)) {
       const pending = pendingCommands.get(request_id)!
@@ -1411,6 +1445,23 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
     isScanning.value = false
     console.log('Discovery scan cancelled')
+  }
+
+  function requestCrioChannelDiscovery(nodeId: string) {
+    // Request available channels from a specific cRIO node
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+
+    console.log(`[MQTT] Requesting channel discovery from cRIO: ${nodeId}`)
+    const topic = `${systemPrefix}/nodes/${nodeId}/discovery/channels`
+    client.value.publish(topic, JSON.stringify({}))
+  }
+
+  function getCrioAvailableChannels(nodeId: string): any[] {
+    // Get cached available channels for a cRIO node
+    return crioDiscoveryChannels.value[nodeId] || []
   }
 
   function onDiscovery(callback: (result: any) => void): () => void {
@@ -1770,6 +1821,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     scanDevices,
     cancelScan,
     onDiscovery,
+
+    // cRIO Channel Discovery
+    crioDiscoveryChannels,
+    requestCrioChannelDiscovery,
+    getCrioAvailableChannels,
 
     // Config updates
     updateChannelConfig,

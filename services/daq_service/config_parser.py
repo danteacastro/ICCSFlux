@@ -14,18 +14,34 @@ logger = logging.getLogger('ConfigParser')
 
 
 class ChannelType(Enum):
+    # Analog Inputs
     THERMOCOUPLE = "thermocouple"
     VOLTAGE_INPUT = "voltage_input"
     CURRENT_INPUT = "current_input"
     RTD = "rtd"                      # Resistance Temperature Detector
-    STRAIN = "strain"                # Strain gauge / bridge
-    IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones
-    RESISTANCE = "resistance"        # Resistance measurement
-    COUNTER = "counter"              # Pulse/frequency counter
-    DIGITAL_INPUT = "digital_input"
-    DIGITAL_OUTPUT = "digital_output"
+    STRAIN = "strain"                # Strain gauge / bridge (legacy)
+    STRAIN_INPUT = "strain_input"    # Explicit strain input
+    BRIDGE_INPUT = "bridge_input"    # Bridge/universal input
+    IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones (legacy)
+    IEPE_INPUT = "iepe_input"        # Explicit IEPE input
+    RESISTANCE = "resistance"        # Resistance measurement (legacy)
+    RESISTANCE_INPUT = "resistance_input"  # Explicit resistance input
+
+    # Analog Outputs
     VOLTAGE_OUTPUT = "voltage_output"
     CURRENT_OUTPUT = "current_output"
+
+    # Digital
+    DIGITAL_INPUT = "digital_input"
+    DIGITAL_OUTPUT = "digital_output"
+
+    # Counter/Timer
+    COUNTER = "counter"              # Pulse/frequency counter (legacy)
+    COUNTER_INPUT = "counter_input"  # Explicit counter input
+    COUNTER_OUTPUT = "counter_output"
+    FREQUENCY_INPUT = "frequency_input"
+    PULSE_OUTPUT = "pulse_output"
+
     # Modbus channel types
     MODBUS_REGISTER = "modbus_register"  # Modbus holding/input register
     MODBUS_COIL = "modbus_coil"          # Modbus coil/discrete input
@@ -38,6 +54,7 @@ class ChannelType(Enum):
             "voltage": cls.VOLTAGE_INPUT,
             "current": cls.CURRENT_INPUT,
             "analog_output": cls.VOLTAGE_OUTPUT,
+            "analog_input": cls.VOLTAGE_INPUT,
         }
         if value in legacy_map:
             return legacy_map[value]
@@ -62,6 +79,7 @@ class HardwareSource(Enum):
     This enum clearly identifies WHERE data comes from:
     - LOCAL_DAQ: NI-DAQmx hardware connected to THIS PC (cDAQ, PXI, USB devices)
     - CRIO: Remote cRIO controller (data arrives via MQTT, processed on cRIO)
+    - OPTO22: Remote Opto22 groov EPIC/RIO (data arrives via MQTT)
     - MODBUS_TCP: Modbus TCP device (read directly by this PC)
     - MODBUS_RTU: Modbus RTU device (read directly by this PC via serial)
     - VIRTUAL: Computed/derived channel (no physical hardware)
@@ -69,10 +87,12 @@ class HardwareSource(Enum):
     Safety implications:
     - LOCAL_DAQ: Safety logic runs on PC - if PC crashes, no protection
     - CRIO: Safety logic can run on cRIO - continues if PC disconnects
+    - OPTO22: Safety logic can run on groov EPIC - continues if PC disconnects
     - MODBUS: Safety logic runs on PC - dependent on PC and network
     """
     LOCAL_DAQ = "local_daq"    # cDAQ, PXI, USB - read by PC via NI-DAQmx
     CRIO = "crio"              # Remote cRIO - data via MQTT, safety on cRIO
+    OPTO22 = "opto22"          # Remote Opto22 - data via MQTT, safety on EPIC/RIO
     MODBUS_TCP = "modbus_tcp"  # Modbus TCP device - read by PC
     MODBUS_RTU = "modbus_rtu"  # Modbus RTU device - read by PC via serial
     VIRTUAL = "virtual"        # Computed channel - no hardware
@@ -80,9 +100,11 @@ class HardwareSource(Enum):
     @classmethod
     def from_channel_config(cls, channel: 'ChannelConfig') -> 'HardwareSource':
         """Determine hardware source from channel configuration."""
-        # Check explicit source_type first
+        # Check explicit source_type first (remote nodes)
         if channel.source_type == "crio":
             return cls.CRIO
+        if channel.source_type == "opto22":
+            return cls.OPTO22
 
         # Check for Modbus channels
         if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
@@ -126,7 +148,7 @@ class SystemConfig:
     mqtt_broker: str = "localhost"
     mqtt_port: int = 1883
     mqtt_base_topic: str = "nisystem"
-    scan_rate_hz: float = 100.0    # Scan rate (capped at 100Hz)
+    scan_rate_hz: float = 4.0      # Scan rate (capped at 100Hz)
     publish_rate_hz: float = 4.0   # Publish rate (capped at 10Hz)
     simulation_mode: bool = True
     log_directory: str = "./logs"
@@ -138,6 +160,11 @@ class SystemConfig:
     default_project: str = ""      # Absolute path to default project JSON
     # Project mode: determines cDAQ (PC is PLC) vs cRIO (cRIO is PLC, PC is HMI)
     project_mode: ProjectMode = ProjectMode.CDAQ
+    # Watchdog output: toggles a digital output so external safety relay can
+    # detect the cRIO is alive. If pulse stops, the external relay trips.
+    watchdog_output_enabled: bool = False
+    watchdog_output_channel: str = ""
+    watchdog_output_rate_hz: float = 1.0
 
 
 @dataclass
@@ -252,6 +279,15 @@ class ChannelConfig:
     counter_min_freq: float = 0.1    # Minimum expected frequency in Hz
     counter_max_freq: float = 1000.0 # Maximum expected frequency in Hz
 
+    # Pulse/Counter output specific
+    pulse_frequency: float = 1000.0       # Output frequency in Hz
+    pulse_duty_cycle: float = 50.0        # Duty cycle 0-100%
+    pulse_idle_state: str = "LOW"         # LOW or HIGH (idle level)
+
+    # Relay specific
+    relay_type: str = "none"              # none, spst, spdt, ssr (informational)
+    momentary_pulse_ms: int = 0           # 0 = latching (stays ON), >0 = momentary (auto-OFF after N ms)
+
     # Modbus specific
     modbus_register_type: str = "holding"  # holding, input, coil, discrete
     modbus_address: int = 0                # Register/coil address
@@ -316,6 +352,16 @@ class ChannelConfig:
     def is_crio(self) -> bool:
         """True if this channel is on a remote cRIO controller."""
         return self.hardware_source == HardwareSource.CRIO
+
+    @property
+    def is_opto22(self) -> bool:
+        """True if this channel is on a remote Opto22 groov EPIC/RIO."""
+        return self.hardware_source == HardwareSource.OPTO22
+
+    @property
+    def is_remote_node(self) -> bool:
+        """True if this channel is on any remote node (cRIO or Opto22)."""
+        return self.hardware_source in (HardwareSource.CRIO, HardwareSource.OPTO22)
 
     @property
     def is_local_daq(self) -> bool:
@@ -603,6 +649,13 @@ def load_config(config_path: str) -> NISystemConfig:
                 counter_reset_on_read=parse_bool(sec.get('counter_reset_on_read', 'false')),
                 counter_min_freq=float(sec.get('counter_min_freq', 0.1)),
                 counter_max_freq=float(sec.get('counter_max_freq', 1000.0)),
+                # Pulse/Counter output
+                pulse_frequency=float(sec.get('pulse_frequency', 1000.0)),
+                pulse_duty_cycle=float(sec.get('pulse_duty_cycle', 50.0)),
+                pulse_idle_state=sec.get('pulse_idle_state', 'LOW'),
+                # Relay
+                relay_type=sec.get('relay_type', 'none'),
+                momentary_pulse_ms=int(sec.get('momentary_pulse_ms', 0)),
                 # Modbus
                 modbus_register_type=sec.get('modbus_register_type', 'holding'),
                 modbus_address=int(sec.get('modbus_address', 0)),

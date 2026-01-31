@@ -239,11 +239,14 @@ describe('LedIndicator', () => {
   // ===========================================================================
 
   describe('Display Modes', () => {
-    it('should have compact class in compact mode', () => {
+    it('should accept compact prop (legacy - layout now CSS-based)', () => {
+      // compact prop is now a legacy prop that doesn't add a class
+      // Layout switching is handled by CSS container queries
       const wrapper = mount(LedIndicator, {
         props: { widgetId: 'led-1', channel: 'DI_001', compact: true }
       })
-      expect(wrapper.find('.led-indicator').classes()).toContain('compact')
+      // Component should render without errors when compact is passed
+      expect(wrapper.find('.led-indicator').exists()).toBe(true)
     })
 
     it('should have industrial class in industrial mode', () => {

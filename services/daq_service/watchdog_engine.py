@@ -301,7 +301,7 @@ class WatchdogEngine:
         if channel_timestamps is None:
             channel_timestamps = {}
 
-        now = time.time()
+        now = time.monotonic()
 
         # Update channel trackers
         for channel, value in channel_values.items():

@@ -290,7 +290,14 @@ class CFPNode:
 
         # Data storage
         self.channel_values: Dict[str, Any] = {}
+        self.channel_qualities: Dict[str, str] = {}  # Channel quality status
         self.last_publish: Dict[str, float] = {}
+
+        # Session state (for API compatibility with DAQ Service/cRIO)
+        self.acquiring = False
+        self.recording = False
+        self.session_active = False
+        self.session_id: Optional[str] = None
 
         # Threading
         self.poll_thread: Optional[threading.Thread] = None
@@ -388,6 +395,9 @@ class CFPNode:
                 (f"{base}/commands/#", 1),
                 (f"{base}/channel/read", 1),
                 (f"{base}/channel/write", 1),
+                (f"{base}/config/get", 1),
+                (f"{base}/config/save", 1),
+                (f"{base}/config/load", 1),
                 (f"{self.config.mqtt_base_topic}/discovery/ping", 1),
             ]
             for topic, qos in topics:
@@ -415,6 +425,12 @@ class CFPNode:
                 self._handle_channel_read(payload)
             elif topic == f"{base}/channel/write":
                 self._handle_channel_write(payload)
+            elif topic == f"{base}/config/get":
+                self._handle_config_get()
+            elif topic == f"{base}/config/save":
+                self._handle_config_save(payload)
+            elif topic == f"{base}/config/load":
+                self._handle_config_load(payload)
             elif topic.startswith(f"{base}/commands/"):
                 command = topic.split('/')[-1]
                 self._handle_command(command, payload)
@@ -564,6 +580,110 @@ class CFPNode:
                 'request_id': request_id
             })
 
+    def _handle_config_get(self):
+        """Handle config get request - return current configuration"""
+        config_data = {
+            'node_id': self.config.node_id,
+            'cfp_host': self.config.cfp_host,
+            'cfp_port': self.config.cfp_port,
+            'mqtt_broker': self.config.mqtt_broker,
+            'mqtt_port': self.config.mqtt_port,
+            'poll_interval': self.config.poll_interval,
+            'modules': []
+        }
+
+        for module in self.config.modules:
+            mod_data = {
+                'slot': module.slot,
+                'module_type': module.module_type,
+                'base_address': module.base_address,
+                'channels': []
+            }
+            for ch in module.channels:
+                mod_data['channels'].append({
+                    'name': ch.name,
+                    'address': ch.address,
+                    'register_type': ch.register_type,
+                    'data_type': ch.data_type,
+                    'scale': ch.scale,
+                    'offset': ch.offset,
+                    'unit': ch.unit,
+                    'writable': ch.writable
+                })
+            config_data['modules'].append(mod_data)
+
+        self._publish_config_response('get', True, data=config_data)
+
+    def _handle_config_save(self, payload: Dict):
+        """Handle config save request"""
+        filename = payload.get('filename', 'cfp_config.json') if isinstance(payload, dict) else 'cfp_config.json'
+
+        try:
+            config_path = Path(__file__).parent / filename
+
+            config_data = {
+                'node_id': self.config.node_id,
+                'cfp_host': self.config.cfp_host,
+                'cfp_port': self.config.cfp_port,
+                'mqtt_broker': self.config.mqtt_broker,
+                'mqtt_port': self.config.mqtt_port,
+                'mqtt_base_topic': self.config.mqtt_base_topic,
+                'poll_interval': self.config.poll_interval,
+                'modules': []
+            }
+
+            for module in self.config.modules:
+                mod_data = {
+                    'slot': module.slot,
+                    'module_type': module.module_type,
+                    'base_address': module.base_address,
+                    'channels': []
+                }
+                for ch in module.channels:
+                    mod_data['channels'].append({
+                        'name': ch.name,
+                        'address': ch.address,
+                        'register_type': ch.register_type,
+                        'data_type': ch.data_type,
+                        'scale': ch.scale,
+                        'offset': ch.offset,
+                        'unit': ch.unit,
+                        'writable': ch.writable
+                    })
+                config_data['modules'].append(mod_data)
+
+            with open(config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+
+            logger.info(f"Configuration saved to {config_path}")
+            self._publish_config_response('save', True, data={'filename': filename})
+
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+            self._publish_config_response('save', False, error=str(e))
+
+    def _handle_config_load(self, payload: Dict):
+        """Handle config load request"""
+        filename = payload.get('filename', 'cfp_config.json') if isinstance(payload, dict) else 'cfp_config.json'
+
+        try:
+            config_path = Path(__file__).parent / filename
+
+            if not config_path.exists():
+                self._publish_config_response('load', False, error=f"File not found: {filename}")
+                return
+
+            # Load and apply new configuration
+            new_config = load_config(config_path)
+            self.config = new_config
+
+            logger.info(f"Configuration loaded from {config_path}")
+            self._publish_config_response('load', True, data={'filename': filename})
+
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            self._publish_config_response('load', False, error=str(e))
+
     def _poll_loop(self):
         """Main polling loop"""
         while self.running:
@@ -588,6 +708,9 @@ class CFPNode:
                 # Publish batch update
                 if all_values:
                     self._publish_channels(all_values)
+
+                # Publish session status (unified API)
+                self._publish_session_status()
 
                 # Publish heartbeat
                 self._publish_heartbeat()
@@ -644,12 +767,86 @@ class CFPNode:
         return values
 
     def _publish_channels(self, values: Dict[str, Any]):
-        """Publish channel values"""
+        """
+        Publish channel values in batch format.
+
+        Uses unified API format matching DAQ Service and cRIO:
+        {channel_name: {value, timestamp, acquisition_ts_us, units, quality, status}, ...}
+        """
         topic = f"{self.config.mqtt_base_topic}/nodes/{self.config.node_id}/channels/batch"
+        timestamp = datetime.now().isoformat()
+        acquisition_ts_us = int(time.time() * 1_000_000)
+
+        # Build batch payload in unified format
+        batch_payload = {}
+        for channel_name, value in values.items():
+            # Find channel config for units
+            channel_config = self._find_channel_config(channel_name)
+            units = channel_config.unit if channel_config else ''
+
+            # Get quality (default to 'good' for connected values)
+            quality = self.channel_qualities.get(channel_name, 'good')
+            status = 'normal'
+
+            # Check for bad values
+            if value is None:
+                quality = 'bad'
+                status = 'disconnected'
+
+            batch_payload[channel_name] = {
+                'value': value,
+                'timestamp': timestamp,
+                'acquisition_ts_us': acquisition_ts_us,
+                'units': units,
+                'quality': quality,
+                'status': status
+            }
+
+        self._publish(topic, batch_payload)
+
+    def _find_channel_config(self, channel_name: str) -> Optional[ModbusChannel]:
+        """Find channel configuration by name"""
+        for module in self.config.modules:
+            for ch in module.channels:
+                if ch.name == channel_name:
+                    return ch
+        return None
+
+    def _publish_session_status(self):
+        """
+        Publish session/acquisition status.
+
+        Uses unified API format matching DAQ Service and cRIO for frontend compatibility.
+        """
+        topic = f"{self.config.mqtt_base_topic}/nodes/{self.config.node_id}/session/status"
         self._publish(topic, {
-            'values': values,
+            'acquiring': self.acquiring,
+            'recording': self.recording,
+            'session_active': self.session_active,
+            'session_id': self.session_id,
             'timestamp': datetime.now().isoformat()
         })
+
+    def _publish_config_response(self, request_type: str, success: bool,
+                                   data: Optional[Dict] = None, error: Optional[str] = None):
+        """
+        Publish config operation response.
+
+        Uses unified API format matching DAQ Service and cRIO for frontend compatibility.
+        """
+        topic = f"{self.config.mqtt_base_topic}/nodes/{self.config.node_id}/config/response"
+        payload = {
+            'request_type': request_type,
+            'success': success,
+            'timestamp': datetime.now().isoformat()
+        }
+        if data:
+            payload['data'] = data
+        if error:
+            payload['error'] = error
+
+        if self.mqtt_client and self.mqtt_connected:
+            self.mqtt_client.publish(topic, json.dumps(payload), qos=1)
 
     def _publish_heartbeat(self):
         """Publish heartbeat"""

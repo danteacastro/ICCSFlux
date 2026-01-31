@@ -31,18 +31,36 @@ except ImportError:
 
 
 class ModuleCategory(Enum):
-    """NI C Series module categories"""
+    """NI C Series module categories - matches ChannelType values"""
+    # Analog Inputs
     THERMOCOUPLE = "thermocouple"
     RTD = "rtd"
-    VOLTAGE_INPUT = "voltage"
-    CURRENT_INPUT = "current"
-    STRAIN = "strain"
-    IEPE = "iepe"
+    VOLTAGE_INPUT = "voltage_input"
+    CURRENT_INPUT = "current_input"
+    STRAIN = "strain"              # Legacy - use STRAIN_INPUT
+    STRAIN_INPUT = "strain_input"
+    BRIDGE_INPUT = "bridge_input"
+    IEPE = "iepe"                  # Legacy - use IEPE_INPUT
+    IEPE_INPUT = "iepe_input"
+    RESISTANCE = "resistance"
+    RESISTANCE_INPUT = "resistance_input"
+
+    # Analog Outputs
+    ANALOG_OUTPUT = "analog_output"  # Legacy - use VOLTAGE_OUTPUT/CURRENT_OUTPUT
+    VOLTAGE_OUTPUT = "voltage_output"
+    CURRENT_OUTPUT = "current_output"
+
+    # Digital
     DIGITAL_INPUT = "digital_input"
     DIGITAL_OUTPUT = "digital_output"
-    ANALOG_OUTPUT = "analog_output"
-    COUNTER = "counter"
-    RESISTANCE = "resistance"
+
+    # Counter
+    COUNTER = "counter"            # Legacy - use COUNTER_INPUT
+    COUNTER_INPUT = "counter_input"
+    COUNTER_OUTPUT = "counter_output"
+    FREQUENCY_INPUT = "frequency_input"
+
+    # Universal/Other
     UNIVERSAL = "universal"
     UNKNOWN = "unknown"
 
@@ -63,6 +81,7 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
 
     # Voltage input modules
     "NI 9201": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±10V AI"},
+    "NI 9202": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI"},
     "NI 9205": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 32, "description": "32-Ch ±10V AI"},
     "NI 9206": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI"},
     "NI 9215": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch Simultaneous ±10V"},
@@ -83,18 +102,18 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9253": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI"},
 
     # Strain/Bridge modules
-    "NI 9235": {"category": ModuleCategory.STRAIN, "channels": 8, "description": "8-Ch Quarter Bridge"},
-    "NI 9236": {"category": ModuleCategory.STRAIN, "channels": 8, "description": "8-Ch Quarter Bridge"},
-    "NI 9237": {"category": ModuleCategory.STRAIN, "channels": 4, "description": "4-Ch Bridge AI"},
+    "NI 9235": {"category": ModuleCategory.STRAIN_INPUT, "channels": 8, "description": "8-Ch Quarter Bridge"},
+    "NI 9236": {"category": ModuleCategory.STRAIN_INPUT, "channels": 8, "description": "8-Ch Quarter Bridge"},
+    "NI 9237": {"category": ModuleCategory.BRIDGE_INPUT, "channels": 4, "description": "4-Ch Bridge AI"},
 
     # IEPE/Accelerometer modules
-    "NI 9230": {"category": ModuleCategory.IEPE, "channels": 3, "description": "3-Ch IEPE AI"},
-    "NI 9231": {"category": ModuleCategory.IEPE, "channels": 8, "description": "8-Ch IEPE AI"},
-    "NI 9232": {"category": ModuleCategory.IEPE, "channels": 3, "description": "3-Ch IEPE AI"},
-    "NI 9233": {"category": ModuleCategory.IEPE, "channels": 4, "description": "4-Ch IEPE AI"},
-    "NI 9234": {"category": ModuleCategory.IEPE, "channels": 4, "description": "4-Ch IEPE AI"},
-    "NI 9250": {"category": ModuleCategory.IEPE, "channels": 2, "description": "2-Ch IEPE AI"},
-    "NI 9251": {"category": ModuleCategory.IEPE, "channels": 2, "description": "2-Ch IEPE AI"},
+    "NI 9230": {"category": ModuleCategory.IEPE_INPUT, "channels": 3, "description": "3-Ch IEPE AI"},
+    "NI 9231": {"category": ModuleCategory.IEPE_INPUT, "channels": 8, "description": "8-Ch IEPE AI"},
+    "NI 9232": {"category": ModuleCategory.IEPE_INPUT, "channels": 3, "description": "3-Ch IEPE AI"},
+    "NI 9233": {"category": ModuleCategory.IEPE_INPUT, "channels": 4, "description": "4-Ch IEPE AI"},
+    "NI 9234": {"category": ModuleCategory.IEPE_INPUT, "channels": 4, "description": "4-Ch IEPE AI"},
+    "NI 9250": {"category": ModuleCategory.IEPE_INPUT, "channels": 2, "description": "2-Ch IEPE AI"},
+    "NI 9251": {"category": ModuleCategory.IEPE_INPUT, "channels": 2, "description": "2-Ch IEPE AI"},
 
     # Digital I/O modules
     "NI 9375": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 32, "description": "16 DI + 16 DO"},
@@ -107,6 +126,7 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9423": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 8, "description": "8-Ch 24V DI"},
     "NI 9425": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 32, "description": "32-Ch 24V Sinking DI"},
     "NI 9426": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 32, "description": "32-Ch 24V Sourcing DI"},
+    "NI 9435": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 4, "description": "4-Ch Universal DI"},
 
     "NI 9470": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 8, "description": "8-Ch 24V Sourcing DO"},
     "NI 9472": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 8, "description": "8-Ch 24V Sourcing DO"},
@@ -115,21 +135,26 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9476": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 32, "description": "32-Ch 24V Sourcing DO"},
     "NI 9477": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 32, "description": "32-Ch 60V Sinking DO"},
     "NI 9478": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 16, "description": "16-Ch Sinking DO"},
+    "NI 9481": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 4, "description": "4-Ch Relay DO"},
+    "NI 9482": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 4, "description": "4-Ch Relay DO"},
+    "NI 9485": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 8, "description": "8-Ch SSR DO"},
 
-    # Analog output modules
-    "NI 9260": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
-    "NI 9262": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
-    "NI 9263": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
-    "NI 9264": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 16, "description": "16-Ch ±10V AO"},
-    "NI 9265": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 4, "description": "4-Ch 0-20mA AO"},
-    "NI 9266": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 8, "description": "8-Ch 0-20mA AO"},
-    "NI 9269": {"category": ModuleCategory.ANALOG_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
+    # Voltage output modules
+    "NI 9260": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
+    "NI 9262": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
+    "NI 9263": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
+    "NI 9264": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 16, "description": "16-Ch ±10V AO"},
+    "NI 9269": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
+
+    # Current output modules
+    "NI 9265": {"category": ModuleCategory.CURRENT_OUTPUT, "channels": 4, "description": "4-Ch 0-20mA AO"},
+    "NI 9266": {"category": ModuleCategory.CURRENT_OUTPUT, "channels": 8, "description": "8-Ch 0-20mA AO"},
 
     # Counter modules
-    "NI 9361": {"category": ModuleCategory.COUNTER, "channels": 8, "description": "8-Ch Counter/DI"},
+    "NI 9361": {"category": ModuleCategory.COUNTER_INPUT, "channels": 8, "description": "8-Ch Counter/DI"},
 
-    # Universal modules
-    "NI 9219": {"category": ModuleCategory.UNIVERSAL, "channels": 4, "description": "4-Ch Universal AI"},
+    # Universal modules (configurable - defaults to bridge)
+    "NI 9219": {"category": ModuleCategory.BRIDGE_INPUT, "channels": 4, "description": "4-Ch Universal AI"},
 }
 
 
@@ -142,6 +167,8 @@ class PhysicalChannel:
     index: int                   # Channel index (0, 1, 2...)
     category: str                # Module category (thermocouple, voltage, etc.)
     description: str = ""
+    source_type: str = "local"   # "local" for cDAQ/PXI, "crio" for remote cRIO
+    node_id: str = ""            # Node ID for remote nodes (e.g., "crio-001")
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -299,15 +326,20 @@ class DeviceDiscovery:
                     category=mod_data.get('category', 'unknown'),
                     description=mod_data.get('description', '')
                 )
-                # Parse channels
+                # Parse channels - mark as cRIO source with node_id
                 for ch_data in mod_data.get('channels', []):
+                    # cRIO sends 'channel_type' for each channel - use it as category fallback
+                    ch_type = ch_data.get('channel_type', '')
+                    ch_category = ch_data.get('category', '') or ch_type  # Fallback to channel_type
                     mod.channels.append(PhysicalChannel(
                         name=ch_data.get('name', ''),
                         device=mod.name,
-                        channel_type=ch_data.get('channel_type', ''),
+                        channel_type=ch_type,
                         index=ch_data.get('index', 0),
-                        category=ch_data.get('category', ''),
-                        description=ch_data.get('description', '')
+                        category=ch_category,
+                        description=ch_data.get('description', ''),
+                        source_type='crio',  # Mark as cRIO channel
+                        node_id=node_id       # Include cRIO node ID
                     ))
                 modules.append(mod)
 
@@ -404,15 +436,20 @@ class DeviceDiscovery:
                     category=mod_data.get('category', 'unknown'),
                     description=mod_data.get('description', '')
                 )
-                # Parse channels
+                # Parse channels - mark as Opto22 source with node_id
                 for ch_data in mod_data.get('channels', []):
+                    # Use channel_type as category fallback
+                    ch_type = ch_data.get('channel_type', '')
+                    ch_category = ch_data.get('category', '') or ch_type
                     mod.channels.append(PhysicalChannel(
                         name=ch_data.get('name', ''),
                         device=mod.name,
-                        channel_type=ch_data.get('channel_type', ''),
+                        channel_type=ch_type,
                         index=ch_data.get('index', 0),
-                        category=ch_data.get('category', ''),
-                        description=ch_data.get('description', '')
+                        category=ch_category,
+                        description=ch_data.get('description', ''),
+                        source_type='opto22',  # Mark as Opto22 channel
+                        node_id=node_id         # Include Opto22 node ID
                     ))
                 modules.append(mod)
 
@@ -885,9 +922,12 @@ class DeviceDiscovery:
                         "module": module.product_type,
                         "slot": module.slot,
                         "chassis": chassis.name,
-                        "channel_type": channel.category,
+                        "channel_type": channel.channel_type,  # Hardware direction (digital_input, analog_input, etc.)
+                        "category": channel.category,           # Measurement type (digital, voltage, thermocouple, etc.)
                         "index": channel.index,
-                        "description": channel.description
+                        "description": channel.description,
+                        "source_type": channel.source_type,
+                        "node_id": channel.node_id
                     })
 
         for device in self._last_result.standalone_devices:
@@ -898,10 +938,49 @@ class DeviceDiscovery:
                     "module": device.product_type,
                     "slot": device.slot,
                     "chassis": "",
-                    "channel_type": channel.category,
+                    "channel_type": channel.channel_type,  # Hardware direction
+                    "category": channel.category,           # Measurement type
                     "index": channel.index,
-                    "description": channel.description
+                    "description": channel.description,
+                    "source_type": channel.source_type,
+                    "node_id": channel.node_id
                 })
+
+        # Add cRIO node channels
+        for crio_node in self._last_result.crio_nodes:
+            for module in crio_node.modules:
+                for channel in module.channels:
+                    channels.append({
+                        "physical_channel": channel.name,
+                        "device": channel.device,
+                        "module": module.product_type,
+                        "slot": module.slot,
+                        "chassis": crio_node.node_id,
+                        "channel_type": channel.channel_type,  # Hardware direction
+                        "category": channel.category,           # Measurement type
+                        "index": channel.index,
+                        "description": channel.description,
+                        "source_type": channel.source_type,
+                        "node_id": channel.node_id
+                    })
+
+        # Add Opto22 node channels
+        for opto22_node in self._last_result.opto22_nodes:
+            for module in opto22_node.modules:
+                for channel in module.channels:
+                    channels.append({
+                        "physical_channel": channel.name,
+                        "device": channel.device,
+                        "module": module.product_type,
+                        "slot": module.slot,
+                        "chassis": opto22_node.node_id,
+                        "channel_type": channel.channel_type,  # Hardware direction
+                        "category": channel.category,           # Measurement type
+                        "index": channel.index,
+                        "description": channel.description,
+                        "source_type": channel.source_type,
+                        "node_id": channel.node_id
+                    })
 
         return channels
 

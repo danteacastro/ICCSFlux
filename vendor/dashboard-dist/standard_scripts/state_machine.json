@@ -1,0 +1,84 @@
+{
+  "name": "State Machine",
+  "description": "Multi-state process control - transitions between states based on conditions or timers",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Control Sequences",
+  "config": {
+    "states": {
+      "type": "array",
+      "default": [
+        {
+          "name": "IDLE",
+          "id": 0,
+          "actions": [{"output": "Pump_Enable", "value": false}, {"output": "Heater_Enable", "value": false}],
+          "transitions": [
+            {"to": "FILL", "condition": "Start_Button", "operator": "==", "value": 1}
+          ]
+        },
+        {
+          "name": "FILL",
+          "id": 1,
+          "actions": [{"output": "Valve_Inlet", "value": true}, {"output": "Pump_Enable", "value": true}],
+          "transitions": [
+            {"to": "HEAT", "condition": "Level_Sensor", "operator": ">=", "value": 90}
+          ]
+        },
+        {
+          "name": "HEAT",
+          "id": 2,
+          "actions": [{"output": "Valve_Inlet", "value": false}, {"output": "Heater_Enable", "value": true}],
+          "transitions": [
+            {"to": "HOLD", "condition": "Temperature_1", "operator": ">=", "value": 70}
+          ]
+        },
+        {
+          "name": "HOLD",
+          "id": 3,
+          "actions": [{"output": "Heater_Enable", "value": false}],
+          "transitions": [
+            {"to": "DRAIN", "type": "timer", "duration": 60}
+          ]
+        },
+        {
+          "name": "DRAIN",
+          "id": 4,
+          "actions": [{"output": "Valve_Outlet", "value": true}, {"output": "Pump_Enable", "value": true}],
+          "transitions": [
+            {"to": "IDLE", "condition": "Level_Sensor", "operator": "<=", "value": 5}
+          ]
+        }
+      ],
+      "description": "State definitions with actions and transitions"
+    },
+    "initial_state": {
+      "type": "string",
+      "default": "IDLE",
+      "description": "Starting state name"
+    }
+  },
+  "subscribed_tags": [],
+  "published_tags": [
+    {
+      "name": "py.SM_State",
+      "unit": "",
+      "description": "Current state ID"
+    },
+    {
+      "name": "py.SM_StateName",
+      "unit": "",
+      "description": "Current state name"
+    },
+    {
+      "name": "py.SM_TimeInState",
+      "unit": "sec",
+      "description": "Time in current state"
+    },
+    {
+      "name": "py.SM_Running",
+      "unit": "",
+      "description": "1 if state machine is active"
+    }
+  ],
+  "code": "# State Machine\n# Multi-state process control with conditional and timed transitions\n# Control: publish to py.SM_Command (start/stop/reset)\n\nimport time\n\nstates_config = config.get('states', [])\ninitial_state = config.get('initial_state', 'IDLE')\n\n# Build state lookup\nstates = {s['name']: s for s in states_config}\n\n# Initialize state\nif 'current_state' not in state:\n    state['current_state'] = initial_state\n    state['state_start_time'] = time.time()\n    state['running'] = True\n    state['actions_executed'] = False\n\n# Check for commands\ncmd = tags.get('py.SM_Command', '')\nif cmd == 'start':\n    state['running'] = True\nelif cmd == 'stop':\n    state['running'] = False\nelif cmd == 'reset':\n    state['current_state'] = initial_state\n    state['state_start_time'] = time.time()\n    state['actions_executed'] = False\n\nif not state['running'] or state['current_state'] not in states:\n    publish('py.SM_Running', 0)\n    publish('py.SM_State', -1)\n    publish('py.SM_StateName', 'STOPPED')\n    publish('py.SM_TimeInState', 0)\nelse:\n    current = states[state['current_state']]\n    time_in_state = time.time() - state['state_start_time']\n    \n    # Execute state actions (on entry)\n    if not state['actions_executed']:\n        for action in current.get('actions', []):\n            output_tag = action.get('output', '')\n            output_value = action.get('value', False)\n            if output_tag:\n                output(output_tag, output_value)\n        state['actions_executed'] = True\n    \n    # Check transitions\n    new_state = None\n    for trans in current.get('transitions', []):\n        trans_type = trans.get('type', 'condition')\n        \n        if trans_type == 'timer':\n            # Timer-based transition\n            duration = trans.get('duration', 10)\n            if time_in_state >= duration:\n                new_state = trans.get('to')\n                break\n        else:\n            # Condition-based transition\n            cond_tag = trans.get('condition', '')\n            operator = trans.get('operator', '==')\n            cond_value = trans.get('value', 0)\n            \n            current_value = tags.get(cond_tag, 0)\n            \n            operators = {\n                '<': lambda a, b: a < b,\n                '<=': lambda a, b: a <= b,\n                '>': lambda a, b: a > b,\n                '>=': lambda a, b: a >= b,\n                '==': lambda a, b: a == b,\n                '!=': lambda a, b: a != b\n            }\n            \n            op_func = operators.get(operator, operators['=='])\n            if op_func(current_value, cond_value):\n                new_state = trans.get('to')\n                break\n    \n    # Transition to new state\n    if new_state and new_state in states:\n        state['current_state'] = new_state\n        state['state_start_time'] = time.time()\n        state['actions_executed'] = False\n        time_in_state = 0\n    \n    publish('py.SM_Running', 1)\n    publish('py.SM_State', current.get('id', 0))\n    publish('py.SM_StateName', state['current_state'])\n    publish('py.SM_TimeInState', time_in_state)"
+}

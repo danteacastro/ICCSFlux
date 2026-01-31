@@ -69,12 +69,31 @@ export function usePlayground() {
 
   function createVariable(config: Partial<UserVariable> & { description?: string }): void {
     const id = config.id || `var_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    const name = config.name || id
+
+    // Optimistic update: add to local state immediately so UI shows the variable
+    variables.value[id] = {
+      id,
+      name,
+      displayName: config.displayName || name,
+      variableType: config.variableType || 'manual',
+      value: config.value ?? 0,
+      units: config.units || '',
+      persistent: config.persistent ?? true,
+      sourceChannel: config.sourceChannel || null,
+      edgeType: config.edgeType || 'increment',
+      scaleFactor: config.scaleFactor ?? 1.0,
+      resetMode: config.resetMode || 'manual',
+      resetTime: config.resetTime || null,
+      resetElapsedS: config.resetElapsedS || null,
+      formula: config.formula || null,
+    } as UserVariable
 
     // Convert to snake_case for backend
     const payload = {
       id,
-      name: config.name || id,
-      display_name: config.displayName || config.name || id,
+      name,
+      display_name: config.displayName || name,
       variable_type: config.variableType || 'manual',
       description: (config as any).description || '',
       value: config.value ?? 0,
@@ -117,6 +136,8 @@ export function usePlayground() {
   }
 
   function deleteVariable(id: string): void {
+    // Optimistic update: remove from local state immediately
+    delete variables.value[id]
     publish('nisystem/variables/delete', { id })
   }
 
@@ -152,8 +173,19 @@ export function usePlayground() {
   // TEST SESSION MANAGEMENT
   // ========================================================================
 
-  function startTestSession(startedBy: string = 'user'): void {
-    publish('nisystem/test-session/start', { started_by: startedBy })
+  function startTestSession(startedBy: string = 'user', metadata?: {
+    testId?: string
+    description?: string
+    operatorNotes?: string
+    timeoutMinutes?: number
+  }): void {
+    publish('nisystem/test-session/start', {
+      started_by: startedBy,
+      test_id: metadata?.testId || '',
+      description: metadata?.description || '',
+      operator_notes: metadata?.operatorNotes || '',
+      timeout_minutes: metadata?.timeoutMinutes || 0,
+    })
   }
 
   function stopTestSession(): void {
@@ -184,6 +216,18 @@ export function usePlayground() {
   // ========================================================================
 
   function createFormulaBlock(block: FormulaBlock): void {
+    // Optimistic update: add to local state immediately so UI shows the block
+    formulaBlocks.value[block.id] = {
+      id: block.id,
+      name: block.name,
+      description: block.description || '',
+      code: block.code || '',
+      enabled: block.enabled ?? true,
+      outputs: block.outputs || {},
+      lastError: undefined,
+      lastValidated: undefined,
+    }
+
     // Convert camelCase to snake_case for backend
     const payload = {
       id: block.id,
@@ -207,6 +251,8 @@ export function usePlayground() {
   }
 
   function deleteFormulaBlock(blockId: string): void {
+    // Optimistic update: remove from local state immediately
+    delete formulaBlocks.value[blockId]
     publish('nisystem/formulas/delete', { id: blockId })
   }
 
@@ -280,7 +326,11 @@ export function usePlayground() {
         stopSequenceId: payload.config?.stop_sequence_id,
         enableTriggerIds: payload.config?.enable_trigger_ids || [],
         enableScheduleIds: payload.config?.enable_schedule_ids || [],
-      }
+      },
+      testId: payload.test_id,
+      description: payload.description,
+      operatorNotes: payload.operator_notes,
+      timeoutMinutes: payload.config?.timeout_minutes || 0,
     }
   }
 

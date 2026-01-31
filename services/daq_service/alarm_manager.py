@@ -478,7 +478,7 @@ class AlarmManager:
         Called from the scan loop for each channel
         """
         if timestamp is None:
-            timestamp = time.time()
+            timestamp = time.monotonic()
 
         with self.lock:
             # Update rate-of-change history
@@ -515,7 +515,7 @@ class AlarmManager:
         if len(history) < 2:
             return None
 
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - window_s
 
         # Get points within window
@@ -788,11 +788,11 @@ class AlarmManager:
         # Determine first-out
         is_first_out = False
         if self.first_out_alarm_id is None or \
-           (self.cascade_start_time and time.time() - self.cascade_start_time > self.CASCADE_WINDOW_S):
+           (self.cascade_start_time and time.monotonic() - self.cascade_start_time > self.CASCADE_WINDOW_S):
             # New cascade
             self.alarm_sequence += 1
             self.first_out_alarm_id = config.id
-            self.cascade_start_time = time.time()
+            self.cascade_start_time = time.monotonic()
             is_first_out = True
 
         self.alarm_sequence += 1

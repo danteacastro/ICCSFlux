@@ -89,20 +89,63 @@ const scriptPublishChannels = computed(() => {
   return channels
 })
 
+// Channel type sort order - groups channels logically in dropdowns
+const CHANNEL_TYPE_ORDER: Record<string, number> = {
+  digital_input: 0,
+  digital_output: 1,
+  voltage_input: 2,
+  voltage_output: 3,
+  current_input: 4,
+  current_output: 5,
+  analog_input: 6,
+  analog_output: 7,
+  thermocouple: 8,
+  rtd: 9,
+  strain: 10, strain_input: 10,
+  bridge_input: 11,
+  iepe: 12, iepe_input: 12,
+  resistance: 13, resistance_input: 13,
+  counter: 14, counter_input: 14,
+  counter_output: 15,
+  frequency_input: 16,
+  pulse_output: 17,
+  modbus_register: 18,
+  modbus_coil: 19,
+  voltage: 2, current: 4, // legacy aliases
+  script: 99,
+}
+
+// Analog-only channel types (for gauge, sparkline, bar_graph)
+function isAnalogChannel(channelType: string | undefined): boolean {
+  if (!channelType) return false
+  return !channelType.startsWith('digital_')
+}
+
 // Available channels based on widget type
 // Includes: hardware channels, system state channels (sys.*), and script channels (py.*)
 const availableChannels = computed(() => {
   const wt = widgetType.value
 
-  // Start with hardware channels from config
+  // Start with hardware channels from config, filtered by widget type
   const hardwareChannels = Object.entries(store.channels).filter(([_, ch]) => {
     if (wt === 'toggle') return ch.channel_type === 'digital_output'
-    if (wt === 'led') return true // LEDs can work with any channel
+    if (wt === 'setpoint') return ch.channel_type === 'voltage_output' || ch.channel_type === 'current_output' || ch.channel_type === 'analog_output'
+    // Gauge, sparkline, bar_graph: analog values only (digital doesn't make sense)
+    if (wt === 'gauge' || wt === 'sparkline' || wt === 'bar_graph') return isAnalogChannel(ch.channel_type)
+    if (wt === 'led') return true // LEDs can threshold any channel
     return true
   })
 
-  // System channels (always available, skip for toggle widgets)
-  const systemChannels: [string, any][] = wt === 'toggle' ? [] : [...SYSTEM_CHANNELS]
+  // Sort hardware channels by type group, then by name within each group
+  hardwareChannels.sort((a, b) => {
+    const aOrder = CHANNEL_TYPE_ORDER[a[1].channel_type] ?? 50
+    const bOrder = CHANNEL_TYPE_ORDER[b[1].channel_type] ?? 50
+    if (aOrder !== bOrder) return aOrder - bOrder
+    return a[0].localeCompare(b[0], undefined, { numeric: true })
+  })
+
+  // System channels (always available, skip for toggle/setpoint widgets)
+  const systemChannels: [string, any][] = (wt === 'toggle' || wt === 'setpoint') ? [] : [...SYSTEM_CHANNELS]
 
   // Collect script-published channels from two sources:
   // 1. Parsed from script code (available before scripts run)
@@ -116,26 +159,43 @@ const availableChannels = computed(() => {
     }
   }
 
-  // Build script channel entries
+  // Build script channel entries (skip for toggle - py.* are not digital outputs)
   const scriptChannels: [string, any][] = []
-  for (const name of scriptChannelNames) {
-    // Skip for toggle widgets (py.* are not digital outputs)
-    if (wt === 'toggle') continue
-    // Create a minimal config object for display
-    scriptChannels.push([name, {
-      name,
-      channel_type: 'script',
-      units: '',
-      description: 'Script-published value'
-    }])
+  if (wt !== 'toggle') {
+    for (const name of scriptChannelNames) {
+      scriptChannels.push([name, {
+        name,
+        channel_type: 'script',
+        units: '',
+        description: 'Script-published value'
+      }])
+    }
   }
 
   // Sort script channels alphabetically
   scriptChannels.sort((a, b) => a[0].localeCompare(b[0]))
 
-  // Combine: hardware channels first, then system channels, then script channels
+  // Combine: hardware channels first (sorted by type), then system, then script
   return [...hardwareChannels, ...systemChannels, ...scriptChannels]
 })
+
+// Channel type label for dropdown when no unit is configured
+function channelTypeLabel(channelType: string | undefined): string {
+  switch (channelType) {
+    case 'digital_input': return 'DI'
+    case 'digital_output': return 'DO'
+    case 'voltage_input': return 'VI'
+    case 'voltage_output': return 'VO'
+    case 'current_input': return 'CI'
+    case 'current_output': return 'CO'
+    case 'thermocouple': return 'TC'
+    case 'rtd': return 'RTD'
+    case 'counter': return 'CTR'
+    case 'frequency': return 'FREQ'
+    case 'script': return 'PY'
+    default: return channelType || ''
+  }
+}
 
 // Digital output channels for button action
 const digitalOutputChannels = computed(() => {
@@ -313,12 +373,12 @@ const selectedChartChannels = computed(() => {
           </div>
 
           <!-- Channel selection (for single-channel widgets) -->
-          <div v-if="['numeric', 'gauge', 'led', 'toggle', 'setpoint', 'sparkline', 'svg_symbol'].includes(widgetType)" class="form-group">
+          <div v-if="['numeric', 'gauge', 'led', 'toggle', 'setpoint', 'sparkline', 'bar_graph', 'svg_symbol'].includes(widgetType)" class="form-group">
             <label>Channel</label>
             <select v-model="localWidget.channel">
               <option value="">-- Select Channel --</option>
               <option v-for="[name, config] in availableChannels" :key="name" :value="name">
-                {{ name }} ({{ formatUnit(config.unit) || 'no unit' }})
+                {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
               </option>
             </select>
           </div>

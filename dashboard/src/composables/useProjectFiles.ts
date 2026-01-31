@@ -20,6 +20,7 @@ import { useDashboardStore } from '../stores/dashboard'
 import { usePythonScripts } from './usePythonScripts'
 import { useBackendScripts } from './useBackendScripts'
 import { useSafety } from './useSafety'
+import { usePlayground } from './usePlayground'
 import type { ChannelConfig, ChannelType } from '../types'
 
 // Channel config as stored in the project JSON file
@@ -112,6 +113,8 @@ export interface ProjectData {
   system?: ProjectSystemConfig
   // Embedded channel definitions (v2.0+)
   channels?: Record<string, ProjectChannelConfig>
+  // User variables
+  variables?: any
   layout: {
     widgets?: any[]                // Optional for legacy single-page
     pages?: DashboardPage[]        // Multi-page support
@@ -129,6 +132,7 @@ export interface ProjectData {
     // Extended script types (v2.1+)
     pythonScripts?: any[]          // Pyodide-based Python scripts
     functionBlocks?: any[]         // Function block diagrams
+    formulaBlocks?: any[]          // Formula blocks
     drawPatterns?: any             // Draw patterns { patterns: [], history: [] }
     watchdogs?: any[]              // Watchdog timers
     stateMachines?: any[]          // State machine definitions
@@ -497,8 +501,34 @@ export function useProjectFiles() {
       runMode: script.runMode,
       enabled: script.enabled
     }))
+    // Get formula blocks from BACKEND composable (where the Variables UI saves)
+    const playgroundComposable = usePlayground()
+    const formulaBlocks = playgroundComposable.formulaBlocksList.value.map(block => ({
+      id: block.id,
+      name: block.name,
+      description: block.description || '',
+      code: block.code || '',
+      enabled: block.enabled,
+      outputs: block.outputs || {}
+    }))
+    // Get user variables from BACKEND composable
+    const userVariables = playgroundComposable.variablesList.value.map(v => ({
+      id: v.id,
+      name: v.name,
+      display_name: v.displayName || v.name,
+      variable_type: v.variableType,
+      value: v.value ?? 0,
+      units: v.units || '',
+      persistent: v.persistent ?? true,
+      source_channel: v.sourceChannel || null,
+      edge_type: v.edgeType || 'increment',
+      scale_factor: v.scaleFactor ?? 1.0,
+      reset_mode: v.resetMode || 'manual',
+      formula: v.formula || null,
+    }))
     const functionBlocks = JSON.parse(localStorage.getItem('dcflux-function-blocks') || '[]')
     const drawPatterns = JSON.parse(localStorage.getItem('dcflux-draw-patterns') || '{"patterns":[],"history":[]}')
+
     const watchdogs = JSON.parse(localStorage.getItem('dcflux-watchdogs') || '[]')
     const stateMachines = JSON.parse(localStorage.getItem('dcflux-state-machines') || '[]')
     const reportTemplates = JSON.parse(localStorage.getItem('dcflux-report-templates') || '[]')
@@ -556,6 +586,8 @@ export function useProjectFiles() {
         gridColumns: layout.gridColumns,
         rowHeight: layout.rowHeight
       },
+      // User variables and formula blocks from backend
+      variables: userVariables,
       scripts: {
         calculatedParams,
         sequences,
@@ -566,6 +598,7 @@ export function useProjectFiles() {
         // Extended script types
         pythonScripts,
         functionBlocks,
+        formulaBlocks,
         drawPatterns,
         watchdogs,
         stateMachines,

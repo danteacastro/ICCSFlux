@@ -28,12 +28,12 @@ class TestChannelConfigFields:
             name="test_channel",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE
+            channel_type=ChannelType.VOLTAGE_INPUT
         )
         assert ch.name == "test_channel"
         assert ch.module == "mod1"
         assert ch.physical_channel == "ai0"
-        assert ch.channel_type == ChannelType.VOLTAGE
+        assert ch.channel_type == ChannelType.VOLTAGE_INPUT
         assert ch.description == ""
         assert ch.units == ""
         assert ch.visible == True
@@ -45,7 +45,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             scale_slope=2.5,
             scale_offset=10.0,
             scale_type="linear"
@@ -60,7 +60,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.CURRENT,
+            channel_type=ChannelType.CURRENT_INPUT,
             four_twenty_scaling=True,
             eng_units_min=0.0,
             eng_units_max=100.0
@@ -75,7 +75,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             pre_scaled_min=0.0,
             pre_scaled_max=10.0,
             scaled_min=0.0,
@@ -188,7 +188,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             terminal_config="DIFF"
         )
         assert ch.terminal_config == "DIFF"
@@ -214,7 +214,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             safety_action="emergency_stop",
             safety_interlock="door_closed"
         )
@@ -227,7 +227,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             log=True,
             log_interval_ms=500
         )
@@ -240,7 +240,7 @@ class TestChannelConfigFields:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             low_limit=0.0,
             high_limit=100.0,
             low_warning=10.0,
@@ -316,7 +316,7 @@ class TestConfigRoundtrip:
                     name="voltage_1",
                     module="voltage_module",
                     physical_channel="ai0",
-                    channel_type=ChannelType.VOLTAGE,
+                    channel_type=ChannelType.VOLTAGE_INPUT,
                     description="Pressure Transducer",
                     units="PSI",
                     terminal_config="DIFF",
@@ -382,7 +382,7 @@ class TestConfigRoundtrip:
         # Verify voltage channel with scaling
         assert "voltage_1" in loaded_config.channels
         ch = loaded_config.channels["voltage_1"]
-        assert ch.channel_type == ChannelType.VOLTAGE
+        assert ch.channel_type == ChannelType.VOLTAGE_INPUT
         assert ch.terminal_config == "DIFF"
         assert ch.scale_type == "map"
         assert ch.pre_scaled_min == 0.0
@@ -561,8 +561,8 @@ class TestAllChannelTypes:
 
     @pytest.mark.parametrize("channel_type", [
         ChannelType.THERMOCOUPLE,
-        ChannelType.VOLTAGE,
-        ChannelType.CURRENT,
+        ChannelType.VOLTAGE_INPUT,
+        ChannelType.CURRENT_INPUT,
         ChannelType.RTD,
         ChannelType.STRAIN,
         ChannelType.IEPE,
@@ -570,7 +570,10 @@ class TestAllChannelTypes:
         ChannelType.COUNTER,
         ChannelType.DIGITAL_INPUT,
         ChannelType.DIGITAL_OUTPUT,
-        ChannelType.ANALOG_OUTPUT
+        ChannelType.VOLTAGE_OUTPUT,
+        ChannelType.CURRENT_OUTPUT,
+        ChannelType.MODBUS_REGISTER,
+        ChannelType.MODBUS_COIL
     ])
     def test_channel_type_creation(self, channel_type):
         """Test that each channel type can be created with defaults."""

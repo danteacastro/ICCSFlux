@@ -25,6 +25,12 @@ from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Support both package import and direct import
+try:
+    from .backup_logger import BackupLogger
+except ImportError:
+    from backup_logger import BackupLogger
+
 logger = logging.getLogger('ProjectManager')
 
 
@@ -148,6 +154,9 @@ class ProjectManager:
         # Load backup manifest
         self.backup_manifest: List[BackupInfo] = []
         self._load_backup_manifest()
+
+        # Initialize backup logger for human-readable changelog
+        self.backup_logger = BackupLogger(self.backup_dir)
 
     def _load_backup_manifest(self):
         """Load backup manifest from disk"""
@@ -357,13 +366,17 @@ class ProjectManager:
 
     def create_backup(self,
                      project_path: Path,
-                     reason: str = "manual") -> Optional[BackupInfo]:
+                     reason: str = "manual",
+                     user: str = "system",
+                     new_data: Optional[Dict[str, Any]] = None) -> Optional[BackupInfo]:
         """
-        Create a backup of a project file.
+        Create a backup of a project file with detailed changelog.
 
         Args:
             project_path: Path to project file
             reason: Reason for backup (pre_save, pre_load, scheduled, manual)
+            user: User who triggered the backup
+            new_data: New project data (for changelog diff, optional)
 
         Returns:
             BackupInfo if successful, None otherwise
@@ -373,6 +386,29 @@ class ProjectManager:
             return None
 
         try:
+            # Load current file data for diffing (this is what we're backing up)
+            with open(project_path, 'r') as f:
+                current_data = json.load(f)
+
+            # Get previous data for diff (from cache or last backup)
+            old_data = self.backup_logger.get_last_data(project_path)
+            old_hash = ""
+
+            if old_data is None and self.backup_manifest:
+                # Try to load from most recent backup
+                project_backups = [b for b in self.backup_manifest
+                                  if b.original_path == project_path]
+                if project_backups:
+                    project_backups.sort(key=lambda b: b.timestamp, reverse=True)
+                    last_backup = project_backups[0]
+                    if last_backup.backup_path.exists():
+                        try:
+                            with open(last_backup.backup_path, 'r') as f:
+                                old_data = json.load(f)
+                            old_hash = last_backup.file_hash
+                        except Exception:
+                            pass
+
             # Generate backup filename with timestamp
             timestamp = datetime.now()
             backup_name = f"{project_path.stem}_{timestamp.strftime('%Y%m%d_%H%M%S')}.json"
@@ -394,15 +430,35 @@ class ProjectManager:
             self.backup_manifest.append(backup_info)
             self._save_backup_manifest()
 
+            # Count backups for this project
+            project_backups = [b for b in self.backup_manifest
+                              if b.original_path == project_path]
+            backup_count = len(project_backups)
+
+            # Write to human-readable changelog
+            self.backup_logger.log_backup(
+                project_name=project_path.stem,
+                project_path=project_path,
+                backup_path=backup_path,
+                new_data=new_data or current_data,
+                old_data=old_data,
+                user=user,
+                reason=reason,
+                new_hash=backup_info.file_hash,
+                old_hash=old_hash,
+                backup_count=backup_count,
+                max_backups=self.max_backups
+            )
+
             # Enforce retention policy
-            self._cleanup_old_backups(project_path)
+            removed_count = self._cleanup_old_backups(project_path)
 
             logger.info(f"Created backup: {backup_path}")
 
             if self.audit_trail:
                 self.audit_trail.log_event(
                     event_type="PROJECT_BACKUP",
-                    user="system",
+                    user=user,
                     description=f"Project backup created: {backup_name}",
                     details={
                         "original_path": str(project_path),
@@ -416,10 +472,20 @@ class ProjectManager:
 
         except Exception as e:
             logger.error(f"Failed to create backup: {e}")
+            self.backup_logger.log_failure(
+                project_name=project_path.stem,
+                operation="BACKUP",
+                user=user,
+                error=str(e)
+            )
             return None
 
-    def _cleanup_old_backups(self, project_path: Path):
-        """Remove old backups exceeding retention limit"""
+    def _cleanup_old_backups(self, project_path: Path) -> int:
+        """Remove old backups exceeding retention limit.
+
+        Returns:
+            Number of backups removed
+        """
         # Find backups for this project
         project_backups = [
             b for b in self.backup_manifest
@@ -430,17 +496,31 @@ class ProjectManager:
         project_backups.sort(key=lambda b: b.timestamp)
 
         # Remove excess backups
+        removed_count = 0
         while len(project_backups) > self.max_backups:
             old_backup = project_backups.pop(0)
             try:
                 if old_backup.backup_path.exists():
                     old_backup.backup_path.unlink()
                 self.backup_manifest.remove(old_backup)
+                removed_count += 1
                 logger.info(f"Removed old backup: {old_backup.backup_path}")
             except Exception as e:
                 logger.warning(f"Failed to remove old backup: {e}")
 
         self._save_backup_manifest()
+
+        # Log cleanup if any backups were removed
+        if removed_count > 0:
+            remaining = len([b for b in self.backup_manifest if b.original_path == project_path])
+            self.backup_logger.log_cleanup(
+                project_name=project_path.stem,
+                removed_count=removed_count,
+                remaining_count=remaining,
+                max_backups=self.max_backups
+            )
+
+        return removed_count
 
     def list_backups(self, project_path: Optional[Path] = None) -> List[BackupInfo]:
         """List available backups, optionally filtered by project"""
@@ -448,12 +528,16 @@ class ProjectManager:
             return [b for b in self.backup_manifest if b.original_path == project_path]
         return list(self.backup_manifest)
 
-    def restore_backup(self, backup_path: Path) -> Tuple[bool, str]:
+    def restore_backup(self, backup_path: Path,
+                       user: str = "system",
+                       reason: str = "") -> Tuple[bool, str]:
         """
         Restore a project from backup.
 
         Args:
             backup_path: Path to backup file
+            user: User who triggered the restore
+            reason: Reason for restore (optional)
 
         Returns:
             (success, message) tuple
@@ -479,22 +563,31 @@ class ProjectManager:
 
             # Create backup of current file before restore
             if backup_info.original_path.exists():
-                self.create_backup(backup_info.original_path, reason="pre_restore")
+                self.create_backup(backup_info.original_path, reason="pre_restore", user=user)
 
             # Restore
             shutil.copy2(backup_path, backup_info.original_path)
 
             logger.info(f"Restored backup: {backup_path} -> {backup_info.original_path}")
 
+            # Log to human-readable backup log
+            self.backup_logger.log_restore(
+                project_name=backup_info.original_path.stem,
+                backup_timestamp=backup_info.timestamp,
+                user=user,
+                reason=reason
+            )
+
             if self.audit_trail:
                 self.audit_trail.log_event(
                     event_type="PROJECT_RESTORE",
-                    user="system",
+                    user=user,
                     description=f"Project restored from backup",
                     details={
                         "backup_path": str(backup_path),
                         "restored_to": str(backup_info.original_path),
-                        "backup_timestamp": backup_info.timestamp.isoformat()
+                        "backup_timestamp": backup_info.timestamp.isoformat(),
+                        "reason": reason
                     }
                 )
 
@@ -502,6 +595,12 @@ class ProjectManager:
 
         except Exception as e:
             logger.error(f"Failed to restore backup: {e}")
+            self.backup_logger.log_failure(
+                project_name=backup_path.stem,
+                operation="RESTORE",
+                user=user,
+                error=str(e)
+            )
             return False, str(e)
 
     # =========================================================================
@@ -587,7 +686,7 @@ class ProjectManager:
 
         # Auto-backup if file exists
         if self.backup_on_save and project_path.exists():
-            backup = self.create_backup(project_path, reason="pre_save")
+            backup = self.create_backup(project_path, reason="pre_save", user=user, new_data=data)
             if not backup:
                 logger.warning("Backup failed but proceeding with save")
 

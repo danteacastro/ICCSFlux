@@ -22,9 +22,27 @@ This is how LabVIEW DAQmx works - hardware timing, software just grabs latest.
 import logging
 import threading
 import time
+import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from queue import Queue
+
+
+def _get_physical_channel_index(physical_channel: str) -> int:
+    """
+    Extract the channel index from a physical_channel string.
+
+    Examples:
+        'cDAQ1Mod1/ai0' -> 0
+        'cDAQ1Mod2/ai15' -> 15
+        'Mod3/port0/line7' -> 7
+
+    This is CRITICAL for correct DAQmx value mapping.
+    DAQmx returns values in the order channels are added to the task.
+    Channels must be added in physical index order to map correctly.
+    """
+    match = re.search(r'(\d+)$', physical_channel)
+    return int(match.group(1)) if match else 0
 
 from config_parser import NISystemConfig, ChannelConfig, ChannelType, ThermocoupleType, ModuleConfig
 from scaling import reverse_scaling
@@ -37,6 +55,7 @@ try:
         ThermocoupleType as NI_TCType,
         AcquisitionType,
         Edge,
+        Level,
         CountDirection,
         FrequencyUnits,
         READ_ALL_AVAILABLE,
@@ -162,6 +181,7 @@ class HardwareReader:
         self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
+        self._momentary_timers: Dict[str, threading.Timer] = {}  # Relay momentary pulse timers
 
         # Output state cache (for read-back) - preserve values across reinit
         self.output_values: Dict[str, float] = initial_output_values.copy() if initial_output_values else {}
@@ -363,6 +383,8 @@ class HardwareReader:
             voltage_out_channels = [c for c in channels if c.channel_type == ChannelType.VOLTAGE_OUTPUT]
             current_out_channels = [c for c in channels if c.channel_type == ChannelType.CURRENT_OUTPUT]
             counter_channels = [c for c in channels if c.channel_type == ChannelType.COUNTER]
+            pulse_out_channels = [c for c in channels if c.channel_type in (
+                ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT)]
 
             # Create ONE continuous task for ALL analog inputs on this module
             if analog_channels:
@@ -395,6 +417,10 @@ class HardwareReader:
             if counter_channels:
                 self._create_counter_tasks(counter_channels)
 
+            # Pulse/counter outputs (individual tasks per channel)
+            if pulse_out_channels:
+                self._create_pulse_output_tasks(pulse_out_channels)
+
     def _create_combined_analog_task(self, module_name: str, channels: List[ChannelConfig]):
         """
         Create a SINGLE continuous acquisition task for ALL analog input channels on a module.
@@ -413,8 +439,12 @@ class HardwareReader:
         channel_names = []
         channel_types: Dict[str, ChannelType] = {}  # Track type per channel for post-processing
 
+        # CRITICAL: Sort channels by physical index before adding to task
+        # DAQmx returns values in the order channels are added
+        sorted_channels = sorted(channels, key=lambda ch: _get_physical_channel_index(ch.physical_channel))
+
         try:
-            for channel in channels:
+            for channel in sorted_channels:
                 phys_chan = self._get_physical_channel_path(channel)
 
                 if channel.channel_type == ChannelType.THERMOCOUPLE:
@@ -994,8 +1024,11 @@ class HardwareReader:
         task = nidaqmx.Task(task_name)
         channel_names = []
 
+        # CRITICAL: Sort channels by physical index before adding to task
+        sorted_channels = sorted(channels, key=lambda ch: _get_physical_channel_index(ch.physical_channel))
+
         try:
-            for channel in channels:
+            for channel in sorted_channels:
                 phys_chan = self._get_physical_channel_path(channel)
 
                 task.di_channels.add_di_chan(
@@ -1165,6 +1198,42 @@ class HardwareReader:
             except Exception as e:
                 logger.error(f"Failed to create counter task for {channel.name}: {e}")
 
+    def _create_pulse_output_tasks(self, channels: List[ChannelConfig]):
+        """Create pulse/counter output tasks (one per channel)."""
+        for channel in channels:
+            try:
+                phys_chan = self._get_physical_channel_path(channel)
+                task = nidaqmx.Task(f"CTR_OUT_{channel.name}")
+
+                idle_state = Level.LOW
+                if getattr(channel, 'pulse_idle_state', 'LOW') == 'HIGH':
+                    idle_state = Level.HIGH
+
+                freq = getattr(channel, 'pulse_frequency', 1000.0)
+                duty = getattr(channel, 'pulse_duty_cycle', 50.0) / 100.0  # 0-100% to 0.0-1.0
+
+                task.co_channels.add_co_pulse_chan_freq(
+                    phys_chan,
+                    name_to_assign_to_channel=channel.name,
+                    freq=freq,
+                    duty_cycle=duty,
+                    idle_state=idle_state
+                )
+
+                # Configure for continuous generation
+                task.timing.cfg_implicit_timing(
+                    sample_mode=AcquisitionType.CONTINUOUS
+                )
+
+                task.start()
+                self.output_tasks[channel.name] = task
+                self.output_values[channel.name] = freq
+                logger.info(f"Created pulse output: {channel.name} -> {phys_chan} "
+                           f"(freq={freq}Hz, duty={duty*100}%, idle={channel.pulse_idle_state})")
+
+            except Exception as e:
+                logger.error(f"Failed to create pulse output task for {channel.name}: {e}")
+
     # =========================================================================
     # CONTINUOUS ACQUISITION MANAGEMENT
     # =========================================================================
@@ -1286,9 +1355,19 @@ class HardwareReader:
                             with self.lock:
                                 if isinstance(raw_data, list):
                                     for i, name in enumerate(task_group.channel_names):
-                                        self.latest_values[name] = 1.0 if raw_data[i] else 0.0
+                                        value = 1.0 if raw_data[i] else 0.0
+                                        # Apply invert flag if set in config
+                                        ch_config = self.config.channels.get(name)
+                                        if ch_config and getattr(ch_config, 'invert', False):
+                                            value = 1.0 - value
+                                        self.latest_values[name] = value
                                 else:
-                                    self.latest_values[task_group.channel_names[0]] = 1.0 if raw_data else 0.0
+                                    value = 1.0 if raw_data else 0.0
+                                    name = task_group.channel_names[0]
+                                    ch_config = self.config.channels.get(name)
+                                    if ch_config and getattr(ch_config, 'invert', False):
+                                        value = 1.0 - value
+                                    self.latest_values[name] = value
                         except Exception as e:
                             logger.warning(f"Error reading digital inputs {task_name}: {e}")
 
@@ -1448,6 +1527,21 @@ class HardwareReader:
                         logger.warning(f"DO readback failed for {channel_name}: {rb_err}")
                         self.output_values[channel_name] = 1.0 if bool_value else 0.0
 
+                    # Momentary pulse: auto-revert after delay (relay feature)
+                    momentary_ms = getattr(channel, 'momentary_pulse_ms', 0)
+                    if momentary_ms > 0 and bool_value:
+                        # Cancel any existing timer for this channel
+                        if channel_name in self._momentary_timers:
+                            self._momentary_timers[channel_name].cancel()
+                        timer = threading.Timer(
+                            momentary_ms / 1000.0,
+                            self._revert_momentary,
+                            args=(channel_name,)
+                        )
+                        timer.daemon = True
+                        timer.start()
+                        self._momentary_timers[channel_name] = timer
+
                 elif channel.channel_type == ChannelType.VOLTAGE_OUTPUT:
                     eng_value = float(value)  # Engineering units from user (%, RPM, PSI, etc.)
 
@@ -1506,6 +1600,20 @@ class HardwareReader:
                         # Readback failed - use commanded engineering value as fallback
                         logger.warning(f"CO readback failed for {channel_name}: {rb_err}")
                         self.output_values[channel_name] = eng_value
+
+                elif channel.channel_type in (ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT):
+                    # Pulse/counter output: update frequency
+                    new_freq = float(value)
+                    if new_freq > 0:
+                        task.stop()
+                        task.co_channels.all.co_pulse_freq = new_freq
+                        task.start()
+                        self.output_values[channel_name] = new_freq
+                        logger.debug(f"PLS {channel_name}: freq={new_freq}Hz")
+                    else:
+                        task.stop()
+                        self.output_values[channel_name] = 0.0
+                        logger.debug(f"PLS {channel_name}: stopped (freq=0)")
 
                 logger.debug(f"Wrote {value} to {channel_name}")
                 return True
@@ -1635,6 +1743,11 @@ class HardwareReader:
                     logger.error(f"Error closing counter task {name}: {e}")
             self.counter_tasks.clear()
 
+            # Cancel momentary pulse timers
+            for timer in self._momentary_timers.values():
+                timer.cancel()
+            self._momentary_timers.clear()
+
         logger.info("Hardware reader closed")
 
     def reset_counter(self, channel_name: str):
@@ -1648,6 +1761,29 @@ class HardwareReader:
         # For now, we log that a reset was requested
         # The actual counter value is typically managed in software for totalizers
         logger.info(f"Hardware counter reset requested for {channel_name}")
+
+    def _revert_momentary(self, channel_name: str):
+        """Auto-revert a momentary relay/digital output to its default state."""
+        try:
+            channel = self.config.channels.get(channel_name)
+            if not channel:
+                return
+            default_val = channel.default_value
+            logger.info(f"Momentary revert: {channel_name} -> {default_val} "
+                       f"(after {channel.momentary_pulse_ms}ms)")
+
+            if channel_name in self.output_tasks:
+                task = self.output_tasks[channel_name]
+                bool_value = bool(default_val)
+                if channel.invert:
+                    bool_value = not bool_value
+                with self.lock:
+                    task.write(bool_value)
+                    self.output_values[channel_name] = default_val
+        except Exception as e:
+            logger.error(f"Error reverting momentary output {channel_name}: {e}")
+        finally:
+            self._momentary_timers.pop(channel_name, None)
 
         # For count mode counters, we could potentially recreate the task
         # For frequency mode, the counter is always reading current frequency

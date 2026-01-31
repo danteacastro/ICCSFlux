@@ -1,24 +1,43 @@
 // Channel and system types matching the Python backend
 
 export type ChannelType =
+  // Analog Inputs
   | 'thermocouple'
   | 'voltage_input'
   | 'current_input'
   | 'rtd'
-  | 'strain'
-  | 'iepe'
-  | 'counter'
-  | 'resistance'
-  | 'digital_input'
-  | 'digital_output'
+  | 'strain'           // Legacy - use strain_input
+  | 'strain_input'
+  | 'bridge_input'
+  | 'iepe'             // Legacy - use iepe_input
+  | 'iepe_input'
+  | 'resistance'       // Legacy - use resistance_input
+  | 'resistance_input'
+
+  // Analog Outputs
   | 'voltage_output'
   | 'current_output'
+
+  // Digital
+  | 'digital_input'
+  | 'digital_output'
+
+  // Counter/Timer
+  | 'counter'          // Legacy - use counter_input
+  | 'counter_input'
+  | 'counter_output'
+  | 'frequency_input'
+  | 'pulse_output'
+
+  // Modbus
   | 'modbus_register'
   | 'modbus_coil'
+
   // Legacy aliases for backwards compatibility
-  | 'voltage'       // Maps to voltage_input
-  | 'current'       // Maps to current_input
-  | 'analog_output' // Maps to voltage_output
+  | 'voltage'          // Maps to voltage_input
+  | 'current'          // Maps to current_input
+  | 'analog_input'     // Generic analog input (from discovery)
+  | 'analog_output'    // Maps to voltage_output
 
 /**
  * Project mode determines system architecture:
@@ -136,6 +155,15 @@ export interface ChannelConfig {
   // Resistance-specific
   resistance_range?: number    // Maximum expected resistance in Ohms
   resistance_wiring?: '2-wire' | '4-wire'
+
+  // Pulse/Counter output specific
+  pulse_frequency?: number     // Output frequency in Hz
+  pulse_duty_cycle?: number    // Duty cycle 0-100%
+  pulse_idle_state?: 'LOW' | 'HIGH'  // Idle level
+
+  // Relay specific (digital_output subtype metadata)
+  relay_type?: 'none' | 'spst' | 'spdt' | 'ssr'  // Relay subtype (informational)
+  momentary_pulse_ms?: number  // 0 = latching, >0 = momentary auto-OFF after N ms
 
   // Modbus-specific
   modbus_register_type?: 'holding' | 'input' | 'coil' | 'discrete'
@@ -1486,6 +1514,11 @@ export interface TestSession {
   elapsedSeconds?: number
   elapsedFormatted?: string   // HH:MM:SS
   config: TestSessionConfig
+  // Session metadata (operator-provided at start)
+  testId?: string             // e.g. "TEST-20260130-001"
+  description?: string        // Free text description
+  operatorNotes?: string      // Free text notes
+  timeoutMinutes?: number     // 0 = no timeout
 }
 
 // Variable value from backend (for MQTT subscription)

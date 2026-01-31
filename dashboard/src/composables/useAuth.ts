@@ -123,6 +123,20 @@ let handlersInitialized = false
 // PERMISSION HELPERS
 // ============================================================================
 
+/**
+ * Check if current user has a specific permission.
+ *
+ * WARNING: This is a FUNCTION, not a computed ref. Calling it inside a Vue
+ * computed() will NOT create a reactive dependency! Vue cannot track that
+ * this function reads currentUser.value internally.
+ *
+ * For reactive permission checks in computed properties, use the role-based
+ * computed refs instead: isAdmin, isSupervisor, isOperator, isGuest
+ *
+ * Example:
+ *   BAD:  computed(() => auth.hasPermission('foo') || auth.isOperator.value)
+ *   GOOD: computed(() => auth.isOperator.value)
+ */
 const hasPermission = (permission: string): boolean => {
   if (!currentUser.value) return false
   // Admin role has all permissions (bypass explicit permission check)
@@ -131,6 +145,7 @@ const hasPermission = (permission: string): boolean => {
 }
 
 // Role hierarchy: admin > supervisor > operator > guest
+// USE THESE in computed() for proper reactivity!
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
 const isSupervisor = computed(() => ['admin', 'supervisor'].includes(currentUser.value?.role || ''))
 const isOperator = computed(() => ['admin', 'supervisor', 'operator'].includes(currentUser.value?.role || ''))

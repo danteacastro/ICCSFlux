@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
+import InterlockBlockOverlay from '../components/InterlockBlockOverlay.vue'
 
 const props = defineProps<{
   widgetId?: string
@@ -80,7 +81,7 @@ function toggle() {
     >
       <span class="slider"></span>
     </button>
-    <div v-if="isBlocked" class="blocked-indicator">🔒</div>
+    <InterlockBlockOverlay v-if="isBlocked" :blocked-by="blockStatus.blockedBy" />
   </div>
 </template>
 
@@ -169,17 +170,16 @@ function toggle() {
 }
 
 .toggle-switch.blocked {
-  border-color: #dc2626;
+  border: 2px solid #dc2626;
+  animation: pulse-blocked 2s ease-in-out infinite;
 }
 
 .toggle-switch.blocked .switch {
   background: #7f1d1d;
 }
 
-.blocked-indicator {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  font-size: 0.6rem;
+@keyframes pulse-blocked {
+  0%, 100% { box-shadow: 0 0 4px rgba(220, 38, 38, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(220, 38, 38, 0.6); }
 }
 </style>

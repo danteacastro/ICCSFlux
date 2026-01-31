@@ -62,31 +62,34 @@ echo   SAFETY ^& ALARMS:
 echo     device alarms          Show active alarms
 echo     device safety          Show safety status
 echo.
-echo   NODE MANAGEMENT (SSH):
-echo     device deploy crio     Deploy code to cRIO
-echo     device deploy opto22   Deploy code to Opto22
-echo     device deploy cfp      Deploy code to cFP
-echo     device deploy all -r   Deploy all and restart
-echo     device restart ^<node^>  Restart node service
-echo     device logs ^<node^>     View node logs
-echo     device logs ^<node^> -f  Follow node logs
-echo     device config          Show node configuration
-echo     device config --setup  Run setup wizard
+echo   NODE DEPLOYMENT (SSH):
+echo     device deploy crio --host ^<ip^> -r    Deploy to cRIO at IP and restart
+echo     device deploy crio-001 -r             Deploy to named node from config
+echo     device deploy all -r                  Deploy to all configured nodes
+echo     device restart crio --host ^<ip^>       Restart service on cRIO
+echo     device logs crio --host ^<ip^> -f       Follow logs on cRIO
+echo     device status crio --host ^<ip^>        Check cRIO status
+echo.
+echo   NODE CONFIGURATION:
+echo     device config                          Show configured nodes
+echo     device config --add ^<name^> ^<ip^>        Add node to config
+echo     device config --remove ^<name^>          Remove node from config
+echo     device config --setup                  Run setup wizard
 echo.
 echo   OPTIONS:
-echo     --broker ^<ip^>         MQTT broker address
-echo     --port ^<port^>         MQTT broker port
+echo     --host ^<ip^>          Target IP (bypasses config lookup)
+echo     --broker ^<ip^>        MQTT broker address
+echo     --port ^<port^>        MQTT broker port
 echo.
 echo   Examples:
-echo     device                           # Interactive mode
-echo     device scan                      # Discover all devices
-echo     device info crio-001             # Show cRIO details
-echo     device read TC001                # Read thermocouple
-echo     device write DO001 1             # Turn on digital output
-echo     device test DO001 3 500          # Toggle test 3x @ 500ms
-echo     device diag crio-001             # Run diagnostics
-echo     device deploy crio --restart     # Deploy and restart
-echo     device --broker 192.168.1.100 ping
+echo     device                                        # Interactive mode
+echo     device scan                                   # Discover all devices
+echo     device deploy crio --host 192.168.1.20 -r    # Quick deploy to cRIO
+echo     device config --add crio-001 192.168.1.20 --type crio  # Save to config
+echo     device deploy crio-001 -r                    # Deploy using saved config
+echo     device read TC001                            # Read thermocouple
+echo     device write DO001 1                         # Turn on digital output
+echo     device logs crio --host 192.168.1.20 -f     # Follow cRIO logs
 echo.
 "%PYTHON%" "%~dp0services\device_cli.py"
 goto end

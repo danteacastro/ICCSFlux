@@ -1,0 +1,78 @@
+{
+  "name": "PID Controller",
+  "description": "Standard PID controller for process control applications",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Process Control",
+  "config": {
+    "process_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Process variable (PV)"
+    },
+    "setpoint": {
+      "type": "number",
+      "default": 50.0,
+      "description": "Target setpoint"
+    },
+    "kp": {
+      "type": "number",
+      "default": 1.0,
+      "description": "Proportional gain"
+    },
+    "ki": {
+      "type": "number",
+      "default": 0.1,
+      "description": "Integral gain"
+    },
+    "kd": {
+      "type": "number",
+      "default": 0.05,
+      "description": "Derivative gain"
+    },
+    "output_min": {
+      "type": "number",
+      "default": 0,
+      "description": "Minimum output (0-100%)"
+    },
+    "output_max": {
+      "type": "number",
+      "default": 100,
+      "description": "Maximum output (0-100%)"
+    },
+    "reverse_action": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reverse acting (cooling vs heating)"
+    }
+  },
+  "subscribed_tags": ["${config.process_tag}"],
+  "published_tags": [
+    {
+      "name": "py.PID_Output",
+      "unit": "%",
+      "description": "Controller output (0-100%)"
+    },
+    {
+      "name": "py.PID_Error",
+      "unit": "same as PV",
+      "description": "Current error (SP - PV)"
+    },
+    {
+      "name": "py.PID_P_Term",
+      "unit": "%",
+      "description": "Proportional contribution"
+    },
+    {
+      "name": "py.PID_I_Term",
+      "unit": "%",
+      "description": "Integral contribution"
+    },
+    {
+      "name": "py.PID_D_Term",
+      "unit": "%",
+      "description": "Derivative contribution"
+    }
+  ],
+  "code": "# PID Controller\n# Standard proportional-integral-derivative control\n\nimport time\n\nprocess_tag = config.get('process_tag', 'Temperature_1')\nsp = config.get('setpoint', 50.0)\nkp = config.get('kp', 1.0)\nki = config.get('ki', 0.1)\nkd = config.get('kd', 0.05)\nout_min = config.get('output_min', 0)\nout_max = config.get('output_max', 100)\nreverse = config.get('reverse_action', False)\n\npv = tags.get(process_tag, 0)\nnow = time.time()\n\n# Calculate error\nerror = sp - pv\nif reverse:\n    error = -error\n\n# Initialize state\nif 'integral' not in state:\n    state['integral'] = 0.0\n    state['last_error'] = error\n    state['last_time'] = now\n\n# Time delta\ndt = now - state['last_time']\nif dt <= 0:\n    dt = 0.1  # Default 100ms\n\n# Proportional term\np_term = kp * error\n\n# Integral term (with anti-windup)\nstate['integral'] += error * dt\n# Anti-windup: limit integral\nmax_integral = (out_max - out_min) / ki if ki > 0 else 1000\nstate['integral'] = max(-max_integral, min(max_integral, state['integral']))\ni_term = ki * state['integral']\n\n# Derivative term (on error)\nif dt > 0:\n    derivative = (error - state['last_error']) / dt\nelse:\n    derivative = 0\nd_term = kd * derivative\n\n# Calculate output\noutput = p_term + i_term + d_term\n\n# Clamp output\noutput = max(out_min, min(out_max, output))\n\n# Update state\nstate['last_error'] = error\nstate['last_time'] = now\n\npublish('py.PID_Output', output)\npublish('py.PID_Error', error if not reverse else -error)\npublish('py.PID_P_Term', p_term)\npublish('py.PID_I_Term', i_term)\npublish('py.PID_D_Term', d_term)"
+}

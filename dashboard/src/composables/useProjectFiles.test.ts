@@ -87,6 +87,17 @@ vi.mock('./useBackendScripts', () => ({
   })
 }))
 
+// Mock safety composable
+vi.mock('./useSafety', () => ({
+  useSafety: () => ({
+    clearAllSafetyState: vi.fn(),
+    loadAlarmConfigs: vi.fn(),
+    loadInterlocks: vi.fn(),
+    alarmConfigs: { value: {} },
+    interlocks: { value: [] },
+  })
+}))
+
 describe('useProjectFiles', () => {
   beforeEach(() => {
     vi.resetAllMocks()  // Reset call counts AND implementations

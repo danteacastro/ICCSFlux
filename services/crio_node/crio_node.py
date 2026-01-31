@@ -43,7 +43,7 @@ import hashlib
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Callable, Tuple
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 import argparse
@@ -387,6 +387,9 @@ class ChannelConfig:
     alarm_priority: str = 'medium'           # low, medium, high, critical
     alarm_deadband: float = 0.0              # Hysteresis to prevent alarm chatter
     alarm_delay_sec: float = 0.0             # Delay before alarm triggers
+    # Legacy alarm fields (for backwards compatibility with old config files)
+    alarm_high: Optional[float] = None       # Deprecated: use hi_limit instead
+    alarm_low: Optional[float] = None        # Deprecated: use lo_limit instead
 
     # Safety settings (for autonomous cRIO operation)
     safety_action: Optional[str] = None      # Name of safety action to trigger on limit violation
@@ -684,6 +687,1501 @@ class LocalSafetyManager:
             }
 
 
+# =============================================================================
+# PID CONTROL ENGINE
+# =============================================================================
+
+class PIDMode(str, Enum):
+    """PID loop operating mode"""
+    AUTO = "auto"
+    MANUAL = "manual"
+    CASCADE = "cascade"
+
+
+class AntiWindupMethod(str, Enum):
+    """Anti-windup strategy for integral term"""
+    NONE = "none"
+    CLAMPING = "clamping"
+    BACK_CALCULATION = "back_calculation"
+
+
+class DerivativeMode(str, Enum):
+    """Derivative calculation mode"""
+    ON_ERROR = "on_error"
+    ON_PV = "on_pv"
+
+
+@dataclass
+class PIDLoop:
+    """PID control loop configuration and state"""
+    id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    pv_channel: str = ""
+    pv_engineering_units: str = ""
+    cv_channel: Optional[str] = None
+    cv_engineering_units: str = "%"
+    setpoint: float = 0.0
+    setpoint_source: str = "manual"
+    setpoint_channel: Optional[str] = None
+    setpoint_min: float = 0.0
+    setpoint_max: float = 100.0
+    kp: float = 1.0
+    ki: float = 0.1
+    kd: float = 0.0
+    output_min: float = 0.0
+    output_max: float = 100.0
+    output_rate_limit: float = 0.0
+    reverse_action: bool = False
+    derivative_mode: DerivativeMode = DerivativeMode.ON_PV
+    anti_windup: AntiWindupMethod = AntiWindupMethod.CLAMPING
+    deadband: float = 0.0
+    mode: PIDMode = PIDMode.AUTO
+    manual_output: float = 0.0
+    bumpless_transfer: bool = True
+    # Runtime state
+    output: float = 0.0
+    error: float = 0.0
+    p_term: float = 0.0
+    i_term: float = 0.0
+    d_term: float = 0.0
+    last_pv: Optional[float] = None
+    last_error: Optional[float] = None
+    last_output: float = 0.0
+    last_update_time: float = 0.0
+
+    def to_config_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id, 'name': self.name, 'description': self.description,
+            'enabled': self.enabled, 'pv_channel': self.pv_channel,
+            'cv_channel': self.cv_channel, 'setpoint': self.setpoint,
+            'setpoint_min': self.setpoint_min, 'setpoint_max': self.setpoint_max,
+            'kp': self.kp, 'ki': self.ki, 'kd': self.kd,
+            'output_min': self.output_min, 'output_max': self.output_max,
+            'output_rate_limit': self.output_rate_limit,
+            'reverse_action': self.reverse_action,
+            'derivative_mode': self.derivative_mode.value,
+            'anti_windup': self.anti_windup.value, 'deadband': self.deadband,
+            'mode': self.mode.value, 'manual_output': self.manual_output,
+            'bumpless_transfer': self.bumpless_transfer,
+        }
+
+    def to_status_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id, 'name': self.name, 'enabled': self.enabled,
+            'mode': self.mode.value,
+            'pv': self.last_pv if self.last_pv is not None else 0.0,
+            'pv_channel': self.pv_channel, 'setpoint': self.setpoint,
+            'output': self.output, 'cv_channel': self.cv_channel,
+            'error': self.error, 'p_term': round(self.p_term, 4),
+            'i_term': round(self.i_term, 4), 'd_term': round(self.d_term, 4),
+            'output_saturated': self.output <= self.output_min or self.output >= self.output_max,
+            'timestamp': datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PIDLoop':
+        if 'derivative_mode' in data and isinstance(data['derivative_mode'], str):
+            data['derivative_mode'] = DerivativeMode(data['derivative_mode'])
+        if 'anti_windup' in data and isinstance(data['anti_windup'], str):
+            data['anti_windup'] = AntiWindupMethod(data['anti_windup'])
+        if 'mode' in data and isinstance(data['mode'], str):
+            data['mode'] = PIDMode(data['mode'])
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)
+
+
+class PIDEngine:
+    """PID Control Engine - manages multiple PID loops"""
+
+    def __init__(self, on_set_output: Optional[Callable[[str, float], bool]] = None):
+        self.loops: Dict[str, PIDLoop] = {}
+        self._lock = threading.RLock()
+        self._on_set_output = on_set_output
+        self._status_callback: Optional[Callable[[str, Dict], None]] = None
+
+    def set_status_callback(self, callback: Callable[[str, Dict], None]):
+        self._status_callback = callback
+
+    def set_output_callback(self, callback: Callable[[str, float], bool]):
+        self._on_set_output = callback
+
+    def add_loop(self, loop: PIDLoop) -> bool:
+        with self._lock:
+            if loop.id in self.loops:
+                return False
+            self.loops[loop.id] = loop
+            return True
+
+    def update_loop(self, loop_id: str, updates: Dict[str, Any]) -> bool:
+        with self._lock:
+            if loop_id not in self.loops:
+                return False
+            loop = self.loops[loop_id]
+            old_mode = loop.mode
+            for key, value in updates.items():
+                if hasattr(loop, key):
+                    if key == 'mode' and isinstance(value, str):
+                        value = PIDMode(value)
+                    elif key == 'derivative_mode' and isinstance(value, str):
+                        value = DerivativeMode(value)
+                    elif key == 'anti_windup' and isinstance(value, str):
+                        value = AntiWindupMethod(value)
+                    setattr(loop, key, value)
+            if loop.bumpless_transfer and old_mode != loop.mode:
+                self._handle_mode_change(loop, old_mode, loop.mode)
+            return True
+
+    def remove_loop(self, loop_id: str) -> bool:
+        with self._lock:
+            if loop_id not in self.loops:
+                return False
+            del self.loops[loop_id]
+            return True
+
+    def get_loop(self, loop_id: str) -> Optional[PIDLoop]:
+        with self._lock:
+            return self.loops.get(loop_id)
+
+    def get_all_loops(self) -> List[PIDLoop]:
+        with self._lock:
+            return list(self.loops.values())
+
+    def clear_loops(self):
+        with self._lock:
+            self.loops.clear()
+
+    def set_setpoint(self, loop_id: str, setpoint: float) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop:
+                return False
+            setpoint = max(loop.setpoint_min, min(loop.setpoint_max, setpoint))
+            loop.setpoint = setpoint
+            loop.setpoint_source = "manual"
+            return True
+
+    def set_mode(self, loop_id: str, mode: str) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop:
+                return False
+            old_mode = loop.mode
+            new_mode = PIDMode(mode)
+            if old_mode == new_mode:
+                return True
+            if loop.bumpless_transfer:
+                self._handle_mode_change(loop, old_mode, new_mode)
+            loop.mode = new_mode
+            return True
+
+    def set_manual_output(self, loop_id: str, output: float) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop:
+                return False
+            output = max(loop.output_min, min(loop.output_max, output))
+            loop.manual_output = output
+            if loop.mode == PIDMode.MANUAL:
+                loop.output = output
+            return True
+
+    def process_scan(self, channel_values: Dict[str, float], dt: float) -> Dict[str, float]:
+        """Process all PID loops for one scan cycle"""
+        outputs = {}
+        with self._lock:
+            for loop in self.loops.values():
+                if not loop.enabled:
+                    continue
+                pv = channel_values.get(loop.pv_channel)
+                if pv is None:
+                    continue
+                sp = self._get_setpoint(loop, channel_values)
+                output = self._compute_pid(loop, pv, sp, dt)
+                if loop.cv_channel:
+                    outputs[loop.cv_channel] = output
+                    if self._on_set_output:
+                        self._on_set_output(loop.cv_channel, output)
+                if self._status_callback:
+                    self._status_callback(loop.id, loop.to_status_dict())
+        return outputs
+
+    def _get_setpoint(self, loop: PIDLoop, channel_values: Dict[str, float]) -> float:
+        if loop.setpoint_source == "manual":
+            return loop.setpoint
+        elif loop.setpoint_source == "channel" and loop.setpoint_channel:
+            sp = channel_values.get(loop.setpoint_channel, loop.setpoint)
+            return max(loop.setpoint_min, min(loop.setpoint_max, sp))
+        elif loop.setpoint_source in self.loops:
+            return self.loops[loop.setpoint_source].output
+        return loop.setpoint
+
+    def _compute_pid(self, loop: PIDLoop, pv: float, sp: float, dt: float) -> float:
+        if loop.mode == PIDMode.MANUAL:
+            loop.output = loop.manual_output
+            loop.last_pv = pv
+            loop.last_error = sp - pv
+            return loop.output
+
+        error = sp - pv
+        if loop.reverse_action:
+            error = -error
+        if abs(error) < loop.deadband:
+            error = 0.0
+        loop.error = error
+
+        if loop.last_pv is None:
+            loop.last_pv = pv
+            loop.last_error = error
+            loop.last_output = loop.output
+            loop.i_term = loop.output
+
+        loop.p_term = loop.kp * error
+
+        if loop.ki > 0 and dt > 0:
+            integral_contribution = loop.ki * error * dt
+            if loop.anti_windup == AntiWindupMethod.CLAMPING:
+                sat_high = loop.output >= loop.output_max and integral_contribution > 0
+                sat_low = loop.output <= loop.output_min and integral_contribution < 0
+                if not (sat_high or sat_low):
+                    loop.i_term += integral_contribution
+            else:
+                loop.i_term += integral_contribution
+
+        if loop.kd > 0 and dt > 0:
+            if loop.derivative_mode == DerivativeMode.ON_PV:
+                d_input = -(pv - loop.last_pv) / dt
+            else:
+                d_input = (error - loop.last_error) / dt
+            loop.d_term = loop.kd * d_input
+        else:
+            loop.d_term = 0.0
+
+        output = loop.p_term + loop.i_term + loop.d_term
+
+        if loop.output_rate_limit > 0 and dt > 0:
+            max_change = loop.output_rate_limit * dt
+            output_change = output - loop.last_output
+            if abs(output_change) > max_change:
+                output = loop.last_output + max_change * (1 if output_change > 0 else -1)
+
+        output = max(loop.output_min, min(loop.output_max, output))
+
+        if loop.anti_windup == AntiWindupMethod.BACK_CALCULATION:
+            unclamped = loop.p_term + loop.i_term + loop.d_term
+            if output != unclamped:
+                loop.i_term = output - loop.p_term - loop.d_term
+
+        loop.output = output
+        loop.last_pv = pv
+        loop.last_error = error
+        loop.last_output = output
+        loop.last_update_time = time.time()
+        return output
+
+    def _handle_mode_change(self, loop: PIDLoop, old_mode: PIDMode, new_mode: PIDMode):
+        if new_mode == PIDMode.AUTO and old_mode == PIDMode.MANUAL:
+            loop.i_term = loop.output - loop.p_term - loop.d_term
+        elif new_mode == PIDMode.MANUAL and old_mode == PIDMode.AUTO:
+            loop.manual_output = loop.output
+
+    def load_config(self, config: Dict[str, Any]):
+        with self._lock:
+            self.loops.clear()
+            for loop_data in config.get('loops', []):
+                try:
+                    loop = PIDLoop.from_dict(loop_data)
+                    self.loops[loop.id] = loop
+                except Exception as e:
+                    logger.error(f"Failed to load PID loop: {e}")
+
+    def to_config_dict(self) -> Dict[str, Any]:
+        with self._lock:
+            return {'loops': [loop.to_config_dict() for loop in self.loops.values()]}
+
+
+# =============================================================================
+# SEQUENCE MANAGER
+# =============================================================================
+
+class SequenceState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+    ERROR = "error"
+
+
+class StepType(str, Enum):
+    SET_OUTPUT = "setOutput"
+    WAIT_DURATION = "waitDuration"
+    WAIT_CONDITION = "waitCondition"
+    LOG_MESSAGE = "logMessage"
+    LOOP_START = "loopStart"
+    LOOP_END = "loopEnd"
+    CONDITIONAL = "conditional"
+
+
+@dataclass
+class SequenceStep:
+    type: str
+    label: Optional[str] = None
+    channel: Optional[str] = None
+    value: Optional[Any] = None
+    duration_ms: Optional[int] = None
+    condition_channel: Optional[str] = None
+    condition_operator: Optional[str] = None
+    condition_value: Optional[Any] = None
+    condition_timeout_ms: Optional[int] = None
+    message: Optional[str] = None
+    loop_count: Optional[int] = None
+    loop_id: Optional[str] = None
+    true_step_index: Optional[int] = None
+    false_step_index: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'SequenceStep':
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class Sequence:
+    id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    steps: List[SequenceStep] = field(default_factory=list)
+    state: SequenceState = SequenceState.IDLE
+    current_step_index: int = 0
+    start_time: Optional[float] = None
+    error_message: Optional[str] = None
+    loop_counters: Dict[str, int] = field(default_factory=dict)
+    loop_start_indices: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "description": self.description,
+            "enabled": self.enabled, "steps": [s.to_dict() for s in self.steps],
+            "state": self.state.value, "current_step_index": self.current_step_index,
+            "start_time": self.start_time, "error_message": self.error_message
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Sequence':
+        steps = [SequenceStep.from_dict(s) for s in data.get("steps", [])]
+        state = SequenceState(data.get("state", "idle"))
+        return cls(id=data["id"], name=data["name"], description=data.get("description", ""),
+                   enabled=data.get("enabled", True), steps=steps, state=state,
+                   current_step_index=data.get("current_step_index", 0))
+
+
+class SequenceManager:
+    """Manages automation sequence execution"""
+
+    def __init__(self):
+        self.sequences: Dict[str, Sequence] = {}
+        self.on_set_output: Optional[Callable[[str, Any], None]] = None
+        self.on_get_channel_value: Optional[Callable[[str], Any]] = None
+        self.on_sequence_event: Optional[Callable[[str, Sequence], None]] = None
+        self._running_sequence_id: Optional[str] = None
+        self._execution_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._lock = threading.Lock()
+
+    def add_sequence(self, sequence: Sequence) -> bool:
+        with self._lock:
+            self.sequences[sequence.id] = sequence
+            return True
+
+    def remove_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            if sequence_id in self.sequences and self._running_sequence_id != sequence_id:
+                del self.sequences[sequence_id]
+                return True
+            return False
+
+    def get_sequence(self, sequence_id: str) -> Optional[Sequence]:
+        return self.sequences.get(sequence_id)
+
+    def get_all_sequences(self) -> List[Sequence]:
+        return list(self.sequences.values())
+
+    def start_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            seq = self.sequences.get(sequence_id)
+            if not seq or not seq.enabled or self._running_sequence_id:
+                return False
+            seq.state = SequenceState.RUNNING
+            seq.current_step_index = 0
+            seq.start_time = time.time()
+            seq.error_message = None
+            seq.loop_counters = {}
+            seq.loop_start_indices = {}
+            self._running_sequence_id = sequence_id
+            self._stop_event.clear()
+            self._pause_event.set()
+            self._execution_thread = threading.Thread(target=self._execute_sequence, args=(seq,), daemon=True)
+            self._execution_thread.start()
+            self._emit_event("started", seq)
+            return True
+
+    def pause_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            if self._running_sequence_id != sequence_id:
+                return False
+            seq = self.sequences.get(sequence_id)
+            if seq and seq.state == SequenceState.RUNNING:
+                seq.state = SequenceState.PAUSED
+                self._pause_event.clear()
+                self._emit_event("paused", seq)
+                return True
+            return False
+
+    def resume_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            if self._running_sequence_id != sequence_id:
+                return False
+            seq = self.sequences.get(sequence_id)
+            if seq and seq.state == SequenceState.PAUSED:
+                seq.state = SequenceState.RUNNING
+                self._pause_event.set()
+                self._emit_event("resumed", seq)
+                return True
+            return False
+
+    def abort_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            if self._running_sequence_id != sequence_id:
+                return False
+            seq = self.sequences.get(sequence_id)
+            if seq and seq.state in (SequenceState.RUNNING, SequenceState.PAUSED):
+                seq.state = SequenceState.ABORTED
+                self._stop_event.set()
+                self._pause_event.set()
+                self._emit_event("aborted", seq)
+                return True
+            return False
+
+    def _execute_sequence(self, seq: Sequence):
+        try:
+            while seq.current_step_index < len(seq.steps):
+                if self._stop_event.is_set():
+                    break
+                self._pause_event.wait()
+                if self._stop_event.is_set():
+                    break
+                step = seq.steps[seq.current_step_index]
+                try:
+                    self._execute_step(seq, step)
+                except Exception as e:
+                    seq.state = SequenceState.ERROR
+                    seq.error_message = str(e)
+                    self._emit_event("error", seq)
+                    break
+                if seq.state == SequenceState.RUNNING:
+                    seq.current_step_index += 1
+            if seq.state == SequenceState.RUNNING:
+                seq.state = SequenceState.COMPLETED
+                self._emit_event("completed", seq)
+        finally:
+            with self._lock:
+                self._running_sequence_id = None
+
+    def _execute_step(self, seq: Sequence, step: SequenceStep):
+        if step.type == StepType.SET_OUTPUT.value:
+            if self.on_set_output and step.channel is not None:
+                self.on_set_output(step.channel, step.value)
+        elif step.type == StepType.WAIT_DURATION.value:
+            self._wait_with_check((step.duration_ms or 0) / 1000.0)
+        elif step.type == StepType.WAIT_CONDITION.value:
+            self._wait_for_condition(step)
+        elif step.type == StepType.LOG_MESSAGE.value:
+            logger.info(f"Sequence log: {step.message}")
+        elif step.type == StepType.LOOP_START.value:
+            loop_id = step.loop_id or f"loop_{seq.current_step_index}"
+            if loop_id not in seq.loop_counters:
+                seq.loop_counters[loop_id] = 0
+                seq.loop_start_indices[loop_id] = seq.current_step_index
+        elif step.type == StepType.LOOP_END.value:
+            loop_id = step.loop_id or f"loop_{seq.current_step_index}"
+            if loop_id in seq.loop_counters:
+                seq.loop_counters[loop_id] += 1
+                if seq.loop_counters[loop_id] < (step.loop_count or 1):
+                    seq.current_step_index = seq.loop_start_indices[loop_id]
+                else:
+                    del seq.loop_counters[loop_id]
+                    del seq.loop_start_indices[loop_id]
+        elif step.type == StepType.CONDITIONAL.value:
+            if self._evaluate_condition(step):
+                if step.true_step_index is not None:
+                    seq.current_step_index = step.true_step_index - 1
+            else:
+                if step.false_step_index is not None:
+                    seq.current_step_index = step.false_step_index - 1
+
+    def _wait_with_check(self, duration_s: float):
+        end_time = time.time() + duration_s
+        while time.time() < end_time:
+            if self._stop_event.is_set():
+                break
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+            time.sleep(0.1)
+
+    def _wait_for_condition(self, step: SequenceStep):
+        if not self.on_get_channel_value or not step.condition_channel:
+            return
+        timeout_s = (step.condition_timeout_ms or 30000) / 1000.0
+        end_time = time.time() + timeout_s
+        while time.time() < end_time:
+            if self._stop_event.is_set():
+                break
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+            if self._evaluate_condition(step):
+                return
+            time.sleep(0.1)
+
+    def _evaluate_condition(self, step: SequenceStep) -> bool:
+        if not self.on_get_channel_value or not step.condition_channel:
+            return True
+        current_value = self.on_get_channel_value(step.condition_channel)
+        if current_value is None:
+            return False
+        target = step.condition_value
+        op = step.condition_operator or "=="
+        try:
+            if op == "==": return current_value == target
+            elif op == "!=": return current_value != target
+            elif op == "<": return float(current_value) < float(target)
+            elif op == ">": return float(current_value) > float(target)
+            elif op == "<=": return float(current_value) <= float(target)
+            elif op == ">=": return float(current_value) >= float(target)
+        except (ValueError, TypeError):
+            return False
+        return False
+
+    def _emit_event(self, event_type: str, seq: Sequence):
+        if self.on_sequence_event:
+            try:
+                self.on_sequence_event(event_type, seq)
+            except Exception as e:
+                logger.error(f"Error in sequence event handler: {e}")
+
+    def load_config(self, config: Dict[str, Any]):
+        with self._lock:
+            self.sequences.clear()
+            for seq_data in config.get('sequences', []):
+                try:
+                    seq = Sequence.from_dict(seq_data)
+                    seq.state = SequenceState.IDLE
+                    self.sequences[seq.id] = seq
+                except Exception as e:
+                    logger.error(f"Failed to load sequence: {e}")
+
+
+# =============================================================================
+# TRIGGER ENGINE
+# =============================================================================
+
+class TriggerType(str, Enum):
+    VALUE_REACHED = "valueReached"
+    TIME_ELAPSED = "timeElapsed"
+    STATE_CHANGE = "stateChange"
+
+
+class TriggerActionType(str, Enum):
+    START_SEQUENCE = "startSequence"
+    STOP_SEQUENCE = "stopSequence"
+    SET_OUTPUT = "setOutput"
+    NOTIFICATION = "notification"
+    LOG = "log"
+
+
+@dataclass
+class TriggerAction:
+    action_type: TriggerActionType
+    sequence_id: Optional[str] = None
+    channel: Optional[str] = None
+    value: Optional[float] = None
+    message: Optional[str] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'TriggerAction':
+        action_type_str = data.get('type', 'notification')
+        if action_type_str == 'runSequence':
+            action_type_str = 'startSequence'
+        return TriggerAction(
+            action_type=TriggerActionType(action_type_str),
+            sequence_id=data.get('sequenceId'),
+            channel=data.get('channel'),
+            value=data.get('value'),
+            message=data.get('message')
+        )
+
+
+@dataclass
+class TriggerCondition:
+    trigger_type: TriggerType
+    channel: Optional[str] = None
+    operator: Optional[str] = None
+    threshold: Optional[float] = None
+    hysteresis: Optional[float] = 0.0
+    duration_ms: Optional[int] = None
+    start_event: Optional[str] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'TriggerCondition':
+        return TriggerCondition(
+            trigger_type=TriggerType(data.get('type', 'valueReached')),
+            channel=data.get('channel'),
+            operator=data.get('operator'),
+            threshold=data.get('value'),
+            hysteresis=data.get('hysteresis', 0.0),
+            duration_ms=data.get('durationMs'),
+            start_event=data.get('startEvent')
+        )
+
+
+@dataclass
+class AutomationTrigger:
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    one_shot: bool
+    cooldown_ms: int
+    condition: TriggerCondition
+    actions: List[TriggerAction]
+    last_triggered: Optional[float] = None
+    has_fired: bool = False
+    last_value_state: Optional[bool] = None
+    start_time: Optional[float] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'AutomationTrigger':
+        condition = TriggerCondition.from_dict(data.get('trigger', {}))
+        actions = [TriggerAction.from_dict(a) for a in data.get('actions', [])]
+        return AutomationTrigger(
+            id=data.get('id', ''), name=data.get('name', ''),
+            description=data.get('description', ''), enabled=data.get('enabled', True),
+            one_shot=data.get('oneShot', False), cooldown_ms=data.get('cooldownMs', 5000),
+            condition=condition, actions=actions
+        )
+
+
+class TriggerEngine:
+    """Evaluates automation triggers each scan"""
+
+    def __init__(self):
+        self.triggers: Dict[str, AutomationTrigger] = {}
+        self.lock = threading.Lock()
+        self.set_output: Optional[Callable[[str, Any], None]] = None
+        self.run_sequence: Optional[Callable[[str], None]] = None
+        self.stop_sequence: Optional[Callable[[str], None]] = None
+        self.publish_notification: Optional[Callable[[str, str, str], None]] = None
+        self._acquisition_start_time: Optional[float] = None
+        self._is_acquiring: bool = False
+
+    def load_from_config(self, config: Dict[str, Any]) -> int:
+        with self.lock:
+            self.triggers.clear()
+            triggers_data = config.get('scripts', {}).get('triggers', [])
+            for trigger_data in triggers_data:
+                try:
+                    trigger = AutomationTrigger.from_dict(trigger_data)
+                    self.triggers[trigger.id] = trigger
+                except Exception as e:
+                    logger.error(f"Failed to load trigger: {e}")
+            return len(self.triggers)
+
+    def clear(self):
+        with self.lock:
+            self.triggers.clear()
+
+    def on_acquisition_start(self):
+        self._acquisition_start_time = time.time()
+        self._is_acquiring = True
+
+    def on_acquisition_stop(self):
+        self._acquisition_start_time = None
+        self._is_acquiring = False
+
+    def process_scan(self, channel_values: Dict[str, float]):
+        if not self._is_acquiring:
+            return
+        now = time.time()
+        with self.lock:
+            for trigger in self.triggers.values():
+                if not trigger.enabled:
+                    continue
+                if trigger.one_shot and trigger.has_fired:
+                    continue
+                if trigger.last_triggered:
+                    elapsed = (now - trigger.last_triggered) * 1000
+                    if elapsed < trigger.cooldown_ms:
+                        continue
+                should_fire = self._evaluate_condition(trigger, channel_values, now)
+                if should_fire:
+                    self._fire_trigger(trigger, now)
+
+    def _evaluate_condition(self, trigger: AutomationTrigger, channel_values: Dict[str, float], now: float) -> bool:
+        cond = trigger.condition
+        if cond.trigger_type == TriggerType.VALUE_REACHED:
+            return self._evaluate_value_reached(trigger, channel_values)
+        elif cond.trigger_type == TriggerType.TIME_ELAPSED:
+            return self._evaluate_time_elapsed(trigger, now)
+        return False
+
+    def _evaluate_value_reached(self, trigger: AutomationTrigger, channel_values: Dict[str, float]) -> bool:
+        cond = trigger.condition
+        if not cond.channel or cond.channel not in channel_values:
+            return False
+        value = channel_values[cond.channel]
+        threshold = cond.threshold or 0
+        operator = cond.operator or '=='
+        if math.isnan(value):
+            return False
+        condition_met = False
+        if operator == '>': condition_met = value > threshold
+        elif operator == '<': condition_met = value < threshold
+        elif operator == '>=': condition_met = value >= threshold
+        elif operator == '<=': condition_met = value <= threshold
+        elif operator == '==': condition_met = abs(value - threshold) < 0.001
+        elif operator == '!=': condition_met = abs(value - threshold) >= 0.001
+        was_met = trigger.last_value_state
+        trigger.last_value_state = condition_met
+        if was_met is None:
+            return condition_met
+        return not was_met and condition_met
+
+    def _evaluate_time_elapsed(self, trigger: AutomationTrigger, now: float) -> bool:
+        cond = trigger.condition
+        if not cond.duration_ms:
+            return False
+        start_time = self._acquisition_start_time if cond.start_event == 'acquisitionStart' else trigger.start_time
+        if start_time is None:
+            return False
+        elapsed_ms = (now - start_time) * 1000
+        return elapsed_ms >= cond.duration_ms
+
+    def _fire_trigger(self, trigger: AutomationTrigger, now: float):
+        logger.info(f"Trigger fired: {trigger.name}")
+        trigger.last_triggered = now
+        if trigger.one_shot:
+            trigger.has_fired = True
+        for action in trigger.actions:
+            try:
+                self._execute_action(action, trigger)
+            except Exception as e:
+                logger.error(f"Failed to execute trigger action: {e}")
+
+    def _execute_action(self, action: TriggerAction, trigger: AutomationTrigger):
+        if action.action_type == TriggerActionType.START_SEQUENCE:
+            if self.run_sequence and action.sequence_id:
+                self.run_sequence(action.sequence_id)
+        elif action.action_type == TriggerActionType.STOP_SEQUENCE:
+            if self.stop_sequence and action.sequence_id:
+                self.stop_sequence(action.sequence_id)
+        elif action.action_type == TriggerActionType.SET_OUTPUT:
+            if self.set_output and action.channel is not None:
+                self.set_output(action.channel, action.value)
+        elif action.action_type == TriggerActionType.NOTIFICATION:
+            if self.publish_notification and action.message:
+                self.publish_notification('trigger', trigger.name, action.message)
+        elif action.action_type == TriggerActionType.LOG:
+            if action.message:
+                logger.info(f"Trigger {trigger.name} LOG: {action.message}")
+
+
+# =============================================================================
+# WATCHDOG ENGINE
+# =============================================================================
+
+class WatchdogConditionType(str, Enum):
+    STALE_DATA = "stale_data"
+    OUT_OF_RANGE = "out_of_range"
+    RATE_EXCEEDED = "rate_exceeded"
+    STUCK_VALUE = "stuck_value"
+
+
+class WatchdogActionType(str, Enum):
+    NOTIFICATION = "notification"
+    ALARM = "alarm"
+    SET_OUTPUT = "setOutput"
+    STOP_SEQUENCE = "stopSequence"
+    RUN_SEQUENCE = "runSequence"
+
+
+@dataclass
+class WatchdogCondition:
+    condition_type: WatchdogConditionType
+    max_stale_ms: int = 5000
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    max_rate_per_min: Optional[float] = None
+    stuck_duration_ms: int = 30000
+    stuck_tolerance: float = 0.001
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'WatchdogCondition':
+        return WatchdogCondition(
+            condition_type=WatchdogConditionType(data.get('type', 'stale_data')),
+            max_stale_ms=data.get('maxStaleMs', 5000),
+            min_value=data.get('minValue'),
+            max_value=data.get('maxValue'),
+            max_rate_per_min=data.get('maxRatePerMin'),
+            stuck_duration_ms=data.get('stuckDurationMs', 30000),
+            stuck_tolerance=data.get('stuckTolerance', 0.001)
+        )
+
+
+@dataclass
+class WatchdogAction:
+    action_type: WatchdogActionType
+    message: Optional[str] = None
+    channel: Optional[str] = None
+    value: Optional[float] = None
+    sequence_id: Optional[str] = None
+    alarm_severity: str = "warning"
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'WatchdogAction':
+        return WatchdogAction(
+            action_type=WatchdogActionType(data.get('type', 'notification')),
+            message=data.get('message'),
+            channel=data.get('channel'),
+            value=data.get('value'),
+            sequence_id=data.get('sequenceId'),
+            alarm_severity=data.get('alarmSeverity', 'warning')
+        )
+
+
+@dataclass
+class Watchdog:
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    channels: List[str]
+    condition: WatchdogCondition
+    actions: List[WatchdogAction]
+    recovery_actions: List[WatchdogAction] = field(default_factory=list)
+    auto_recover: bool = True
+    cooldown_ms: int = 10000
+    is_triggered: bool = False
+    triggered_at: Optional[float] = None
+    triggered_channels: List[str] = field(default_factory=list)
+    last_triggered: Optional[float] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'Watchdog':
+        condition = WatchdogCondition.from_dict(data.get('condition', {}))
+        actions = [WatchdogAction.from_dict(a) for a in data.get('actions', [])]
+        recovery_actions = [WatchdogAction.from_dict(a) for a in data.get('recoveryActions', [])]
+        return Watchdog(
+            id=data.get('id', ''), name=data.get('name', ''),
+            description=data.get('description', ''), enabled=data.get('enabled', True),
+            channels=data.get('channels', []), condition=condition,
+            actions=actions, recovery_actions=recovery_actions,
+            auto_recover=data.get('autoRecover', True), cooldown_ms=data.get('cooldownMs', 10000)
+        )
+
+
+@dataclass
+class ChannelTracker:
+    last_value: Optional[float] = None
+    last_update_time: Optional[float] = None
+    stuck_since: Optional[float] = None
+    rate_history: List[tuple] = field(default_factory=list)
+
+
+class WatchdogEngine:
+    """Monitors channels for abnormal conditions"""
+
+    def __init__(self):
+        self.watchdogs: Dict[str, Watchdog] = {}
+        self.channel_trackers: Dict[str, ChannelTracker] = {}
+        self.lock = threading.Lock()
+        self.set_output: Optional[Callable[[str, Any], None]] = None
+        self.run_sequence: Optional[Callable[[str], None]] = None
+        self.stop_sequence: Optional[Callable[[str], None]] = None
+        self.publish_notification: Optional[Callable[[str, str, str], None]] = None
+        self.raise_alarm: Optional[Callable[[str, str, str], None]] = None
+        self._is_acquiring: bool = False
+
+    def on_acquisition_start(self):
+        self._is_acquiring = True
+
+    def on_acquisition_stop(self):
+        self._is_acquiring = False
+
+    def load_from_config(self, config: Dict[str, Any]) -> int:
+        with self.lock:
+            self.watchdogs.clear()
+            self.channel_trackers.clear()
+            watchdogs_data = config.get('scripts', {}).get('watchdogs', [])
+            for wd_data in watchdogs_data:
+                try:
+                    wd = Watchdog.from_dict(wd_data)
+                    self.watchdogs[wd.id] = wd
+                    for ch in wd.channels:
+                        if ch not in self.channel_trackers:
+                            self.channel_trackers[ch] = ChannelTracker()
+                except Exception as e:
+                    logger.error(f"Failed to load watchdog: {e}")
+            return len(self.watchdogs)
+
+    def clear(self):
+        with self.lock:
+            self.watchdogs.clear()
+            self.channel_trackers.clear()
+
+    def process_scan(self, channel_values: Dict[str, float], channel_timestamps: Dict[str, float] = None):
+        if not self._is_acquiring:
+            return
+        if channel_timestamps is None:
+            channel_timestamps = {}
+        now = time.time()
+        for channel, value in channel_values.items():
+            if channel not in self.channel_trackers:
+                self.channel_trackers[channel] = ChannelTracker()
+            tracker = self.channel_trackers[channel]
+            timestamp = channel_timestamps.get(channel, now)
+            tracker.rate_history.append((now, value))
+            cutoff = now - 60
+            tracker.rate_history = [(t, v) for t, v in tracker.rate_history if t >= cutoff]
+            if tracker.last_value is not None:
+                if abs(value - tracker.last_value) <= 0.001:
+                    if tracker.stuck_since is None:
+                        tracker.stuck_since = now
+                else:
+                    tracker.stuck_since = None
+            tracker.last_value = value
+            tracker.last_update_time = timestamp
+
+        with self.lock:
+            for wd in self.watchdogs.values():
+                if not wd.enabled:
+                    continue
+                triggered_channels = self._evaluate_watchdog(wd, channel_values, now)
+                if triggered_channels:
+                    if not wd.is_triggered:
+                        if wd.last_triggered:
+                            elapsed = (now - wd.last_triggered) * 1000
+                            if elapsed < wd.cooldown_ms:
+                                continue
+                        self._trigger_watchdog(wd, triggered_channels, now)
+                elif wd.is_triggered and wd.auto_recover:
+                    self._recover_watchdog(wd, now)
+
+    def _evaluate_watchdog(self, wd: Watchdog, channel_values: Dict[str, float], now: float) -> List[str]:
+        triggered = []
+        cond = wd.condition
+        for channel in wd.channels:
+            if channel not in channel_values:
+                continue
+            tracker = self.channel_trackers.get(channel)
+            if not tracker:
+                continue
+            value = channel_values[channel]
+            if cond.condition_type == WatchdogConditionType.STALE_DATA:
+                if tracker.last_update_time:
+                    age_ms = (now - tracker.last_update_time) * 1000
+                    if age_ms > cond.max_stale_ms:
+                        triggered.append(channel)
+            elif cond.condition_type == WatchdogConditionType.OUT_OF_RANGE:
+                if not math.isnan(value):
+                    if cond.min_value is not None and value < cond.min_value:
+                        triggered.append(channel)
+                    elif cond.max_value is not None and value > cond.max_value:
+                        triggered.append(channel)
+            elif cond.condition_type == WatchdogConditionType.RATE_EXCEEDED:
+                if cond.max_rate_per_min and len(tracker.rate_history) >= 2:
+                    old_t, old_v = tracker.rate_history[0]
+                    new_t, new_v = tracker.rate_history[-1]
+                    if new_t > old_t:
+                        rate_per_min = abs(new_v - old_v) / (new_t - old_t) * 60
+                        if rate_per_min > cond.max_rate_per_min:
+                            triggered.append(channel)
+            elif cond.condition_type == WatchdogConditionType.STUCK_VALUE:
+                if tracker.stuck_since:
+                    stuck_ms = (now - tracker.stuck_since) * 1000
+                    if stuck_ms > cond.stuck_duration_ms:
+                        triggered.append(channel)
+        return triggered
+
+    def _trigger_watchdog(self, wd: Watchdog, triggered_channels: List[str], now: float):
+        logger.warning(f"Watchdog triggered: {wd.name} on channels: {triggered_channels}")
+        wd.is_triggered = True
+        wd.triggered_at = now
+        wd.triggered_channels = triggered_channels
+        wd.last_triggered = now
+        for action in wd.actions:
+            try:
+                self._execute_action(action, wd)
+            except Exception as e:
+                logger.error(f"Failed to execute watchdog action: {e}")
+
+    def _recover_watchdog(self, wd: Watchdog, now: float):
+        logger.info(f"Watchdog recovered: {wd.name}")
+        wd.is_triggered = False
+        wd.triggered_at = None
+        wd.triggered_channels = []
+        for action in wd.recovery_actions:
+            try:
+                self._execute_action(action, wd)
+            except Exception as e:
+                logger.error(f"Failed to execute watchdog recovery action: {e}")
+
+    def _execute_action(self, action: WatchdogAction, wd: Watchdog):
+        if action.action_type == WatchdogActionType.NOTIFICATION:
+            if self.publish_notification:
+                message = action.message or f"Watchdog '{wd.name}' triggered"
+                self.publish_notification('watchdog', wd.name, message)
+        elif action.action_type == WatchdogActionType.ALARM:
+            if self.raise_alarm:
+                message = action.message or f"Watchdog alarm: {wd.name}"
+                self.raise_alarm(wd.id, action.alarm_severity, message)
+        elif action.action_type == WatchdogActionType.SET_OUTPUT:
+            if self.set_output and action.channel is not None:
+                self.set_output(action.channel, action.value)
+        elif action.action_type == WatchdogActionType.STOP_SEQUENCE:
+            if self.stop_sequence and action.sequence_id:
+                self.stop_sequence(action.sequence_id)
+        elif action.action_type == WatchdogActionType.RUN_SEQUENCE:
+            if self.run_sequence and action.sequence_id:
+                self.run_sequence(action.sequence_id)
+
+    def manual_clear(self, watchdog_id: str) -> bool:
+        with self.lock:
+            if watchdog_id not in self.watchdogs:
+                return False
+            wd = self.watchdogs[watchdog_id]
+            if wd.is_triggered:
+                wd.is_triggered = False
+                wd.triggered_at = None
+                wd.triggered_channels = []
+                return True
+            return False
+
+
+# =============================================================================
+# ENHANCED ALARM MANAGER
+# =============================================================================
+
+class AlarmSeverity(Enum):
+    """Alarm severity levels (ISA-18.2 style)"""
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
+
+
+class FullAlarmState(Enum):
+    """Alarm lifecycle states"""
+    NORMAL = "normal"
+    ACTIVE = "active"
+    ACKNOWLEDGED = "acknowledged"
+    RETURNED = "returned"
+    SHELVED = "shelved"
+    OUT_OF_SERVICE = "out_of_service"
+
+
+class LatchBehavior(Enum):
+    AUTO_CLEAR = "auto_clear"
+    LATCH = "latch"
+    TIMED_LATCH = "timed_latch"
+
+
+@dataclass
+class AlarmConfig:
+    """Configuration for a single alarm point"""
+    id: str
+    channel: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    severity: AlarmSeverity = AlarmSeverity.MEDIUM
+    high_high: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    low_low: Optional[float] = None
+    deadband: float = 0.0
+    on_delay_s: float = 0.0
+    off_delay_s: float = 0.0
+    latch_behavior: LatchBehavior = LatchBehavior.AUTO_CLEAR
+    timed_latch_s: float = 60.0
+    actions: List[str] = field(default_factory=list)
+    safety_action: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id, 'channel': self.channel, 'name': self.name,
+            'description': self.description, 'enabled': self.enabled,
+            'severity': self.severity.name,
+            'high_high': self.high_high, 'high': self.high,
+            'low': self.low, 'low_low': self.low_low,
+            'deadband': self.deadband, 'on_delay_s': self.on_delay_s,
+            'off_delay_s': self.off_delay_s,
+            'latch_behavior': self.latch_behavior.value,
+            'timed_latch_s': self.timed_latch_s,
+            'actions': self.actions, 'safety_action': self.safety_action
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'AlarmConfig':
+        return AlarmConfig(
+            id=d.get('id', ''), channel=d.get('channel', ''),
+            name=d.get('name', ''), description=d.get('description', ''),
+            enabled=d.get('enabled', True),
+            severity=AlarmSeverity[d.get('severity', 'MEDIUM')],
+            high_high=d.get('high_high'), high=d.get('high'),
+            low=d.get('low'), low_low=d.get('low_low'),
+            deadband=d.get('deadband', 0.0),
+            on_delay_s=d.get('on_delay_s', 0.0),
+            off_delay_s=d.get('off_delay_s', 0.0),
+            latch_behavior=LatchBehavior(d.get('latch_behavior', 'auto_clear')),
+            timed_latch_s=d.get('timed_latch_s', 60.0),
+            actions=d.get('actions', []),
+            safety_action=d.get('safety_action')
+        )
+
+
+@dataclass
+class ActiveAlarm:
+    """Runtime state of an active alarm"""
+    alarm_id: str
+    channel: str
+    name: str
+    severity: AlarmSeverity
+    state: FullAlarmState
+    threshold_type: str
+    threshold_value: float
+    triggered_value: float
+    current_value: float
+    triggered_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by: Optional[str] = None
+    cleared_at: Optional[datetime] = None
+    sequence_number: int = 0
+    is_first_out: bool = False
+    shelved_at: Optional[datetime] = None
+    shelved_by: Optional[str] = None
+    shelve_reason: str = ""
+    message: str = ""
+    safety_action: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            'alarm_id': self.alarm_id, 'channel': self.channel, 'name': self.name,
+            'severity': self.severity.name, 'state': self.state.value,
+            'threshold_type': self.threshold_type, 'threshold_value': self.threshold_value,
+            'triggered_value': self.triggered_value, 'current_value': self.current_value,
+            'triggered_at': self.triggered_at.isoformat(),
+            'acknowledged_at': self.acknowledged_at.isoformat() if self.acknowledged_at else None,
+            'acknowledged_by': self.acknowledged_by,
+            'cleared_at': self.cleared_at.isoformat() if self.cleared_at else None,
+            'sequence_number': self.sequence_number, 'is_first_out': self.is_first_out,
+            'shelved_at': self.shelved_at.isoformat() if self.shelved_at else None,
+            'shelved_by': self.shelved_by, 'shelve_reason': self.shelve_reason,
+            'message': self.message, 'safety_action': self.safety_action,
+            'duration_seconds': (datetime.now() - self.triggered_at).total_seconds()
+        }
+
+
+class EnhancedAlarmManager:
+    """Enhanced alarm management with full lifecycle support"""
+
+    def __init__(self, publish_callback: Optional[Callable] = None):
+        self.publish_callback = publish_callback
+        self.lock = threading.RLock()
+        self.alarm_configs: Dict[str, AlarmConfig] = {}
+        self.active_alarms: Dict[str, ActiveAlarm] = {}
+        self.on_delay_timers: Dict[str, float] = {}
+        self.off_delay_timers: Dict[str, float] = {}
+        self.timed_latch_timers: Dict[str, float] = {}
+        self.value_history: Dict[str, List[tuple]] = {}
+        self.alarm_sequence = 0
+        self.first_out_alarm_id: Optional[str] = None
+        self.cascade_start_time: Optional[float] = None
+        self.CASCADE_WINDOW_S = 5.0
+        self.history: List[Dict[str, Any]] = []
+        self.max_history = 1000
+
+    def add_alarm_config(self, config: AlarmConfig):
+        with self.lock:
+            self.alarm_configs[config.id] = config
+
+    def remove_alarm_config(self, alarm_id: str):
+        with self.lock:
+            self.alarm_configs.pop(alarm_id, None)
+            self.active_alarms.pop(alarm_id, None)
+
+    def get_configs_for_channel(self, channel: str) -> List[AlarmConfig]:
+        return [c for c in self.alarm_configs.values() if c.channel == channel]
+
+    def process_value(self, channel: str, value: float, timestamp: Optional[float] = None):
+        if timestamp is None:
+            timestamp = time.time()
+        with self.lock:
+            self._update_rate_history(channel, value, timestamp)
+            for config in self.get_configs_for_channel(channel):
+                if not config.enabled:
+                    continue
+                self._evaluate_alarm(config, value, timestamp)
+            self._check_timed_latches(timestamp)
+
+    def _update_rate_history(self, channel: str, value: float, timestamp: float):
+        if channel not in self.value_history:
+            self.value_history[channel] = []
+        self.value_history[channel].append((timestamp, value))
+        cutoff = timestamp - 60.0
+        self.value_history[channel] = [(t, v) for t, v in self.value_history[channel] if t >= cutoff]
+
+    def _evaluate_alarm(self, config: AlarmConfig, value: float, timestamp: float):
+        alarm_id = config.id
+        current = self.active_alarms.get(alarm_id)
+        condition_met, threshold_type, threshold_value = self._check_thresholds(config, value)
+
+        if condition_met:
+            self.off_delay_timers.pop(alarm_id, None)
+            self.timed_latch_timers.pop(alarm_id, None)
+            if current is None:
+                if config.on_delay_s > 0:
+                    if alarm_id not in self.on_delay_timers:
+                        self.on_delay_timers[alarm_id] = timestamp
+                        return
+                    if timestamp - self.on_delay_timers[alarm_id] < config.on_delay_s:
+                        return
+                self._trigger_alarm(config, value, threshold_type, threshold_value)
+                self.on_delay_timers.pop(alarm_id, None)
+            elif current.state != FullAlarmState.SHELVED:
+                current.current_value = value
+                if current.state == FullAlarmState.RETURNED:
+                    current.state = FullAlarmState.ACKNOWLEDGED if current.acknowledged_at else FullAlarmState.ACTIVE
+        else:
+            self.on_delay_timers.pop(alarm_id, None)
+            if current is not None and current.state != FullAlarmState.SHELVED:
+                if self._should_clear(config, value, current.threshold_type, current.threshold_value):
+                    self._handle_clear(config, current, value, timestamp)
+
+    def _check_thresholds(self, config: AlarmConfig, value: float) -> tuple:
+        if config.high_high is not None and value >= config.high_high:
+            return True, 'high_high', config.high_high
+        if config.low_low is not None and value <= config.low_low:
+            return True, 'low_low', config.low_low
+        if config.high is not None and value >= config.high:
+            return True, 'high', config.high
+        if config.low is not None and value <= config.low:
+            return True, 'low', config.low
+        return False, None, None
+
+    def _should_clear(self, config: AlarmConfig, value: float, threshold_type: str, threshold_value: float) -> bool:
+        deadband = config.deadband
+        if threshold_type in ('high_high', 'high'):
+            return value < (threshold_value - deadband)
+        elif threshold_type in ('low_low', 'low'):
+            return value > (threshold_value + deadband)
+        return True
+
+    def _handle_clear(self, config: AlarmConfig, current: ActiveAlarm, value: float, timestamp: float):
+        alarm_id = config.id
+        if config.latch_behavior == LatchBehavior.AUTO_CLEAR:
+            if config.off_delay_s > 0:
+                if alarm_id not in self.off_delay_timers:
+                    self.off_delay_timers[alarm_id] = timestamp
+                if timestamp - self.off_delay_timers[alarm_id] < config.off_delay_s:
+                    current.current_value = value
+                    return
+            self._clear_alarm(alarm_id, "Auto-cleared")
+            self.off_delay_timers.pop(alarm_id, None)
+        elif config.latch_behavior == LatchBehavior.LATCH:
+            if current.state == FullAlarmState.ACTIVE:
+                current.state = FullAlarmState.RETURNED
+            current.current_value = value
+            current.cleared_at = datetime.now()
+        elif config.latch_behavior == LatchBehavior.TIMED_LATCH:
+            if current.state == FullAlarmState.ACTIVE:
+                current.state = FullAlarmState.RETURNED
+                current.cleared_at = datetime.now()
+            if alarm_id not in self.timed_latch_timers:
+                self.timed_latch_timers[alarm_id] = timestamp
+            current.current_value = value
+
+    def _check_timed_latches(self, timestamp: float):
+        expired = []
+        for alarm_id, clear_time in self.timed_latch_timers.items():
+            config = self.alarm_configs.get(alarm_id)
+            if config and timestamp - clear_time >= config.timed_latch_s:
+                expired.append(alarm_id)
+        for alarm_id in expired:
+            self._clear_alarm(alarm_id, "Timed latch expired")
+            self.timed_latch_timers.pop(alarm_id, None)
+
+    def _trigger_alarm(self, config: AlarmConfig, value: float, threshold_type: str, threshold_value: float):
+        now = datetime.now()
+        is_first_out = False
+        if self.first_out_alarm_id is None or \
+           (self.cascade_start_time and time.time() - self.cascade_start_time > self.CASCADE_WINDOW_S):
+            self.alarm_sequence += 1
+            self.first_out_alarm_id = config.id
+            self.cascade_start_time = time.time()
+            is_first_out = True
+        self.alarm_sequence += 1
+        direction = "exceeded" if threshold_type.startswith('high') else "fell below"
+        message = f"{config.name} {direction} {threshold_type.replace('_', ' ')} limit: {value:.2f} (limit: {threshold_value})"
+        alarm = ActiveAlarm(
+            alarm_id=config.id, channel=config.channel, name=config.name,
+            severity=config.severity, state=FullAlarmState.ACTIVE,
+            threshold_type=threshold_type, threshold_value=threshold_value,
+            triggered_value=value, current_value=value, triggered_at=now,
+            sequence_number=self.alarm_sequence, is_first_out=is_first_out,
+            message=message, safety_action=config.safety_action
+        )
+        self.active_alarms[config.id] = alarm
+        self._log_event(alarm, 'triggered', value, threshold_value, None)
+        self._publish_alarm(alarm)
+        if config.safety_action and self.publish_callback:
+            self.publish_callback('safety_action', {'action_id': config.safety_action, 'alarm_id': alarm.alarm_id})
+        logger.warning(f"ALARM TRIGGERED: {message}")
+
+    def _clear_alarm(self, alarm_id: str, reason: str = "Cleared"):
+        alarm = self.active_alarms.get(alarm_id)
+        if alarm is None:
+            return
+        self._log_event(alarm, 'cleared', alarm.current_value, alarm.threshold_value, None)
+        del self.active_alarms[alarm_id]
+        if alarm_id == self.first_out_alarm_id:
+            self.first_out_alarm_id = None
+            self.cascade_start_time = None
+        self._publish_alarm_cleared(alarm_id)
+        logger.info(f"ALARM CLEARED: {alarm.name} - {reason}")
+
+    def acknowledge_alarm(self, alarm_id: str, user: str = "Unknown") -> bool:
+        with self.lock:
+            alarm = self.active_alarms.get(alarm_id)
+            if alarm and alarm.state in (FullAlarmState.ACTIVE, FullAlarmState.RETURNED):
+                alarm.state = FullAlarmState.ACKNOWLEDGED
+                alarm.acknowledged_at = datetime.now()
+                alarm.acknowledged_by = user
+                self._log_event(alarm, 'acknowledged', alarm.current_value, alarm.threshold_value, user)
+                self._publish_alarm(alarm)
+                return True
+            return False
+
+    def acknowledge_all(self, user: str = "Unknown") -> int:
+        with self.lock:
+            count = 0
+            for alarm_id, alarm in list(self.active_alarms.items()):
+                if alarm.state in (FullAlarmState.ACTIVE, FullAlarmState.RETURNED):
+                    self.acknowledge_alarm(alarm_id, user)
+                    count += 1
+            return count
+
+    def reset_alarm(self, alarm_id: str, user: str = "Unknown") -> bool:
+        with self.lock:
+            alarm = self.active_alarms.get(alarm_id)
+            if alarm:
+                self._log_event(alarm, 'reset', alarm.current_value, alarm.threshold_value, user)
+                self._clear_alarm(alarm_id, f"Reset by {user}")
+                return True
+            return False
+
+    def shelve_alarm(self, alarm_id: str, user: str, reason: str = "", duration_s: float = 3600.0) -> bool:
+        with self.lock:
+            alarm = self.active_alarms.get(alarm_id)
+            if alarm:
+                alarm.state = FullAlarmState.SHELVED
+                alarm.shelved_at = datetime.now()
+                alarm.shelved_by = user
+                alarm.shelve_reason = reason
+                self._log_event(alarm, 'shelved', alarm.current_value, alarm.threshold_value, user)
+                self._publish_alarm(alarm)
+                return True
+            return False
+
+    def unshelve_alarm(self, alarm_id: str, user: str) -> bool:
+        with self.lock:
+            alarm = self.active_alarms.get(alarm_id)
+            if alarm and alarm.state == FullAlarmState.SHELVED:
+                alarm.state = FullAlarmState.ACKNOWLEDGED if alarm.acknowledged_at else FullAlarmState.ACTIVE
+                alarm.shelved_at = None
+                alarm.shelved_by = None
+                alarm.shelve_reason = ""
+                self._log_event(alarm, 'unshelved', alarm.current_value, alarm.threshold_value, user)
+                self._publish_alarm(alarm)
+                return True
+            return False
+
+    def _log_event(self, alarm: ActiveAlarm, event_type: str, value: float, threshold: float, user: Optional[str]):
+        entry = {
+            'timestamp': datetime.now().isoformat(), 'alarm_id': alarm.alarm_id,
+            'channel': alarm.channel, 'event_type': event_type,
+            'severity': alarm.severity.name, 'value': value,
+            'threshold': threshold, 'user': user, 'message': alarm.message
+        }
+        self.history.append(entry)
+        if len(self.history) > self.max_history:
+            self.history = self.history[-self.max_history:]
+
+    def _publish_alarm(self, alarm: ActiveAlarm):
+        if self.publish_callback:
+            self.publish_callback('alarm', alarm.to_dict())
+
+    def _publish_alarm_cleared(self, alarm_id: str):
+        if self.publish_callback:
+            self.publish_callback('alarm_cleared', {'alarm_id': alarm_id})
+
+    def get_active_alarms(self) -> List[ActiveAlarm]:
+        with self.lock:
+            alarms = list(self.active_alarms.values())
+            alarms.sort(key=lambda a: (a.severity.value, a.sequence_number))
+            return alarms
+
+    def get_alarm_counts(self) -> Dict[str, int]:
+        with self.lock:
+            counts = {'total': len(self.active_alarms), 'active': 0, 'acknowledged': 0,
+                      'returned': 0, 'shelved': 0, 'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+            for alarm in self.active_alarms.values():
+                counts[alarm.state.value] = counts.get(alarm.state.value, 0) + 1
+                counts[alarm.severity.name.lower()] = counts.get(alarm.severity.name.lower(), 0) + 1
+            return counts
+
+    def get_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.lock:
+            return list(reversed(self.history[-limit:]))
+
+    def load_config(self, config: Dict[str, Any]):
+        with self.lock:
+            self.alarm_configs.clear()
+            for alarm_data in config.get('alarms', []):
+                try:
+                    ac = AlarmConfig.from_dict(alarm_data)
+                    self.alarm_configs[ac.id] = ac
+                except Exception as e:
+                    logger.error(f"Failed to load alarm config: {e}")
+
+    def clear_all(self):
+        with self.lock:
+            self.active_alarms.clear()
+            self.on_delay_timers.clear()
+            self.off_delay_timers.clear()
+            self.timed_latch_timers.clear()
+            self.first_out_alarm_id = None
+            self.cascade_start_time = None
+
+
 @dataclass
 class CRIOConfig:
     """Configuration for cRIO node"""
@@ -694,7 +2192,7 @@ class CRIOConfig:
     mqtt_username: str = ''
     mqtt_password: str = ''
 
-    scan_rate_hz: float = 10.0
+    scan_rate_hz: float = 4.0
     publish_rate_hz: float = 4.0  # Rate at which to publish MQTT messages (separate from scan rate)
     watchdog_timeout: float = 2.0
 
@@ -778,6 +2276,7 @@ class CRIONodeService:
         self.pc_connected = False
         self._last_status_time = 0.0  # For periodic status publishing
         self._last_publish_time = 0.0  # For rate-limited channel publishing
+        self._start_time = time.time()  # For uptime tracking
 
         # Config version tracking (for PC sync)
         self.config_version = ''  # Hash of current config
@@ -786,8 +2285,107 @@ class CRIONodeService:
         # Hardware info cache (detected once at startup)
         self._hardware_info: Optional[Dict[str, Any]] = None
 
+        # =================================================================
+        # NEW ENGINES (Standalone DAQ capability)
+        # =================================================================
+
+        # PID Control Engine
+        self.pid_engine = PIDEngine(on_set_output=self._set_output_internal)
+        self.pid_engine.set_status_callback(self._publish_pid_status)
+
+        # Sequence Manager
+        self.sequence_manager = SequenceManager()
+        self.sequence_manager.on_set_output = self._set_output_internal
+        self.sequence_manager.on_get_channel_value = self._get_channel_value
+        self.sequence_manager.on_sequence_event = self._on_sequence_event
+
+        # Trigger Engine
+        self.trigger_engine = TriggerEngine()
+        self.trigger_engine.set_output = self._set_output_internal
+        self.trigger_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id)
+        self.trigger_engine.stop_sequence = lambda seq_id: self.sequence_manager.abort_sequence(seq_id)
+        self.trigger_engine.publish_notification = self._publish_notification
+
+        # Watchdog Engine (channel monitoring)
+        self.channel_watchdog = WatchdogEngine()
+        self.channel_watchdog.set_output = self._set_output_internal
+        self.channel_watchdog.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id)
+        self.channel_watchdog.stop_sequence = lambda seq_id: self.sequence_manager.abort_sequence(seq_id)
+        self.channel_watchdog.publish_notification = self._publish_notification
+        self.channel_watchdog.raise_alarm = self._raise_alarm
+
+        # Enhanced Alarm Manager
+        self.enhanced_alarm_manager = EnhancedAlarmManager(publish_callback=self._publish_alarm_event)
+
+        # Last scan time for dt calculation
+        self._last_scan_time: float = 0.0
+
         # Load config (if exists)
         self._load_local_config()
+
+    # =========================================================================
+    # ENGINE CALLBACK METHODS
+    # =========================================================================
+
+    def _set_output_internal(self, channel: str, value: Any) -> bool:
+        """Internal callback for setting outputs from engines"""
+        try:
+            return self._write_output(channel, float(value))
+        except Exception as e:
+            logger.error(f"Failed to set output {channel}: {e}")
+            return False
+
+    def _get_channel_value(self, channel: str) -> Optional[float]:
+        """Get current channel value"""
+        with self.values_lock:
+            return self.channel_values.get(channel)
+
+    def _publish_pid_status(self, loop_id: str, status: Dict[str, Any]):
+        """Publish PID loop status via MQTT"""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_base_topic}/node/{self.config.node_id}/pid/loop/{loop_id}/status"
+            try:
+                self.mqtt_client.publish(topic, json.dumps(status), qos=0)
+            except Exception as e:
+                logger.error(f"Failed to publish PID status: {e}")
+
+    def _on_sequence_event(self, event_type: str, sequence: Sequence):
+        """Handle sequence events"""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_base_topic}/node/{self.config.node_id}/sequence/event"
+            try:
+                self.mqtt_client.publish(topic, json.dumps({
+                    'event': event_type,
+                    'sequence': sequence.to_dict()
+                }), qos=1)
+            except Exception as e:
+                logger.error(f"Failed to publish sequence event: {e}")
+
+    def _publish_notification(self, source: str, name: str, message: str):
+        """Publish notification via MQTT"""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_base_topic}/node/{self.config.node_id}/notification"
+            try:
+                self.mqtt_client.publish(topic, json.dumps({
+                    'source': source, 'name': name, 'message': message,
+                    'timestamp': datetime.now().isoformat()
+                }), qos=1)
+            except Exception as e:
+                logger.error(f"Failed to publish notification: {e}")
+
+    def _raise_alarm(self, alarm_id: str, severity: str, message: str):
+        """Raise an alarm from watchdog engine"""
+        logger.warning(f"Watchdog alarm {alarm_id}: [{severity}] {message}")
+        self._publish_notification('watchdog_alarm', alarm_id, message)
+
+    def _publish_alarm_event(self, event_type: str, data: Dict[str, Any]):
+        """Publish alarm event via MQTT"""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_base_topic}/node/{self.config.node_id}/alarm/{event_type}"
+            try:
+                self.mqtt_client.publish(topic, json.dumps(data), qos=1)
+            except Exception as e:
+                logger.error(f"Failed to publish alarm event: {e}")
 
     # =========================================================================
     # CONFIGURATION PERSISTENCE
@@ -817,7 +2415,7 @@ class CRIONodeService:
                     mqtt_base_topic=data.get('mqtt_base_topic', 'nisystem'),
                     mqtt_username=data.get('mqtt_username', ''),
                     mqtt_password=data.get('mqtt_password', ''),
-                    scan_rate_hz=data.get('scan_rate_hz', 10.0),
+                    scan_rate_hz=data.get('scan_rate_hz', 4.0),
                     publish_rate_hz=data.get('publish_rate_hz', 4.0),
                     watchdog_timeout=data.get('watchdog_timeout', 2.0),
                     channels=channels,
@@ -1454,6 +3052,7 @@ class CRIONodeService:
                 (f"{base}/safety/#", 1),      # Safety commands (trigger, clear)
                 (f"{base}/session/#", 1),     # Session commands (start, stop)
                 (f"{base}/console/#", 1),     # Interactive console (IPython-like)
+                (f"{base}/discovery/#", 1),   # Discovery requests (available channels)
                 # Global discovery ping - respond when PC scans for devices
                 (f"{mqtt_base}/discovery/ping", 1),
             ]
@@ -1512,6 +3111,8 @@ class CRIONodeService:
                 self._handle_session_message(topic, payload)
             elif topic.startswith(f"{base}/console/"):
                 self._handle_console_message(topic, payload)
+            elif topic.startswith(f"{base}/discovery/"):
+                self._handle_discovery_message(topic, payload)
 
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
@@ -1550,6 +3151,9 @@ class CRIONodeService:
                         alarm_message=action_data.get('alarm_message', '')
                     )
 
+                # Save old channels for incremental reconfiguration
+                old_channels = dict(self.config.channels) if self.config.channels else {}
+
                 # Update config
                 self.config.channels = channels
                 self.config.scripts = payload.get('scripts', [])
@@ -1557,8 +3161,15 @@ class CRIONodeService:
                 self.config.safe_state_outputs = payload.get('safe_state_outputs', [])
                 self.config.watchdog_timeout = payload.get('watchdog_timeout', self.config.watchdog_timeout)
 
-                # Calculate config hash for version tracking
-                config_hash = self._calculate_config_hash()
+                # Use config version from PC if provided, otherwise calculate locally
+                # (PC uses md5[:8], we use sha256 - must use PC's version for matching)
+                config_hash = payload.get('config_version', '')
+                if not config_hash:
+                    config_hash = self._calculate_config_hash()
+
+                # Check if config actually changed (avoid unnecessary hardware reconfig)
+                config_unchanged = (config_hash == self.config_version and self.config_version)
+
                 self.config_version = config_hash
                 self.config_timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -1571,8 +3182,12 @@ class CRIONodeService:
                 # Save locally
                 self._save_local_config()
 
-                # Reconfigure hardware
-                self._configure_hardware()
+                # Reconfigure hardware only if config changed (prevents output toggling)
+                # Pass old_channels for incremental reconfiguration (only changed outputs affected)
+                if config_unchanged:
+                    logger.info(f"Config unchanged (version: {config_hash}), skipping hardware reconfiguration")
+                else:
+                    self._configure_hardware(old_channels=old_channels)
 
                 # Clear safety triggered state (config changed)
                 with self.safety_lock:
@@ -1708,7 +3323,88 @@ class CRIONodeService:
         return ChannelConfig(**normalized)
 
     def _handle_command_message(self, topic: str, payload: Dict[str, Any]):
-        """Handle output commands from NISystem"""
+        """Handle commands from NISystem (device CLI and output commands)"""
+        request_id = payload.get('request_id', '')
+        base = self.get_topic_base()
+
+        # Device CLI commands (ping, info, modules, firmware, reboot)
+        if topic.endswith('/commands/ping'):
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'command': 'ping',
+                'request_id': request_id,
+                'node_id': self.config.node_id,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+            return
+
+        elif topic.endswith('/commands/info'):
+            hw_info = getattr(self, '_hardware_info', {})
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'info': {
+                    'node_id': self.config.node_id,
+                    'type': 'cRIO',
+                    'product_type': hw_info.get('product_type', 'cRIO'),
+                    'serial_number': hw_info.get('serial_number', 'N/A'),
+                    'device_name': hw_info.get('device_name', ''),
+                    'ip_address': self._get_local_ip(),
+                    'channels': len(self.config.channels),
+                    'modules': len(hw_info.get('modules', [])),
+                    'acquiring': self._acquiring.is_set(),
+                    'uptime_hours': round((time.time() - getattr(self, '_start_time', time.time())) / 3600, 1)
+                }
+            })
+            return
+
+        elif topic.endswith('/commands/modules'):
+            hw_info = getattr(self, '_hardware_info', {})
+            modules = []
+            for mod in hw_info.get('modules', []):
+                modules.append({
+                    'slot': mod.get('slot', 0),
+                    'name': mod.get('name', ''),
+                    'type': mod.get('product_type', ''),
+                    'channels': len(mod.get('channels', []))
+                })
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'modules': modules
+            })
+            return
+
+        elif topic.endswith('/commands/firmware'):
+            hw_info = getattr(self, '_hardware_info', {})
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'node_software': '1.0.0',
+                'product_type': hw_info.get('product_type', 'cRIO'),
+                'serial_number': hw_info.get('serial_number', 'N/A'),
+                'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                'nidaqmx_available': 'nidaqmx' in sys.modules
+            })
+            return
+
+        elif topic.endswith('/commands/reboot'):
+            logger.warning("Received reboot command from device CLI")
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'message': 'Reboot initiated'
+            })
+            # Schedule reboot after response is sent
+            def do_reboot():
+                time.sleep(1)
+                logger.info("Executing reboot...")
+                import subprocess
+                subprocess.run(['reboot'], check=False)
+            threading.Thread(target=do_reboot, daemon=True).start()
+            return
+
+        # Output commands
         # New format: topic ends with /commands/output, TAG name in payload
         # Old format: topic ends with /commands/{channel_name}
         if topic.endswith('/commands/output'):
@@ -1775,10 +3471,38 @@ class CRIONodeService:
                     self._publish_interlock_blocked(channel_name, ch_config.safety_interlock, value)
                     return  # Reject command
 
-            self._write_output(task_key, value)
-            logger.info(f"Output command: {channel_name} -> {task_key} = {value}")
+            success = self._write_output(task_key, value)
+            logger.info(f"Output command: {channel_name} -> {task_key} = {value} (success={success})")
+
+            # Publish acknowledgment so dashboard knows command completed
+            base = self.get_topic_base()
+            self._publish(f"{base}/command/ack", {
+                'success': success,
+                'command': 'output',
+                'channel': channel_name,
+                'value': value,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+
+            # Also publish the channel value immediately so dashboard updates
+            if success and channel_name in self.output_values:
+                self._publish(f"{base}/channels/{channel_name}", {
+                    'value': self.output_values[channel_name],
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'quality': 'good',
+                    'type': 'output'
+                })
         else:
             logger.warning(f"Unknown output channel: {channel_name} (physical={physical_channel}, available: {list(self.output_tasks.keys())})")
+            # Publish failure acknowledgment
+            base = self.get_topic_base()
+            self._publish(f"{base}/command/ack", {
+                'success': False,
+                'command': 'output',
+                'channel': channel_name,
+                'error': f"Unknown output channel: {channel_name}",
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
 
     def _handle_script_message(self, topic: str, payload: Dict[str, Any]):
         """Handle script commands from NISystem"""
@@ -1886,12 +3610,12 @@ class CRIONodeService:
             self._set_safe_state(payload.get('reason', 'command'))
         elif topic.endswith('/channel/add'):
             # Dynamic channel addition (seamless task swap)
-            success = self.add_channel_dynamic(payload)
+            success, message = self.add_channel_dynamic(payload)
             self._publish(f"{self.get_topic_base()}/channel/response", {
                 'action': 'add',
                 'success': success,
                 'channel': payload.get('name', ''),
-                'message': 'Channel added' if success else 'Failed to add channel'
+                'message': message
             })
         elif topic.endswith('/channel/remove'):
             # Dynamic channel removal (seamless task swap)
@@ -2051,6 +3775,26 @@ class CRIONodeService:
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
 
+    def _publish_config_response(self, request_type: str, success: bool,
+                                   data: Optional[Dict[str, Any]] = None,
+                                   error: Optional[str] = None):
+        """
+        Publish config operation response.
+
+        Uses unified API format matching DAQ Service for frontend compatibility.
+        """
+        payload = {
+            'request_type': request_type,
+            'success': success,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        if data:
+            payload['data'] = data
+        if error:
+            payload['error'] = error
+
+        self._publish(f"{self.get_topic_base()}/config/response", payload, qos=1)
+
     def _check_session_timeout(self):
         """Check if session has timed out (PC disconnect protection)"""
         if not self.session.active:
@@ -2105,6 +3849,111 @@ class CRIONodeService:
             self._handle_console_complete(payload)
         elif topic.endswith('/reset'):
             self._handle_console_reset(payload)
+
+    def _handle_discovery_message(self, topic: str, payload: Dict[str, Any]):
+        """Handle discovery requests (available channels, etc.)"""
+        if topic.endswith('/channels'):
+            self._publish_available_channels()
+
+    def _publish_available_channels(self):
+        """
+        Publish available physical channels from this cRIO node.
+
+        This allows the frontend to show a dropdown of available channels
+        when manually adding channels from a remote cRIO node.
+        """
+        base = self.get_topic_base()
+
+        # Get hardware info (this includes enumerated channels)
+        if not self._hardware_info:
+            self._detect_hardware()
+
+        # Build flat list of available channels with their types
+        available_channels = []
+        used_physical_channels = {ch.physical_channel for ch in self.channels.values() if ch.physical_channel}
+
+        for module in self._hardware_info.get('modules', []):
+            module_name = module.get('name', '')
+            module_type = module.get('product_type', '')
+
+            for ch in module.get('channels', []):
+                physical_name = ch.get('name', '')
+                display_name = ch.get('display_name', physical_name)
+                channel_type = ch.get('channel_type', 'unknown')
+                category = ch.get('category', channel_type)
+
+                # Mark if already in use
+                in_use = physical_name in used_physical_channels
+
+                # Map generic types to specific types based on module
+                specific_type = self._map_channel_type(channel_type, category, module_type)
+
+                available_channels.append({
+                    'physical_channel': physical_name,
+                    'display_name': display_name,
+                    'channel_type': specific_type,
+                    'category': category,
+                    'module': module_name,
+                    'module_type': module_type,
+                    'in_use': in_use,
+                    'used_by': self._get_channel_using_physical(physical_name) if in_use else None
+                })
+
+        # Publish response
+        self._publish(f"{base}/discovery/channels/response", {
+            'node_id': self.config.node_id,
+            'node_type': 'crio',
+            'device_name': self._hardware_info.get('device_name', ''),
+            'channels': available_channels,
+            'total_available': len([c for c in available_channels if not c['in_use']]),
+            'total_in_use': len([c for c in available_channels if c['in_use']]),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+        logger.info(f"Published {len(available_channels)} available channels for discovery")
+
+    def _map_channel_type(self, generic_type: str, category: str, module_type: str) -> str:
+        """Map generic channel types to specific types based on module."""
+        # NI Module type mapping for common modules
+        module_type_lower = module_type.lower()
+
+        if 'analog_input' in generic_type or category == 'ai':
+            # Thermocouples
+            if '9213' in module_type or '9211' in module_type or '9212' in module_type:
+                return 'thermocouple'
+            # RTD
+            if '9217' in module_type or '9226' in module_type:
+                return 'rtd'
+            # Current input
+            if '9203' in module_type or '9227' in module_type:
+                return 'current_input'
+            # Voltage input (default for analog input)
+            return 'voltage_input'
+
+        if 'analog_output' in generic_type or category == 'ao':
+            # Current output
+            if '9265' in module_type:
+                return 'current_output'
+            # Voltage output (default for analog output)
+            return 'voltage_output'
+
+        if 'digital_input' in generic_type:
+            return 'digital_input'
+
+        if 'digital_output' in generic_type:
+            return 'digital_output'
+
+        if 'counter' in generic_type:
+            return 'counter'
+
+        return generic_type
+
+    def _get_channel_using_physical(self, physical_channel: str) -> Optional[str]:
+        """Get the tag name using a physical channel."""
+        for name, ch in self.channels.items():
+            if getattr(ch, 'physical_channel', '') == physical_channel:
+                return name
+        return None
 
     def _handle_console_execute(self, payload: dict) -> None:
         """Execute a single Python command from the interactive console widget."""
@@ -2910,7 +4759,7 @@ Time functions:
                 if ch_config and ch_config.channel_type == 'digital_output':
                     self._write_output(channel_name, 0)
                     logger.info(f"  DO {channel_name} -> 0 (OFF)")
-                elif ch_config and ch_config.channel_type == 'analog_output':
+                elif ch_config and ch_config.channel_type in ('analog_output', 'voltage_output', 'current_output'):
                     # AO safe state: default to 0.0 (voltage outputs)
                     # For 4-20mA current outputs, use SafetyAction with explicit safe_value
                     safe_value = 0.0
@@ -3348,14 +5197,60 @@ Time functions:
     # HARDWARE CONFIGURATION
     # =========================================================================
 
-    def _configure_hardware(self):
-        """Configure NI-DAQmx tasks based on current config"""
+    def _configure_hardware(self, old_channels: Dict[str, ChannelConfig] = None):
+        """Configure NI-DAQmx tasks based on current config.
+
+        Args:
+            old_channels: Previous channel config for incremental updates.
+                         If provided, only changed channels will be reconfigured.
+        """
         if not NIDAQMX_AVAILABLE:
             logger.warning("NI-DAQmx not available - using simulation")
             return
 
-        # Close existing tasks
-        self._close_tasks()
+        # Track if we need to restart tasks after reconfiguration
+        was_acquiring = self._acquiring.is_set()
+
+        # Determine what changed (for incremental reconfiguration)
+        if old_channels:
+            changed_outputs, removed_outputs, new_outputs = self._diff_output_channels(
+                old_channels, self.config.channels
+            )
+
+            # PAUSE SCAN LOOP during reconfiguration to prevent race conditions
+            if was_acquiring:
+                logger.info("Pausing scan loop for reconfiguration...")
+                self._task_swap_in_progress = True
+                time.sleep(0.05)  # Allow current scan iteration to complete
+
+            # SAFETY FIRST: Set outputs to safe state BEFORE closing tasks
+            # This prevents undefined output states during reconfiguration
+            if changed_outputs or removed_outputs:
+                logger.info(f"Setting {len(changed_outputs) + len(removed_outputs)} outputs to safe state before reconfiguration")
+                for ch_name in list(changed_outputs) + list(removed_outputs):
+                    if ch_name in self.output_tasks:
+                        try:
+                            # Get safe value (0 for DO, 0.0 for AO)
+                            old_ch = old_channels.get(ch_name)
+                            if old_ch and old_ch.channel_type == 'digital_output':
+                                self.output_tasks[ch_name].write(False)
+                            elif old_ch and old_ch.channel_type in ('analog_output', 'voltage_output', 'current_output'):
+                                self.output_tasks[ch_name].write(0.0)
+                            logger.debug(f"  {ch_name} -> SAFE")
+                        except Exception as e:
+                            logger.warning(f"Failed to set {ch_name} to safe state: {e}")
+
+            # Close only output tasks that need to be closed
+            # Input tasks are grouped, so we still need to close and recreate them
+            self._close_tasks_selective(changed_outputs | removed_outputs)
+            self._close_input_tasks()  # Input tasks must be recreated
+
+            # For outputs, only create tasks for new/changed channels
+            outputs_to_create = changed_outputs | new_outputs
+        else:
+            # Full reconfiguration (first startup or forced)
+            self._close_tasks()
+            outputs_to_create = None  # Create all
 
         # Group channels by type
         tc_channels = []
@@ -3372,9 +5267,9 @@ Time functions:
         for name, ch in self.config.channels.items():
             if ch.channel_type == 'thermocouple':
                 tc_channels.append(ch)
-            elif ch.channel_type == 'voltage':
+            elif ch.channel_type in ('voltage', 'voltage_input'):
                 voltage_channels.append(ch)
-            elif ch.channel_type == 'current':
+            elif ch.channel_type in ('current', 'current_input'):
                 current_channels.append(ch)
             elif ch.channel_type == 'rtd':
                 rtd_channels.append(ch)
@@ -3388,10 +5283,10 @@ Time functions:
                 di_channels.append(ch)
             elif ch.channel_type == 'digital_output':
                 do_channels.append(ch)
-            elif ch.channel_type == 'analog_output':
+            elif ch.channel_type in ('analog_output', 'voltage_output', 'current_output'):
                 ao_channels.append(ch)
 
-        # Create input tasks
+        # Create input tasks (always recreated since they're grouped by type)
         if tc_channels:
             self._create_thermocouple_task(tc_channels)
         if voltage_channels:
@@ -3409,14 +5304,34 @@ Time functions:
         if di_channels:
             self._create_digital_input_task(di_channels)
 
-        # Create output tasks
+        # Create output tasks (incremental: only new/changed, full: all)
         if ao_channels:
-            self._create_analog_output_tasks(ao_channels)
+            ao_to_create = [ch for ch in ao_channels
+                           if outputs_to_create is None or ch.name in outputs_to_create]
+            if ao_to_create:
+                self._create_analog_output_tasks(ao_to_create)
         if do_channels:
-            self._create_digital_output_tasks(do_channels)
-            self._setup_watchdog(do_channels)
+            do_to_create = [ch for ch in do_channels
+                           if outputs_to_create is None or ch.name in outputs_to_create]
+            if do_to_create:
+                self._create_digital_output_tasks(do_to_create)
+            self._setup_watchdog(do_channels)  # Watchdog always uses all DO channels
 
         logger.info(f"Hardware configured: {len(self.input_tasks)} input tasks, {len(self.output_tasks)} output tasks")
+
+        # If acquisition was running, start the new input tasks and resume scan loop
+        if was_acquiring and self.input_tasks:
+            logger.info("Restarting input tasks after reconfiguration...")
+            for name, task_info in self.input_tasks.items():
+                try:
+                    task_info['task'].start()
+                    logger.debug(f"Started task: {name}")
+                except Exception as e:
+                    logger.error(f"Failed to start task {name}: {e}")
+
+            # Resume scan loop
+            self._task_swap_in_progress = False
+            logger.info("Scan loop resumed")
 
     def _create_thermocouple_task(self, channels: List[ChannelConfig]):
         """Create thermocouple input task"""
@@ -3561,7 +5476,20 @@ Time functions:
             logger.error(f"Failed to create current task: {e}")
 
     def _create_digital_input_task(self, channels: List[ChannelConfig]):
-        """Create digital input task"""
+        """Create digital input task with on-demand reads for safety responsiveness.
+
+        SAFETY ARCHITECTURE NOTE:
+        Digital inputs are often used for safety interlocks (E-stops, limit switches,
+        door interlocks, pressure switches). On-demand reads provide IMMEDIATE state
+        with microsecond latency - critical for safety response.
+
+        Hardware-timed buffered reads would introduce unacceptable latency
+        (up to buffer_size/sample_rate = 100/10 = 10 seconds worst case).
+
+        The different read methods are intentional:
+        - Analog (TC, Voltage, Current): Hardware-timed for precision/anti-aliasing
+        - Digital (DI for safeties): On-demand for immediate response
+        """
         task = nidaqmx.Task('DI_Input')
         channel_names = []
 
@@ -3576,9 +5504,11 @@ Time functions:
                 channel_names.append(ch.name)  # Keep original name for our tracking
                 logger.info(f"Added DI channel: {ch.name} -> {ch.physical_channel}")
 
+            # On-demand reads (no hardware timing) - REQUIRED for safety applications
+            # This gives immediate current state with no buffer delay
             self.input_tasks['digital_input'] = {
                 'task': task,
-                'reader': None,  # On-demand read for DI
+                'reader': None,  # On-demand read for immediate safety response
                 'channels': channel_names
             }
 
@@ -4076,6 +6006,78 @@ Time functions:
                 logger.warning(f"Error closing watchdog task: {e}")
             self.watchdog_task = None
 
+    def _close_tasks_selective(self, channels_to_close: set):
+        """Close only specific output tasks (for incremental reconfiguration)"""
+        if not channels_to_close:
+            return
+
+        # Close specified output tasks
+        for ch_name in channels_to_close:
+            if ch_name in self.output_tasks:
+                try:
+                    self.output_tasks[ch_name].close()
+                    del self.output_tasks[ch_name]
+                    logger.debug(f"Closed output task: {ch_name}")
+                except Exception as e:
+                    logger.warning(f"Error closing output task {ch_name}: {e}")
+
+    def _close_input_tasks(self):
+        """Close all input tasks (they're grouped by type, so must be fully recreated)"""
+        for name, task_info in self.input_tasks.items():
+            try:
+                task_info['task'].close()
+            except Exception as e:
+                logger.warning(f"Error closing input task {name}: {e}")
+        self.input_tasks.clear()
+
+        # Also close watchdog since it's tied to DO channel set
+        if self.watchdog_task:
+            try:
+                self.watchdog_task.close()
+            except Exception as e:
+                logger.warning(f"Error closing watchdog task: {e}")
+            self.watchdog_task = None
+
+    def _diff_output_channels(self, old_channels: Dict[str, ChannelConfig],
+                               new_channels: Dict[str, ChannelConfig]) -> tuple:
+        """Compare old and new configs to find changed output channels.
+
+        Returns:
+            Tuple of (changed_outputs, removed_outputs, new_outputs) as sets of channel names
+        """
+        output_types = {'digital_output', 'analog_output'}
+
+        # Get old and new output channels
+        old_outputs = {name: ch for name, ch in old_channels.items()
+                       if ch.channel_type in output_types}
+        new_outputs = {name: ch for name, ch in new_channels.items()
+                       if ch.channel_type in output_types}
+
+        old_names = set(old_outputs.keys())
+        new_names = set(new_outputs.keys())
+
+        # Removed channels (in old but not in new)
+        removed = old_names - new_names
+
+        # New channels (in new but not in old)
+        added = new_names - old_names
+
+        # Changed channels (in both but config differs)
+        changed = set()
+        for name in old_names & new_names:
+            old_ch = old_outputs[name]
+            new_ch = new_outputs[name]
+            # Compare relevant fields for outputs
+            if (old_ch.physical_channel != new_ch.physical_channel or
+                old_ch.channel_type != new_ch.channel_type):
+                changed.add(name)
+
+        if removed or added or changed:
+            logger.info(f"Output channel diff: {len(changed)} changed, "
+                       f"{len(removed)} removed, {len(added)} new")
+
+        return changed, removed, added
+
     # =========================================================================
     # DATA ACQUISITION
     # =========================================================================
@@ -4105,6 +6107,10 @@ Time functions:
         )
         self.scan_thread.start()
 
+        # Notify engines that acquisition started
+        self.trigger_engine.on_acquisition_start()
+        self.channel_watchdog.on_acquisition_start()
+
         # Publish status
         self._publish_status()
         logger.info("Acquisition started")
@@ -4120,6 +6126,16 @@ Time functions:
         logger.info("Stopping acquisition...")
         self._acquiring.clear()
 
+        # CRITICAL: Stop session first if active - session scripts depend on acquisition
+        # Without acquisition, outputs can't be controlled safely
+        if self.session.active:
+            logger.info("Stopping active session (acquisition stopping)")
+            self._stop_session('acquisition_stopped')
+
+        # Notify engines that acquisition stopped
+        self.trigger_engine.on_acquisition_stop()
+        self.channel_watchdog.on_acquisition_stop()
+
         # Wait for scan thread
         if self.scan_thread and self.scan_thread.is_alive():
             self.scan_thread.join(timeout=2.0)
@@ -4133,6 +6149,9 @@ Time functions:
 
         # Auto-stop acquisition scripts
         self._auto_stop_scripts('acquisition')
+
+        # Set outputs to safe state when stopping
+        self._set_safe_state('acquisition_stopped')
 
         # Publish status
         self._publish_status()
@@ -4501,9 +6520,9 @@ Time functions:
         with self._task_swap_lock:
             try:
                 # Step 1: Group channels by type
-                tc_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'TC']
-                voltage_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('VOLTAGE', 'ANALOG')]
-                current_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('CURRENT', '4-20MA')]
+                tc_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('TC', 'THERMOCOUPLE')]
+                voltage_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('VOLTAGE', 'VOLTAGE_INPUT', 'ANALOG')]
+                current_channels = [ch for ch in new_channels if ch.channel_type.upper() in ('CURRENT', 'CURRENT_INPUT', '4-20MA')]
                 rtd_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'RTD']
                 counter_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'COUNTER']
                 strain_channels = [ch for ch in new_channels if ch.channel_type.upper() == 'STRAIN']
@@ -4596,7 +6615,37 @@ Time functions:
                 self._task_swap_in_progress = False
                 return False
 
-    def add_channel_dynamic(self, channel_config: Dict[str, Any]) -> bool:
+    def _check_physical_channel_collision(
+        self,
+        physical_channel: str,
+        exclude_channel: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Check if a physical channel is already in use by another tag.
+
+        Args:
+            physical_channel: The physical channel path (e.g., "Mod1/ai0")
+            exclude_channel: Channel name to exclude from check (for updates)
+
+        Returns:
+            Name of the conflicting channel, or None if no collision
+        """
+        if not physical_channel:
+            return None
+
+        for name, ch in self.channels.items():
+            # Skip the channel being updated
+            if exclude_channel and name == exclude_channel:
+                continue
+
+            # Check if same physical channel
+            ch_physical = getattr(ch, 'physical_channel', '') or ''
+            if ch_physical == physical_channel:
+                return name
+
+        return None
+
+    def add_channel_dynamic(self, channel_config: Dict[str, Any]) -> Tuple[bool, str]:
         """Add a channel dynamically without stopping acquisition.
 
         This is a convenience method that adds a single channel to the
@@ -4606,9 +6655,21 @@ Time functions:
             channel_config: Channel configuration dict
 
         Returns:
-            True if channel was added successfully
+            Tuple of (success: bool, message: str)
         """
         try:
+            channel_name = channel_config.get('name', '')
+            physical_channel = channel_config.get('physical_channel', '')
+
+            # Check for channel name collision
+            if channel_name in self.channels:
+                return False, f"Channel '{channel_name}' already exists"
+
+            # Check for physical channel collision
+            collision = self._check_physical_channel_collision(physical_channel)
+            if collision:
+                return False, f"Physical channel '{physical_channel}' is already used by tag '{collision}'"
+
             # Create ChannelConfig from dict
             new_ch = ChannelConfig(
                 name=channel_config['name'],
@@ -4628,11 +6689,14 @@ Time functions:
             current_channels.append(new_ch)
 
             # Perform seamless swap
-            return self.seamless_task_swap(current_channels)
+            if self.seamless_task_swap(current_channels):
+                return True, f"Channel '{channel_name}' added successfully"
+            else:
+                return False, "Failed to reconfigure DAQ tasks"
 
         except Exception as e:
             logger.error(f"Failed to add channel dynamically: {e}")
-            return False
+            return False, str(e)
 
     def remove_channel_dynamic(self, channel_name: str) -> bool:
         """Remove a channel dynamically without stopping acquisition.
@@ -4680,10 +6744,30 @@ Time functions:
                 # Read all inputs
                 now = time.time()
 
-                # Read analog inputs (take snapshot of tasks to avoid race condition)
+                # Read all inputs (take snapshot of tasks to avoid race condition)
                 current_input_tasks = dict(self.input_tasks)
                 for task_name, task_info in current_input_tasks.items():
-                    if task_info['reader'] is not None:
+                    # Digital inputs - on-demand read for immediate safety response
+                    # (no buffering delay - critical for E-stops, interlocks, etc.)
+                    if task_name == 'digital_input':
+                        try:
+                            task = task_info['task']
+                            channels = task_info['channels']
+                            # On-demand read gives IMMEDIATE current state (microseconds)
+                            raw_data = task.read(timeout=0.01)
+
+                            with self.values_lock:
+                                if isinstance(raw_data, list):
+                                    for i, name in enumerate(channels):
+                                        self.channel_values[name] = 1.0 if raw_data[i] else 0.0
+                                        self.channel_timestamps[name] = now
+                                else:
+                                    self.channel_values[channels[0]] = 1.0 if raw_data else 0.0
+                                    self.channel_timestamps[channels[0]] = now
+                        except Exception as e:
+                            logger.warning(f"Error reading {task_name}: {e}")
+                    elif task_info['reader'] is not None:
+                        # Analog inputs with hardware-timed continuous sampling
                         try:
                             task = task_info['task']
                             reader = task_info['reader']
@@ -4707,7 +6791,7 @@ Time functions:
                                             value = value * ch_config.scale_slope + ch_config.scale_offset
 
                                             # Convert current from A to mA
-                                            if ch_config.channel_type == 'current':
+                                            if ch_config.channel_type in ('current', 'current_input'):
                                                 value = value * 1000.0
 
                                         self.channel_values[name] = value
@@ -4715,19 +6799,20 @@ Time functions:
                         except Exception as e:
                             logger.warning(f"Error reading {task_name}: {e}")
                     else:
-                        # On-demand read (digital inputs)
+                        # Fallback on-demand read for any other task without reader
                         try:
                             task = task_info['task']
                             channels = task_info['channels']
-                            raw_data = task.read(timeout=0.1)
+                            raw_data = task.read(timeout=0.01)
 
                             with self.values_lock:
-                                if isinstance(raw_data, list):
+                                if isinstance(raw_data, (list, tuple)):
                                     for i, name in enumerate(channels):
-                                        self.channel_values[name] = 1.0 if raw_data[i] else 0.0
+                                        val = raw_data[i] if i < len(raw_data) else 0
+                                        self.channel_values[name] = float(val) if isinstance(val, (int, float, bool)) else (1.0 if val else 0.0)
                                         self.channel_timestamps[name] = now
                                 else:
-                                    self.channel_values[channels[0]] = 1.0 if raw_data else 0.0
+                                    self.channel_values[channels[0]] = float(raw_data) if isinstance(raw_data, (int, float)) else (1.0 if raw_data else 0.0)
                                     self.channel_timestamps[channels[0]] = now
                         except Exception as e:
                             logger.warning(f"Error reading {task_name}: {e}")
@@ -4738,6 +6823,45 @@ Time functions:
                         self.channel_values[name] = value
                         self.channel_timestamps[name] = now
 
+                # Get values snapshot for engine processing
+                with self.values_lock:
+                    values_snapshot = dict(self.channel_values)
+                    timestamps_snapshot = dict(self.channel_timestamps)
+
+                # Calculate dt for PID
+                dt = now - self._last_scan_time if self._last_scan_time > 0 else scan_interval
+                self._last_scan_time = now
+
+                # =====================================================
+                # PROCESS ENGINES
+                # =====================================================
+
+                # PID Control - must run before outputs are published
+                try:
+                    pid_outputs = self.pid_engine.process_scan(values_snapshot, dt)
+                    # PID outputs are written via the callback
+                except Exception as e:
+                    logger.error(f"PID engine error: {e}")
+
+                # Trigger Engine - evaluate automation triggers
+                try:
+                    self.trigger_engine.process_scan(values_snapshot)
+                except Exception as e:
+                    logger.error(f"Trigger engine error: {e}")
+
+                # Watchdog Engine - monitor for stale/out-of-range values
+                try:
+                    self.channel_watchdog.process_scan(values_snapshot, timestamps_snapshot)
+                except Exception as e:
+                    logger.error(f"Watchdog engine error: {e}")
+
+                # Enhanced Alarm Manager - process all channels
+                try:
+                    for ch_name, ch_value in values_snapshot.items():
+                        self.enhanced_alarm_manager.process_value(ch_name, ch_value, now)
+                except Exception as e:
+                    logger.error(f"Enhanced alarm manager error: {e}")
+
                 # Publish channel values at publish_rate_hz (not scan_rate_hz)
                 # This reduces MQTT message load significantly
                 if now - self._last_publish_time >= publish_interval:
@@ -4746,8 +6870,6 @@ Time functions:
 
                 # Check alarms and safety limits (autonomous operation)
                 # This evaluates ISA-18.2 alarms and triggers safety actions locally
-                with self.values_lock:
-                    values_snapshot = dict(self.channel_values)
 
                 for ch_name, ch_value in values_snapshot.items():
                     try:
@@ -4845,7 +6967,7 @@ Time functions:
             task = self.output_tasks[channel_name]
             ch_config = self.config.channels.get(channel_name)
 
-            if ch_config and ch_config.channel_type == 'analog_output':
+            if ch_config and ch_config.channel_type in ('analog_output', 'voltage_output', 'current_output'):
                 # Analog output - apply REVERSE scaling (engineering units → raw V/mA)
                 eng_value = float(value) if value is not None else 0.0
                 raw_value = self._reverse_scale_output(ch_config, eng_value)
@@ -4889,13 +7011,32 @@ Time functions:
                 self._start_script(script_id)
 
     def _auto_stop_scripts(self, run_mode: str):
-        """Auto-stop scripts matching the given run_mode"""
+        """Auto-stop scripts matching the given run_mode and wait for them to stop"""
+        scripts_to_stop = []
         for script_id, script in self.scripts.items():
             script_run_mode = script.get('run_mode', 'manual')
             if script_run_mode == run_mode:
                 if script_id in self.script_threads and self.script_threads[script_id].is_alive():
                     logger.info(f"Auto-stopping {run_mode} script: {script_id}")
                     self._stop_script(script_id)
+                    scripts_to_stop.append(script_id)
+
+        # Wait for all scripts to actually stop (max 5 seconds)
+        if scripts_to_stop:
+            logger.info(f"Waiting for {len(scripts_to_stop)} scripts to stop...")
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                still_running = [sid for sid in scripts_to_stop
+                                if sid in self.script_threads and self.script_threads[sid].is_alive()]
+                if not still_running:
+                    logger.info("All scripts stopped")
+                    break
+                time.sleep(0.1)
+            else:
+                still_running = [sid for sid in scripts_to_stop
+                                if sid in self.script_threads and self.script_threads[sid].is_alive()]
+                if still_running:
+                    logger.warning(f"Scripts did not stop in time: {still_running}")
 
     def _start_script(self, script_id: str, max_runtime_seconds: float = 300.0):
         """Start executing a Python script with timeout
@@ -5232,6 +7373,8 @@ Time functions:
             # Batch all channel values into a single message to reduce MQTT load
             # Format: { "channel_name": {"value": x, "timestamp": t, "acquisition_ts_us": us, "quality": q}, ... }
             batch = {}
+
+            # Include INPUT channel values
             for name, value in self.channel_values.items():
                 timestamp = self.channel_timestamps.get(name, 0)
                 batch[name] = {
@@ -5242,6 +7385,17 @@ Time functions:
                     # OPC UA style quality code
                     'quality': get_value_quality(value)
                 }
+
+            # Include OUTPUT channel values so dashboard shows current output state
+            for name, value in self.output_values.items():
+                if name not in batch:  # Don't overwrite if already present
+                    batch[name] = {
+                        'value': value,
+                        'timestamp': time.time(),
+                        'acquisition_ts_us': int(time.time() * 1_000_000),
+                        'quality': 'good',
+                        'type': 'output'  # Mark as output for dashboard
+                    }
 
             if batch:
                 self._publish(

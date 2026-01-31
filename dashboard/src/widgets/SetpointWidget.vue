@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
+import InterlockBlockOverlay from '../components/InterlockBlockOverlay.vue'
 import { formatUnit } from '../utils/formatUnit'
 import type { WidgetStyle } from '../types'
 
@@ -211,6 +212,7 @@ watch(currentValue, (val) => {
 const isDisabled = computed(() => {
   if (isBlocked.value) return true
   if (!store.isConnected) return true
+  if (!store.isAcquiring) return true
   if (!channelConfig.value && !props.channel.startsWith('py.')) return true
   // Disable for input channels - can't set inputs
   if (isInputChannel.value) return true
@@ -414,9 +416,7 @@ function onKnobMouseUp() {
       </div>
     </template>
 
-    <div v-if="isBlocked" class="blocked-indicator" :title="blockStatus.blockedBy.map(s => s.name).join(', ')">
-      BLOCKED
-    </div>
+    <InterlockBlockOverlay v-if="isBlocked" :blocked-by="blockStatus.blockedBy" />
   </div>
 </template>
 
@@ -535,19 +535,13 @@ function onKnobMouseUp() {
 }
 
 .blocked {
-  border-color: #78350f;
+  border: 2px solid #dc2626;
+  animation: pulse-blocked 2s ease-in-out infinite;
 }
 
-.blocked-indicator {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  font-size: 0.5rem;
-  font-weight: 700;
-  color: #fbbf24;
-  background: #78350f;
-  padding: 2px 4px;
-  border-radius: 2px;
+@keyframes pulse-blocked {
+  0%, 100% { box-shadow: 0 0 4px rgba(220, 38, 38, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(220, 38, 38, 0.6); }
 }
 
 /* Warning state - wrong channel type */

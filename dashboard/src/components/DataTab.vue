@@ -66,7 +66,8 @@ const availableChannels = computed(() => {
     name,  // TAG is the only identifier
     type: config.channel_type,
     unit: config.unit,
-    group: config.group || 'Ungrouped'
+    group: config.group || 'Ungrouped',
+    physical_channel: config.physical_channel || ''  // For module-based sorting
   }))
 
   // Script-published values (prefixed with py.)
@@ -106,15 +107,47 @@ function naturalSort(a: string, b: string): number {
   return 0
 }
 
-// Sorted channels: DAQ tags first (natural sort), then Python script tags
-// DAQ: tag_1, tag_2, ... tag_10, tag_11, ... uag_1, uag_2
+// Sort by module first, then by channel index within module
+// This ensures channels are grouped by physical hardware module
+// E.g., Mod1/ai0, Mod1/ai1, Mod2/ai0, Mod2/ai1, Mod5/ai0, etc.
+function moduleSort(a: { name: string, physical_channel?: string }, b: { name: string, physical_channel?: string }): number {
+  const aPhys = a.physical_channel || ''
+  const bPhys = b.physical_channel || ''
+
+  // Extract module number (e.g., "Mod1/ai0" -> 1, "cDAQ1Mod2/ai3" -> 2)
+  const aModMatch = aPhys.match(/Mod(\d+)/i)
+  const bModMatch = bPhys.match(/Mod(\d+)/i)
+  const aMod = aModMatch ? parseInt(aModMatch[1]!, 10) : 999
+  const bMod = bModMatch ? parseInt(bModMatch[1]!, 10) : 999
+
+  // Sort by module first
+  if (aMod !== bMod) return aMod - bMod
+
+  // Then by channel index (ai0, ai1, ... ai10, etc.)
+  const aChMatch = aPhys.match(/[/]([a-z]+)(\d+)$/i)
+  const bChMatch = bPhys.match(/[/]([a-z]+)(\d+)$/i)
+  if (aChMatch && bChMatch) {
+    // Same channel type prefix (ai, di, ao, do)
+    if (aChMatch[1]! === bChMatch[1]!) {
+      return parseInt(aChMatch[2]!, 10) - parseInt(bChMatch[2]!, 10)
+    }
+    // Different type, sort alphabetically (ai before ao before di before do)
+    return aChMatch[1]!.localeCompare(bChMatch[1]!)
+  }
+
+  // Fallback to natural sort on name
+  return naturalSort(a.name, b.name)
+}
+
+// Sorted channels: DAQ tags first (by module/channel), then Python script tags
+// DAQ: Mod1/ai0, Mod1/ai1, ... Mod2/ai0, Mod2/ai1, ... Mod5/ai0, etc.
 // Python: py.Efficiency, py.FlowRate, etc.
 const sortedChannels = computed(() => {
   const daqChannels = availableChannels.value.filter(ch => !ch.name.startsWith('py.'))
   const pythonChannels = availableChannels.value.filter(ch => ch.name.startsWith('py.'))
 
   return [
-    ...daqChannels.sort((a, b) => naturalSort(a.name, b.name)),
+    ...daqChannels.sort(moduleSort),
     ...pythonChannels.sort((a, b) => naturalSort(a.name, b.name))
   ]
 })

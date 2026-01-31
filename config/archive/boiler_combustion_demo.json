@@ -1,0 +1,1644 @@
+{
+  "type": "nisystem-project",
+  "version": "2.0",
+  "name": "H2-Ready Boiler Combustion Research",
+  "description": "GTI Energy - Advanced Hydrogen-Blend Combustion Test Facility | 500kW Industrial Boiler Research Platform",
+  "created": "2026-01-15T00:00:00.000Z",
+  "modified": "2026-01-19T00:00:00.000Z",
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 50,
+    "publish_rate_hz": 10,
+    "simulation_mode": true,
+    "log_directory": "./logs",
+    "system_name": "GTI H2-Ready Boiler Test Facility",
+    "system_id": "GTI-BOILER-001",
+    "datalog_rate_ms": 1000,
+    "datalog_rearm": true,
+    "datalog_rearm_rate_sec": 3600
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "TC_Flue_1": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Flue Gas Temp 1",
+      "description": "Primary flue gas temperature - stack exit",
+      "alarm_enabled": true,
+      "hi_limit": 450,
+      "hihi_limit": 500,
+      "lo_limit": 200,
+      "alarm_priority": "high",
+      "alarm_deadband": 5,
+      "log": true,
+      "precision": 1,
+      "group": "Flue Gas"
+    },
+    "TC_Flue_2": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Flue Gas Temp 2",
+      "description": "Secondary flue gas temperature - economizer inlet",
+      "alarm_enabled": true,
+      "hi_limit": 550,
+      "hihi_limit": 600,
+      "alarm_priority": "medium",
+      "alarm_deadband": 5,
+      "log": true,
+      "precision": 1,
+      "group": "Flue Gas"
+    },
+    "TC_Combustion_1": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai2",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Combustion Zone 1",
+      "description": "Primary combustion chamber temperature",
+      "alarm_enabled": true,
+      "hi_limit": 1800,
+      "hihi_limit": 2000,
+      "alarm_priority": "critical",
+      "alarm_deadband": 10,
+      "safety_action": "burner-shutdown",
+      "log": true,
+      "precision": 0,
+      "group": "Combustion"
+    },
+    "TC_Combustion_2": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai3",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Combustion Zone 2",
+      "description": "Secondary combustion zone temperature",
+      "alarm_enabled": true,
+      "hi_limit": 1600,
+      "hihi_limit": 1800,
+      "alarm_priority": "high",
+      "alarm_deadband": 10,
+      "log": true,
+      "precision": 0,
+      "group": "Combustion"
+    },
+    "TC_Combustion_3": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai4",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Combustion Zone 3",
+      "description": "Tertiary combustion zone temperature",
+      "alarm_enabled": true,
+      "hi_limit": 1400,
+      "hihi_limit": 1600,
+      "alarm_priority": "high",
+      "alarm_deadband": 10,
+      "log": true,
+      "precision": 0,
+      "group": "Combustion"
+    },
+    "TC_HX_In": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai5",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Heat Exchanger Inlet",
+      "description": "Hot gas entering heat exchanger",
+      "alarm_enabled": true,
+      "hi_limit": 800,
+      "hihi_limit": 900,
+      "alarm_priority": "medium",
+      "alarm_deadband": 5,
+      "log": true,
+      "precision": 1,
+      "group": "Heat Exchanger"
+    },
+    "TC_HX_Out": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai6",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Heat Exchanger Outlet",
+      "description": "Cooled gas leaving heat exchanger",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 1,
+      "group": "Heat Exchanger"
+    },
+    "TC_Burner_Tip": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai7",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "units": "degF",
+      "display_name": "Burner Tip Temp",
+      "description": "Burner nozzle tip temperature - flashback detection",
+      "alarm_enabled": true,
+      "hi_limit": 400,
+      "hihi_limit": 500,
+      "alarm_priority": "critical",
+      "alarm_deadband": 5,
+      "safety_action": "h2-shutoff",
+      "log": true,
+      "precision": 1,
+      "group": "Burner"
+    },
+    "RTD_Water_Supply": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod2/ai0",
+      "channel_type": "rtd",
+      "rtd_type": "Pt3851",
+      "resistance_config": "3Wire",
+      "excitation_current": 0.001,
+      "units": "degF",
+      "display_name": "Water Supply Temp",
+      "description": "Feedwater supply temperature",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 2,
+      "group": "Water Loop"
+    },
+    "RTD_Water_Return": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod2/ai1",
+      "channel_type": "rtd",
+      "rtd_type": "Pt3851",
+      "resistance_config": "3Wire",
+      "excitation_current": 0.001,
+      "units": "degF",
+      "display_name": "Water Return Temp",
+      "description": "Heated water return temperature",
+      "alarm_enabled": true,
+      "hi_limit": 200,
+      "hihi_limit": 212,
+      "alarm_priority": "high",
+      "alarm_deadband": 2,
+      "safety_action": "water-overheat",
+      "log": true,
+      "precision": 2,
+      "group": "Water Loop"
+    },
+    "RTD_Ambient": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod2/ai2",
+      "channel_type": "rtd",
+      "rtd_type": "Pt3851",
+      "resistance_config": "3Wire",
+      "excitation_current": 0.001,
+      "units": "degF",
+      "display_name": "Ambient Temp",
+      "description": "Test cell ambient temperature",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 1,
+      "group": "Environment"
+    },
+    "RTD_Combustion_Air": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod2/ai3",
+      "channel_type": "rtd",
+      "rtd_type": "Pt3851",
+      "resistance_config": "3Wire",
+      "excitation_current": 0.001,
+      "units": "degF",
+      "display_name": "Combustion Air Temp",
+      "description": "Pre-heated combustion air temperature",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 1,
+      "group": "Combustion"
+    },
+    "PT_NG_Supply": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai0",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "psig",
+      "scale_min": 0,
+      "scale_max": 15,
+      "display_name": "NG Supply Pressure",
+      "description": "Natural gas supply pressure",
+      "alarm_enabled": true,
+      "lo_limit": 3,
+      "lolo_limit": 2,
+      "hi_limit": 12,
+      "alarm_priority": "high",
+      "alarm_deadband": 0.2,
+      "safety_action": "low-fuel-pressure",
+      "log": true,
+      "precision": 2,
+      "group": "Fuel System"
+    },
+    "PT_H2_Supply": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai1",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "psig",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "H2 Supply Pressure",
+      "description": "Hydrogen supply pressure",
+      "alarm_enabled": true,
+      "lo_limit": 20,
+      "lolo_limit": 15,
+      "hi_limit": 80,
+      "hihi_limit": 90,
+      "alarm_priority": "critical",
+      "alarm_deadband": 1,
+      "safety_action": "h2-shutoff",
+      "log": true,
+      "precision": 1,
+      "group": "Fuel System"
+    },
+    "PT_Furnace": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai2",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "inWC",
+      "scale_min": -5,
+      "scale_max": 5,
+      "display_name": "Furnace Pressure",
+      "description": "Furnace draft pressure",
+      "alarm_enabled": true,
+      "lo_limit": -3,
+      "hi_limit": 1,
+      "hihi_limit": 2,
+      "alarm_priority": "high",
+      "alarm_deadband": 0.1,
+      "safety_action": "draft-fault",
+      "log": true,
+      "precision": 2,
+      "group": "Combustion"
+    },
+    "PT_Water": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai3",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "psig",
+      "scale_min": 0,
+      "scale_max": 150,
+      "display_name": "Water Pressure",
+      "description": "Circulating water loop pressure",
+      "alarm_enabled": true,
+      "lo_limit": 20,
+      "hi_limit": 100,
+      "hihi_limit": 120,
+      "alarm_priority": "medium",
+      "alarm_deadband": 2,
+      "log": true,
+      "precision": 1,
+      "group": "Water Loop"
+    },
+    "FT_NG": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai4",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "terminal_config": "Diff",
+      "units": "SCFH",
+      "eng_units_min": 0,
+      "eng_units_max": 2000,
+      "display_name": "NG Flow Rate",
+      "description": "Natural gas volumetric flow rate",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 0,
+      "group": "Fuel System"
+    },
+    "FT_H2": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai5",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "terminal_config": "Diff",
+      "units": "SCFH",
+      "eng_units_min": 0,
+      "eng_units_max": 1000,
+      "display_name": "H2 Flow Rate",
+      "description": "Hydrogen volumetric flow rate",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 0,
+      "group": "Fuel System"
+    },
+    "FT_Air": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai6",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "terminal_config": "Diff",
+      "units": "SCFM",
+      "eng_units_min": 0,
+      "eng_units_max": 500,
+      "display_name": "Combustion Air Flow",
+      "description": "Combustion air volumetric flow rate",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 0,
+      "group": "Combustion"
+    },
+    "FT_Water": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai7",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "terminal_config": "Diff",
+      "units": "GPM",
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "display_name": "Water Flow Rate",
+      "description": "Circulating water flow rate",
+      "alarm_enabled": true,
+      "lo_limit": 10,
+      "lolo_limit": 5,
+      "alarm_priority": "high",
+      "alarm_deadband": 1,
+      "safety_action": "low-water-flow",
+      "log": true,
+      "precision": 1,
+      "group": "Water Loop"
+    },
+    "O2_Flue": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai0",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 25,
+      "display_name": "Flue O2",
+      "description": "Oxygen concentration in flue gas",
+      "alarm_enabled": true,
+      "lo_limit": 2,
+      "hi_limit": 10,
+      "alarm_priority": "medium",
+      "alarm_deadband": 0.2,
+      "log": true,
+      "precision": 2,
+      "group": "Emissions"
+    },
+    "CO_Flue": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai1",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "ppm",
+      "scale_min": 0,
+      "scale_max": 2000,
+      "display_name": "Flue CO",
+      "description": "Carbon monoxide concentration in flue gas",
+      "alarm_enabled": true,
+      "hi_limit": 400,
+      "hihi_limit": 800,
+      "alarm_priority": "high",
+      "alarm_deadband": 10,
+      "safety_action": "high-co",
+      "log": true,
+      "precision": 0,
+      "group": "Emissions"
+    },
+    "CO2_Flue": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai2",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 20,
+      "display_name": "Flue CO2",
+      "description": "Carbon dioxide concentration in flue gas",
+      "alarm_enabled": false,
+      "log": true,
+      "precision": 2,
+      "group": "Emissions"
+    },
+    "NOx_Flue": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai3",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "ppm",
+      "scale_min": 0,
+      "scale_max": 500,
+      "display_name": "Flue NOx",
+      "description": "NOx concentration in flue gas",
+      "alarm_enabled": true,
+      "hi_limit": 100,
+      "hihi_limit": 200,
+      "alarm_priority": "medium",
+      "alarm_deadband": 5,
+      "log": true,
+      "precision": 0,
+      "group": "Emissions"
+    },
+    "H2_Ambient_1": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai4",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "% LEL",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "H2 Detector - Burner",
+      "description": "Hydrogen leak detector near burner",
+      "alarm_enabled": true,
+      "hi_limit": 10,
+      "hihi_limit": 25,
+      "alarm_priority": "critical",
+      "alarm_deadband": 1,
+      "safety_action": "h2-leak-emergency",
+      "log": true,
+      "precision": 0,
+      "group": "Safety"
+    },
+    "H2_Ambient_2": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai5",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "% LEL",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "H2 Detector - Supply",
+      "description": "Hydrogen leak detector near supply manifold",
+      "alarm_enabled": true,
+      "hi_limit": 10,
+      "hihi_limit": 25,
+      "alarm_priority": "critical",
+      "alarm_deadband": 1,
+      "safety_action": "h2-leak-emergency",
+      "log": true,
+      "precision": 0,
+      "group": "Safety"
+    },
+    "Flame_Signal": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod4/ai6",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "Diff",
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "Flame Signal",
+      "description": "UV flame detector signal strength",
+      "alarm_enabled": true,
+      "lo_limit": 20,
+      "lolo_limit": 10,
+      "alarm_priority": "critical",
+      "alarm_deadband": 2,
+      "safety_action": "flame-loss",
+      "log": true,
+      "precision": 0,
+      "group": "Burner"
+    },
+    "Burner_Firing_Rate": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod5/ao0",
+      "channel_type": "voltage_output",
+      "voltage_range": 10,
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "Firing Rate",
+      "description": "Burner firing rate setpoint",
+      "log": true,
+      "precision": 0,
+      "group": "Burner Control"
+    },
+    "H2_Blend_Setpoint": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod5/ao1",
+      "channel_type": "voltage_output",
+      "voltage_range": 10,
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 30,
+      "display_name": "H2 Blend %",
+      "description": "Hydrogen blend ratio setpoint (0-30%)",
+      "log": true,
+      "precision": 1,
+      "group": "Burner Control"
+    },
+    "Air_Damper_Pos": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod5/ao2",
+      "channel_type": "voltage_output",
+      "voltage_range": 10,
+      "units": "%",
+      "scale_min": 0,
+      "scale_max": 100,
+      "display_name": "Air Damper Position",
+      "description": "Combustion air damper position",
+      "log": true,
+      "precision": 0,
+      "group": "Burner Control"
+    },
+    "Burner_Enable": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line0",
+      "channel_type": "digital_output",
+      "display_name": "Burner Enable",
+      "description": "Master burner enable signal",
+      "log": true,
+      "group": "Burner Control"
+    },
+    "Ignition_Spark": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line1",
+      "channel_type": "digital_output",
+      "display_name": "Ignition Spark",
+      "description": "Spark igniter control",
+      "log": true,
+      "group": "Burner Control"
+    },
+    "Pilot_Valve": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line2",
+      "channel_type": "digital_output",
+      "display_name": "Pilot Gas Valve",
+      "description": "Pilot gas solenoid valve",
+      "log": true,
+      "group": "Burner Control"
+    },
+    "Main_Gas_Valve": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line3",
+      "channel_type": "digital_output",
+      "display_name": "Main Gas Valve",
+      "description": "Main natural gas solenoid valve",
+      "log": true,
+      "group": "Fuel System"
+    },
+    "H2_Shutoff_Valve": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line4",
+      "channel_type": "digital_output",
+      "display_name": "H2 Shutoff Valve",
+      "description": "Hydrogen emergency shutoff valve",
+      "log": true,
+      "group": "Fuel System"
+    },
+    "Blower_Start": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line5",
+      "channel_type": "digital_output",
+      "display_name": "Combustion Blower",
+      "description": "Combustion air blower motor start",
+      "log": true,
+      "group": "Burner Control"
+    },
+    "Circ_Pump_Start": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line6",
+      "channel_type": "digital_output",
+      "display_name": "Circulation Pump",
+      "description": "Water circulation pump motor start",
+      "log": true,
+      "group": "Water Loop"
+    },
+    "Alarm_Horn": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line7",
+      "channel_type": "digital_output",
+      "display_name": "Alarm Horn",
+      "description": "Audible alarm indicator",
+      "log": true,
+      "group": "Safety"
+    },
+    "Flame_Detected": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line0",
+      "channel_type": "digital_input",
+      "display_name": "Flame Detected",
+      "description": "UV flame detector - flame present",
+      "log": true,
+      "group": "Burner"
+    },
+    "High_Limit_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line1",
+      "channel_type": "digital_input",
+      "display_name": "High Limit OK",
+      "description": "High temperature limit switch - normal",
+      "log": true,
+      "group": "Safety"
+    },
+    "Low_Water_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line2",
+      "channel_type": "digital_input",
+      "display_name": "Low Water OK",
+      "description": "Low water cutoff switch - normal",
+      "log": true,
+      "group": "Safety"
+    },
+    "Gas_Pressure_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line3",
+      "channel_type": "digital_input",
+      "display_name": "Gas Pressure OK",
+      "description": "Gas pressure switch - normal",
+      "log": true,
+      "group": "Safety"
+    },
+    "Airflow_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line4",
+      "channel_type": "digital_input",
+      "display_name": "Airflow Proven",
+      "description": "Combustion airflow proving switch",
+      "log": true,
+      "group": "Safety"
+    },
+    "E_Stop_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line5",
+      "channel_type": "digital_input",
+      "display_name": "E-Stop OK",
+      "description": "Emergency stop circuit - not active",
+      "log": true,
+      "group": "Safety"
+    },
+    "H2_Vent_Open": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line6",
+      "channel_type": "digital_input",
+      "display_name": "H2 Vent Status",
+      "description": "Hydrogen vent valve position feedback",
+      "log": true,
+      "group": "Fuel System"
+    },
+    "Door_Interlock_OK": {
+      "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line7",
+      "channel_type": "digital_input",
+      "display_name": "Door Interlock OK",
+      "description": "Test cell door interlock - closed",
+      "log": true,
+      "group": "Safety"
+    }
+  },
+  "safety": {
+    "enabled": true,
+    "watchdog_timeout_sec": 5,
+    "actions": {
+      "burner-shutdown": {
+        "name": "Burner Emergency Shutdown",
+        "description": "Immediate burner shutdown on combustion zone overtemp",
+        "outputs": {
+          "Burner_Enable": false,
+          "Main_Gas_Valve": false,
+          "H2_Shutoff_Valve": false,
+          "Pilot_Valve": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "h2-shutoff": {
+        "name": "Hydrogen Emergency Shutoff",
+        "description": "Close H2 valve on flashback or overpressure",
+        "outputs": {
+          "H2_Shutoff_Valve": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "h2-leak-emergency": {
+        "name": "H2 Leak Emergency",
+        "description": "Complete shutdown on hydrogen leak detection",
+        "outputs": {
+          "Burner_Enable": false,
+          "Main_Gas_Valve": false,
+          "H2_Shutoff_Valve": false,
+          "Pilot_Valve": false,
+          "Ignition_Spark": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 0
+      },
+      "flame-loss": {
+        "name": "Flame Loss Shutdown",
+        "description": "Close fuel valves on loss of flame signal",
+        "outputs": {
+          "Main_Gas_Valve": false,
+          "H2_Shutoff_Valve": false,
+          "Pilot_Valve": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "high-co": {
+        "name": "High CO Alarm",
+        "description": "Reduce firing rate on high CO emissions",
+        "outputs": {
+          "Alarm_Horn": true
+        },
+        "latching": false,
+        "priority": 2
+      },
+      "low-fuel-pressure": {
+        "name": "Low Fuel Pressure",
+        "description": "Shutdown on loss of fuel pressure",
+        "outputs": {
+          "Burner_Enable": false,
+          "Main_Gas_Valve": false,
+          "Pilot_Valve": false
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "low-water-flow": {
+        "name": "Low Water Flow",
+        "description": "Reduce firing on low water flow",
+        "outputs": {
+          "Alarm_Horn": true
+        },
+        "latching": false,
+        "priority": 2
+      },
+      "water-overheat": {
+        "name": "Water Overheat",
+        "description": "Reduce firing on high water temperature",
+        "outputs": {
+          "Alarm_Horn": true
+        },
+        "latching": false,
+        "priority": 2
+      },
+      "draft-fault": {
+        "name": "Draft Fault",
+        "description": "Shutdown on furnace pressure fault",
+        "outputs": {
+          "Burner_Enable": false,
+          "Main_Gas_Valve": false,
+          "H2_Shutoff_Valve": false,
+          "Pilot_Valve": false
+        },
+        "latching": true,
+        "priority": 1
+      }
+    },
+    "interlocks": [
+      {
+        "name": "Flame Loss Protection",
+        "condition": "Flame_Detected == false AND Burner_Enable == true",
+        "action": "flame-loss",
+        "delay_ms": 2000
+      },
+      {
+        "name": "High Limit Trip",
+        "condition": "High_Limit_OK == false",
+        "action": "burner-shutdown",
+        "delay_ms": 0
+      },
+      {
+        "name": "Low Water Trip",
+        "condition": "Low_Water_OK == false",
+        "action": "burner-shutdown",
+        "delay_ms": 0
+      },
+      {
+        "name": "E-Stop Trip",
+        "condition": "E_Stop_OK == false",
+        "action": "h2-leak-emergency",
+        "delay_ms": 0
+      },
+      {
+        "name": "Door Interlock",
+        "condition": "Door_Interlock_OK == false AND Burner_Enable == true",
+        "action": "burner-shutdown",
+        "delay_ms": 0
+      }
+    ]
+  },
+  "scripts": {
+    "boiler_simulator": {
+      "name": "Boiler Data Simulator",
+      "description": "Generates realistic operating data for demo mode",
+      "enabled": true,
+      "auto_start": true,
+      "file": "boiler_simulator.py"
+    },
+    "efficiency_calc": {
+      "name": "Thermal Efficiency Calculator",
+      "description": "Real-time combustion and thermal efficiency calculations",
+      "enabled": true,
+      "auto_start": true,
+      "file": "efficiency_calc.py"
+    },
+    "emissions_logger": {
+      "name": "Emissions Data Logger",
+      "description": "EPA-compliant emissions averaging and reporting",
+      "enabled": true,
+      "auto_start": true,
+      "file": "emissions_logger.py"
+    }
+  },
+  "layout": {
+    "gridColumns": 24,
+    "rowHeight": 30,
+    "currentPageId": "overview",
+    "pages": [
+      {
+        "id": "overview",
+        "name": "Overview",
+        "order": 0,
+        "widgets": [
+          {
+            "id": "w-title-header",
+            "type": "title",
+            "title": "GTI H2-Ready Boiler Combustion Research",
+            "subtitle": "500kW Industrial Test Platform",
+            "x": 0, "y": 0, "w": 12, "h": 1,
+            "style": { "fontSize": "large", "textAlign": "left" }
+          },
+          {
+            "id": "w-clock",
+            "type": "clock",
+            "x": 20, "y": 0, "w": 4, "h": 1,
+            "showDate": true,
+            "style": { "fontSize": "large" }
+          },
+          {
+            "id": "w-system-status",
+            "type": "system_status",
+            "x": 0, "y": 1, "w": 4, "h": 4,
+            "title": "System Status"
+          },
+          {
+            "id": "w-alarm-summary",
+            "type": "alarm_summary",
+            "x": 4, "y": 1, "w": 5, "h": 4,
+            "title": "Active Alarms",
+            "maxItems": 8
+          },
+          {
+            "id": "w-interlock-overview",
+            "type": "interlock_status",
+            "x": 9, "y": 1, "w": 4, "h": 4,
+            "title": "Safety Interlocks"
+          },
+          {
+            "id": "w-title-combustion",
+            "type": "title",
+            "title": "Combustion Zone",
+            "x": 13, "y": 1, "w": 3, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-gauge-comb1",
+            "type": "gauge",
+            "channel": "TC_Combustion_1",
+            "x": 13, "y": 2, "w": 3, "h": 3,
+            "minValue": 0,
+            "maxValue": 2000,
+            "showLimits": true
+          },
+          {
+            "id": "w-gauge-comb2",
+            "type": "gauge",
+            "channel": "TC_Combustion_2",
+            "x": 16, "y": 2, "w": 3, "h": 3,
+            "minValue": 0,
+            "maxValue": 1800,
+            "showLimits": true
+          },
+          {
+            "id": "w-title-emissions",
+            "type": "title",
+            "title": "Emissions",
+            "x": 19, "y": 1, "w": 5, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-bar-o2",
+            "type": "bar_graph",
+            "channel": "O2_Flue",
+            "x": 19, "y": 2, "w": 5, "h": 1,
+            "minValue": 0,
+            "maxValue": 25,
+            "showLimits": true
+          },
+          {
+            "id": "w-bar-co",
+            "type": "bar_graph",
+            "channel": "CO_Flue",
+            "x": 19, "y": 3, "w": 5, "h": 1,
+            "minValue": 0,
+            "maxValue": 800,
+            "showLimits": true,
+            "colorZones": [
+              { "max": 200, "color": "#22c55e" },
+              { "max": 400, "color": "#eab308" },
+              { "max": 800, "color": "#ef4444" }
+            ]
+          },
+          {
+            "id": "w-bar-nox",
+            "type": "bar_graph",
+            "channel": "NOx_Flue",
+            "x": 19, "y": 4, "w": 5, "h": 1,
+            "minValue": 0,
+            "maxValue": 200,
+            "showLimits": true
+          },
+          {
+            "id": "w-divider-1",
+            "type": "divider",
+            "x": 0, "y": 5, "w": 24, "h": 1,
+            "style": { "color": "#3b82f6" }
+          },
+          {
+            "id": "w-title-control",
+            "type": "title",
+            "title": "Burner Control",
+            "x": 0, "y": 6, "w": 6, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-setpoint-firing",
+            "type": "setpoint",
+            "channel": "Burner_Firing_Rate",
+            "x": 0, "y": 7, "w": 3, "h": 2,
+            "minValue": 0,
+            "maxValue": 100
+          },
+          {
+            "id": "w-setpoint-h2blend",
+            "type": "setpoint",
+            "channel": "H2_Blend_Setpoint",
+            "x": 3, "y": 7, "w": 3, "h": 2,
+            "minValue": 0,
+            "maxValue": 30
+          },
+          {
+            "id": "w-toggle-burner",
+            "type": "toggle",
+            "channel": "Burner_Enable",
+            "x": 0, "y": 9, "w": 2, "h": 1,
+            "onLabel": "BURNER ON",
+            "offLabel": "BURNER OFF",
+            "confirmOn": true,
+            "style": { "onColor": "#22c55e", "offColor": "#64748b" }
+          },
+          {
+            "id": "w-toggle-blower",
+            "type": "toggle",
+            "channel": "Blower_Start",
+            "x": 2, "y": 9, "w": 2, "h": 1,
+            "onLabel": "BLOWER",
+            "offLabel": "BLOWER"
+          },
+          {
+            "id": "w-toggle-pump",
+            "type": "toggle",
+            "channel": "Circ_Pump_Start",
+            "x": 4, "y": 9, "w": 2, "h": 1,
+            "onLabel": "PUMP",
+            "offLabel": "PUMP"
+          },
+          {
+            "id": "w-title-temps",
+            "type": "title",
+            "title": "Temperature Trends",
+            "x": 6, "y": 6, "w": 9, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-chart-temps",
+            "type": "chart",
+            "channels": ["TC_Combustion_1", "TC_Combustion_2", "TC_Flue_1", "TC_Flue_2"],
+            "x": 6, "y": 7, "w": 9, "h": 4,
+            "timeRange": 300,
+            "showGrid": true,
+            "showLegend": true,
+            "yAxisAuto": true
+          },
+          {
+            "id": "w-title-flows",
+            "type": "title",
+            "title": "Flow Rates",
+            "x": 15, "y": 6, "w": 4, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-numeric-ng-flow",
+            "type": "numeric",
+            "channel": "FT_NG",
+            "x": 15, "y": 7, "w": 2, "h": 1
+          },
+          {
+            "id": "w-numeric-h2-flow",
+            "type": "numeric",
+            "channel": "FT_H2",
+            "x": 17, "y": 7, "w": 2, "h": 1
+          },
+          {
+            "id": "w-numeric-air-flow",
+            "type": "numeric",
+            "channel": "FT_Air",
+            "x": 15, "y": 8, "w": 2, "h": 1
+          },
+          {
+            "id": "w-numeric-water-flow",
+            "type": "numeric",
+            "channel": "FT_Water",
+            "x": 17, "y": 8, "w": 2, "h": 1
+          },
+          {
+            "id": "w-sparkline-flame",
+            "type": "sparkline",
+            "channel": "Flame_Signal",
+            "x": 15, "y": 9, "w": 4, "h": 2,
+            "historyLength": 60
+          },
+          {
+            "id": "w-title-safety",
+            "type": "title",
+            "title": "Safety Status",
+            "x": 19, "y": 6, "w": 5, "h": 1,
+            "style": { "fontSize": "medium" }
+          },
+          {
+            "id": "w-led-flame",
+            "type": "led",
+            "channel": "Flame_Detected",
+            "x": 19, "y": 7, "w": 2, "h": 1,
+            "label": "Flame",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-led-highlimit",
+            "type": "led",
+            "channel": "High_Limit_OK",
+            "x": 21, "y": 7, "w": 2, "h": 1,
+            "label": "Hi Limit",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-led-lowwater",
+            "type": "led",
+            "channel": "Low_Water_OK",
+            "x": 19, "y": 8, "w": 2, "h": 1,
+            "label": "Water OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-led-gaspressure",
+            "type": "led",
+            "channel": "Gas_Pressure_OK",
+            "x": 21, "y": 8, "w": 2, "h": 1,
+            "label": "Gas OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-led-airflow",
+            "type": "led",
+            "channel": "Airflow_OK",
+            "x": 19, "y": 9, "w": 2, "h": 1,
+            "label": "Air OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-led-estop",
+            "type": "led",
+            "channel": "E_Stop_OK",
+            "x": 21, "y": 9, "w": 2, "h": 1,
+            "label": "E-Stop",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w-gauge-h2detect1",
+            "type": "gauge",
+            "channel": "H2_Ambient_1",
+            "x": 19, "y": 10, "w": 2, "h": 2,
+            "minValue": 0,
+            "maxValue": 25,
+            "showLimits": true,
+            "title": "H2 Burner"
+          },
+          {
+            "id": "w-gauge-h2detect2",
+            "type": "gauge",
+            "channel": "H2_Ambient_2",
+            "x": 21, "y": 10, "w": 2, "h": 2,
+            "minValue": 0,
+            "maxValue": 25,
+            "showLimits": true,
+            "title": "H2 Supply"
+          }
+        ]
+      },
+      {
+        "id": "combustion",
+        "name": "Combustion",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "w2-title",
+            "type": "title",
+            "title": "Combustion Analysis",
+            "x": 0, "y": 0, "w": 18, "h": 1,
+            "style": { "fontSize": "large" }
+          },
+          {
+            "id": "w2-clock",
+            "type": "clock",
+            "x": 20, "y": 0, "w": 4, "h": 1
+          },
+          {
+            "id": "w2-chart-comb-temps",
+            "type": "chart",
+            "channels": ["TC_Combustion_1", "TC_Combustion_2", "TC_Combustion_3"],
+            "x": 0, "y": 1, "w": 12, "h": 5,
+            "timeRange": 600,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "title": "Combustion Zone Temperatures"
+          },
+          {
+            "id": "w2-chart-flue-temps",
+            "type": "chart",
+            "channels": ["TC_Flue_1", "TC_Flue_2"],
+            "x": 12, "y": 1, "w": 12, "h": 5,
+            "timeRange": 600,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "title": "Flue Gas Temperatures"
+          },
+          {
+            "id": "w2-divider",
+            "type": "divider",
+            "x": 0, "y": 6, "w": 24, "h": 1
+          },
+          {
+            "id": "w2-title-pressures",
+            "type": "title",
+            "title": "Pressures",
+            "x": 0, "y": 7, "w": 8, "h": 1
+          },
+          {
+            "id": "w2-gauge-furnace",
+            "type": "gauge",
+            "channel": "PT_Furnace",
+            "x": 0, "y": 8, "w": 4, "h": 4,
+            "minValue": -5,
+            "maxValue": 5,
+            "showLimits": true
+          },
+          {
+            "id": "w2-gauge-water",
+            "type": "gauge",
+            "channel": "PT_Water",
+            "x": 4, "y": 8, "w": 4, "h": 4,
+            "minValue": 0,
+            "maxValue": 150,
+            "showLimits": true
+          },
+          {
+            "id": "w2-title-fuel",
+            "type": "title",
+            "title": "Fuel System",
+            "x": 8, "y": 7, "w": 8, "h": 1
+          },
+          {
+            "id": "w2-gauge-ng",
+            "type": "gauge",
+            "channel": "PT_NG_Supply",
+            "x": 8, "y": 8, "w": 4, "h": 4,
+            "minValue": 0,
+            "maxValue": 15,
+            "showLimits": true
+          },
+          {
+            "id": "w2-gauge-h2",
+            "type": "gauge",
+            "channel": "PT_H2_Supply",
+            "x": 12, "y": 8, "w": 4, "h": 4,
+            "minValue": 0,
+            "maxValue": 100,
+            "showLimits": true
+          },
+          {
+            "id": "w2-title-damper",
+            "type": "title",
+            "title": "Air Control",
+            "x": 16, "y": 7, "w": 8, "h": 1
+          },
+          {
+            "id": "w2-setpoint-damper",
+            "type": "setpoint",
+            "channel": "Air_Damper_Pos",
+            "x": 16, "y": 8, "w": 4, "h": 2,
+            "minValue": 0,
+            "maxValue": 100
+          },
+          {
+            "id": "w2-numeric-combair",
+            "type": "numeric",
+            "channel": "RTD_Combustion_Air",
+            "x": 20, "y": 8, "w": 4, "h": 2,
+            "title": "Combustion Air Temp"
+          },
+          {
+            "id": "w2-sparkline-airflow",
+            "type": "sparkline",
+            "channel": "FT_Air",
+            "x": 16, "y": 10, "w": 8, "h": 2,
+            "title": "Air Flow Trend"
+          }
+        ]
+      },
+      {
+        "id": "emissions",
+        "name": "Emissions",
+        "order": 2,
+        "widgets": [
+          {
+            "id": "w3-title",
+            "type": "title",
+            "title": "Emissions Monitoring - EPA Compliance",
+            "x": 0, "y": 0, "w": 18, "h": 1,
+            "style": { "fontSize": "large" }
+          },
+          {
+            "id": "w3-clock",
+            "type": "clock",
+            "x": 20, "y": 0, "w": 4, "h": 1
+          },
+          {
+            "id": "w3-chart-emissions",
+            "type": "chart",
+            "channels": ["O2_Flue", "CO_Flue", "CO2_Flue", "NOx_Flue"],
+            "x": 0, "y": 1, "w": 16, "h": 6,
+            "timeRange": 1800,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "showScrollbar": true,
+            "title": "Real-Time Emissions (30 min)"
+          },
+          {
+            "id": "w3-gauge-o2",
+            "type": "gauge",
+            "channel": "O2_Flue",
+            "x": 16, "y": 1, "w": 4, "h": 3,
+            "minValue": 0,
+            "maxValue": 25,
+            "showLimits": true
+          },
+          {
+            "id": "w3-gauge-co2",
+            "type": "gauge",
+            "channel": "CO2_Flue",
+            "x": 20, "y": 1, "w": 4, "h": 3,
+            "minValue": 0,
+            "maxValue": 20,
+            "showLimits": false
+          },
+          {
+            "id": "w3-gauge-co",
+            "type": "gauge",
+            "channel": "CO_Flue",
+            "x": 16, "y": 4, "w": 4, "h": 3,
+            "minValue": 0,
+            "maxValue": 1000,
+            "showLimits": true
+          },
+          {
+            "id": "w3-gauge-nox",
+            "type": "gauge",
+            "channel": "NOx_Flue",
+            "x": 20, "y": 4, "w": 4, "h": 3,
+            "minValue": 0,
+            "maxValue": 200,
+            "showLimits": true
+          },
+          {
+            "id": "w3-divider",
+            "type": "divider",
+            "x": 0, "y": 7, "w": 24, "h": 1
+          },
+          {
+            "id": "w3-value-table",
+            "type": "value_table",
+            "channels": ["O2_Flue", "CO_Flue", "CO2_Flue", "NOx_Flue"],
+            "x": 0, "y": 8, "w": 8, "h": 4,
+            "title": "Emissions Summary",
+            "showAlarmStatus": true,
+            "showUnits": true
+          },
+          {
+            "id": "w3-bar-o2-detail",
+            "type": "bar_graph",
+            "channel": "O2_Flue",
+            "x": 8, "y": 8, "w": 8, "h": 1,
+            "minValue": 0,
+            "maxValue": 15,
+            "showLimits": true,
+            "colorZones": [
+              { "max": 3, "color": "#ef4444" },
+              { "max": 6, "color": "#22c55e" },
+              { "max": 10, "color": "#eab308" }
+            ]
+          },
+          {
+            "id": "w3-bar-co-detail",
+            "type": "bar_graph",
+            "channel": "CO_Flue",
+            "x": 8, "y": 9, "w": 8, "h": 1,
+            "minValue": 0,
+            "maxValue": 500,
+            "showLimits": true
+          },
+          {
+            "id": "w3-bar-nox-detail",
+            "type": "bar_graph",
+            "channel": "NOx_Flue",
+            "x": 8, "y": 10, "w": 8, "h": 1,
+            "minValue": 0,
+            "maxValue": 150,
+            "showLimits": true
+          },
+          {
+            "id": "w3-bar-co2-detail",
+            "type": "bar_graph",
+            "channel": "CO2_Flue",
+            "x": 8, "y": 11, "w": 8, "h": 1,
+            "minValue": 0,
+            "maxValue": 15,
+            "showLimits": false
+          },
+          {
+            "id": "w3-sparkline-o2",
+            "type": "sparkline",
+            "channel": "O2_Flue",
+            "x": 16, "y": 8, "w": 4, "h": 2,
+            "historyLength": 120,
+            "title": "O2 Trend"
+          },
+          {
+            "id": "w3-sparkline-co",
+            "type": "sparkline",
+            "channel": "CO_Flue",
+            "x": 20, "y": 8, "w": 4, "h": 2,
+            "historyLength": 120,
+            "title": "CO Trend"
+          },
+          {
+            "id": "w3-sparkline-nox",
+            "type": "sparkline",
+            "channel": "NOx_Flue",
+            "x": 16, "y": 10, "w": 4, "h": 2,
+            "historyLength": 120,
+            "title": "NOx Trend"
+          },
+          {
+            "id": "w3-recording",
+            "type": "recording_status",
+            "x": 20, "y": 10, "w": 4, "h": 2,
+            "title": "Data Recording"
+          }
+        ]
+      },
+      {
+        "id": "safety",
+        "name": "Safety",
+        "order": 3,
+        "widgets": [
+          {
+            "id": "w4-title",
+            "type": "title",
+            "title": "Safety System Status",
+            "subtitle": "H2 Leak Detection & Interlock Monitoring",
+            "x": 0, "y": 0, "w": 18, "h": 1,
+            "style": { "fontSize": "large" }
+          },
+          {
+            "id": "w4-clock",
+            "type": "clock",
+            "x": 20, "y": 0, "w": 4, "h": 1
+          },
+          {
+            "id": "w4-interlock-status",
+            "type": "interlock_status",
+            "x": 0, "y": 1, "w": 6, "h": 6,
+            "title": "Safety Interlocks"
+          },
+          {
+            "id": "w4-alarm-summary",
+            "type": "alarm_summary",
+            "x": 6, "y": 1, "w": 6, "h": 6,
+            "title": "Safety Alarms",
+            "maxItems": 12,
+            "filterPriority": ["critical", "high"]
+          },
+          {
+            "id": "w4-title-h2",
+            "type": "title",
+            "title": "Hydrogen Leak Detection",
+            "x": 12, "y": 1, "w": 12, "h": 1,
+            "style": { "fontSize": "medium", "textAlign": "center" }
+          },
+          {
+            "id": "w4-gauge-h2-1",
+            "type": "gauge",
+            "channel": "H2_Ambient_1",
+            "x": 12, "y": 2, "w": 6, "h": 5,
+            "minValue": 0,
+            "maxValue": 50,
+            "showLimits": true,
+            "title": "H2 Detector - Burner Area"
+          },
+          {
+            "id": "w4-gauge-h2-2",
+            "type": "gauge",
+            "channel": "H2_Ambient_2",
+            "x": 18, "y": 2, "w": 6, "h": 5,
+            "minValue": 0,
+            "maxValue": 50,
+            "showLimits": true,
+            "title": "H2 Detector - Supply Manifold"
+          },
+          {
+            "id": "w4-divider",
+            "type": "divider",
+            "x": 0, "y": 7, "w": 24, "h": 1
+          },
+          {
+            "id": "w4-title-digital",
+            "type": "title",
+            "title": "Safety Switches & Interlocks",
+            "x": 0, "y": 8, "w": 12, "h": 1
+          },
+          {
+            "id": "w4-led-flame2",
+            "type": "led",
+            "channel": "Flame_Detected",
+            "x": 0, "y": 9, "w": 3, "h": 1,
+            "label": "Flame Detected",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-hilimit",
+            "type": "led",
+            "channel": "High_Limit_OK",
+            "x": 3, "y": 9, "w": 3, "h": 1,
+            "label": "High Limit OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-lowwater2",
+            "type": "led",
+            "channel": "Low_Water_OK",
+            "x": 6, "y": 9, "w": 3, "h": 1,
+            "label": "Low Water OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-gas",
+            "type": "led",
+            "channel": "Gas_Pressure_OK",
+            "x": 9, "y": 9, "w": 3, "h": 1,
+            "label": "Gas Press OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-air",
+            "type": "led",
+            "channel": "Airflow_OK",
+            "x": 0, "y": 10, "w": 3, "h": 1,
+            "label": "Airflow Proven",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-estop2",
+            "type": "led",
+            "channel": "E_Stop_OK",
+            "x": 3, "y": 10, "w": 3, "h": 1,
+            "label": "E-Stop OK",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-led-vent",
+            "type": "led",
+            "channel": "H2_Vent_Open",
+            "x": 6, "y": 10, "w": 3, "h": 1,
+            "label": "H2 Vent",
+            "onColor": "#eab308",
+            "offColor": "#22c55e"
+          },
+          {
+            "id": "w4-led-door",
+            "type": "led",
+            "channel": "Door_Interlock_OK",
+            "x": 9, "y": 10, "w": 3, "h": 1,
+            "label": "Door Closed",
+            "onColor": "#22c55e",
+            "offColor": "#ef4444"
+          },
+          {
+            "id": "w4-title-outputs",
+            "type": "title",
+            "title": "Safety Output Status",
+            "x": 12, "y": 8, "w": 12, "h": 1
+          },
+          {
+            "id": "w4-led-burner",
+            "type": "led",
+            "channel": "Burner_Enable",
+            "x": 12, "y": 9, "w": 3, "h": 1,
+            "label": "Burner En",
+            "onColor": "#22c55e",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-spark",
+            "type": "led",
+            "channel": "Ignition_Spark",
+            "x": 15, "y": 9, "w": 3, "h": 1,
+            "label": "Ignition",
+            "onColor": "#eab308",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-pilot",
+            "type": "led",
+            "channel": "Pilot_Valve",
+            "x": 18, "y": 9, "w": 3, "h": 1,
+            "label": "Pilot Valve",
+            "onColor": "#3b82f6",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-main",
+            "type": "led",
+            "channel": "Main_Gas_Valve",
+            "x": 21, "y": 9, "w": 3, "h": 1,
+            "label": "Main Gas",
+            "onColor": "#3b82f6",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-h2valve",
+            "type": "led",
+            "channel": "H2_Shutoff_Valve",
+            "x": 12, "y": 10, "w": 3, "h": 1,
+            "label": "H2 Valve",
+            "onColor": "#8b5cf6",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-blower",
+            "type": "led",
+            "channel": "Blower_Start",
+            "x": 15, "y": 10, "w": 3, "h": 1,
+            "label": "Blower",
+            "onColor": "#06b6d4",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-pump",
+            "type": "led",
+            "channel": "Circ_Pump_Start",
+            "x": 18, "y": 10, "w": 3, "h": 1,
+            "label": "Circ Pump",
+            "onColor": "#06b6d4",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-led-alarm",
+            "type": "led",
+            "channel": "Alarm_Horn",
+            "x": 21, "y": 10, "w": 3, "h": 1,
+            "label": "Alarm Horn",
+            "onColor": "#ef4444",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w4-chart-h2",
+            "type": "chart",
+            "channels": ["H2_Ambient_1", "H2_Ambient_2"],
+            "x": 0, "y": 11, "w": 24, "h": 3,
+            "timeRange": 600,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "yAxisMin": 0,
+            "yAxisMax": 30,
+            "yAxisAuto": false,
+            "title": "H2 Leak Detector Trends (10 min)"
+          }
+        ]
+      }
+    ]
+  }
+}

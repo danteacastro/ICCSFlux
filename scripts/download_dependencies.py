@@ -281,6 +281,53 @@ Copy these files here:
         return False
 
 
+def setup_nssm():
+    """Setup NSSM (Non-Sucking Service Manager) in vendor folder."""
+    log("Setting up NSSM...")
+    nssm_dir = VENDOR_DIR / "nssm"
+    nssm_dir.mkdir(parents=True, exist_ok=True)
+
+    nssm_exe = nssm_dir / "nssm.exe"
+
+    if nssm_exe.exists():
+        log("  NSSM already present", "OK")
+        return True
+
+    # Try to download NSSM
+    nssm_url = "https://nssm.cc/release/nssm-2.24.zip"
+    zip_path = nssm_dir / "nssm.zip"
+
+    log("  Downloading NSSM 2.24...")
+    if download_file(nssm_url, str(zip_path), "NSSM"):
+        import zipfile
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Extract just the 64-bit exe
+            for name in zf.namelist():
+                if name.endswith('win64/nssm.exe'):
+                    with zf.open(name) as src, open(nssm_exe, 'wb') as dst:
+                        dst.write(src.read())
+                    break
+        zip_path.unlink()  # Remove zip after extraction
+
+        if nssm_exe.exists():
+            log("  NSSM extracted successfully", "OK")
+            return True
+
+    # Fallback: create README with download instructions
+    log("  NSSM download failed", "WARN")
+    log("  Download from: https://nssm.cc/download", "WARN")
+    log(f"  Copy nssm.exe (64-bit) to: {nssm_dir}", "WARN")
+
+    readme = nssm_dir / "README.txt"
+    readme.write_text("""NSSM - Non-Sucking Service Manager
+
+Download from: https://nssm.cc/download
+
+Extract and copy nssm.exe (from the win64 folder) here.
+""")
+    return False
+
+
 def create_manifest():
     """Create a manifest of all vendored dependencies."""
     log("Creating manifest...")
@@ -343,6 +390,10 @@ def main():
 
     # Setup Mosquitto
     setup_mosquitto()
+    print()
+
+    # Setup NSSM
+    setup_nssm()
     print()
 
     # Create manifest

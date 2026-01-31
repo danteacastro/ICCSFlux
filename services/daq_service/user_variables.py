@@ -269,25 +269,38 @@ class TestSessionConfig:
 class TestSession:
     """Test session state"""
     active: bool = False
+    name: str = ""  # Session name (synced from cRIO)
     started_at: Optional[str] = None  # ISO timestamp
     started_by: Optional[str] = None
     config: TestSessionConfig = field(default_factory=TestSessionConfig)
+    # Session metadata (operator-provided at start)
+    test_id: Optional[str] = None        # e.g. "TEST-20260130-001"
+    description: Optional[str] = None    # Free text description
+    operator_notes: Optional[str] = None  # Free text notes
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             'active': self.active,
+            'name': self.name,
             'started_at': self.started_at,
             'started_by': self.started_by,
             'config': self.config.to_dict(),
+            'test_id': self.test_id,
+            'description': self.description,
+            'operator_notes': self.operator_notes,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TestSession':
         return cls(
             active=data.get('active', False),
+            name=data.get('name', ''),
             started_at=data.get('started_at'),
             started_by=data.get('started_by'),
             config=TestSessionConfig.from_dict(data.get('config', {})),
+            test_id=data.get('test_id'),
+            description=data.get('description'),
+            operator_notes=data.get('operator_notes'),
         )
 
 
@@ -994,7 +1007,9 @@ class UserVariableManager:
 
     def start_session(self, acquiring: bool, started_by: str = "user",
                        latched_alarm_count: int = 0, active_alarm_count: int = 0,
-                       require_no_latched: bool = False, require_no_active: bool = False) -> Dict[str, Any]:
+                       require_no_latched: bool = False, require_no_active: bool = False,
+                       test_id: Optional[str] = None, description: Optional[str] = None,
+                       operator_notes: Optional[str] = None) -> Dict[str, Any]:
         """
         Start a test session with state validation.
 
@@ -1006,6 +1021,9 @@ class UserVariableManager:
             require_no_latched: If True, reject start if any latched alarms exist
                                (set True only when a safety latch widget is configured)
             require_no_active: If True, reject start if any active alarms exist
+            test_id: Optional test identifier (e.g. "TEST-20260130-001")
+            description: Optional free text description
+            operator_notes: Optional free text notes
 
         Returns status dict with success/error info.
         """
@@ -1084,9 +1102,12 @@ class UserVariableManager:
             self.session.active = True
             self.session.started_at = datetime.now().isoformat()
             self.session.started_by = started_by
+            self.session.test_id = test_id
+            self.session.description = description
+            self.session.operator_notes = operator_notes
 
-        logger.info(f"[STATE MACHINE] Session started successfully by {started_by} at {self.session.started_at}")
-        return {'success': True, 'started_at': self.session.started_at}
+        logger.info(f"[STATE MACHINE] Session started successfully by {started_by} at {self.session.started_at} (test_id={test_id})")
+        return {'success': True, 'started_at': self.session.started_at, 'test_id': test_id}
 
     def stop_session(self) -> Dict[str, Any]:
         """Stop the current test session with state validation"""
@@ -1153,6 +1174,9 @@ class UserVariableManager:
             stopped_at = datetime.now().isoformat()
             self.session.started_at = None
             self.session.started_by = None
+            self.session.test_id = None
+            self.session.description = None
+            self.session.operator_notes = None
 
         logger.info(f"[STATE MACHINE] Session stopped successfully at {stopped_at}")
         return {
@@ -1481,11 +1505,19 @@ class UserVariableManager:
             Number of formulas loaded
         """
         with self.lock:
-            # Clear existing formula blocks
-            self.formula_blocks.clear()
-            self._formula_values.clear()
-
             scripts_data = project_data.get('scripts', {})
+
+            # Only clear formula blocks if project has formula data to replace them
+            has_formula_data = (
+                scripts_data.get('calculatedParams') or
+                scripts_data.get('formulaBlocks')
+            )
+            if has_formula_data:
+                self.formula_blocks.clear()
+                self._formula_values.clear()
+            else:
+                logger.debug("No formula data in project, preserving existing formula blocks")
+
             loaded_count = 0
 
             # Load calculatedParams (simple formulas)
@@ -1541,6 +1573,39 @@ class UserVariableManager:
                 # Don't save to disk - project is the source of truth
             else:
                 logger.debug("No formulas found in project")
+
+            return loaded_count
+
+    def load_variables_from_project(self, project_data: Dict[str, Any]) -> int:
+        """Load user variables from project data.
+
+        Args:
+            project_data: Project JSON dict (top-level 'variables' key)
+
+        Returns:
+            Number of variables loaded
+        """
+        with self.lock:
+            variables_data = project_data.get('variables', [])
+            if not variables_data:
+                logger.debug("No user variables in project, preserving existing")
+                return 0
+
+            # Clear and reload
+            self.variables.clear()
+            loaded_count = 0
+
+            for var_data in variables_data:
+                try:
+                    var = UserVariable.from_dict(var_data)
+                    self.variables[var.id] = var
+                    loaded_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to load variable from project: {e}")
+
+            if loaded_count > 0:
+                self._save_variables()
+                logger.info(f"Loaded {loaded_count} user variables from project")
 
             return loaded_count
 

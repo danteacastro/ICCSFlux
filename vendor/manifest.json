@@ -1,0 +1,497 @@
+{
+  "python_version": "3.11.7",
+  "packages": [
+    "paho-mqtt>=1.6.0",
+    "pymodbus>=3.0.0",
+    "pyserial>=3.5",
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "python-dateutil>=2.8.0",
+    "psutil>=5.9.0",
+    "requests>=2.28.0",
+    "opcua>=0.98.0",
+    "pycomm3>=1.2.0"
+  ],
+  "files": [
+    {
+      "path": "manifest.json",
+      "size": 3242
+    },
+    {
+      "path": "README.md",
+      "size": 2561
+    },
+    {
+      "path": "dashboard-dist\\index.html",
+      "size": 771
+    },
+    {
+      "path": "dashboard-dist\\vite.svg",
+      "size": 1497
+    },
+    {
+      "path": "mosquitto\\libcrypto-3-x64.dll",
+      "size": 5241856
+    },
+    {
+      "path": "mosquitto\\libssl-3-x64.dll",
+      "size": 863744
+    },
+    {
+      "path": "mosquitto\\mosquitto.dll",
+      "size": 93184
+    },
+    {
+      "path": "mosquitto\\mosquitto.exe",
+      "size": 269312
+    },
+    {
+      "path": "mosquitto\\mosquitto_dynamic_security.dll",
+      "size": 98304
+    },
+    {
+      "path": "mosquitto\\mosquitto_passwd.exe",
+      "size": 24064
+    },
+    {
+      "path": "npm-cache\\package-lock.json",
+      "size": 160357
+    },
+    {
+      "path": "npm-cache\\_update-notifier-last-checked",
+      "size": 0
+    },
+    {
+      "path": "python\\get-pip.py",
+      "size": 2182415
+    },
+    {
+      "path": "python\\python-3.11.7-embed-amd64.zip",
+      "size": 11198184
+    },
+    {
+      "path": "python-packages\\certifi-2026.1.4-py3-none-any.whl",
+      "size": 152900
+    },
+    {
+      "path": "python-packages\\charset_normalizer-3.4.4-cp313-cp313-win_amd64.whl",
+      "size": 107092
+    },
+    {
+      "path": "python-packages\\idna-3.11-py3-none-any.whl",
+      "size": 71008
+    },
+    {
+      "path": "python-packages\\lxml-6.0.2-cp313-cp313-win_amd64.whl",
+      "size": 4010347
+    },
+    {
+      "path": "python-packages\\numpy-2.4.1-cp313-cp313-win_amd64.whl",
+      "size": 12307230
+    },
+    {
+      "path": "python-packages\\opcua-0.98.13.tar.gz",
+      "size": 572837
+    },
+    {
+      "path": "python-packages\\paho_mqtt-2.1.0-py3-none-any.whl",
+      "size": 67219
+    },
+    {
+      "path": "python-packages\\psutil-7.2.1-cp37-abi3-win_amd64.whl",
+      "size": 136938
+    },
+    {
+      "path": "python-packages\\pycomm3-1.2.16-py3-none-any.whl",
+      "size": 99589
+    },
+    {
+      "path": "python-packages\\pymodbus-3.11.4-py3-none-any.whl",
+      "size": 166002
+    },
+    {
+      "path": "python-packages\\pyserial-3.5-py2.py3-none-any.whl",
+      "size": 90585
+    },
+    {
+      "path": "python-packages\\python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "size": 229892
+    },
+    {
+      "path": "python-packages\\pytz-2025.2-py2.py3-none-any.whl",
+      "size": 509225
+    },
+    {
+      "path": "python-packages\\requests-2.32.5-py3-none-any.whl",
+      "size": 64738
+    },
+    {
+      "path": "python-packages\\requirements.txt",
+      "size": 165
+    },
+    {
+      "path": "python-packages\\scipy-1.17.0-cp313-cp313-win_amd64.whl",
+      "size": 36287211
+    },
+    {
+      "path": "python-packages\\six-1.17.0-py2.py3-none-any.whl",
+      "size": 11050
+    },
+    {
+      "path": "python-packages\\urllib3-2.6.3-py3-none-any.whl",
+      "size": 131584
+    },
+    {
+      "path": "npm-cache\\_logs\\2026-01-23T18_19_27_427Z-debug-0.log",
+      "size": 1823
+    },
+    {
+      "path": "npm-cache\\_logs\\2026-01-23T18_57_24_690Z-debug-0.log",
+      "size": 1823
+    },
+    {
+      "path": "dashboard-dist\\assets\\ActionButtonWidget-BLu1bfva.css",
+      "size": 4500
+    },
+    {
+      "path": "dashboard-dist\\assets\\ActionButtonWidget-Byv2pSqy.js",
+      "size": 4483
+    },
+    {
+      "path": "dashboard-dist\\assets\\AlarmSummaryWidget-DAWHr5cw.js",
+      "size": 3318
+    },
+    {
+      "path": "dashboard-dist\\assets\\AlarmSummaryWidget-KvT909S_.css",
+      "size": 2428
+    },
+    {
+      "path": "dashboard-dist\\assets\\BarGraphWidget-D4Uov9iF.css",
+      "size": 6907
+    },
+    {
+      "path": "dashboard-dist\\assets\\BarGraphWidget-IOL-7j8z.js",
+      "size": 3833
+    },
+    {
+      "path": "dashboard-dist\\assets\\ClockWidget-B_tVJP6P.js",
+      "size": 1843
+    },
+    {
+      "path": "dashboard-dist\\assets\\ClockWidget-CcICyBOj.css",
+      "size": 1041
+    },
+    {
+      "path": "dashboard-dist\\assets\\codicon-ngg6Pgfi.ttf",
+      "size": 121972
+    },
+    {
+      "path": "dashboard-dist\\assets\\CrioStatusWidget-BdVuw80p.css",
+      "size": 3233
+    },
+    {
+      "path": "dashboard-dist\\assets\\CrioStatusWidget-BgvTzTOt.js",
+      "size": 5309
+    },
+    {
+      "path": "dashboard-dist\\assets\\css.worker-DBVD8oXr.js",
+      "size": 1030360
+    },
+    {
+      "path": "dashboard-dist\\assets\\DividerWidget-BBQiqxu1.js",
+      "size": 867
+    },
+    {
+      "path": "dashboard-dist\\assets\\DividerWidget-CrjmS9g7.css",
+      "size": 584
+    },
+    {
+      "path": "dashboard-dist\\assets\\GaugeWidget-CWuQpM1U.js",
+      "size": 2672
+    },
+    {
+      "path": "dashboard-dist\\assets\\GaugeWidget-xWkFj2SQ.css",
+      "size": 920
+    },
+    {
+      "path": "dashboard-dist\\assets\\html.worker-CwpTb9lJ.js",
+      "size": 693161
+    },
+    {
+      "path": "dashboard-dist\\assets\\index-BP3s0ka9.css",
+      "size": 280906
+    },
+    {
+      "path": "dashboard-dist\\assets\\index-BSYBxLZA.js",
+      "size": 1057244
+    },
+    {
+      "path": "dashboard-dist\\assets\\InterlockStatusWidget-5Fdon6to.js",
+      "size": 3831
+    },
+    {
+      "path": "dashboard-dist\\assets\\InterlockStatusWidget-BwotL3fy.css",
+      "size": 2615
+    },
+    {
+      "path": "dashboard-dist\\assets\\json.worker-BoL8UZqY.js",
+      "size": 383070
+    },
+    {
+      "path": "dashboard-dist\\assets\\LatchSwitchWidget-Cy2fqAFR.css",
+      "size": 3085
+    },
+    {
+      "path": "dashboard-dist\\assets\\LatchSwitchWidget-DmfIFVCT.js",
+      "size": 3543
+    },
+    {
+      "path": "dashboard-dist\\assets\\LedIndicator-90YxZQEc.css",
+      "size": 3046
+    },
+    {
+      "path": "dashboard-dist\\assets\\LedIndicator-LoCAVvlI.js",
+      "size": 3618
+    },
+    {
+      "path": "dashboard-dist\\assets\\monaco-Dvl_Svmm.css",
+      "size": 146364
+    },
+    {
+      "path": "dashboard-dist\\assets\\monaco-K9NcVayt.js",
+      "size": 4212950
+    },
+    {
+      "path": "dashboard-dist\\assets\\NumericDisplay-C4Nu-nHn.css",
+      "size": 3342
+    },
+    {
+      "path": "dashboard-dist\\assets\\NumericDisplay-TrWBnl9T.js",
+      "size": 1934
+    },
+    {
+      "path": "dashboard-dist\\assets\\PidLoopWidget-DZa-Fyy6.js",
+      "size": 4215
+    },
+    {
+      "path": "dashboard-dist\\assets\\PidLoopWidget-NBSSdZ6b.css",
+      "size": 3113
+    },
+    {
+      "path": "dashboard-dist\\assets\\PythonConsoleWidget-BMk8G3Yl.css",
+      "size": 3903
+    },
+    {
+      "path": "dashboard-dist\\assets\\PythonConsoleWidget-mrsb7M8O.js",
+      "size": 4842
+    },
+    {
+      "path": "dashboard-dist\\assets\\RecordingStatusWidget-DUWOum2T.js",
+      "size": 1919
+    },
+    {
+      "path": "dashboard-dist\\assets\\RecordingStatusWidget-FRTHEqt-.css",
+      "size": 1772
+    },
+    {
+      "path": "dashboard-dist\\assets\\SchedulerStatusWidget-BhkcmPQk.js",
+      "size": 2147
+    },
+    {
+      "path": "dashboard-dist\\assets\\SchedulerStatusWidget-DpVj7B7H.css",
+      "size": 1943
+    },
+    {
+      "path": "dashboard-dist\\assets\\ScriptMonitorWidget-BNzddJ8a.css",
+      "size": 2496
+    },
+    {
+      "path": "dashboard-dist\\assets\\ScriptMonitorWidget-Dmz0YDgw.js",
+      "size": 4170
+    },
+    {
+      "path": "dashboard-dist\\assets\\ScriptOutputWidget-CwHveh47.css",
+      "size": 2668
+    },
+    {
+      "path": "dashboard-dist\\assets\\ScriptOutputWidget-DdbDPnpn.js",
+      "size": 3226
+    },
+    {
+      "path": "dashboard-dist\\assets\\SetpointWidget-BSYgMRUx.js",
+      "size": 6933
+    },
+    {
+      "path": "dashboard-dist\\assets\\SetpointWidget-Dn0XE3mh.css",
+      "size": 4486
+    },
+    {
+      "path": "dashboard-dist\\assets\\SparklineWidget-BXVma3Hs.css",
+      "size": 1352
+    },
+    {
+      "path": "dashboard-dist\\assets\\SparklineWidget-C_WUEgUe.js",
+      "size": 2519
+    },
+    {
+      "path": "dashboard-dist\\assets\\SvgSymbolWidget-BbgQbB-F.css",
+      "size": 2884
+    },
+    {
+      "path": "dashboard-dist\\assets\\SvgSymbolWidget-Dd2Nhu_i.js",
+      "size": 3984
+    },
+    {
+      "path": "dashboard-dist\\assets\\SystemStatusWidget-DUkPY1pA.css",
+      "size": 5339
+    },
+    {
+      "path": "dashboard-dist\\assets\\SystemStatusWidget-_DWeumqh.js",
+      "size": 4322
+    },
+    {
+      "path": "dashboard-dist\\assets\\TitleLabel-C3CsXiEo.js",
+      "size": 5682
+    },
+    {
+      "path": "dashboard-dist\\assets\\TitleLabel-CL3AtH1X.css",
+      "size": 3014
+    },
+    {
+      "path": "dashboard-dist\\assets\\ToggleSwitch-B5fJFtOx.js",
+      "size": 1594
+    },
+    {
+      "path": "dashboard-dist\\assets\\ToggleSwitch-uXS4p3BO.css",
+      "size": 1410
+    },
+    {
+      "path": "dashboard-dist\\assets\\TrendChart-B5c23rFQ.js",
+      "size": 30222
+    },
+    {
+      "path": "dashboard-dist\\assets\\TrendChart-D9h_YGnZ.css",
+      "size": 12175
+    },
+    {
+      "path": "dashboard-dist\\assets\\ts.worker-BH9nVgjN.js",
+      "size": 7010226
+    },
+    {
+      "path": "dashboard-dist\\assets\\ValueTableWidget-DjQD0AMZ.css",
+      "size": 2608
+    },
+    {
+      "path": "dashboard-dist\\assets\\ValueTableWidget-TLjCuyQN.js",
+      "size": 1739
+    },
+    {
+      "path": "dashboard-dist\\assets\\VariableExplorerWidget-BKs7BuUy.css",
+      "size": 3684
+    },
+    {
+      "path": "dashboard-dist\\assets\\VariableExplorerWidget-D-3vR9ye.js",
+      "size": 4095
+    },
+    {
+      "path": "dashboard-dist\\assets\\VariableInputWidget-D0XtWfkH.css",
+      "size": 2992
+    },
+    {
+      "path": "dashboard-dist\\assets\\VariableInputWidget-D9EtMr9g.js",
+      "size": 3493
+    },
+    {
+      "path": "dashboard-dist\\assets\\vendor-86j3mTMB.js",
+      "size": 644507
+    },
+    {
+      "path": "dashboard-dist\\assets\\vendor-D1GxaB_c.css",
+      "size": 1652
+    },
+    {
+      "path": "dashboard-dist\\layouts\\dhw_dashboard_layout.json",
+      "size": 8324
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\alarm_monitor.json",
+      "size": 2451
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\batch_recipe.json",
+      "size": 7408
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\conditional_control.json",
+      "size": 3616
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\control_loop.json",
+      "size": 4887
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\delta_calculator.json",
+      "size": 1389
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\duty_cycle.json",
+      "size": 2611
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\expression_calculator.json",
+      "size": 2300
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\index.json",
+      "size": 5374
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\integrator.json",
+      "size": 2186
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\linear_scaling.json",
+      "size": 2233
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\moving_average.json",
+      "size": 1360
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\peak_detector.json",
+      "size": 2141
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\pid_controller.json",
+      "size": 3389
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\rate_of_change.json",
+      "size": 1447
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\running_statistics.json",
+      "size": 2027
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\setpoint_deviation.json",
+      "size": 1773
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\state_machine.json",
+      "size": 5599
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\thermal_efficiency.json",
+      "size": 2160
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\timed_sequence.json",
+      "size": 4402
+    },
+    {
+      "path": "dashboard-dist\\standard_scripts\\unit_converter.json",
+      "size": 2692
+    }
+  ]
+}

@@ -33,20 +33,40 @@ npm-debug.log*
 
 # Data files (keep structure but not data)
 data/*.csv
+data/*.csv.sha256
 data/*.json
+data/*.jsonl
 data/*.parquet
+data/*.tdms
+data/audit/*.jsonl
 !data/.gitkeep
 
 # Logs
 logs/*.log
 logs/*.txt
 logs/*.csv
+logs/*.tdms
+logs/*.sha256
 !logs/.gitkeep
 
 # Service logs and recordings
 services/daq_service/logs/*.csv
 services/daq_service/logs/*.log
+services/daq_service/logs/*.tdms
+services/daq_service/logs/*.sha256
 !services/daq_service/logs/.gitkeep
+services/daq_service/data/audit/*.jsonl
+
+# Pytest cache
+.pytest_cache/
+
+# Config backups (auto-generated)
+config/projects/backups/*.json
+config/projects/backups/backup.log
+!config/projects/backups/manifest.json
+
+# Windows artifacts
+nul
 
 # OS
 .DS_Store

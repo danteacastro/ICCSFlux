@@ -377,10 +377,10 @@ export function useProjectManager() {
   // ============================================================================
 
   function isProjectFileV2(data: any): data is ProjectFile {
-    // V2 projects either have configFile (legacy) or embedded channels (new format)
+    // Accept projects with embedded channels (v1.0+ with channels, or v2.0+)
+    // Previously only matched version 2.x, which caused exported v1.0 files to be rejected
     return data &&
            data.type === 'nisystem-project' &&
-           data.version?.startsWith('2') &&
            (data.configFile !== undefined || data.channels !== undefined)
   }
 

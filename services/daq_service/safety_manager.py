@@ -517,7 +517,7 @@ class SafetyManager:
                     result = {
                         'satisfied': satisfied,
                         'current_value': value,
-                        'reason': f'{condition.channel} = {"ON" if actual_state else "OFF"}{invert_note} ({("OK" if satisfied else f"requires {"ON" if expected else "OFF"}")})'
+                        'reason': f"{condition.channel} = {'ON' if actual_state else 'OFF'}{invert_note} ({'OK' if satisfied else ('requires ON' if expected else 'requires OFF')})"
                     }
 
         return result

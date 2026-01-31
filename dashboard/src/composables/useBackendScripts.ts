@@ -123,6 +123,11 @@ const isLoading = ref(false)
 const lastError = ref<string | null>(null)
 let handlersInitialized = false
 
+// Track recent optimistic updates to prevent backend status from overwriting
+// Key format: `${scriptId}:${field}` -> timestamp
+const recentOptimisticUpdates = new Map<string, number>()
+const OPTIMISTIC_UPDATE_TTL = 2000 // 2 seconds protection window
+
 // =============================================================================
 // COMPOSABLE
 // =============================================================================
@@ -161,11 +166,23 @@ export function useBackendScripts() {
   // MQTT HANDLERS
   // ===========================================================================
 
+  // Helper to check if a field is protected by a recent optimistic update
+  function isFieldProtected(scriptId: string, field: string): boolean {
+    const key = `${scriptId}:${field}`
+    const timestamp = recentOptimisticUpdates.get(key)
+    if (!timestamp) return false
+
+    const age = Date.now() - timestamp
+    if (age > OPTIMISTIC_UPDATE_TTL) {
+      // Expired, clean up
+      recentOptimisticUpdates.delete(key)
+      return false
+    }
+    return true
+  }
+
   function handleScriptStatus(data: ScriptStatus) {
     if (!data || !Array.isArray(data.scripts)) return
-
-    // Debug: log status updates to diagnose blinking (check browser console)
-    console.log('[ScriptStatus] Received:', data.scripts.length, 'scripts', data.scripts.map(s => `${s.name}:${s.state}`))
 
     // Build set of current script IDs from backend
     const backendIds = new Set<string>()
@@ -178,6 +195,24 @@ export function useBackendScripts() {
 
         const normalizedScript = normalizeScript(scriptData)
         const existingScript = scripts.value[scriptData.id]
+
+        // Preserve fields that were recently updated optimistically (race condition protection)
+        // This prevents backend status (generated before the update was processed) from
+        // overwriting the user's recent changes
+        if (existingScript) {
+          if (isFieldProtected(scriptData.id, 'runMode')) {
+            normalizedScript.runMode = existingScript.runMode
+          }
+          if (isFieldProtected(scriptData.id, 'enabled')) {
+            normalizedScript.enabled = existingScript.enabled
+          }
+          if (isFieldProtected(scriptData.id, 'autoRestart')) {
+            normalizedScript.autoRestart = existingScript.autoRestart
+          }
+          if (isFieldProtected(scriptData.id, 'name')) {
+            normalizedScript.name = existingScript.name
+          }
+        }
 
         // Only update if data actually changed (prevents unnecessary re-renders/blinking)
         const hasChanged = !existingScript ||
@@ -340,7 +375,28 @@ export function useBackendScripts() {
   }): string {
     // Use provided ID or generate new one
     const id = script.id || `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    const now = new Date().toISOString()
 
+    // OPTIMISTIC UPDATE: Add to local state immediately so projectFiles.saveNow()
+    // has the script before the MQTT round-trip completes
+    scripts.value[id] = {
+      id,
+      name: script.name,
+      code: script.code,
+      description: script.description || '',
+      enabled: script.enabled !== false,
+      runMode: script.runMode || 'manual',
+      autoRestart: script.autoRestart || false,
+      createdAt: now,
+      modifiedAt: now,
+      state: 'idle',
+      startedAt: null,
+      iterations: 0,
+      errorMessage: null
+    }
+    scriptOutputs.value[id] = []
+
+    // Send to backend
     mqtt.sendLocalCommand('script/add', {
       id,
       name: script.name,
@@ -362,6 +418,31 @@ export function useBackendScripts() {
     enabled: boolean
     autoRestart: boolean
   }>) {
+    // OPTIMISTIC UPDATE: Update local state immediately so projectFiles.saveNow()
+    // has the latest data before the MQTT round-trip completes
+    const existingScript = scripts.value[id]
+    if (existingScript) {
+      scripts.value[id] = {
+        ...existingScript,
+        ...(updates.name !== undefined && { name: updates.name }),
+        ...(updates.code !== undefined && { code: updates.code }),
+        ...(updates.description !== undefined && { description: updates.description }),
+        ...(updates.runMode !== undefined && { runMode: updates.runMode }),
+        ...(updates.enabled !== undefined && { enabled: updates.enabled }),
+        ...(updates.autoRestart !== undefined && { autoRestart: updates.autoRestart }),
+        modifiedAt: new Date().toISOString()
+      }
+
+      // Track which fields were optimistically updated to prevent race condition
+      // where backend status (generated before update was processed) overwrites local state
+      const now = Date.now()
+      if (updates.runMode !== undefined) recentOptimisticUpdates.set(`${id}:runMode`, now)
+      if (updates.enabled !== undefined) recentOptimisticUpdates.set(`${id}:enabled`, now)
+      if (updates.autoRestart !== undefined) recentOptimisticUpdates.set(`${id}:autoRestart`, now)
+      if (updates.name !== undefined) recentOptimisticUpdates.set(`${id}:name`, now)
+    }
+
+    // Send to backend
     const payload: any = { id }
 
     if (updates.name !== undefined) payload.name = updates.name

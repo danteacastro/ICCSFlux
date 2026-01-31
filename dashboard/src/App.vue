@@ -49,11 +49,12 @@ const activeTab = ref('overview')
 // - Operator+: Can modify channel configs
 // - Supervisor+: Can modify scripts, safety, recording settings
 // - Admin: Can manage users
-const canEditConfig = computed(() => auth.hasPermission('config.channels.modify') || auth.isOperator.value)
-const canEditScripts = computed(() => auth.hasPermission('config.channels.modify') || auth.isSupervisor.value)
-const canEditData = computed(() => auth.hasPermission('config.recording.modify') || auth.isOperator.value)
-const canEditSafety = computed(() => auth.hasPermission('config.safety.modify') || auth.isSupervisor.value)
-const canEditAdmin = computed(() => auth.hasPermission('users.manage') || auth.isSupervisor.value)
+// Note: Use isOperator/isSupervisor directly (computed refs) for proper reactivity
+const canEditConfig = computed(() => auth.isOperator.value)
+const canEditScripts = computed(() => auth.isSupervisor.value)
+const canEditData = computed(() => auth.isOperator.value)
+const canEditSafety = computed(() => auth.isSupervisor.value)
+const canEditAdmin = computed(() => auth.isSupervisor.value)
 
 // Provide edit permissions to child components
 provide('canEditConfig', canEditConfig)
@@ -63,14 +64,26 @@ provide('canEditSafety', canEditSafety)
 provide('canEditAdmin', canEditAdmin)
 provide('showLoginDialog', () => { showLoginDialog.value = true })
 
-// URL-based page selection (for multi-window support)
+// URL-based navigation state (for multi-window support)
+// Encodes both view (overview/config/data/safety) and page within overview
+function getViewFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('view')
+}
+
 function getPageFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search)
   return params.get('page')
 }
 
-function updateUrlWithPage(pageId: string) {
+function updateUrlNavigation(view: string, pageId: string) {
   const url = new URL(window.location.href)
+  // Always persist view so each tab remembers its own panel
+  if (view && view !== 'overview') {
+    url.searchParams.set('view', view)
+  } else {
+    url.searchParams.delete('view')
+  }
   if (pageId && pageId !== 'default') {
     url.searchParams.set('page', pageId)
   } else {
@@ -79,9 +92,20 @@ function updateUrlWithPage(pageId: string) {
   window.history.replaceState({}, '', url.toString())
 }
 
+// Restore activeTab from URL on startup (before any watches fire)
+const urlView = getViewFromUrl()
+if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'notebook', 'admin'].includes(urlView)) {
+  activeTab.value = urlView
+}
+
+// Watch for view (activeTab) changes and update URL
+watch(activeTab, (newView) => {
+  updateUrlNavigation(newView, store.currentPageId)
+})
+
 // Watch for page changes and update URL + track window position
 watch(() => store.currentPageId, (newPageId) => {
-  updateUrlWithPage(newPageId)
+  updateUrlNavigation(activeTab.value, newPageId)
 
   // Start tracking window position for this page (multi-monitor memory)
   if (windowPositionCleanup) {
@@ -1175,13 +1199,16 @@ async function handleManualSave() {
   margin-left: 8px;
 }
 
-.project-name {
-  font-size: 0.8rem;
+.project-status .project-name {
+  font-size: 0.7rem;
   color: #9ca3af;
-  max-width: 150px;
+  max-width: 100px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.2;
+  word-break: break-word;
 }
 
 .dirty-indicator {

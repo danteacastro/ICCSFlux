@@ -43,7 +43,7 @@ import re
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Callable
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 import argparse
@@ -692,6 +692,645 @@ class LocalSafetyManager:
             }
 
 
+# =============================================================================
+# PID CONTROL ENGINE
+# =============================================================================
+
+class PIDMode(str, Enum):
+    AUTO = "auto"
+    MANUAL = "manual"
+    CASCADE = "cascade"
+
+
+class AntiWindupMethod(str, Enum):
+    NONE = "none"
+    CLAMPING = "clamping"
+    BACK_CALCULATION = "back_calculation"
+
+
+class DerivativeMode(str, Enum):
+    ON_ERROR = "on_error"
+    ON_PV = "on_pv"
+
+
+@dataclass
+class PIDLoop:
+    id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    pv_channel: str = ""
+    cv_channel: Optional[str] = None
+    setpoint: float = 0.0
+    setpoint_source: str = "manual"
+    setpoint_channel: Optional[str] = None
+    setpoint_min: float = 0.0
+    setpoint_max: float = 100.0
+    kp: float = 1.0
+    ki: float = 0.1
+    kd: float = 0.0
+    output_min: float = 0.0
+    output_max: float = 100.0
+    output_rate_limit: float = 0.0
+    reverse_action: bool = False
+    derivative_mode: DerivativeMode = DerivativeMode.ON_PV
+    anti_windup: AntiWindupMethod = AntiWindupMethod.CLAMPING
+    deadband: float = 0.0
+    mode: PIDMode = PIDMode.AUTO
+    manual_output: float = 0.0
+    bumpless_transfer: bool = True
+    output: float = 0.0
+    error: float = 0.0
+    p_term: float = 0.0
+    i_term: float = 0.0
+    d_term: float = 0.0
+    last_pv: Optional[float] = None
+    last_error: Optional[float] = None
+    last_output: float = 0.0
+
+    def to_status_dict(self) -> Dict[str, Any]:
+        return {'id': self.id, 'name': self.name, 'enabled': self.enabled, 'mode': self.mode.value,
+                'pv': self.last_pv if self.last_pv is not None else 0.0, 'setpoint': self.setpoint,
+                'output': self.output, 'cv_channel': self.cv_channel, 'error': self.error,
+                'p_term': round(self.p_term, 4), 'i_term': round(self.i_term, 4), 'd_term': round(self.d_term, 4)}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PIDLoop':
+        if 'derivative_mode' in data and isinstance(data['derivative_mode'], str):
+            data['derivative_mode'] = DerivativeMode(data['derivative_mode'])
+        if 'anti_windup' in data and isinstance(data['anti_windup'], str):
+            data['anti_windup'] = AntiWindupMethod(data['anti_windup'])
+        if 'mode' in data and isinstance(data['mode'], str):
+            data['mode'] = PIDMode(data['mode'])
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in data.items() if k in known_fields})
+
+
+class PIDEngine:
+    def __init__(self, on_set_output: Optional[Callable[[str, float], bool]] = None):
+        self.loops: Dict[str, PIDLoop] = {}
+        self._lock = threading.RLock()
+        self._on_set_output = on_set_output
+        self._status_callback: Optional[Callable[[str, Dict], None]] = None
+
+    def set_status_callback(self, callback: Callable[[str, Dict], None]):
+        self._status_callback = callback
+
+    def add_loop(self, loop: PIDLoop) -> bool:
+        with self._lock:
+            if loop.id in self.loops: return False
+            self.loops[loop.id] = loop
+            return True
+
+    def set_setpoint(self, loop_id: str, setpoint: float) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop: return False
+            loop.setpoint = max(loop.setpoint_min, min(loop.setpoint_max, setpoint))
+            return True
+
+    def set_mode(self, loop_id: str, mode: str) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop: return False
+            old_mode = loop.mode
+            loop.mode = PIDMode(mode)
+            if loop.bumpless_transfer and old_mode != loop.mode:
+                if loop.mode == PIDMode.AUTO:
+                    loop.i_term = loop.output - loop.p_term - loop.d_term
+                elif loop.mode == PIDMode.MANUAL:
+                    loop.manual_output = loop.output
+            return True
+
+    def set_manual_output(self, loop_id: str, output: float) -> bool:
+        with self._lock:
+            loop = self.loops.get(loop_id)
+            if not loop: return False
+            loop.manual_output = max(loop.output_min, min(loop.output_max, output))
+            if loop.mode == PIDMode.MANUAL: loop.output = loop.manual_output
+            return True
+
+    def process_scan(self, channel_values: Dict[str, float], dt: float) -> Dict[str, float]:
+        outputs = {}
+        with self._lock:
+            for loop in self.loops.values():
+                if not loop.enabled: continue
+                pv = channel_values.get(loop.pv_channel)
+                if pv is None: continue
+                sp = loop.setpoint if loop.setpoint_source == "manual" else channel_values.get(loop.setpoint_channel, loop.setpoint)
+                output = self._compute_pid(loop, pv, sp, dt)
+                if loop.cv_channel:
+                    outputs[loop.cv_channel] = output
+                    if self._on_set_output: self._on_set_output(loop.cv_channel, output)
+                if self._status_callback: self._status_callback(loop.id, loop.to_status_dict())
+        return outputs
+
+    def _compute_pid(self, loop: PIDLoop, pv: float, sp: float, dt: float) -> float:
+        if loop.mode == PIDMode.MANUAL:
+            loop.output = loop.manual_output
+            loop.last_pv = pv
+            return loop.output
+        error = sp - pv
+        if loop.reverse_action: error = -error
+        if abs(error) < loop.deadband: error = 0.0
+        loop.error = error
+        if loop.last_pv is None:
+            loop.last_pv = pv
+            loop.last_error = error
+            loop.i_term = loop.output
+        loop.p_term = loop.kp * error
+        if loop.ki > 0 and dt > 0:
+            contrib = loop.ki * error * dt
+            sat_high = loop.output >= loop.output_max and contrib > 0
+            sat_low = loop.output <= loop.output_min and contrib < 0
+            if loop.anti_windup == AntiWindupMethod.CLAMPING and not (sat_high or sat_low):
+                loop.i_term += contrib
+            elif loop.anti_windup != AntiWindupMethod.CLAMPING:
+                loop.i_term += contrib
+        if loop.kd > 0 and dt > 0:
+            loop.d_term = loop.kd * (-(pv - loop.last_pv) / dt if loop.derivative_mode == DerivativeMode.ON_PV else (error - (loop.last_error or 0)) / dt)
+        else:
+            loop.d_term = 0.0
+        output = loop.p_term + loop.i_term + loop.d_term
+        output = max(loop.output_min, min(loop.output_max, output))
+        loop.output = output
+        loop.last_pv = pv
+        loop.last_error = error
+        return output
+
+    def load_config(self, config: Dict[str, Any]):
+        with self._lock:
+            self.loops.clear()
+            for loop_data in config.get('loops', []):
+                try:
+                    self.loops[loop_data['id']] = PIDLoop.from_dict(loop_data)
+                except Exception as e:
+                    logger.error(f"Failed to load PID loop: {e}")
+
+    def on_acquisition_start(self):
+        """Called when acquisition starts - reset integral terms."""
+        with self._lock:
+            for loop in self.loops.values():
+                loop.last_pv = None
+                loop.last_error = None
+                loop.i_term = 0.0
+
+    def on_acquisition_stop(self):
+        """Called when acquisition stops."""
+        pass  # PID loops persist state
+
+
+# =============================================================================
+# SEQUENCE MANAGER
+# =============================================================================
+
+class SequenceState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+    ERROR = "error"
+
+
+class StepType(str, Enum):
+    SET_OUTPUT = "setOutput"
+    WAIT_DURATION = "waitDuration"
+    WAIT_CONDITION = "waitCondition"
+    LOG_MESSAGE = "logMessage"
+    LOOP_START = "loopStart"
+    LOOP_END = "loopEnd"
+
+
+@dataclass
+class SequenceStep:
+    type: str
+    label: Optional[str] = None
+    channel: Optional[str] = None
+    value: Optional[Any] = None
+    duration_ms: Optional[int] = None
+    condition_channel: Optional[str] = None
+    condition_operator: Optional[str] = None
+    condition_value: Optional[Any] = None
+    condition_timeout_ms: Optional[int] = None
+    message: Optional[str] = None
+    loop_count: Optional[int] = None
+    loop_id: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'SequenceStep':
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class Sequence:
+    id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    steps: List[SequenceStep] = field(default_factory=list)
+    state: SequenceState = SequenceState.IDLE
+    current_step_index: int = 0
+    start_time: Optional[float] = None
+    loop_counters: Dict[str, int] = field(default_factory=dict)
+    loop_start_indices: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "state": self.state.value, "current_step_index": self.current_step_index}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Sequence':
+        steps = [SequenceStep.from_dict(s) for s in data.get("steps", [])]
+        return cls(id=data["id"], name=data["name"], steps=steps, enabled=data.get("enabled", True))
+
+
+class SequenceManager:
+    def __init__(self):
+        self.sequences: Dict[str, Sequence] = {}
+        self.on_set_output: Optional[Callable[[str, Any], None]] = None
+        self.on_get_channel_value: Optional[Callable[[str], Any]] = None
+        self.on_sequence_event: Optional[Callable[[str, Sequence], None]] = None
+        self._running_sequence_id: Optional[str] = None
+        self._execution_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._lock = threading.Lock()
+
+    def add_sequence(self, sequence: Sequence) -> bool:
+        with self._lock:
+            self.sequences[sequence.id] = sequence
+            return True
+
+    def start_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            seq = self.sequences.get(sequence_id)
+            if not seq or not seq.enabled or self._running_sequence_id: return False
+            seq.state = SequenceState.RUNNING
+            seq.current_step_index = 0
+            seq.start_time = time.time()
+            seq.loop_counters = {}
+            seq.loop_start_indices = {}
+            self._running_sequence_id = sequence_id
+            self._stop_event.clear()
+            self._pause_event.set()
+            self._execution_thread = threading.Thread(target=self._execute, args=(seq,), daemon=True)
+            self._execution_thread.start()
+            if self.on_sequence_event: self.on_sequence_event("started", seq)
+            return True
+
+    def abort_sequence(self, sequence_id: str) -> bool:
+        with self._lock:
+            if self._running_sequence_id != sequence_id: return False
+            seq = self.sequences.get(sequence_id)
+            if seq:
+                seq.state = SequenceState.ABORTED
+                self._stop_event.set()
+                self._pause_event.set()
+                if self.on_sequence_event: self.on_sequence_event("aborted", seq)
+            return True
+
+    def _execute(self, seq: Sequence):
+        try:
+            while seq.current_step_index < len(seq.steps):
+                if self._stop_event.is_set(): break
+                self._pause_event.wait()
+                if self._stop_event.is_set(): break
+                step = seq.steps[seq.current_step_index]
+                self._execute_step(seq, step)
+                if seq.state == SequenceState.RUNNING: seq.current_step_index += 1
+            if seq.state == SequenceState.RUNNING:
+                seq.state = SequenceState.COMPLETED
+                if self.on_sequence_event: self.on_sequence_event("completed", seq)
+        finally:
+            with self._lock: self._running_sequence_id = None
+
+    def _execute_step(self, seq: Sequence, step: SequenceStep):
+        if step.type == StepType.SET_OUTPUT.value and self.on_set_output and step.channel:
+            self.on_set_output(step.channel, step.value)
+        elif step.type == StepType.WAIT_DURATION.value:
+            end = time.time() + (step.duration_ms or 0) / 1000.0
+            while time.time() < end and not self._stop_event.is_set():
+                self._pause_event.wait()
+                time.sleep(0.1)
+        elif step.type == StepType.WAIT_CONDITION.value:
+            end = time.time() + (step.condition_timeout_ms or 30000) / 1000.0
+            while time.time() < end and not self._stop_event.is_set():
+                self._pause_event.wait()
+                if self.on_get_channel_value and step.condition_channel:
+                    val = self.on_get_channel_value(step.condition_channel)
+                    if self._check_condition(val, step.condition_operator, step.condition_value): return
+                time.sleep(0.1)
+        elif step.type == StepType.LOOP_START.value:
+            loop_id = step.loop_id or f"loop_{seq.current_step_index}"
+            if loop_id not in seq.loop_counters:
+                seq.loop_counters[loop_id] = 0
+                seq.loop_start_indices[loop_id] = seq.current_step_index
+        elif step.type == StepType.LOOP_END.value:
+            loop_id = step.loop_id or f"loop_{seq.current_step_index}"
+            if loop_id in seq.loop_counters:
+                seq.loop_counters[loop_id] += 1
+                if seq.loop_counters[loop_id] < (step.loop_count or 1):
+                    seq.current_step_index = seq.loop_start_indices[loop_id]
+                else:
+                    del seq.loop_counters[loop_id]
+                    del seq.loop_start_indices[loop_id]
+
+    def _check_condition(self, val, op, target) -> bool:
+        if val is None: return False
+        try:
+            if op == "==": return val == target
+            if op == "!=": return val != target
+            if op == "<": return float(val) < float(target)
+            if op == ">": return float(val) > float(target)
+            if op == "<=": return float(val) <= float(target)
+            if op == ">=": return float(val) >= float(target)
+        except: pass
+        return False
+
+    def load_config(self, config: Dict[str, Any]):
+        with self._lock:
+            self.sequences.clear()
+            for seq_data in config.get('sequences', []):
+                try:
+                    self.sequences[seq_data['id']] = Sequence.from_dict(seq_data)
+                except Exception as e:
+                    logger.error(f"Failed to load sequence: {e}")
+
+    def on_acquisition_start(self):
+        """Called when acquisition starts."""
+        pass  # Sequences continue running if active
+
+    def on_acquisition_stop(self):
+        """Called when acquisition stops - abort running sequences."""
+        if self._running_sequence_id:
+            self.abort_sequence(self._running_sequence_id)
+
+
+# =============================================================================
+# TRIGGER ENGINE
+# =============================================================================
+
+class TriggerEngine:
+    def __init__(self):
+        self.triggers: Dict[str, Dict[str, Any]] = {}
+        self.set_output: Optional[Callable[[str, Any], None]] = None
+        self.run_sequence: Optional[Callable[[str], None]] = None
+        self.publish_notification: Optional[Callable[[str, str, str], None]] = None
+        self._is_acquiring = False
+        self._last_values: Dict[str, bool] = {}
+
+    def on_acquisition_start(self): self._is_acquiring = True
+    def on_acquisition_stop(self): self._is_acquiring = False
+
+    def process_scan(self, channel_values: Dict[str, float]):
+        if not self._is_acquiring: return
+        for tid, trigger in self.triggers.items():
+            if not trigger.get('enabled', True): continue
+            cond = trigger.get('condition', {})
+            channel = cond.get('channel')
+            if not channel or channel not in channel_values: continue
+            val = channel_values[channel]
+            threshold = cond.get('threshold', 0)
+            op = cond.get('operator', '>')
+            met = False
+            if op == '>': met = val > threshold
+            elif op == '<': met = val < threshold
+            elif op == '>=': met = val >= threshold
+            elif op == '<=': met = val <= threshold
+            elif op == '==': met = abs(val - threshold) < 0.001
+            was = self._last_values.get(tid, False)
+            self._last_values[tid] = met
+            if met and not was:
+                for action in trigger.get('actions', []):
+                    self._execute_action(action, trigger)
+
+    def _execute_action(self, action: Dict, trigger: Dict):
+        atype = action.get('type', '')
+        if atype == 'setOutput' and self.set_output:
+            self.set_output(action.get('channel'), action.get('value'))
+        elif atype == 'runSequence' and self.run_sequence:
+            self.run_sequence(action.get('sequenceId'))
+        elif atype == 'notification' and self.publish_notification:
+            self.publish_notification('trigger', trigger.get('name', ''), action.get('message', ''))
+
+    def load_config(self, config: Dict[str, Any]):
+        self.triggers = {t['id']: t for t in config.get('triggers', [])}
+
+
+# =============================================================================
+# WATCHDOG ENGINE
+# =============================================================================
+
+class WatchdogEngine:
+    def __init__(self):
+        self.watchdogs: Dict[str, Dict[str, Any]] = {}
+        self.set_output: Optional[Callable[[str, Any], None]] = None
+        self.run_sequence: Optional[Callable[[str], None]] = None
+        self.stop_sequence: Optional[Callable[[str], None]] = None
+        self.publish_notification: Optional[Callable[[str, str, str], None]] = None
+        self.raise_alarm: Optional[Callable[[str, str, str], None]] = None
+        self._is_acquiring = False
+        self._triggered: Dict[str, bool] = {}
+        self._last_values: Dict[str, tuple] = {}
+
+    def on_acquisition_start(self): self._is_acquiring = True
+    def on_acquisition_stop(self): self._is_acquiring = False
+
+    def process_scan(self, channel_values: Dict[str, float], timestamps: Dict[str, float] = None):
+        if not self._is_acquiring: return
+        now = time.time()
+        for wid, wd in self.watchdogs.items():
+            if not wd.get('enabled', True): continue
+            channels = wd.get('channels', [])
+            cond = wd.get('condition', {})
+            ctype = cond.get('type', 'stale_data')
+            triggered_chs = []
+            for ch in channels:
+                if ch not in channel_values: continue
+                val = channel_values[ch]
+                ts = timestamps.get(ch, now) if timestamps else now
+                if ctype == 'stale_data':
+                    max_stale = cond.get('maxStaleMs', 5000) / 1000.0
+                    if now - ts > max_stale: triggered_chs.append(ch)
+                elif ctype == 'out_of_range':
+                    min_v, max_v = cond.get('minValue'), cond.get('maxValue')
+                    if (min_v is not None and val < min_v) or (max_v is not None and val > max_v):
+                        triggered_chs.append(ch)
+            if triggered_chs and not self._triggered.get(wid, False):
+                self._triggered[wid] = True
+                for action in wd.get('actions', []):
+                    self._execute_action(action, wd)
+                logger.warning(f"Watchdog triggered: {wd.get('name')} on {triggered_chs}")
+            elif not triggered_chs and self._triggered.get(wid, False):
+                self._triggered[wid] = False
+                for action in wd.get('recoveryActions', []):
+                    self._execute_action(action, wd)
+
+    def _execute_action(self, action: Dict, wd: Dict):
+        atype = action.get('type', '')
+        if atype == 'setOutput' and self.set_output:
+            self.set_output(action.get('channel'), action.get('value'))
+        elif atype == 'notification' and self.publish_notification:
+            self.publish_notification('watchdog', wd.get('name', ''), action.get('message', ''))
+        elif atype == 'alarm' and self.raise_alarm:
+            self.raise_alarm(wd.get('id', ''), action.get('severity', 'warning'), action.get('message', ''))
+
+    def load_config(self, config: Dict[str, Any]):
+        self.watchdogs = {w['id']: w for w in config.get('watchdogs', [])}
+
+
+# =============================================================================
+# ENHANCED ALARM MANAGER
+# =============================================================================
+
+class AlarmSeverity(Enum):
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
+
+
+class FullAlarmState(Enum):
+    NORMAL = "normal"
+    ACTIVE = "active"
+    ACKNOWLEDGED = "acknowledged"
+    RETURNED = "returned"
+    SHELVED = "shelved"
+
+
+class LatchBehavior(Enum):
+    AUTO_CLEAR = "auto_clear"
+    LATCH = "latch"
+
+
+@dataclass
+class AlarmConfig:
+    id: str
+    channel: str
+    name: str
+    enabled: bool = True
+    severity: AlarmSeverity = AlarmSeverity.MEDIUM
+    high_high: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    low_low: Optional[float] = None
+    deadband: float = 0.0
+    latch_behavior: LatchBehavior = LatchBehavior.AUTO_CLEAR
+    safety_action: Optional[str] = None
+
+    @staticmethod
+    def from_dict(d: dict) -> 'AlarmConfig':
+        return AlarmConfig(id=d.get('id', ''), channel=d.get('channel', ''), name=d.get('name', ''),
+                           enabled=d.get('enabled', True), severity=AlarmSeverity[d.get('severity', 'MEDIUM')],
+                           high_high=d.get('high_high'), high=d.get('high'), low=d.get('low'), low_low=d.get('low_low'),
+                           deadband=d.get('deadband', 0.0), latch_behavior=LatchBehavior(d.get('latch_behavior', 'auto_clear')),
+                           safety_action=d.get('safety_action'))
+
+
+@dataclass
+class ActiveAlarm:
+    alarm_id: str
+    channel: str
+    name: str
+    severity: AlarmSeverity
+    state: FullAlarmState
+    threshold_type: str
+    threshold_value: float
+    triggered_value: float
+    current_value: float
+    triggered_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by: Optional[str] = None
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        return {'alarm_id': self.alarm_id, 'channel': self.channel, 'name': self.name,
+                'severity': self.severity.name, 'state': self.state.value, 'threshold_type': self.threshold_type,
+                'triggered_value': self.triggered_value, 'current_value': self.current_value,
+                'triggered_at': self.triggered_at.isoformat(), 'message': self.message}
+
+
+class EnhancedAlarmManager:
+    def __init__(self, publish_callback: Optional[Callable] = None):
+        self.publish_callback = publish_callback
+        self.lock = threading.RLock()
+        self.alarm_configs: Dict[str, AlarmConfig] = {}
+        self.active_alarms: Dict[str, ActiveAlarm] = {}
+
+    def add_alarm_config(self, config: AlarmConfig):
+        with self.lock: self.alarm_configs[config.id] = config
+
+    def process_value(self, channel: str, value: float, timestamp: float = None):
+        with self.lock:
+            for config in [c for c in self.alarm_configs.values() if c.channel == channel and c.enabled]:
+                met, ttype, tval = self._check_thresholds(config, value)
+                current = self.active_alarms.get(config.id)
+                if met:
+                    if current is None:
+                        self._trigger_alarm(config, value, ttype, tval)
+                    else:
+                        current.current_value = value
+                else:
+                    if current and current.state != FullAlarmState.SHELVED:
+                        if self._should_clear(config, value, current.threshold_type, current.threshold_value):
+                            if config.latch_behavior == LatchBehavior.AUTO_CLEAR:
+                                self._clear_alarm(config.id)
+                            elif current.state == FullAlarmState.ACTIVE:
+                                current.state = FullAlarmState.RETURNED
+                                current.current_value = value
+
+    def _check_thresholds(self, config: AlarmConfig, value: float) -> tuple:
+        if config.high_high is not None and value >= config.high_high: return True, 'high_high', config.high_high
+        if config.low_low is not None and value <= config.low_low: return True, 'low_low', config.low_low
+        if config.high is not None and value >= config.high: return True, 'high', config.high
+        if config.low is not None and value <= config.low: return True, 'low', config.low
+        return False, None, None
+
+    def _should_clear(self, config: AlarmConfig, value: float, ttype: str, tval: float) -> bool:
+        db = config.deadband
+        if ttype in ('high_high', 'high'): return value < (tval - db)
+        if ttype in ('low_low', 'low'): return value > (tval + db)
+        return True
+
+    def _trigger_alarm(self, config: AlarmConfig, value: float, ttype: str, tval: float):
+        direction = "exceeded" if ttype.startswith('high') else "fell below"
+        alarm = ActiveAlarm(alarm_id=config.id, channel=config.channel, name=config.name, severity=config.severity,
+                            state=FullAlarmState.ACTIVE, threshold_type=ttype, threshold_value=tval,
+                            triggered_value=value, current_value=value, triggered_at=datetime.now(),
+                            message=f"{config.name} {direction} {ttype} limit: {value:.2f}")
+        self.active_alarms[config.id] = alarm
+        if self.publish_callback: self.publish_callback('alarm', alarm.to_dict())
+        logger.warning(f"ALARM: {alarm.message}")
+
+    def _clear_alarm(self, alarm_id: str):
+        alarm = self.active_alarms.pop(alarm_id, None)
+        if alarm and self.publish_callback:
+            self.publish_callback('alarm_cleared', {'alarm_id': alarm_id})
+            logger.info(f"ALARM CLEARED: {alarm.name}")
+
+    def acknowledge_alarm(self, alarm_id: str, user: str = "Unknown") -> bool:
+        with self.lock:
+            alarm = self.active_alarms.get(alarm_id)
+            if alarm and alarm.state in (FullAlarmState.ACTIVE, FullAlarmState.RETURNED):
+                alarm.state = FullAlarmState.ACKNOWLEDGED
+                alarm.acknowledged_at = datetime.now()
+                alarm.acknowledged_by = user
+                if self.publish_callback: self.publish_callback('alarm', alarm.to_dict())
+                return True
+            return False
+
+    def get_active_alarms(self) -> List[ActiveAlarm]:
+        with self.lock: return list(self.active_alarms.values())
+
+    def load_config(self, config: Dict[str, Any]):
+        with self.lock:
+            self.alarm_configs.clear()
+            for a in config.get('alarms', []):
+                try: self.alarm_configs[a['id']] = AlarmConfig.from_dict(a)
+                except Exception as e: logger.error(f"Failed to load alarm: {e}")
+
+
 @dataclass
 class Opto22Config:
     """Configuration for Opto22 node"""
@@ -706,7 +1345,7 @@ class Opto22Config:
     api_key: str = ''  # groov API key for authentication
     verify_ssl: bool = False  # Self-signed cert on localhost
 
-    scan_rate_hz: float = 10.0
+    scan_rate_hz: float = 4.0
     publish_rate_hz: float = 4.0  # Rate at which to publish MQTT messages
     watchdog_timeout: float = 2.0
 
@@ -782,11 +1421,37 @@ class Opto22NodeService:
         # Local safety manager (for autonomous safety operation)
         self.local_safety: Optional[LocalSafetyManager] = None
 
+        # =======================================================================
+        # STANDALONE ENGINES (run autonomously on Opto22 hardware)
+        # =======================================================================
+
+        # PID Control Engine - deterministic control loops
+        self.pid_engine = PIDEngine(on_set_output=self._set_output_internal)
+        self.pid_engine.set_status_callback(self._publish_pid_status)
+
+        # Sequence Manager - automated step sequences
+        self.sequence_manager = SequenceManager()
+        self.sequence_manager.on_set_output = self._set_output_internal
+        self.sequence_manager.on_get_channel_value = self._get_channel_value
+        self.sequence_manager.on_sequence_event = self._on_sequence_event
+
+        # Trigger Engine - condition-based automation
+        self.trigger_engine = TriggerEngine()
+        self.trigger_engine.set_output = self._set_output_internal
+        self.trigger_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id)
+
+        # Watchdog Engine - channel monitoring (stale/out-of-range)
+        self.channel_watchdog = WatchdogEngine()
+
+        # Enhanced Alarm Manager - full ISA-18.2 alarm lifecycle
+        self.enhanced_alarm_manager = EnhancedAlarmManager(publish_callback=self._publish_alarm_event)
+
         # Status
         self.last_pc_contact = time.time()
         self.pc_connected = False
         self._last_status_time = 0.0  # For periodic status publishing
         self._last_publish_time = 0.0  # For rate-limited channel publishing
+        self._start_time = time.time()  # For uptime tracking
 
         # Config version tracking (for PC sync)
         self.config_version = ''  # Hash of current config
@@ -797,6 +1462,99 @@ class Opto22NodeService:
 
         # Load config (if exists)
         self._load_local_config()
+
+    # =========================================================================
+    # ENGINE CALLBACK HELPERS
+    # =========================================================================
+
+    def _set_output_internal(self, channel_name: str, value: float) -> bool:
+        """Internal callback for engines to set output values."""
+        if not self.config:
+            return False
+        ch_config = self.config.channels.get(channel_name)
+        if not ch_config:
+            logger.warning(f"Engine set_output: unknown channel {channel_name}")
+            return False
+        if ch_config.channel_type not in ('analog_output', 'digital_output'):
+            logger.warning(f"Engine set_output: {channel_name} is not an output")
+            return False
+        return self._write_channel_value(ch_config, value)
+
+    def _get_channel_value(self, channel_name: str) -> Optional[float]:
+        """Internal callback for engines to read channel values."""
+        with self.values_lock:
+            return self.channel_values.get(channel_name)
+
+    def _publish_pid_status(self, loop_id: str, status: Dict[str, Any]):
+        """Callback to publish PID loop status via MQTT."""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_topic_prefix}/pid/{loop_id}/status"
+            try:
+                self.mqtt_client.publish(topic, json.dumps(status), qos=0)
+            except Exception as e:
+                logger.debug(f"PID status publish failed: {e}")
+
+    def _on_sequence_event(self, event_type: str, sequence: 'Sequence'):
+        """Callback for sequence manager events."""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_topic_prefix}/sequence/{sequence.id}/{event_type}"
+            payload = {
+                'sequence_id': sequence.id,
+                'event': event_type,
+                'state': sequence.state.value if sequence.state else 'unknown',
+                'current_step': sequence.current_step_index,
+                'timestamp': datetime.now().isoformat()
+            }
+            try:
+                self.mqtt_client.publish(topic, json.dumps(payload), qos=1)
+            except Exception as e:
+                logger.debug(f"Sequence event publish failed: {e}")
+
+    def _publish_notification(self, notification_type: str, message: str, severity: str = 'info'):
+        """Publish a notification message via MQTT."""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_topic_prefix}/notifications"
+            payload = {
+                'type': notification_type,
+                'message': message,
+                'severity': severity,
+                'timestamp': datetime.now().isoformat(),
+                'source': 'opto22_node'
+            }
+            try:
+                self.mqtt_client.publish(topic, json.dumps(payload), qos=1)
+            except Exception as e:
+                logger.debug(f"Notification publish failed: {e}")
+
+    def _raise_alarm(self, channel_name: str, alarm_type: str, value: float, limit: float):
+        """Callback for watchdog engine to raise alarms."""
+        self._publish_notification(
+            'watchdog_alarm',
+            f"Channel {channel_name}: {alarm_type} (value={value:.2f}, limit={limit:.2f})",
+            severity='warning'
+        )
+
+    def _publish_alarm_event(self, alarm: 'ActiveAlarm', event_type: str):
+        """Callback to publish alarm events via MQTT."""
+        if self.mqtt_client and self._mqtt_connected.is_set():
+            topic = f"{self.config.mqtt_topic_prefix}/alarms/{alarm.channel_name}/{event_type}"
+            payload = {
+                'channel_name': alarm.channel_name,
+                'alarm_type': alarm.alarm_type,
+                'event': event_type,
+                'state': alarm.state.value,
+                'severity': alarm.severity.value,
+                'value': alarm.trigger_value,
+                'limit': alarm.limit_value,
+                'message': alarm.message,
+                'timestamp': alarm.timestamp.isoformat(),
+                'acknowledged': alarm.acknowledged,
+                'shelved': alarm.shelved
+            }
+            try:
+                self.mqtt_client.publish(topic, json.dumps(payload), qos=1)
+            except Exception as e:
+                logger.debug(f"Alarm event publish failed: {e}")
 
     # =========================================================================
     # REST API ACCESS
@@ -954,7 +1712,7 @@ class Opto22NodeService:
                     mqtt_password=data.get('mqtt_password', ''),
                     api_key=data.get('api_key', ''),
                     verify_ssl=data.get('verify_ssl', False),
-                    scan_rate_hz=data.get('scan_rate_hz', 10.0),
+                    scan_rate_hz=data.get('scan_rate_hz', 4.0),
                     publish_rate_hz=data.get('publish_rate_hz', 4.0),
                     watchdog_timeout=data.get('watchdog_timeout', 2.0),
                     channels=channels,
@@ -1445,7 +2203,90 @@ class Opto22NodeService:
         return ChannelConfig(**normalized)
 
     def _handle_command_message(self, topic: str, payload: Dict[str, Any]):
-        """Handle output commands from NISystem"""
+        """Handle commands from NISystem (device CLI and output commands)"""
+        request_id = payload.get('request_id', '')
+        base = self.get_topic_base()
+
+        # Device CLI commands (ping, info, modules, firmware, reboot)
+        if topic.endswith('/commands/ping'):
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'command': 'ping',
+                'request_id': request_id,
+                'node_id': self.config.node_id,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+            return
+
+        elif topic.endswith('/commands/info'):
+            hw_info = self._detect_hardware_info()
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'info': {
+                    'node_id': self.config.node_id,
+                    'type': 'Opto22',
+                    'product_type': hw_info.get('product_type', 'groov EPIC/RIO'),
+                    'serial_number': hw_info.get('serial_number', 'N/A'),
+                    'device_name': hw_info.get('device_name', ''),
+                    'firmware_version': hw_info.get('firmware_version', ''),
+                    'ip_address': self._get_local_ip(),
+                    'channels': len(self.config.channels),
+                    'modules': len(hw_info.get('modules', [])),
+                    'acquiring': self._acquiring.is_set(),
+                    'uptime_hours': round((time.time() - getattr(self, '_start_time', time.time())) / 3600, 1)
+                }
+            })
+            return
+
+        elif topic.endswith('/commands/modules'):
+            hw_info = self._detect_hardware_info()
+            modules = []
+            for mod in hw_info.get('modules', []):
+                modules.append({
+                    'slot': mod.get('slot', 0),
+                    'name': mod.get('name', ''),
+                    'type': mod.get('module_type', ''),
+                    'channels': len(mod.get('channels', []))
+                })
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'modules': modules
+            })
+            return
+
+        elif topic.endswith('/commands/firmware'):
+            hw_info = self._detect_hardware_info()
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'node_software': '1.0.0',
+                'product_type': hw_info.get('product_type', 'groov EPIC/RIO'),
+                'serial_number': hw_info.get('serial_number', 'N/A'),
+                'firmware_version': hw_info.get('firmware_version', ''),
+                'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            })
+            return
+
+        elif topic.endswith('/commands/reboot'):
+            logger.warning("Received reboot command from device CLI")
+            self._publish(f"{base}/command/response", {
+                'success': True,
+                'request_id': request_id,
+                'message': 'Reboot initiated'
+            })
+            # Schedule reboot after response is sent
+            def do_reboot():
+                time.sleep(1)
+                logger.info("Executing reboot...")
+                import subprocess
+                subprocess.run(['reboot'], check=False)
+            threading.Thread(target=do_reboot, daemon=True).start()
+            return
+
+        # Output commands
+        # New format: topic ends with /commands/output, TAG name in payload
         if topic.endswith('/commands/output'):
             channel_name = payload.get('channel', '')
             value = payload.get('value')
@@ -1742,6 +2583,26 @@ class Opto22NodeService:
             'locked_outputs': self.session.locked_outputs,
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
+
+    def _publish_config_response(self, request_type: str, success: bool,
+                                   data: Optional[Dict[str, Any]] = None,
+                                   error: Optional[str] = None):
+        """
+        Publish config operation response.
+
+        Uses unified API format matching DAQ Service and cRIO for frontend compatibility.
+        """
+        payload = {
+            'request_type': request_type,
+            'success': success,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        if data:
+            payload['data'] = data
+        if error:
+            payload['error'] = error
+
+        self._publish(f"{self.get_topic_base()}/config/response", payload, qos=1)
 
     def _check_session_timeout(self):
         """Check if session has timed out (PC disconnect protection)"""
@@ -3032,6 +3893,12 @@ Time functions:
         self._publish_status()
         logger.info("Acquisition started")
 
+        # Notify engines of acquisition start
+        self.pid_engine.on_acquisition_start()
+        self.sequence_manager.on_acquisition_start()
+        self.trigger_engine.on_acquisition_start()
+        self.channel_watchdog.on_acquisition_start()
+
         # Auto-start acquisition scripts
         self._auto_start_scripts('acquisition')
 
@@ -3039,6 +3906,12 @@ Time functions:
         """Stop data acquisition"""
         if not self._acquiring.is_set():
             return
+
+        # Notify engines of acquisition stop
+        self.pid_engine.on_acquisition_stop()
+        self.sequence_manager.on_acquisition_stop()
+        self.trigger_engine.on_acquisition_stop()
+        self.channel_watchdog.on_acquisition_stop()
 
         # Auto-stop acquisition scripts first
         self._auto_stop_scripts('acquisition')
@@ -3106,6 +3979,43 @@ Time functions:
                         self.local_safety.evaluate_all()
                     except Exception as e:
                         logger.error(f"Local safety evaluation error: {e}")
+
+                # ===============================================================
+                # STANDALONE ENGINE PROCESSING
+                # ===============================================================
+
+                # Get timestamps snapshot for watchdog
+                with self.values_lock:
+                    timestamps_snapshot = dict(self.channel_timestamps)
+
+                # Calculate dt for PID
+                dt = time.time() - loop_start
+
+                # PID Control - must run before outputs are published
+                try:
+                    pid_outputs = self.pid_engine.process_scan(values_snapshot, dt)
+                    # PID outputs are written directly via callback
+                except Exception as e:
+                    logger.error(f"PID engine error: {e}")
+
+                # Trigger Engine - evaluate automation triggers
+                try:
+                    self.trigger_engine.process_scan(values_snapshot)
+                except Exception as e:
+                    logger.error(f"Trigger engine error: {e}")
+
+                # Watchdog Engine - monitor for stale/out-of-range values
+                try:
+                    self.channel_watchdog.process_scan(values_snapshot, timestamps_snapshot)
+                except Exception as e:
+                    logger.error(f"Watchdog engine error: {e}")
+
+                # Enhanced Alarm Manager - process all channels
+                try:
+                    for ch_name, ch_value in values_snapshot.items():
+                        self.enhanced_alarm_manager.process_value(ch_name, ch_value, now)
+                except Exception as e:
+                    logger.error(f"Enhanced alarm manager error: {e}")
 
             except Exception as e:
                 logger.error(f"Scan loop error: {e}")

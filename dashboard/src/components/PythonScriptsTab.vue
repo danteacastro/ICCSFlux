@@ -284,6 +284,13 @@ function createNewScript() {
   showNewScriptModal.value = false
   selectedScriptId.value = scriptId
 
+  // Update editor with default code (matching createFromTemplate behavior)
+  if (editor) {
+    editor.setValue(DEFAULT_SCRIPT_CODE)
+    lastSavedCode.value = DEFAULT_SCRIPT_CODE
+    isDirty.value = false
+  }
+
   // Persist to project file
   setTimeout(async () => {
     if (projectFiles.currentProject.value) {

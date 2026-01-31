@@ -1,0 +1,49 @@
+{
+  "name": "Unit Converter",
+  "description": "Converts values between common engineering units",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Utilities",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to convert"
+    },
+    "conversion": {
+      "type": "select",
+      "options": [
+        "C_to_F",
+        "F_to_C",
+        "PSI_to_bar",
+        "bar_to_PSI",
+        "PSI_to_kPa",
+        "kPa_to_PSI",
+        "GPM_to_LPM",
+        "LPM_to_GPM",
+        "in_to_mm",
+        "mm_to_in",
+        "lb_to_kg",
+        "kg_to_lb",
+        "HP_to_kW",
+        "kW_to_HP"
+      ],
+      "default": "C_to_F",
+      "description": "Conversion type"
+    },
+    "output_name": {
+      "type": "string",
+      "default": "",
+      "description": "Custom output name (leave blank for auto)"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Converted",
+      "unit": "converted unit",
+      "description": "Converted value"
+    }
+  ],
+  "code": "# Unit Converter\n# Common engineering unit conversions\n\ninput_tag = config.get('input_tag', 'Temperature_1')\nconversion = config.get('conversion', 'C_to_F')\noutput_name = config.get('output_name', '')\n\nvalue = tags.get(input_tag, 0)\n\n# Conversion functions\nconversions = {\n    'C_to_F': lambda x: x * 9/5 + 32,\n    'F_to_C': lambda x: (x - 32) * 5/9,\n    'PSI_to_bar': lambda x: x * 0.0689476,\n    'bar_to_PSI': lambda x: x * 14.5038,\n    'PSI_to_kPa': lambda x: x * 6.89476,\n    'kPa_to_PSI': lambda x: x * 0.145038,\n    'GPM_to_LPM': lambda x: x * 3.78541,\n    'LPM_to_GPM': lambda x: x * 0.264172,\n    'in_to_mm': lambda x: x * 25.4,\n    'mm_to_in': lambda x: x / 25.4,\n    'lb_to_kg': lambda x: x * 0.453592,\n    'kg_to_lb': lambda x: x * 2.20462,\n    'HP_to_kW': lambda x: x * 0.7457,\n    'kW_to_HP': lambda x: x * 1.341\n}\n\n# Unit suffixes for auto-naming\nunit_suffixes = {\n    'C_to_F': '_F',\n    'F_to_C': '_C',\n    'PSI_to_bar': '_bar',\n    'bar_to_PSI': '_PSI',\n    'PSI_to_kPa': '_kPa',\n    'kPa_to_PSI': '_PSI',\n    'GPM_to_LPM': '_LPM',\n    'LPM_to_GPM': '_GPM',\n    'in_to_mm': '_mm',\n    'mm_to_in': '_in',\n    'lb_to_kg': '_kg',\n    'kg_to_lb': '_lb',\n    'HP_to_kW': '_kW',\n    'kW_to_HP': '_HP'\n}\n\n# Convert\nif conversion in conversions:\n    result = conversions[conversion](value)\nelse:\n    result = value\n\n# Determine output tag name\nif output_name:\n    tag_name = f'py.{output_name}'\nelse:\n    suffix = unit_suffixes.get(conversion, '_Converted')\n    tag_name = f'py.{input_tag}{suffix}'\n\npublish(tag_name, result)"
+}

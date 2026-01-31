@@ -26,9 +26,11 @@ const emit = defineEmits<{
 const store = useDashboardStore()
 
 // Permission checks for control actions
-const canStartAcquisition = computed(() => auth.hasPermission('acquisition.start') || auth.isOperator.value)
-const canStartRecording = computed(() => auth.hasPermission('recording.start') || auth.isOperator.value)
-const canControlSession = computed(() => auth.hasPermission('acquisition.start') || auth.isOperator.value)
+// Use role-based computed refs directly for proper Vue reactivity
+// (function calls like hasPermission() don't create reactive dependencies)
+const canStartAcquisition = computed(() => auth.isOperator.value)
+const canStartRecording = computed(() => auth.isOperator.value)
+const canControlSession = computed(() => auth.isOperator.value)
 
 // Recording timer display
 const recordingTime = computed(() => {

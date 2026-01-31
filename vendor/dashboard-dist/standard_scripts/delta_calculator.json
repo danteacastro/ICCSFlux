@@ -1,0 +1,38 @@
+{
+  "name": "Delta Calculator",
+  "description": "Calculates the difference between two tags (A - B)",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Calculations",
+  "config": {
+    "tag_a": {
+      "type": "tag",
+      "default": "Pressure_In",
+      "description": "First tag (minuend)"
+    },
+    "tag_b": {
+      "type": "tag",
+      "default": "Pressure_Out",
+      "description": "Second tag (subtrahend)"
+    },
+    "output_name": {
+      "type": "string",
+      "default": "Delta_P",
+      "description": "Output tag name (without py. prefix)"
+    },
+    "absolute_value": {
+      "type": "boolean",
+      "default": false,
+      "description": "Return absolute value"
+    }
+  },
+  "subscribed_tags": ["${config.tag_a}", "${config.tag_b}"],
+  "published_tags": [
+    {
+      "name": "py.${config.output_name}",
+      "unit": "same as inputs",
+      "description": "Difference (A - B)"
+    }
+  ],
+  "code": "# Delta Calculator\n# Simple difference: A - B\n# Common uses: Delta_P (pressure drop), Delta_T (temperature difference)\n\ntag_a = config.get('tag_a', 'Pressure_In')\ntag_b = config.get('tag_b', 'Pressure_Out')\noutput_name = config.get('output_name', 'Delta_P')\nuse_abs = config.get('absolute_value', False)\n\na = tags.get(tag_a, 0)\nb = tags.get(tag_b, 0)\n\ndelta = a - b\n\nif use_abs:\n    delta = abs(delta)\n\npublish(f'py.{output_name}', delta)"
+}

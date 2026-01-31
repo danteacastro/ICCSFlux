@@ -1,0 +1,8 @@
+# Azure IoT Hub Uploader Service Requirements
+# Uses paho-mqtt 1.x for compatibility with azure-iot-device
+
+# MQTT client (1.x required for Azure IoT SDK)
+paho-mqtt>=1.6.0,<2.0.0
+
+# Azure IoT Hub SDK
+azure-iot-device>=2.12.0

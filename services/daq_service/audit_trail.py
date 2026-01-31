@@ -59,6 +59,7 @@ class AuditEventType(Enum):
     SAFETY_INTERLOCK_MODIFIED = "safety.interlock.modified"
     SAFETY_CONFIG_LOCKED = "safety.config.locked"
     SAFETY_CONFIG_UNLOCKED = "safety.config.unlocked"
+    EMERGENCY_STOP = "safety.emergency.stop"
 
     # Alarm actions
     ALARM_ACKNOWLEDGED = "alarm.acknowledged"

@@ -288,7 +288,7 @@ describe('System Status Handling', () => {
       recording: false,
       scheduler_enabled: true,
       simulation_mode: false,
-      scan_rate_hz: 10,
+      scan_rate_hz: 4,
       project_name: 'dhw_test_system'
     }
 

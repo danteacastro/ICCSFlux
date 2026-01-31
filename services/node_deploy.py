@@ -136,8 +136,7 @@ class NodeDeployer:
         """Run SSH command on remote node"""
         ssh_cmd = ['ssh']
 
-        # Add options for non-interactive
-        ssh_cmd.extend(['-o', 'BatchMode=yes'])
+        # Allow password prompts, skip host key verification
         ssh_cmd.extend(['-o', 'StrictHostKeyChecking=no'])
         ssh_cmd.extend(['-o', f'ConnectTimeout={timeout}'])
 
@@ -161,7 +160,6 @@ class NodeDeployer:
     def _run_scp(self, node: NodeConfig, local_path: Path, remote_path: str) -> tuple[bool, str]:
         """Copy file to remote node via SCP"""
         scp_cmd = ['scp']
-        scp_cmd.extend(['-o', 'BatchMode=yes'])
         scp_cmd.extend(['-o', 'StrictHostKeyChecking=no'])
         scp_cmd.append(str(local_path))
         scp_cmd.append(f'{node.user}@{node.host}:{remote_path}')
@@ -279,6 +277,9 @@ class NodeDeployer:
         # Make executable
         self._run_ssh(node, f'chmod +x {node.deploy_path}/crio_node.py')
 
+        # Create startup script
+        self._setup_autostart(node)
+
         # Verify deployment
         info("Verifying deployment...")
         ok, output = self._run_ssh(node, f'ls -la {node.deploy_path}/crio_node.py')
@@ -286,6 +287,40 @@ class NodeDeployer:
             success(f"Deployment verified: {output.strip()}")
 
         return True
+
+    def _setup_autostart(self, node: NodeConfig) -> None:
+        """Setup autostart script for the node service"""
+        script_names = {
+            'crio': 'crio_node.py',
+            'opto22': 'opto22_node.py',
+            'cfp': 'cfp_node.py'
+        }
+        script_name = script_names.get(node.node_type, f'{node.node_type}_node.py')
+        log_file = f'{node.log_path}/{node.node_type}_node.log'
+        broker_arg = f'--broker {node.mqtt_broker}' if node.mqtt_broker else f'--broker {self.config.mqtt_broker}'
+
+        # Create startup script
+        startup_script = f'''#!/bin/bash
+# NISystem {node.node_type} node startup script
+cd {node.deploy_path}
+python3 {script_name} {broker_arg} >> {log_file} 2>&1 &
+'''
+        info("Creating startup script...")
+        # Use echo with heredoc to create the script
+        cmd = f'''cat > {node.deploy_path}/start_node.sh << 'STARTUP_EOF'
+{startup_script}
+STARTUP_EOF
+chmod +x {node.deploy_path}/start_node.sh'''
+        self._run_ssh(node, cmd)
+
+        # Add to rc.local or crontab for autostart
+        info("Configuring autostart on boot...")
+        # Try rc.local first (common on NI Linux RT)
+        rc_line = f'{node.deploy_path}/start_node.sh'
+        self._run_ssh(node, f'grep -q "start_node.sh" /etc/rc.local 2>/dev/null || echo "{rc_line}" >> /etc/rc.local 2>/dev/null')
+        # Also try crontab as fallback
+        self._run_ssh(node, f'(crontab -l 2>/dev/null | grep -v start_node.sh; echo "@reboot {rc_line}") | crontab - 2>/dev/null')
+        success("Autostart configured")
 
     def deploy_opto22(self, node: NodeConfig) -> bool:
         """Deploy Opto22 node code and config"""
@@ -326,6 +361,9 @@ class NodeDeployer:
 
         # Make executable
         self._run_ssh(node, f'chmod +x {node.deploy_path}/opto22_node.py')
+
+        # Create startup script
+        self._setup_autostart(node)
 
         return True
 
@@ -373,6 +411,9 @@ class NodeDeployer:
 
         # Make executable
         self._run_ssh(node, f'chmod +x {node.deploy_path}/cfp_node.py')
+
+        # Create startup script
+        self._setup_autostart(node)
 
         return True
 
@@ -544,16 +585,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s deploy crio          Deploy code to cRIO
-  %(prog)s deploy opto22        Deploy code to Opto22
-  %(prog)s deploy cfp           Deploy code to cFP host
-  %(prog)s deploy all           Deploy to all configured nodes
-  %(prog)s status crio          Check cRIO status
-  %(prog)s restart crio         Restart cRIO service
-  %(prog)s logs crio            View cRIO logs
-  %(prog)s logs crio -f         Follow cRIO logs
-  %(prog)s config               Show configuration
-  %(prog)s config --setup       Run configuration setup
+  %(prog)s deploy crio --host 192.168.1.20      Deploy to cRIO at specific IP
+  %(prog)s deploy crio-001                      Deploy to named node from config
+  %(prog)s deploy crio --host 192.168.1.20 -r   Deploy and restart
+  %(prog)s deploy all                           Deploy to all configured nodes
+  %(prog)s status crio-001                      Check node status
+  %(prog)s restart crio --host 192.168.1.20     Restart service on specific IP
+  %(prog)s logs crio-001                        View node logs
+  %(prog)s logs crio --host 192.168.1.20 -f     Follow logs on specific IP
+  %(prog)s config                               Show configuration
+  %(prog)s config --setup                       Run configuration setup
+  %(prog)s config --add crio-002 192.168.1.21   Add a node to config
         """
     )
 
@@ -561,21 +603,26 @@ Examples:
 
     # Deploy command
     deploy_parser = subparsers.add_parser('deploy', help='Deploy code to node(s)')
-    deploy_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
+    deploy_parser.add_argument('target', help='Node type (crio/opto22/cfp), node name, or "all"')
+    deploy_parser.add_argument('--host', '-H', help='Target IP address (overrides config)')
+    deploy_parser.add_argument('--user', '-u', default='admin', help='SSH username (default: admin)')
     deploy_parser.add_argument('--restart', '-r', action='store_true', help='Restart service after deploy')
     deploy_parser.add_argument('--install', '-i', action='store_true', help='Install requirements')
 
     # Status command
     status_parser = subparsers.add_parser('status', help='Check node status')
-    status_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
+    status_parser.add_argument('target', help='Node type, node name, or "all"')
+    status_parser.add_argument('--host', '-H', help='Target IP address (overrides config)')
 
     # Restart command
     restart_parser = subparsers.add_parser('restart', help='Restart node service')
-    restart_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
+    restart_parser.add_argument('target', help='Node type, node name, or "all"')
+    restart_parser.add_argument('--host', '-H', help='Target IP address (overrides config)')
 
     # Logs command
     logs_parser = subparsers.add_parser('logs', help='View node logs')
-    logs_parser.add_argument('target', choices=['crio', 'opto22', 'cfp'], help='Target node')
+    logs_parser.add_argument('target', help='Node type or node name')
+    logs_parser.add_argument('--host', '-H', help='Target IP address (overrides config)')
     logs_parser.add_argument('-n', '--lines', type=int, default=50, help='Number of lines')
     logs_parser.add_argument('-f', '--follow', action='store_true', help='Follow log output')
 
@@ -583,10 +630,14 @@ Examples:
     config_parser = subparsers.add_parser('config', help='Manage configuration')
     config_parser.add_argument('--setup', action='store_true', help='Run setup wizard')
     config_parser.add_argument('--show', action='store_true', help='Show current config')
+    config_parser.add_argument('--add', nargs=2, metavar=('NAME', 'IP'), help='Add a node: --add crio-002 192.168.1.21')
+    config_parser.add_argument('--type', choices=['crio', 'opto22', 'cfp'], default='crio', help='Node type for --add')
+    config_parser.add_argument('--remove', metavar='NAME', help='Remove a node by name')
 
     # Install command
     install_parser = subparsers.add_parser('install', help='Install requirements on node')
-    install_parser.add_argument('target', choices=['crio', 'opto22', 'cfp', 'all'], help='Target node(s)')
+    install_parser.add_argument('target', help='Node type, node name, or "all"')
+    install_parser.add_argument('--host', '-H', help='Target IP address (overrides config)')
 
     args = parser.parse_args()
 
@@ -602,6 +653,33 @@ Examples:
     if args.command == 'config':
         if args.setup:
             config = create_default_config(config_path)
+        elif args.add:
+            # Add a node: --add crio-002 192.168.1.21 --type crio
+            node_name, node_ip = args.add
+            node_type = args.type
+
+            config = DeployConfig.load(config_path) if config_path.exists() else DeployConfig()
+
+            config.nodes[node_name] = NodeConfig(
+                name=node_name,
+                host=node_ip,
+                user='admin',
+                deploy_path='/home/admin/nisystem',
+                log_path='/var/log',
+                node_type=node_type,
+                mqtt_broker=config.mqtt_broker
+            )
+            config.save(config_path)
+            success(f"Added node '{node_name}' ({node_type}) at {node_ip}")
+        elif args.remove:
+            # Remove a node by name
+            config = DeployConfig.load(config_path) if config_path.exists() else DeployConfig()
+            if args.remove in config.nodes:
+                del config.nodes[args.remove]
+                config.save(config_path)
+                success(f"Removed node '{args.remove}'")
+            else:
+                error(f"Node '{args.remove}' not found in configuration")
         else:
             if config_path.exists():
                 config = DeployConfig.load(config_path)
@@ -615,6 +693,9 @@ Examples:
                     print(f"    User: {node.user}")
                     print(f"    Deploy Path: {node.deploy_path}")
                     print(f"    Type: {node.node_type}")
+                print("\nTo add more nodes:")
+                print("  device config --add <name> <ip> --type <crio|opto22|cfp>")
+                print("  Example: device config --add crio-002 192.168.1.21 --type crio")
             else:
                 warning(f"No configuration found at {config_path}")
                 print("Run: python node_deploy.py config --setup")
@@ -629,19 +710,62 @@ Examples:
 
     deployer = NodeDeployer(config)
 
-    # Get target nodes
-    def get_targets(target: str) -> List[NodeConfig]:
+    # Determine node type from target string
+    def infer_node_type(target: str) -> str:
+        """Infer node type from target name or type string"""
+        target_lower = target.lower()
+        if target_lower.startswith('crio') or target_lower == 'crio':
+            return 'crio'
+        elif target_lower.startswith('opto') or target_lower == 'opto22':
+            return 'opto22'
+        elif target_lower.startswith('cfp') or target_lower == 'cfp':
+            return 'cfp'
+        return 'crio'  # default
+
+    # Get target nodes (supports --host override, named nodes, or type-based lookup)
+    def get_targets(target: str, host: Optional[str] = None, user: str = 'admin') -> List[NodeConfig]:
+        # If --host is provided, create an ephemeral node config
+        if host:
+            node_type = infer_node_type(target)
+            return [NodeConfig(
+                name=f'{node_type}-{host}',
+                host=host,
+                user=user,
+                deploy_path='/home/admin/nisystem',
+                log_path='/var/log',
+                node_type=node_type,
+                mqtt_broker=config.mqtt_broker
+            )]
+
+        # "all" returns all configured nodes
         if target == 'all':
+            if not config.nodes:
+                warning("No nodes configured. Use: device config --add <name> <ip> --type <type>")
             return list(config.nodes.values())
-        elif target in config.nodes:
+
+        # Check if target is a configured node name
+        if target in config.nodes:
             return [config.nodes[target]]
-        else:
-            error(f"Node '{target}' not configured")
-            return []
+
+        # Check if target is a node type - return all nodes of that type
+        node_type = infer_node_type(target)
+        matching = [n for n in config.nodes.values() if n.node_type == node_type]
+        if matching:
+            return matching
+
+        # Not found
+        error(f"Node '{target}' not found in configuration")
+        print(f"Configured nodes: {', '.join(config.nodes.keys()) if config.nodes else '(none)'}")
+        print(f"\nOptions:")
+        print(f"  1. Add to config: device config --add {target} <ip> --type {node_type}")
+        print(f"  2. Use --host:    device deploy {target} --host <ip>")
+        return []
 
     # Execute commands
     if args.command == 'deploy':
-        targets = get_targets(args.target)
+        host = getattr(args, 'host', None)
+        user = getattr(args, 'user', 'admin')
+        targets = get_targets(args.target, host, user)
         for node in targets:
             if node.node_type == 'crio':
                 ok = deployer.deploy_crio(node)
@@ -660,7 +784,8 @@ Examples:
                     deployer.restart_service(node)
 
     elif args.command == 'status':
-        targets = get_targets(args.target)
+        host = getattr(args, 'host', None)
+        targets = get_targets(args.target, host)
         for node in targets:
             header(f"Status: {node.name} ({node.host})")
             status = deployer.get_status(node)
@@ -672,19 +797,22 @@ Examples:
             print(f"  MQTT Connected: {'Yes' if status['mqtt_connected'] else 'Unknown'}")
 
     elif args.command == 'restart':
-        targets = get_targets(args.target)
+        host = getattr(args, 'host', None)
+        targets = get_targets(args.target, host)
         for node in targets:
             deployer.restart_service(node)
 
     elif args.command == 'logs':
-        if args.target not in config.nodes:
-            error(f"Node '{args.target}' not configured")
+        host = getattr(args, 'host', None)
+        targets = get_targets(args.target, host)
+        if not targets:
             return
-        node = config.nodes[args.target]
+        node = targets[0]  # Logs only work on one node at a time
         deployer.view_logs(node, args.lines, args.follow)
 
     elif args.command == 'install':
-        targets = get_targets(args.target)
+        host = getattr(args, 'host', None)
+        targets = get_targets(args.target, host)
         for node in targets:
             deployer.install_requirements(node)
 

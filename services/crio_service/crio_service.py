@@ -157,7 +157,7 @@ class SystemConfig:
     mqtt_base_topic: str = "nisystem"
     crio_id: str = "crio-001"
     crio_name: str = "cRIO Controller"
-    scan_rate_hz: int = 100
+    scan_rate_hz: int = 4
     heartbeat_interval_sec: float = 1.0
     pc_watchdog_timeout_sec: float = 5.0
     pc_heartbeat_topic: str = "nisystem/heartbeat"
@@ -195,7 +195,7 @@ def parse_config(config_path: str) -> CRIOConfig:
         config.system.mqtt_base_topic = sys_section.get('mqtt_base_topic', 'nisystem')
         config.system.crio_id = sys_section.get('crio_id', 'crio-001')
         config.system.crio_name = sys_section.get('crio_name', 'cRIO Controller')
-        config.system.scan_rate_hz = sys_section.getint('scan_rate_hz', 100)
+        config.system.scan_rate_hz = sys_section.getint('scan_rate_hz', 4)
         config.system.heartbeat_interval_sec = sys_section.getfloat('heartbeat_interval_sec', 1.0)
         config.system.pc_watchdog_timeout_sec = sys_section.getfloat('pc_watchdog_timeout_sec', 5.0)
         config.system.pc_heartbeat_topic = sys_section.get('pc_heartbeat_topic', 'nisystem/heartbeat')

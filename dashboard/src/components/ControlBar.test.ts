@@ -11,62 +11,54 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { mount, VueWrapper } from '@vue/test-utils'
+import { ref, type Ref } from 'vue'
 
-// Mock all composables inside vi.mock factory to avoid hoisting issues
-vi.mock('../stores/dashboard', () => {
-  const { ref } = require('vue')
+// Shared state for mocks - set before mounting component
+let mockAcquiring: Ref<boolean>
+let mockRecording: Ref<boolean>
+let mockEditMode: Ref<boolean>
+let mockPidEditMode: Ref<boolean>
+let mockSessionActive: Ref<boolean>
+let mockAuthRole: Ref<string>
 
-  const mockAcquiring = ref(false)
-  const mockRecording = ref(false)
-  const mockEditMode = ref(false)
-  const mockPidEditMode = ref(false)
+// Initialize fresh refs
+function resetMocks() {
+  mockAcquiring = ref(false)
+  mockRecording = ref(false)
+  mockEditMode = ref(false)
+  mockPidEditMode = ref(false)
+  mockSessionActive = ref(false)
+  mockAuthRole = ref('admin')
+}
 
-  // Export to global for test access
-  ;(global as any).__mockDashboardState = {
-    mockAcquiring,
-    mockRecording,
-    mockEditMode,
-    mockPidEditMode
-  }
+// Mock all composables - they read from the shared refs
+vi.mock('../stores/dashboard', () => ({
+  useDashboardStore: () => ({
+    get isConnected() { return true },
+    get isAcquiring() { return mockAcquiring.value },
+    get isRecording() { return mockRecording.value },
+    get status() { return { recording_duration_seconds: 0 } },
+    get editMode() { return mockEditMode.value },
+    get pidEditMode() { return mockPidEditMode.value },
+    toggleEditMode: vi.fn(),
+    setPidEditMode: vi.fn()
+  })
+}))
 
-  return {
-    useDashboardStore: () => ({
-      get isConnected() { return true },
-      get isAcquiring() { return mockAcquiring.value },
-      get isRecording() { return mockRecording.value },
-      get status() { return { recording_duration_seconds: 0 } },
-      get editMode() { return mockEditMode.value },
-      get pidEditMode() { return mockPidEditMode.value },
-      toggleEditMode: vi.fn(),
-      setPidEditMode: vi.fn()
-    })
-  }
-})
-
-vi.mock('../composables/useAuth', () => {
-  const { ref } = require('vue')
-
-  const mockRole = ref('admin')
-
-  ;(global as any).__mockAuthRole = mockRole
-
-  return {
-    useAuth: () => ({
-      hasPermission: (perm: string) => {
-        const role = mockRole.value
-        return role === 'admin' || role === 'operator' || role === 'supervisor'
-      },
-      // Return object with .value getter to match computed behavior
-      isOperator: {
-        get value() {
-          return ['admin', 'supervisor', 'operator'].includes(mockRole.value)
-        }
+vi.mock('../composables/useAuth', () => ({
+  useAuth: () => ({
+    hasPermission: (perm: string) => {
+      const role = mockAuthRole.value
+      return role === 'admin' || role === 'operator' || role === 'supervisor'
+    },
+    isOperator: {
+      get value() {
+        return ['admin', 'supervisor', 'operator'].includes(mockAuthRole.value)
       }
-    })
-  }
-})
+    }
+  })
+}))
 
 vi.mock('../composables/useMqtt', () => ({
   useMqtt: () => ({
@@ -74,19 +66,13 @@ vi.mock('../composables/useMqtt', () => ({
   })
 }))
 
-vi.mock('../composables/usePlayground', () => {
-  const { ref } = require('vue')
-
-  const mockSessionActive = ref(false)
-  ;(global as any).__mockSessionActive = mockSessionActive
-
-  return {
-    usePlayground: () => ({
-      // Return ref directly - it has .value property
-      isSessionActive: mockSessionActive
-    })
-  }
-})
+vi.mock('../composables/usePlayground', () => ({
+  usePlayground: () => ({
+    isSessionActive: {
+      get value() { return mockSessionActive.value }
+    }
+  })
+}))
 
 // Import after mocking
 import ControlBar from './ControlBar.vue'
@@ -94,18 +80,7 @@ import ControlBar from './ControlBar.vue'
 describe('ControlBar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset mock state
-    if ((global as any).__mockAuthRole) {
-      (global as any).__mockAuthRole.value = 'admin'
-    }
-    if ((global as any).__mockSessionActive) {
-      (global as any).__mockSessionActive.value = false
-    }
-    if ((global as any).__mockDashboardState) {
-      (global as any).__mockDashboardState.mockAcquiring.value = false
-      ;(global as any).__mockDashboardState.mockRecording.value = false
-      ;(global as any).__mockDashboardState.mockEditMode.value = false
-    }
+    resetMocks()
   })
 
   // ===========================================================================
@@ -152,6 +127,43 @@ describe('ControlBar', () => {
     it('should render record button with correct class', () => {
       const wrapper = mount(ControlBar)
       expect(wrapper.find('.btn-record').exists()).toBe(true)
+    })
+  })
+
+  // ===========================================================================
+  // START/STOP STATE TRANSITION TESTS
+  // ===========================================================================
+
+  describe('Start/Stop State Transition', () => {
+    it('should show START button when not acquiring', () => {
+      mockAcquiring.value = false
+
+      const wrapper = mount(ControlBar)
+
+      expect(wrapper.find('.btn-start').exists()).toBe(true)
+      expect(wrapper.find('.btn-stop').exists()).toBe(false)
+      expect(wrapper.text()).toContain('START')
+    })
+
+    it('should show STOP button when acquiring', () => {
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+
+      expect(wrapper.find('.btn-stop').exists()).toBe(true)
+      expect(wrapper.find('.btn-start').exists()).toBe(false)
+      expect(wrapper.text()).toContain('STOP')
+    })
+
+    it('should emit stop when STOP button clicked', async () => {
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const stopBtn = wrapper.find('.btn-stop')
+
+      await stopBtn.trigger('click')
+
+      expect(wrapper.emitted('stop')).toBeTruthy()
     })
   })
 
@@ -206,7 +218,7 @@ describe('ControlBar', () => {
 
   describe('Permissions', () => {
     it('should show lock icon for guests', () => {
-      (global as any).__mockAuthRole.value = 'guest'
+      mockAuthRole.value = 'guest'
 
       const wrapper = mount(ControlBar)
 
@@ -214,7 +226,7 @@ describe('ControlBar', () => {
     })
 
     it('should not show lock icon for operators', () => {
-      (global as any).__mockAuthRole.value = 'operator'
+      mockAuthRole.value = 'operator'
 
       const wrapper = mount(ControlBar)
 
@@ -224,7 +236,7 @@ describe('ControlBar', () => {
     })
 
     it('should not show lock icon for admins', () => {
-      (global as any).__mockAuthRole.value = 'admin'
+      mockAuthRole.value = 'admin'
 
       const wrapper = mount(ControlBar)
 
@@ -248,6 +260,96 @@ describe('ControlBar', () => {
       const wrapper = mount(ControlBar)
 
       expect(wrapper.find('.toggle-btn').exists()).toBe(true)
+    })
+
+    it('should NOT have "on" class when session is inactive', () => {
+      mockSessionActive.value = false
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      expect(toggleBtn.classes()).not.toContain('on')
+    })
+
+    it('should have "on" class when session is active (green state)', () => {
+      mockSessionActive.value = true
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      expect(toggleBtn.classes()).toContain('on')
+    })
+
+    it('should be disabled when not acquiring', () => {
+      mockAcquiring.value = false
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      expect(toggleBtn.classes()).toContain('disabled')
+      expect(toggleBtn.attributes('disabled')).toBeDefined()
+    })
+
+    it('should be enabled when acquiring', () => {
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      expect(toggleBtn.classes()).not.toContain('disabled')
+    })
+
+    it('should emit session-start when clicked while OFF (inactive)', async () => {
+      mockSessionActive.value = false
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      await toggleBtn.trigger('click')
+
+      expect(wrapper.emitted('session-start')).toBeTruthy()
+      expect(wrapper.emitted('session-stop')).toBeFalsy()
+    })
+
+    it('should emit session-stop when clicked while ON (active)', async () => {
+      mockSessionActive.value = true
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      await toggleBtn.trigger('click')
+
+      expect(wrapper.emitted('session-stop')).toBeTruthy()
+      expect(wrapper.emitted('session-start')).toBeFalsy()
+    })
+
+    it('should NOT emit events when clicked while not acquiring', async () => {
+      mockSessionActive.value = false
+      mockAcquiring.value = false
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      await toggleBtn.trigger('click')
+
+      expect(wrapper.emitted('session-start')).toBeFalsy()
+      expect(wrapper.emitted('session-stop')).toBeFalsy()
+    })
+
+    it('should NOT emit events when user lacks permission', async () => {
+      mockAuthRole.value = 'guest'
+      mockAcquiring.value = true
+
+      const wrapper = mount(ControlBar)
+      const toggleBtn = wrapper.find('.toggle-btn')
+
+      await toggleBtn.trigger('click')
+
+      expect(wrapper.emitted('session-start')).toBeFalsy()
+      expect(wrapper.emitted('session-stop')).toBeFalsy()
     })
   })
 

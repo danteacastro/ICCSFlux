@@ -1,0 +1,1028 @@
+# =============================================================================
+# NISystem Configuration - Dual Furnace Thermal Test Stand
+# =============================================================================
+# Test System: Two independent furnace chambers for thermal cycling/soak testing
+# Safety Philosophy: Fail-safe design - any fault condition disables heaters
+# Equipment: 8-slot cDAQ-9189 with full module complement
+# =============================================================================
+
+[system]
+mqtt_broker = localhost
+mqtt_port = 1883
+mqtt_base_topic = nisystem
+scan_rate_hz = 100
+publish_rate_hz = 4
+simulation_mode = true
+log_directory = ./logs
+config_reload_topic = nisystem/config/reload
+system_name = Dual Furnace Thermal Test Stand
+system_id = TTS-001
+
+# =============================================================================
+# CHASSIS
+# =============================================================================
+[chassis:cDAQ-9189-Main]
+type = cDAQ-9189
+serial = 01AB23CD
+connection = USB
+description = Main 8-Slot CompactDAQ Chassis
+enabled = true
+
+# =============================================================================
+# MODULES (8 slots filled)
+# =============================================================================
+
+[module:Slot1_FurnaceTC]
+type = NI-9213
+chassis = cDAQ-9189-Main
+slot = 1
+description = Furnace Zone Thermocouples (16ch)
+enabled = true
+
+[module:Slot2_DUT_TC]
+type = NI-9213
+chassis = cDAQ-9189-Main
+slot = 2
+description = DUT Thermocouples (16ch)
+enabled = true
+
+[module:Slot3_Analog4to20]
+type = NI-9203
+chassis = cDAQ-9189-Main
+slot = 3
+description = 4-20mA Process Sensors (8ch)
+enabled = true
+
+[module:Slot4_Counters]
+type = NI-9361
+chassis = cDAQ-9189-Main
+slot = 4
+description = Pulse/Counter Inputs - Flow Meters (8ch)
+enabled = true
+
+[module:Slot5_DigitalIn]
+type = NI-9423
+chassis = cDAQ-9189-Main
+slot = 5
+description = 24V Digital Inputs (8ch)
+enabled = true
+
+[module:Slot6_DigitalOut]
+type = NI-9472
+chassis = cDAQ-9189-Main
+slot = 6
+description = 24V Digital Outputs (8ch)
+enabled = true
+
+[module:Slot7_AnalogOut]
+type = NI-9263
+chassis = cDAQ-9189-Main
+slot = 7
+description = Analog Outputs 0-10V (4ch)
+enabled = true
+
+[module:Slot8_AnalogIn]
+type = NI-9239
+chassis = cDAQ-9189-Main
+slot = 8
+description = Analog Inputs +/-10V (4ch)
+enabled = true
+
+# =============================================================================
+# FURNACE 1 - ZONE TEMPERATURES (Slot 1: NI-9213)
+# =============================================================================
+
+[channel:TC101]
+module = Slot1_FurnaceTC
+physical_channel = ai0
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 1 Zone 1 Top
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F1_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:TC102]
+module = Slot1_FurnaceTC
+physical_channel = ai1
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 1 Zone 2 Middle
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F1_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:TC103]
+module = Slot1_FurnaceTC
+physical_channel = ai2
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 1 Zone 3 Bottom
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F1_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:TC104]
+module = Slot1_FurnaceTC
+physical_channel = ai3
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 1 Door Seal
+low_limit = 0
+high_limit = 200
+high_warning = 150
+log = true
+log_interval_ms = 5000
+group = Furnace 1
+
+# =============================================================================
+# FURNACE 2 - ZONE TEMPERATURES (Slot 1: NI-9213)
+# =============================================================================
+
+[channel:TC201]
+module = Slot1_FurnaceTC
+physical_channel = ai4
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 2 Zone 1 Top
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F2_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:TC202]
+module = Slot1_FurnaceTC
+physical_channel = ai5
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 2 Zone 2 Middle
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F2_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:TC203]
+module = Slot1_FurnaceTC
+physical_channel = ai6
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 2 Zone 3 Bottom
+low_limit = 0
+high_limit = 1000
+low_warning = 15
+high_warning = 950
+safety_action = F2_overtemp
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:TC204]
+module = Slot1_FurnaceTC
+physical_channel = ai7
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Furnace 2 Door Seal
+low_limit = 0
+high_limit = 200
+high_warning = 150
+log = true
+log_interval_ms = 5000
+group = Furnace 2
+
+# =============================================================================
+# DUT (DEVICE UNDER TEST) TEMPERATURES (Slot 2: NI-9213)
+# =============================================================================
+
+[channel:TC111]
+module = Slot2_DUT_TC
+physical_channel = ai0
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F1 DUT 1 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 1
+
+[channel:TC112]
+module = Slot2_DUT_TC
+physical_channel = ai1
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F1 DUT 2 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 1
+
+[channel:TC113]
+module = Slot2_DUT_TC
+physical_channel = ai2
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F1 DUT 3 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 1
+
+[channel:TC114]
+module = Slot2_DUT_TC
+physical_channel = ai3
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F1 DUT 4 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 1
+
+[channel:TC211]
+module = Slot2_DUT_TC
+physical_channel = ai4
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F2 DUT 1 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 2
+
+[channel:TC212]
+module = Slot2_DUT_TC
+physical_channel = ai5
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F2 DUT 2 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 2
+
+[channel:TC213]
+module = Slot2_DUT_TC
+physical_channel = ai6
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F2 DUT 3 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 2
+
+[channel:TC214]
+module = Slot2_DUT_TC
+physical_channel = ai7
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = F2 DUT 4 Surface
+low_limit = -40
+high_limit = 900
+log = true
+log_interval_ms = 500
+group = DUT Furnace 2
+
+[channel:TC001]
+module = Slot2_DUT_TC
+physical_channel = ai8
+channel_type = thermocouple
+thermocouple_type = K
+units = degC
+description = Ambient Room Temp
+low_limit = 10
+high_limit = 40
+low_warning = 15
+high_warning = 35
+log = true
+log_interval_ms = 10000
+group = Environment
+
+# =============================================================================
+# 4-20mA PROCESS SENSORS (Slot 3: NI-9203)
+# =============================================================================
+
+[channel:PT101]
+module = Slot3_Analog4to20
+physical_channel = ai0
+channel_type = current
+current_range_ma = 20.0
+units = mbar
+four_twenty_scaling = true
+eng_units_min = -50
+eng_units_max = 1000
+description = F1 Chamber Pressure
+low_limit = -50
+high_limit = 1000
+high_warning = 500
+safety_action = F1_high_pressure
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:PT201]
+module = Slot3_Analog4to20
+physical_channel = ai1
+channel_type = current
+current_range_ma = 20.0
+units = mbar
+scale_slope = 62.5
+scale_offset = -250
+description = F2 Chamber Pressure
+low_limit = -50
+high_limit = 1000
+high_warning = 500
+safety_action = F2_high_pressure
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:PT001]
+module = Slot3_Analog4to20
+physical_channel = ai2
+channel_type = current
+current_range_ma = 20.0
+units = psi
+scale_slope = 6.25
+scale_offset = -25
+description = Cooling Water Pressure
+low_limit = 0
+high_limit = 100
+low_warning = 30
+safety_action = low_water_pressure
+log = true
+log_interval_ms = 1000
+group = Utilities
+
+[channel:PT002]
+module = Slot3_Analog4to20
+physical_channel = ai3
+channel_type = current
+current_range_ma = 20.0
+units = psi
+scale_slope = 12.5
+scale_offset = -50
+description = N2 Supply Pressure
+low_limit = 0
+high_limit = 200
+low_warning = 50
+safety_action = low_n2_pressure
+log = true
+log_interval_ms = 5000
+group = Utilities
+
+[channel:HT101]
+module = Slot3_Analog4to20
+physical_channel = ai4
+channel_type = current
+current_range_ma = 20.0
+units = %RH
+scale_slope = 6.25
+scale_offset = -25
+description = F1 Chamber Humidity
+low_limit = 0
+high_limit = 100
+log = true
+log_interval_ms = 5000
+group = Furnace 1
+
+[channel:HT201]
+module = Slot3_Analog4to20
+physical_channel = ai5
+channel_type = current
+current_range_ma = 20.0
+units = %RH
+scale_slope = 6.25
+scale_offset = -25
+description = F2 Chamber Humidity
+low_limit = 0
+high_limit = 100
+log = true
+log_interval_ms = 5000
+group = Furnace 2
+
+[channel:FT001]
+module = Slot3_Analog4to20
+physical_channel = ai6
+channel_type = current
+current_range_ma = 20.0
+units = CFM
+scale_slope = 31.25
+scale_offset = -125
+description = Exhaust Flow Rate
+low_limit = 0
+high_limit = 500
+low_warning = 100
+safety_action = low_exhaust_flow
+log = true
+log_interval_ms = 2000
+group = Utilities
+
+[channel:HT001]
+module = Slot3_Analog4to20
+physical_channel = ai7
+channel_type = current
+current_range_ma = 20.0
+units = %RH
+scale_slope = 6.25
+scale_offset = -25
+description = Room Humidity
+low_limit = 0
+high_limit = 100
+high_warning = 70
+log = true
+log_interval_ms = 10000
+group = Environment
+
+# =============================================================================
+# FLOW METER COUNTERS (Slot 4: NI-9361)
+# =============================================================================
+
+[channel:FT101]
+module = Slot4_Counters
+physical_channel = ctr0
+channel_type = voltage
+units = LPM
+scale_slope = 5.0
+scale_offset = 0
+description = F1 Cooling Flow
+low_limit = 0
+high_limit = 50
+low_warning = 5
+safety_action = F1_low_cooling
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:FT201]
+module = Slot4_Counters
+physical_channel = ctr1
+channel_type = voltage
+units = LPM
+scale_slope = 5.0
+scale_offset = 0
+description = F2 Cooling Flow
+low_limit = 0
+high_limit = 50
+low_warning = 5
+safety_action = F2_low_cooling
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:FT002]
+module = Slot4_Counters
+physical_channel = ctr2
+channel_type = voltage
+units = SLPM
+scale_slope = 10.0
+scale_offset = 0
+description = N2 Purge Flow
+low_limit = 0
+high_limit = 100
+log = true
+log_interval_ms = 2000
+group = Utilities
+
+[channel:FT003]
+module = Slot4_Counters
+physical_channel = ctr3
+channel_type = voltage
+units = L
+scale_slope = 100.0
+scale_offset = 0
+description = Total Water Usage
+low_limit = 0
+high_limit = 999999
+log = true
+log_interval_ms = 60000
+group = Utilities
+
+# =============================================================================
+# VALVE DOSING - FLOW TOTALIZERS (Slot 4: NI-9361)
+# =============================================================================
+# These counter channels accumulate flow for the valve dosing system.
+# In simulation mode, they increment automatically to simulate flow.
+
+[channel:Flow_1]
+module = Slot4_Counters
+physical_channel = ctr4
+channel_type = counter
+units = gal
+scale_slope = 0.1
+scale_offset = 0
+description = Valve 1 Flow Totalizer
+low_limit = 0
+high_limit = 999999
+log = true
+log_interval_ms = 1000
+group = Valve Dosing
+
+[channel:Flow_2]
+module = Slot4_Counters
+physical_channel = ctr5
+channel_type = counter
+units = gal
+scale_slope = 0.1
+scale_offset = 0
+description = Valve 2 Flow Totalizer
+low_limit = 0
+high_limit = 999999
+log = true
+log_interval_ms = 1000
+group = Valve Dosing
+
+[channel:Flow_3]
+module = Slot4_Counters
+physical_channel = ctr6
+channel_type = counter
+units = gal
+scale_slope = 0.1
+scale_offset = 0
+description = Valve 3 Flow Totalizer
+low_limit = 0
+high_limit = 999999
+log = true
+log_interval_ms = 1000
+group = Valve Dosing
+
+# =============================================================================
+# DIGITAL INPUTS (Slot 5: NI-9423)
+# =============================================================================
+
+[channel:DI001]
+module = Slot5_DigitalIn
+physical_channel = di0
+channel_type = digital_input
+invert = true
+description = E-Stop (NC)
+safety_action = emergency_shutdown
+log = true
+group = Safety
+
+[channel:DI101]
+module = Slot5_DigitalIn
+physical_channel = di1
+channel_type = digital_input
+invert = false
+description = F1 Door Closed
+safety_action = F1_door_open
+log = true
+group = Furnace 1
+
+[channel:DI201]
+module = Slot5_DigitalIn
+physical_channel = di2
+channel_type = digital_input
+invert = false
+description = F2 Door Closed
+safety_action = F2_door_open
+log = true
+group = Furnace 2
+
+[channel:DI102]
+module = Slot5_DigitalIn
+physical_channel = di3
+channel_type = digital_input
+invert = true
+description = F1 Overtemp Switch
+safety_action = F1_overtemp_hw
+log = true
+group = Furnace 1
+
+[channel:DI202]
+module = Slot5_DigitalIn
+physical_channel = di4
+channel_type = digital_input
+invert = true
+description = F2 Overtemp Switch
+safety_action = F2_overtemp_hw
+log = true
+group = Furnace 2
+
+[channel:DI002]
+module = Slot5_DigitalIn
+physical_channel = di5
+channel_type = digital_input
+invert = false
+description = Water Flow OK
+safety_action = water_flow_loss
+log = true
+group = Utilities
+
+[channel:DI003]
+module = Slot5_DigitalIn
+physical_channel = di6
+channel_type = digital_input
+invert = false
+description = Air Pressure OK
+safety_action = air_pressure_loss
+log = true
+group = Utilities
+
+[channel:DI004]
+module = Slot5_DigitalIn
+physical_channel = di7
+channel_type = digital_input
+invert = false
+description = Main Power OK
+log = true
+group = System
+
+# =============================================================================
+# DIGITAL OUTPUTS (Slot 6: NI-9472)
+# =============================================================================
+
+[channel:DO101]
+module = Slot6_DigitalOut
+physical_channel = do0
+channel_type = digital_output
+default_state = false
+description = F1 Heater Enable
+log = true
+group = Furnace 1
+
+[channel:DO201]
+module = Slot6_DigitalOut
+physical_channel = do1
+channel_type = digital_output
+default_state = false
+description = F2 Heater Enable
+log = true
+group = Furnace 2
+
+[channel:DO102]
+module = Slot6_DigitalOut
+physical_channel = do2
+channel_type = digital_output
+default_state = false
+description = F1 N2 Purge
+log = true
+group = Furnace 1
+
+[channel:DO202]
+module = Slot6_DigitalOut
+physical_channel = do3
+channel_type = digital_output
+default_state = false
+description = F2 N2 Purge
+log = true
+group = Furnace 2
+
+[channel:DO001]
+module = Slot6_DigitalOut
+physical_channel = do4
+channel_type = digital_output
+default_state = false
+description = Cooling Pump
+log = true
+group = Utilities
+
+[channel:DO002]
+module = Slot6_DigitalOut
+physical_channel = do5
+channel_type = digital_output
+default_state = false
+description = Exhaust Fan
+log = true
+group = Utilities
+
+[channel:DO003]
+module = Slot6_DigitalOut
+physical_channel = do6
+channel_type = digital_output
+default_state = false
+description = Alarm Beacon
+log = true
+group = System
+
+[channel:DO004]
+module = Slot6_DigitalOut
+physical_channel = do7
+channel_type = digital_output
+default_state = false
+description = Alarm Horn
+log = true
+group = System
+
+# =============================================================================
+# VALVE DOSING - SOLENOID VALVES (Additional Digital Outputs)
+# =============================================================================
+# Note: These use virtual channels since Slot6 only has 8 outputs (do0-do7).
+# In production, these would need a second digital output module.
+
+[channel:Valve_1]
+module = Slot6_DigitalOut
+physical_channel = vdo0
+channel_type = digital_output
+default_state = false
+description = Dosing Valve 1
+log = true
+group = Valve Dosing
+
+[channel:Valve_2]
+module = Slot6_DigitalOut
+physical_channel = vdo1
+channel_type = digital_output
+default_state = false
+description = Dosing Valve 2
+log = true
+group = Valve Dosing
+
+[channel:Valve_3]
+module = Slot6_DigitalOut
+physical_channel = vdo2
+channel_type = digital_output
+default_state = false
+description = Dosing Valve 3
+log = true
+group = Valve Dosing
+
+# =============================================================================
+# ANALOG OUTPUTS (Slot 7: NI-9263)
+# =============================================================================
+
+[channel:AO101]
+module = Slot7_AnalogOut
+physical_channel = ao0
+channel_type = analog_output
+voltage_range = 10.0
+units = degC
+scale_slope = 0.01
+scale_offset = 0.0
+description = F1 Temp Setpoint
+default_value = 0.0
+low_limit = 0
+high_limit = 1000
+log = true
+group = Furnace 1
+
+[channel:AO201]
+module = Slot7_AnalogOut
+physical_channel = ao1
+channel_type = analog_output
+voltage_range = 10.0
+units = degC
+scale_slope = 0.01
+scale_offset = 0.0
+description = F2 Temp Setpoint
+default_value = 0.0
+low_limit = 0
+high_limit = 1000
+log = true
+group = Furnace 2
+
+[channel:AO102]
+module = Slot7_AnalogOut
+physical_channel = ao2
+channel_type = analog_output
+voltage_range = 10.0
+units = degC/min
+scale_slope = 0.1
+scale_offset = 0.0
+description = F1 Ramp Rate
+default_value = 10.0
+low_limit = 0
+high_limit = 100
+log = true
+group = Furnace 1
+
+[channel:AO202]
+module = Slot7_AnalogOut
+physical_channel = ao3
+channel_type = analog_output
+voltage_range = 10.0
+units = degC/min
+scale_slope = 0.1
+scale_offset = 0.0
+description = F2 Ramp Rate
+default_value = 10.0
+low_limit = 0
+high_limit = 100
+log = true
+group = Furnace 2
+
+# =============================================================================
+# ANALOG INPUTS - MISC FEEDBACK (Slot 8: NI-9239)
+# =============================================================================
+
+[channel:AI101]
+module = Slot8_AnalogIn
+physical_channel = ai0
+channel_type = voltage
+voltage_range = 10.0
+units = A
+scale_slope = 10.0
+scale_offset = 0.0
+description = F1 Heater Current
+low_limit = 0
+high_limit = 100
+high_warning = 80
+safety_action = F1_overcurrent
+log = true
+log_interval_ms = 1000
+group = Furnace 1
+
+[channel:AI201]
+module = Slot8_AnalogIn
+physical_channel = ai1
+channel_type = voltage
+voltage_range = 10.0
+units = A
+scale_slope = 10.0
+scale_offset = 0.0
+description = F2 Heater Current
+low_limit = 0
+high_limit = 100
+high_warning = 80
+safety_action = F2_overcurrent
+log = true
+log_interval_ms = 1000
+group = Furnace 2
+
+[channel:AI102]
+module = Slot8_AnalogIn
+physical_channel = ai2
+channel_type = voltage
+voltage_range = 10.0
+units = %
+scale_slope = 10.0
+scale_offset = 0.0
+description = F1 Heater Power
+low_limit = 0
+high_limit = 100
+log = true
+log_interval_ms = 500
+group = Furnace 1
+
+[channel:AI202]
+module = Slot8_AnalogIn
+physical_channel = ai3
+channel_type = voltage
+voltage_range = 10.0
+units = %
+scale_slope = 10.0
+scale_offset = 0.0
+description = F2 Heater Power
+low_limit = 0
+high_limit = 100
+log = true
+log_interval_ms = 500
+group = Furnace 2
+
+# =============================================================================
+# SAFETY ACTIONS - Fail-Safe Philosophy
+# =============================================================================
+
+[safety_action:emergency_shutdown]
+description = EMERGENCY STOP - Complete System Shutdown
+actions = DO101:false, DO201:false, DO102:true, DO202:true, DO003:true, DO004:true
+trigger_alarm = true
+alarm_message = EMERGENCY STOP ACTIVATED - All heaters disabled, N2 purge active
+
+[safety_action:F1_overtemp]
+description = Furnace 1 Software Over-temperature
+actions = DO101:false, DO102:true, DO003:true
+trigger_alarm = true
+alarm_message = FURNACE 1 OVERTEMP - Heater OFF, N2 purge ON
+
+[safety_action:F2_overtemp]
+description = Furnace 2 Software Over-temperature
+actions = DO201:false, DO202:true, DO003:true
+trigger_alarm = true
+alarm_message = FURNACE 2 OVERTEMP - Heater OFF, N2 purge ON
+
+[safety_action:F1_overtemp_hw]
+description = Furnace 1 Hardware Over-temperature Switch
+actions = DO101:false, DO102:true, DO003:true, DO004:true
+trigger_alarm = true
+alarm_message = FURNACE 1 OVERTEMP (HW) - CRITICAL
+
+[safety_action:F2_overtemp_hw]
+description = Furnace 2 Hardware Over-temperature Switch
+actions = DO201:false, DO202:true, DO003:true, DO004:true
+trigger_alarm = true
+alarm_message = FURNACE 2 OVERTEMP (HW) - CRITICAL
+
+[safety_action:F1_door_open]
+description = Furnace 1 Door Opened
+actions = DO101:false
+trigger_alarm = false
+alarm_message = F1 door opened - heating paused
+
+[safety_action:F2_door_open]
+description = Furnace 2 Door Opened
+actions = DO201:false
+trigger_alarm = false
+alarm_message = F2 door opened - heating paused
+
+[safety_action:F1_low_cooling]
+description = Furnace 1 Low Cooling Flow
+actions = DO101:false, DO003:true
+trigger_alarm = true
+alarm_message = F1 LOW COOLING - Heater disabled
+
+[safety_action:F2_low_cooling]
+description = Furnace 2 Low Cooling Flow
+actions = DO201:false, DO003:true
+trigger_alarm = true
+alarm_message = F2 LOW COOLING - Heater disabled
+
+[safety_action:low_water_pressure]
+description = System Low Water Pressure
+actions = DO101:false, DO201:false, DO003:true
+trigger_alarm = true
+alarm_message = LOW WATER PRESSURE - All heaters disabled
+
+[safety_action:water_flow_loss]
+description = Cooling Water Flow Lost
+actions = DO101:false, DO201:false, DO102:true, DO202:true, DO003:true, DO004:true
+trigger_alarm = true
+alarm_message = COOLING FLOW LOST - CRITICAL
+
+[safety_action:low_n2_pressure]
+description = Low N2 Supply Pressure
+actions = DO003:true
+trigger_alarm = true
+alarm_message = LOW N2 PRESSURE - Check supply
+
+[safety_action:low_exhaust_flow]
+description = Low Exhaust Ventilation
+actions = DO101:false, DO201:false, DO003:true
+trigger_alarm = true
+alarm_message = LOW EXHAUST - Heaters disabled
+
+[safety_action:air_pressure_loss]
+description = Compressed Air Lost
+actions = DO003:true
+trigger_alarm = true
+alarm_message = AIR PRESSURE LOST
+
+[safety_action:F1_high_pressure]
+description = Furnace 1 High Pressure
+actions = DO101:false, DO102:false, DO003:true
+trigger_alarm = true
+alarm_message = F1 HIGH PRESSURE - Check seal
+
+[safety_action:F2_high_pressure]
+description = Furnace 2 High Pressure
+actions = DO201:false, DO202:false, DO003:true
+trigger_alarm = true
+alarm_message = F2 HIGH PRESSURE - Check seal
+
+[safety_action:F1_overcurrent]
+description = Furnace 1 Heater Overcurrent
+actions = DO101:false, DO003:true
+trigger_alarm = true
+alarm_message = F1 OVERCURRENT - Check elements
+
+[safety_action:F2_overcurrent]
+description = Furnace 2 Heater Overcurrent
+actions = DO201:false, DO003:true
+trigger_alarm = true
+alarm_message = F2 OVERCURRENT - Check elements

@@ -56,6 +56,8 @@ interface ModuleTypeInfo {
 
 const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   // ===== DIGITAL INPUT MODULES =====
+  'NI 9375': { channel_type: 'digital_input', category: 'digital' },   // 16-ch DI + 16-ch DO combo
+  'NI 9411': { channel_type: 'digital_input', category: 'digital' },   // 6-ch DI, differential
   'NI 9421': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, 24V sinking
   'NI 9422': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, 24-60V sinking
   'NI 9423': { channel_type: 'digital_input', category: 'digital' },   // 8-ch DI, TTL
@@ -64,6 +66,7 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9435': { channel_type: 'digital_input', category: 'digital' },   // 4-ch universal DI
 
   // ===== DIGITAL OUTPUT MODULES =====
+  'NI 9470': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 24V sourcing
   'NI 9472': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 24V sourcing
   'NI 9474': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 5-30V sourcing
   'NI 9475': { channel_type: 'digital_output', category: 'digital' },  // 8-ch DO, 60V sinking
@@ -78,41 +81,54 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9403': { channel_type: 'digital_input', category: 'digital' },   // 32-ch bidirectional TTL
 
   // ===== ANALOG INPUT - VOLTAGE =====
-  'NI 9201': { channel_type: 'analog_input', category: 'voltage' },    // 8-ch ±10V
-  'NI 9202': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch ±10V
-  'NI 9205': { channel_type: 'analog_input', category: 'voltage' },    // 32-ch ±10V
-  'NI 9206': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch simultaneous ±10V
-  'NI 9215': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch simultaneous ±10V
-  'NI 9220': { channel_type: 'analog_input', category: 'voltage' },    // 16-ch ±10V
-  'NI 9221': { channel_type: 'analog_input', category: 'voltage' },    // 8-ch ±60V
-  'NI 9222': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch simultaneous ±10V
-  'NI 9223': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch high-speed ±10V
-  'NI 9229': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch ±60V isolated
-  'NI 9239': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch ±10V universal
+  'NI 9201': { channel_type: 'voltage_input', category: 'voltage' },   // 8-ch ±10V
+  'NI 9202': { channel_type: 'voltage_input', category: 'voltage' },   // 16-ch ±10V
+  'NI 9205': { channel_type: 'voltage_input', category: 'voltage' },   // 32-ch ±10V
+  'NI 9206': { channel_type: 'voltage_input', category: 'voltage' },   // 16-ch simultaneous ±10V
+  'NI 9215': { channel_type: 'voltage_input', category: 'voltage' },   // 4-ch simultaneous ±10V
+  'NI 9220': { channel_type: 'voltage_input', category: 'voltage' },   // 16-ch ±10V
+  'NI 9221': { channel_type: 'voltage_input', category: 'voltage' },   // 8-ch ±60V
+  'NI 9222': { channel_type: 'voltage_input', category: 'voltage' },   // 4-ch simultaneous ±10V
+  'NI 9223': { channel_type: 'voltage_input', category: 'voltage' },   // 4-ch high-speed ±10V
+  'NI 9229': { channel_type: 'voltage_input', category: 'voltage' },   // 4-ch ±60V isolated
+  'NI 9239': { channel_type: 'voltage_input', category: 'voltage' },   // 4-ch ±10V universal
 
   // ===== ANALOG INPUT - CURRENT =====
-  'NI 9203': { channel_type: 'analog_input', category: 'current' },    // 8-ch ±20mA
-  'NI 9208': { channel_type: 'analog_input', category: 'current' },    // 16-ch ±20mA
+  'NI 9203': { channel_type: 'current_input', category: 'current' },   // 8-ch ±20mA
+  'NI 9208': { channel_type: 'current_input', category: 'current' },   // 16-ch ±20mA
+  'NI 9227': { channel_type: 'current_input', category: 'current' },   // 8-ch ±20mA
+  'NI 9246': { channel_type: 'current_input', category: 'current' },   // 3-phase current
+  'NI 9247': { channel_type: 'current_input', category: 'current' },   // 3-phase current
+  'NI 9253': { channel_type: 'current_input', category: 'current' },   // 8-ch ±20mA
 
   // ===== ANALOG INPUT - THERMOCOUPLE =====
-  'NI 9210': { channel_type: 'analog_input', category: 'thermocouple' }, // 4-ch TC
-  'NI 9211': { channel_type: 'analog_input', category: 'thermocouple' }, // 4-ch TC
-  'NI 9212': { channel_type: 'analog_input', category: 'thermocouple' }, // 8-ch TC
-  'NI 9213': { channel_type: 'analog_input', category: 'thermocouple' }, // 16-ch TC
-  'NI 9214': { channel_type: 'analog_input', category: 'thermocouple' }, // 16-ch isothermal TC
+  'NI 9210': { channel_type: 'thermocouple', category: 'thermocouple' }, // 4-ch TC
+  'NI 9211': { channel_type: 'thermocouple', category: 'thermocouple' }, // 4-ch TC
+  'NI 9212': { channel_type: 'thermocouple', category: 'thermocouple' }, // 8-ch TC
+  'NI 9213': { channel_type: 'thermocouple', category: 'thermocouple' }, // 16-ch TC
+  'NI 9214': { channel_type: 'thermocouple', category: 'thermocouple' }, // 16-ch isothermal TC
 
   // ===== ANALOG INPUT - RTD =====
-  'NI 9216': { channel_type: 'analog_input', category: 'rtd' },        // 8-ch RTD
-  'NI 9217': { channel_type: 'analog_input', category: 'rtd' },        // 4-ch RTD
-  'NI 9226': { channel_type: 'analog_input', category: 'rtd' },        // 8-ch RTD
+  'NI 9216': { channel_type: 'rtd', category: 'rtd' },                 // 8-ch RTD
+  'NI 9217': { channel_type: 'rtd', category: 'rtd' },                 // 4-ch RTD
+  'NI 9226': { channel_type: 'rtd', category: 'rtd' },                 // 8-ch RTD
 
   // ===== ANALOG INPUT - STRAIN/BRIDGE =====
-  'NI 9235': { channel_type: 'analog_input', category: 'strain' },     // 8-ch quarter-bridge
-  'NI 9236': { channel_type: 'analog_input', category: 'strain' },     // 8-ch quarter-bridge
-  'NI 9237': { channel_type: 'analog_input', category: 'bridge' },     // 4-ch bridge
+  'NI 9235': { channel_type: 'strain_input', category: 'strain' },     // 8-ch quarter-bridge
+  'NI 9236': { channel_type: 'strain_input', category: 'strain' },     // 8-ch quarter-bridge
+  'NI 9237': { channel_type: 'bridge_input', category: 'bridge' },     // 4-ch bridge
+
+  // ===== ANALOG INPUT - IEPE/ACCELEROMETER =====
+  'NI 9230': { channel_type: 'iepe_input', category: 'iepe' },         // 3-ch IEPE
+  'NI 9231': { channel_type: 'iepe_input', category: 'iepe' },         // 8-ch IEPE
+  'NI 9232': { channel_type: 'iepe_input', category: 'iepe' },         // 3-ch IEPE
+  'NI 9233': { channel_type: 'iepe_input', category: 'iepe' },         // 4-ch IEPE
+  'NI 9234': { channel_type: 'iepe_input', category: 'iepe' },         // 4-ch IEPE
+  'NI 9250': { channel_type: 'iepe_input', category: 'iepe' },         // 2-ch IEPE
+  'NI 9251': { channel_type: 'iepe_input', category: 'iepe' },         // 2-ch IEPE
 
   // ===== ANALOG INPUT - UNIVERSAL/MULTI =====
-  'NI 9219': { channel_type: 'analog_input', category: 'voltage' },    // 4-ch universal AI
+  'NI 9219': { channel_type: 'bridge_input', category: 'bridge' },     // 4-ch universal AI
 
   // ===== ANALOG OUTPUT - VOLTAGE =====
   'NI 9260': { channel_type: 'voltage_output', category: 'voltage' },   // 4-ch ±10V
@@ -122,8 +138,8 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9269': { channel_type: 'voltage_output', category: 'voltage' },   // 4-ch isolated ±10V
 
   // ===== ANALOG OUTPUT - CURRENT =====
-  'NI 9265': { channel_type: 'current_output', category: 'current' }, // 4-ch 0-20mA
-  'NI 9266': { channel_type: 'current_output', category: 'current' }, // 8-ch 0-20mA
+  'NI 9265': { channel_type: 'current_output', category: 'current' },  // 4-ch 0-20mA
+  'NI 9266': { channel_type: 'current_output', category: 'current' },  // 8-ch 0-20mA
 
   // ===== RELAY MODULES =====
   // Relay modules are digital outputs - NI-DAQmx treats them as DO channels
@@ -131,12 +147,15 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9482': { channel_type: 'digital_output', category: 'relay' },    // 4-ch SPDT relay
   'NI 9485': { channel_type: 'digital_output', category: 'relay' },    // 8-ch SSR
 
+  // ===== COUNTER MODULES =====
+  'NI 9361': { channel_type: 'counter_input', category: 'counter' },   // 8-ch counter
+
   // ===== COMBO MODULES =====
   // NI 9207: 8 voltage + 8 current inputs (ai0-ai7 = voltage, ci0-ci7 = current)
   'NI 9207': {
-    channel_type: 'analog_input',
+    channel_type: 'voltage_input',
     category: 'voltage',
-    alt_channel_type: 'analog_input',
+    alt_channel_type: 'current_input',
     alt_category: 'current',
     alt_prefix: 'ci'
   },
@@ -387,16 +406,30 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
       }
     }
   } else if (sourceType === 'crio' && nodeId) {
-    // cRIO: get channels from selected node
-    const node = discoveryResult.value?.crio_nodes?.find((n: any) => n.node_id === nodeId)
-    if (node?.modules) {
-      for (const module of node.modules) {
-        for (const ch of module.channels || []) {
-          channels.push({
-            value: ch.name,
-            label: `${ch.name} (${ch.type})`,
-            type: ch.type
-          })
+    // cRIO: First try to get channels from cRIO-specific discovery (direct from cRIO node)
+    const crioChannels = crioDiscoveryChannels.value[nodeId]
+    if (crioChannels?.length) {
+      for (const ch of crioChannels) {
+        // Mark in-use channels
+        const inUseLabel = ch.in_use ? ' [IN USE]' : ''
+        channels.push({
+          value: ch.physical_channel,
+          label: `${ch.physical_channel} (${ch.channel_type})${inUseLabel}`,
+          type: ch.channel_type
+        })
+      }
+    } else {
+      // Fallback: get channels from DAQ service's discovery result (may be limited)
+      const node = discoveryResult.value?.crio_nodes?.find((n: any) => n.node_id === nodeId)
+      if (node?.modules) {
+        for (const module of node.modules) {
+          for (const ch of module.channels || []) {
+            channels.push({
+              value: ch.name,
+              label: `${ch.name} (${ch.type})`,
+              type: ch.type
+            })
+          }
         }
       }
     }
@@ -422,9 +455,14 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
 // Check if we have discovery data for the current source type
 function hasDiscoveryData(): boolean {
   const sourceType = newChannelForm.value.source_type
+  const nodeId = newChannelForm.value.node_id
   if (sourceType === 'cdaq') {
     return !!(discoveryResult.value?.chassis?.length || discoveryResult.value?.standalone_devices?.length)
   } else if (sourceType === 'crio') {
+    // Check cRIO-specific discovery first, then fall back to DAQ discovery
+    if (nodeId && crioDiscoveryChannels.value[nodeId]?.length) {
+      return true
+    }
     return !!discoveryResult.value?.crio_nodes?.length
   } else if (sourceType === 'opto22') {
     return !!discoveryResult.value?.opto22_nodes?.length
@@ -435,9 +473,14 @@ function hasDiscoveryData(): boolean {
 // System Settings State
 const showSystemSettings = ref(false)
 const systemSettingsForm = ref({
-  scan_rate_hz: 100,
-  publish_rate_hz: 10,
-  project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22'
+  scan_rate_hz: 4,
+  publish_rate_hz: 4,
+  project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22',
+  watchdog_output: {
+    enabled: false,
+    channel: '',
+    rate_hz: 1.0
+  }
 })
 
 // Auto-Gen Widgets Modal State
@@ -451,18 +494,34 @@ const autoGenForm = ref({
 
 // Available channel types for auto-gen selection
 const availableChannelTypes = [
+  // Temperature
   { id: 'thermocouple', label: 'Thermocouple (TC)', icon: '🌡' },
   { id: 'rtd', label: 'RTD', icon: '🌡' },
+  // Analog Inputs
   { id: 'voltage_input', label: 'Voltage Input', icon: '⚡' },
   { id: 'current_input', label: 'Current Input', icon: '〰' },
+  { id: 'strain_input', label: 'Strain Input', icon: '⚖' },
+  { id: 'bridge_input', label: 'Bridge Input', icon: '⚖' },
+  { id: 'iepe_input', label: 'IEPE/Accelerometer', icon: '📳' },
+  { id: 'resistance_input', label: 'Resistance Input', icon: '🔌' },
+  // Analog Outputs
   { id: 'voltage_output', label: 'Voltage Output', icon: '↗' },
   { id: 'current_output', label: 'Current Output', icon: '↗' },
+  // Digital
   { id: 'digital_input', label: 'Digital Input', icon: '◯' },
   { id: 'digital_output', label: 'Digital Output', icon: '●' },
-  { id: 'counter', label: 'Counter', icon: '⏱' },
-  { id: 'strain', label: 'Strain/Bridge', icon: '⚖' },
+  // Counter/Timer
+  { id: 'counter_input', label: 'Counter Input', icon: '⏱' },
+  { id: 'frequency_input', label: 'Frequency Input', icon: '📊' },
+  // Legacy (for backwards compatibility)
+  { id: 'counter', label: 'Counter (Legacy)', icon: '⏱' },
+  { id: 'strain', label: 'Strain (Legacy)', icon: '⚖' },
+  { id: 'iepe', label: 'IEPE (Legacy)', icon: '📳' },
+  { id: 'resistance', label: 'Resistance (Legacy)', icon: '🔌' },
+  // Modbus
   { id: 'modbus_register', label: 'Modbus Register', icon: '📊' },
   { id: 'modbus_coil', label: 'Modbus Coil', icon: '🔘' },
+  // Other
   { id: 'string', label: 'String', icon: '📝' }
 ]
 
@@ -720,6 +779,15 @@ function updateChannelField(channelName: string, field: string, value: any) {
   markDirty()
 }
 
+// Handle tag rename from inline edit (wrapper for renameChannel)
+function handleTagRename(oldName: string, newName: string) {
+  if (!canEdit.value) return
+  newName = newName.trim()
+  // If unchanged or empty, do nothing (will revert on next render)
+  if (!newName || newName === oldName) return
+  renameChannel(oldName, newName)
+}
+
 // Add new channel
 function openAddChannelModal() {
   // Default source_type based on project_mode
@@ -843,10 +911,19 @@ function getDefaultUnit(channelType: ChannelType): string {
     current: 'mA',
     voltage_input: 'V',
     current_input: 'mA',
+    analog_input: 'V',   // Generic analog input
     strain: 'µε',
+    strain_input: 'µε',
+    bridge_input: 'mV/V',
     iepe: 'g',
-    counter: 'counts',
+    iepe_input: 'g',
     resistance: 'Ω',
+    resistance_input: 'Ω',
+    counter: 'counts',
+    counter_input: 'counts',
+    counter_output: 'counts',
+    frequency_input: 'Hz',
+    pulse_output: 'Hz',
     digital_input: '',
     digital_output: '',
     voltage_output: 'V',
@@ -894,6 +971,64 @@ function deleteChannel(channelName: string, event?: Event) {
   markDirty()
 }
 
+// Rename channel (change tag name)
+function renameChannel(oldName: string, newName: string) {
+  // Validate new name
+  newName = newName.trim()
+  if (!newName) {
+    showFeedback('error', 'Tag name cannot be empty')
+    return false
+  }
+  if (newName === oldName) {
+    return false // No change
+  }
+  if (store.channels[newName]) {
+    showFeedback('error', `Tag "${newName}" already exists`)
+    return false
+  }
+  // Validate tag name format (alphanumeric + underscore, starts with letter)
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
+    showFeedback('error', 'Tag name must start with a letter and contain only letters, numbers, and underscores')
+    return false
+  }
+
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return false
+  }
+
+  // Get the current config
+  const config = store.channels[oldName]
+  if (!config) {
+    showFeedback('error', `Channel "${oldName}" not found`)
+    return false
+  }
+
+  // Create new channel with same config
+  mqtt.createChannel(newName, { ...config })
+
+  // Delete old channel
+  mqtt.sendCommand('config/channel/delete', { channel: oldName })
+
+  // Update local enabled state
+  if (channelEnabled.value[oldName] !== undefined) {
+    channelEnabled.value[newName] = channelEnabled.value[oldName]
+    delete channelEnabled.value[oldName]
+  }
+
+  // Update all references (widgets, alarms, scripts, etc.)
+  propagateChannelRename(oldName, newName)
+
+  // Update selected channel if it was the renamed one
+  if (selectedChannel.value === oldName) {
+    selectedChannel.value = newName
+  }
+
+  showFeedback('success', `Renamed "${oldName}" to "${newName}"`)
+  markDirty()
+  return true
+}
+
 // Reset counter to zero
 function resetCounter(channelName: string) {
   if (!mqtt.connected.value) {
@@ -908,10 +1043,16 @@ function resetCounter(channelName: string) {
 
 // Open system settings
 function openSystemSettings() {
+  const wd = (store.status as any)?.watchdog_output
   systemSettingsForm.value = {
-    scan_rate_hz: store.status?.scan_rate_hz || 100,
-    publish_rate_hz: store.status?.publish_rate_hz || 10,
-    project_mode: (store.status?.project_mode as 'cdaq' | 'crio' | 'opto22') || 'cdaq'
+    scan_rate_hz: store.status?.scan_rate_hz || 4,
+    publish_rate_hz: store.status?.publish_rate_hz || 4,
+    project_mode: (store.status?.project_mode as 'cdaq' | 'crio' | 'opto22') || 'cdaq',
+    watchdog_output: {
+      enabled: wd?.enabled || false,
+      channel: wd?.channel || '',
+      rate_hz: wd?.rate_hz || 1.0
+    }
   }
   showSystemSettings.value = true
 }
@@ -925,7 +1066,8 @@ function saveSystemSettings() {
   mqtt.sendNodeCommand('config/system/update', {
     scan_rate_hz: systemSettingsForm.value.scan_rate_hz,
     publish_rate_hz: systemSettingsForm.value.publish_rate_hz,
-    project_mode: systemSettingsForm.value.project_mode
+    project_mode: systemSettingsForm.value.project_mode,
+    watchdog_output: systemSettingsForm.value.watchdog_output
   })
   showFeedback('info', 'Updating system settings...')
   showSystemSettings.value = false
@@ -1001,6 +1143,7 @@ function setAllAutoGenTypes(select: boolean) {
 const isScanning = computed(() => mqtt.isScanning.value)
 const discoveryChannels = computed(() => mqtt.discoveryChannels.value)
 const discoveryResult = computed(() => mqtt.discoveryResult.value)
+const crioDiscoveryChannels = computed(() => mqtt.crioDiscoveryChannels.value)
 const showDiscoveryPanel = ref(false)
 const selectedDiscoveryChannels = ref<string[]>([])
 const devicePrefix = ref('')  // Prefix to prepend to physical channels (e.g., "RIO0" for cRIO)
@@ -1220,8 +1363,8 @@ function pushConfigToCrio(node: any) {
     channels: channelConfigs,
     scripts: scripts,
     safe_state_outputs: safeStateOutputs,
-    scan_rate_hz: store.status?.scan_rate_hz || 100,
-    publish_rate_hz: store.status?.publish_rate_hz || 10
+    scan_rate_hz: store.status?.scan_rate_hz || 4,
+    publish_rate_hz: store.status?.publish_rate_hz || 4
   })
 
   showFeedback('info', `Pushing config to ${node.node_id}...`)
@@ -1255,8 +1398,8 @@ function pushConfigToOpto22(node: any) {
     channels: channelConfigs,
     scripts: scripts,
     safe_state_outputs: safeStateOutputs,
-    scan_rate_hz: store.status?.scan_rate_hz || 100,
-    publish_rate_hz: store.status?.publish_rate_hz || 10
+    scan_rate_hz: store.status?.scan_rate_hz || 4,
+    publish_rate_hz: store.status?.publish_rate_hz || 4
   })
 
   showFeedback('info', `Pushing config to ${node.node_id}...`)
@@ -1293,8 +1436,8 @@ function autoPushToRemoteNodes() {
     channels: channelConfigs,
     scripts: scripts,
     safe_state_outputs: safeStateOutputs,
-    scan_rate_hz: store.status?.scan_rate_hz || 100,
-    publish_rate_hz: store.status?.publish_rate_hz || 10
+    scan_rate_hz: store.status?.scan_rate_hz || 4,
+    publish_rate_hz: store.status?.publish_rate_hz || 4
   }
 
   let pushedCount = 0
@@ -1554,6 +1697,9 @@ function addSelectedChannels() {
       log: true,
       log_interval_ms: 1000,
       enabled: true,
+      // Thermocouple defaults - Type K is most common
+      thermocouple_type: category === 'thermocouple' ? 'K' : null,
+      cjc_source: category === 'thermocouple' ? 'BUILT_IN' : null,
       // Source tracking (for multi-node systems)
       // For cRIO/Opto22: use node_id (e.g., "crio-001", "opto22-001")
       // For cDAQ: use chassis_name (e.g., "cDAQ-9189") for identification
@@ -1720,6 +1866,7 @@ const channelTypeTabs = [
   { id: 'digital_input', label: 'DI', icon: '▢', fullName: 'Digital Input' },
   { id: 'digital_output', label: 'DO', icon: '▣', fullName: 'Digital Output' },
   { id: 'counter', label: 'CTR', icon: '#', fullName: 'Counter/Timer Input' },
+  { id: 'pulse_output', label: 'PLS', icon: '⏱', fullName: 'Pulse/Counter Output' },
   { id: 'strain', label: 'STR', icon: '⚖', fullName: 'Strain Gauge / Bridge Input' },
   { id: 'iepe', label: 'IEPE', icon: '〰', fullName: 'IEPE Accelerometer Input' },
   { id: 'modbus', label: 'MODBUS', icon: '🔌', fullName: 'Modbus TCP/RTU Device' },
@@ -1744,6 +1891,37 @@ const activeTypeTab = ref('all')
 const searchQuery = ref('')
 const selectedChannel = ref<string | null>(null)
 const showConfigPanel = ref(false)
+
+// Sort channels by module first, then by channel index
+// This ensures channels are grouped by physical hardware module
+function moduleSort(a: [string, any], b: [string, any]): number {
+  const aPhys = a[1].physical_channel || ''
+  const bPhys = b[1].physical_channel || ''
+
+  // Extract module number (e.g., "Mod1/ai0" -> 1, "cDAQ1Mod2/ai3" -> 2)
+  const aModMatch = aPhys.match(/Mod(\d+)/i)
+  const bModMatch = bPhys.match(/Mod(\d+)/i)
+  const aMod = aModMatch ? parseInt(aModMatch[1], 10) : 999
+  const bMod = bModMatch ? parseInt(bModMatch[1], 10) : 999
+
+  // Sort by module first
+  if (aMod !== bMod) return aMod - bMod
+
+  // Then by channel index (ai0, ai1, ... ai10, etc.)
+  const aChMatch = aPhys.match(/[/]([a-z]+)(\d+)$/i)
+  const bChMatch = bPhys.match(/[/]([a-z]+)(\d+)$/i)
+  if (aChMatch && bChMatch) {
+    // Same channel type prefix (ai, di, ao, do)
+    if (aChMatch[1] === bChMatch[1]) {
+      return parseInt(aChMatch[2], 10) - parseInt(bChMatch[2], 10)
+    }
+    // Different type, sort alphabetically (ai before ao before di before do)
+    return aChMatch[1].localeCompare(bChMatch[1])
+  }
+
+  // Fallback to natural sort on name
+  return a[0].localeCompare(b[0])
+}
 
 // Filtered channels based on active tab and search
 const filteredChannels = computed(() => {
@@ -1792,7 +1970,8 @@ const filteredChannels = computed(() => {
     )
   }
 
-  return channels
+  // Sort by module first, then by channel index
+  return channels.sort(moduleSort)
 })
 
 // Get current value for a channel (shows error strings for problematic channels)
@@ -2063,19 +2242,28 @@ function formatChannelType(type: ChannelType): string {
   const typeMap: Record<ChannelType, string> = {
     thermocouple: 'TC',
     rtd: 'RTD',
-    voltage: 'AI',
-    current: 'mA',
-    voltage_input: 'AI',
-    current_input: 'mA',
+    voltage: 'VI',          // Voltage input
+    current: 'CI',          // Current input (4-20mA, etc.)
+    voltage_input: 'VI',    // Voltage input alias
+    current_input: 'CI',    // Current input alias
+    analog_input: 'AI',     // Generic analog input (when type unknown)
     strain: 'STR',
+    strain_input: 'STR',
+    bridge_input: 'BRG',
     iepe: 'IEPE',
-    counter: 'CTR',
+    iepe_input: 'IEPE',
     resistance: 'RES',
+    resistance_input: 'RES',
+    counter: 'CTR',
+    counter_input: 'CTR',
+    counter_output: 'CTO',
+    frequency_input: 'FREQ',
+    pulse_output: 'PLS',
     digital_input: 'DI',
     digital_output: 'DO',
-    voltage_output: 'VO',
-    current_output: 'CO',
-    analog_output: 'AO',  // Legacy
+    voltage_output: 'VO',   // Voltage output
+    current_output: 'CO',   // Current output
+    analog_output: 'AO',    // Legacy
     modbus_register: 'MB',
     modbus_coil: 'MBC',
   }
@@ -2268,7 +2456,7 @@ function saveChannelConfig() {
   }
 
   // Add voltage input settings
-  if (channelType === 'voltage') {
+  if (channelType === 'voltage' || channelType === 'voltage_input') {
     // Parse voltage range from string like "10V" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
     if (rangeMatch) {
@@ -2284,7 +2472,7 @@ function saveChannelConfig() {
   }
 
   // Add current input settings
-  if (channelType === 'current') {
+  if (channelType === 'current' || channelType === 'current_input') {
     // Parse current range from string like "20mA" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
     if (rangeMatch) {
@@ -2720,6 +2908,14 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'COUNT', width: '100px' },
         { key: 'reset', label: 'RESET', width: '60px' },
       ]
+    case 'pulse_output':
+      return [
+        ...baseColumns,
+        { key: 'frequency', label: 'FREQ (Hz)', width: '100px' },
+        { key: 'duty_cycle', label: 'DUTY %', width: '80px' },
+        { key: 'idle_state', label: 'IDLE', width: '60px' },
+        { key: 'value', label: 'VALUE', width: '100px' },
+      ]
     case 'resistance':
       return [
         ...baseColumns,
@@ -2794,6 +2990,53 @@ onMounted(() => {
 watch(() => Object.keys(store.channels), () => {
   initializeEnableStates()
 })
+
+// Watch for cRIO node selection changes to trigger channel discovery
+watch(
+  () => [newChannelForm.value.source_type, newChannelForm.value.node_id],
+  ([sourceType, nodeId]) => {
+    // When cRIO node is selected and we don't have discovery data for it, request discovery
+    if (sourceType === 'crio' && nodeId && !crioDiscoveryChannels.value[nodeId]) {
+      console.log('[ConfigurationTab] Requesting cRIO channel discovery for:', nodeId)
+      mqtt.requestCrioChannelDiscovery(nodeId)
+    }
+  }
+)
+
+// Watch for physical channel selection to auto-set channel type from discovery
+watch(
+  () => newChannelForm.value.physical_channel,
+  (physicalChannel) => {
+    if (!physicalChannel || physicalChannel === '__manual__') return
+
+    // Look up the channel type from discovery data
+    const availableChannels = getAvailablePhysicalChannels()
+    const selectedChannel = availableChannels.find(ch => ch.value === physicalChannel)
+
+    if (selectedChannel?.type) {
+      // Map discovery types to form types
+      const typeMapping: Record<string, string> = {
+        'analog_input': 'voltage',
+        'voltage_input': 'voltage',
+        'current_input': 'current',
+        'thermocouple': 'thermocouple',
+        'rtd': 'rtd',
+        'analog_output': 'voltage_output',
+        'voltage_output': 'voltage_output',
+        'current_output': 'current_output',
+        'digital_input': 'digital_input',
+        'digital_output': 'digital_output',
+        'counter': 'counter',
+        'strain': 'strain'
+      }
+      const mappedType = typeMapping[selectedChannel.type] || selectedChannel.type
+      if (mappedType && mappedType !== newChannelForm.value.channel_type) {
+        console.log(`[ConfigurationTab] Auto-setting channel type: ${selectedChannel.type} -> ${mappedType}`)
+        newChannelForm.value.channel_type = mappedType as ChannelType
+      }
+    }
+  }
+)
 </script>
 
 <template>
@@ -3098,9 +3341,18 @@ watch(() => Object.keys(store.channels), () => {
                   {{ formatChannelType(config.channel_type) }}
                 </span>
               </td>
-              <!-- TAG - channel identifier (read-only) -->
-              <td class="col-tag">
-                <span class="tag-display">{{ name }}</span>
+              <!-- TAG - channel identifier (editable) -->
+              <td class="col-tag editable-cell" @click.stop>
+                <input
+                  type="text"
+                  :value="name"
+                  @blur="handleTagRename(name, ($event.target as HTMLInputElement).value)"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()"
+                  @keyup.escape="($event.target as HTMLInputElement).value = name; ($event.target as HTMLInputElement).blur()"
+                  class="inline-input tag-input"
+                  placeholder="tag_name"
+                  :disabled="!canEdit"
+                />
                 <span v-if="config.source_type === 'crio'" class="source-badge crio" title="Remote cRIO node">cRIO</span>
                 <span v-else-if="config.source_type === 'opto22'" class="source-badge opto22" title="Remote Opto22 node">Opto22</span>
               </td>
@@ -3416,6 +3668,43 @@ watch(() => Object.keys(store.channels), () => {
                     min="0"
                     :disabled="!canEdit"
                   />
+                </td>
+              </template>
+              <template v-else-if="activeTypeTab === 'pulse_output'">
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.pulse_frequency || 1000"
+                    @change="updateChannelField(name, 'pulse_frequency', parseFloat(($event.target as HTMLInputElement).value) || 1000)"
+                    class="inline-input"
+                    placeholder="1000"
+                    step="1"
+                    min="0.1"
+                    :disabled="!canEdit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.pulse_duty_cycle || 50"
+                    @change="updateChannelField(name, 'pulse_duty_cycle', parseFloat(($event.target as HTMLInputElement).value) || 50)"
+                    class="inline-input"
+                    placeholder="50"
+                    step="1"
+                    min="0"
+                    max="100"
+                    :disabled="!canEdit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.pulse_idle_state || 'LOW'"
+                    @change="updateChannelField(name, 'pulse_idle_state', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option value="LOW">LOW</option>
+                    <option value="HIGH">HIGH</option>
+                  </select>
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'resistance'">
@@ -4376,6 +4665,28 @@ watch(() => Object.keys(store.channels), () => {
               </div>
             </template>
 
+            <!-- Pulse/Counter Output settings -->
+            <template v-if="editingConfig.config.channel_type === 'pulse_output'">
+              <div class="config-section">
+                <h4>Pulse Output Settings</h4>
+                <div class="form-row">
+                  <label>Frequency (Hz)</label>
+                  <input type="number" v-model.number="editingConfig.config.pulse_frequency" min="0.1" step="1" placeholder="1000" />
+                </div>
+                <div class="form-row">
+                  <label>Duty Cycle (%)</label>
+                  <input type="number" v-model.number="editingConfig.config.pulse_duty_cycle" min="0" max="100" step="1" placeholder="50" />
+                </div>
+                <div class="form-row">
+                  <label>Idle State</label>
+                  <select v-model="editingConfig.config.pulse_idle_state">
+                    <option value="LOW">LOW</option>
+                    <option value="HIGH">HIGH</option>
+                  </select>
+                </div>
+              </div>
+            </template>
+
             <!-- Resistance settings -->
             <template v-if="editingConfig.config.channel_type === 'resistance'">
               <div class="config-section">
@@ -4456,6 +4767,26 @@ watch(() => Object.keys(store.channels), () => {
                     <input type="checkbox" v-model="editingConfig.moduleConfig.initial_state" />
                     Initial State: ON
                   </label>
+                </div>
+                <div class="form-row">
+                  <label>Relay Type</label>
+                  <select v-model="editingConfig.config.relay_type">
+                    <option value="none">None (Transistor)</option>
+                    <option value="spst">SPST Relay</option>
+                    <option value="spdt">SPDT Relay</option>
+                    <option value="ssr">Solid State Relay</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Momentary Pulse (ms)</label>
+                  <input
+                    type="number"
+                    v-model.number="editingConfig.config.momentary_pulse_ms"
+                    min="0"
+                    step="100"
+                    placeholder="0 = latching"
+                  />
+                  <span class="form-hint">0 = latching (stays ON). >0 = auto-OFF after N ms</span>
                 </div>
               </div>
             </template>
@@ -4721,7 +5052,7 @@ watch(() => Object.keys(store.channels), () => {
                             @change="toggleDiscoveryChannel(channel.name)"
                           />
                           <span class="channel-name">{{ channel.name }}</span>
-                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="type-badge" :class="channel.channel_type">{{ formatChannelType(channel.channel_type) }}</span>
                           <span class="channel-desc">{{ channel.description }}</span>
                         </div>
                       </div>
@@ -4763,7 +5094,7 @@ watch(() => Object.keys(store.channels), () => {
                         @change="toggleDiscoveryChannel(channel.name)"
                       />
                       <span class="channel-name">{{ channel.name }}</span>
-                      <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                      <span class="type-badge" :class="channel.channel_type">{{ formatChannelType(channel.channel_type) }}</span>
                       <span class="channel-desc">{{ channel.description }}</span>
                     </div>
                   </div>
@@ -4842,7 +5173,7 @@ watch(() => Object.keys(store.channels), () => {
                             @change="toggleDiscoveryChannel(channel.name)"
                           />
                           <span class="channel-name">{{ channel.name }}</span>
-                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="type-badge" :class="channel.channel_type">{{ formatChannelType(channel.channel_type) }}</span>
                           <span class="channel-desc">{{ channel.description }}</span>
                         </div>
                       </div>
@@ -4924,7 +5255,7 @@ watch(() => Object.keys(store.channels), () => {
                             @change="toggleDiscoveryChannel(channel.name)"
                           />
                           <span class="channel-name">{{ channel.name }}</span>
-                          <span class="type-badge" :class="channel.category">{{ channel.channel_type }}</span>
+                          <span class="type-badge" :class="channel.channel_type">{{ formatChannelType(channel.channel_type) }}</span>
                           <span class="channel-desc">{{ channel.description }}</span>
                         </div>
                       </div>
@@ -5050,6 +5381,7 @@ watch(() => Object.keys(store.channels), () => {
                 <option value="strain">Strain/Bridge</option>
                 <option value="iepe">IEPE/Accelerometer</option>
                 <option value="counter">Counter</option>
+                <option value="pulse_output">Pulse Output</option>
                 <option value="resistance">Resistance</option>
                 <option value="digital_input">Digital Input</option>
                 <option value="digital_output">Digital Output</option>
@@ -5063,18 +5395,7 @@ watch(() => Object.keys(store.channels), () => {
               </span>
             </div>
 
-            <!-- Source Type Selection -->
-            <div class="form-row">
-              <label>Source Type</label>
-              <select v-model="newChannelForm.source_type" class="source-select">
-                <option value="cdaq">cDAQ (Local)</option>
-                <option value="crio">cRIO (Remote)</option>
-                <option value="opto22">Opto22 (Remote)</option>
-              </select>
-              <span class="form-hint">Hardware platform for this channel</span>
-            </div>
-
-            <!-- Node Selector (for remote sources) -->
+            <!-- Node Selector (for remote sources - only shown when project_mode is crio or opto22) -->
             <div class="form-row" v-if="newChannelForm.source_type !== 'cdaq'">
               <label>Node</label>
               <select v-model="newChannelForm.node_id" class="node-select">
@@ -5249,6 +5570,46 @@ watch(() => Object.keys(store.channels), () => {
                   max="1000"
                 />
                 <span class="form-hint">MQTT publish rate</span>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h4>Watchdog Output</h4>
+              <span class="form-hint" style="margin-bottom: 8px; display: block;">
+                Toggles a digital output at a fixed rate so an external safety relay can detect the cRIO is alive.
+              </span>
+              <div class="form-row">
+                <label>Enabled</label>
+                <label class="toggle-label">
+                  <input
+                    type="checkbox"
+                    v-model="systemSettingsForm.watchdog_output.enabled"
+                  />
+                  <span>{{ systemSettingsForm.watchdog_output.enabled ? 'Active' : 'Disabled' }}</span>
+                </label>
+              </div>
+              <div class="form-row" v-if="systemSettingsForm.watchdog_output.enabled">
+                <label>Output Channel</label>
+                <select v-model="systemSettingsForm.watchdog_output.channel">
+                  <option value="">-- Select Output --</option>
+                  <option
+                    v-for="ch in outputChannels"
+                    :key="ch.name"
+                    :value="ch.name"
+                  >{{ ch.name }}</option>
+                </select>
+                <span class="form-hint">Digital output to pulse</span>
+              </div>
+              <div class="form-row" v-if="systemSettingsForm.watchdog_output.enabled">
+                <label>Pulse Rate (Hz)</label>
+                <input
+                  type="number"
+                  v-model.number="systemSettingsForm.watchdog_output.rate_hz"
+                  min="0.1"
+                  max="10"
+                  step="0.1"
+                />
+                <span class="form-hint">Toggle frequency (1 Hz = 1 full cycle/sec)</span>
               </div>
             </div>
 
@@ -6088,6 +6449,9 @@ watch(() => Object.keys(store.channels), () => {
 .type-badge.voltage_output { background: #0e7490; color: #67e8f9; }
 .type-badge.current_output { background: #7c2d12; color: #fed7aa; }
 .type-badge.analog_output { background: #0e7490; color: #67e8f9; } /* Legacy */
+.type-badge.analog_input { background: #1e3a8a; color: #93c5fd; }  /* Same as voltage */
+.type-badge.voltage_input { background: #1e3a8a; color: #93c5fd; } /* Same as voltage */
+.type-badge.current_input { background: #4c1d95; color: #c4b5fd; } /* Same as current */
 
 /* Value Cell */
 .col-value .value {
@@ -6266,6 +6630,17 @@ watch(() => Object.keys(store.channels), () => {
   min-width: 280px;
 }
 
+/* Tag input - monospace for tag names */
+.col-tag .inline-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.col-tag .inline-input:focus {
+  color: #93c5fd;
+}
 
 .editable-cell input[type="checkbox"] {
   cursor: pointer;
@@ -7383,6 +7758,9 @@ input[type="checkbox"] {
 .type-badge.current_output { background: #ea580c; color: #fff; }
 .type-badge.analog_output { background: #d97706; color: #fff; } /* Legacy */
 .type-badge.counter { background: #7c3aed; color: #fff; }
+.type-badge.analog_input { background: #16a34a; color: #fff; }  /* Same as voltage */
+.type-badge.voltage_input { background: #16a34a; color: #fff; } /* Same as voltage */
+.type-badge.current_input { background: #2563eb; color: #fff; } /* Same as current */
 
 /* Toolbar separator */
 .discovery-actions .separator {

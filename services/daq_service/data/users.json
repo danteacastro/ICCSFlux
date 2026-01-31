@@ -1,1 +1,54 @@
-{}
+{
+  "admin": {
+    "username": "admin",
+    "password_hash": "$2b$12$TuCMUWYMkl49AvxO7oGR7uI1F.A.CO3BtHufynlSW3fuDwKNtrFOu",
+    "role": "admin",
+    "display_name": "Administrator",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-24T14:23:10.357348",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  },
+  "supervisor": {
+    "username": "supervisor",
+    "password_hash": "$2b$12$OIfNQcNdPErq5ni8NcXtK.yrgSorD8ZpeLQCCpW3q0XRjrXYNf5Uq",
+    "role": "supervisor",
+    "display_name": "Supervisor",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-24T14:23:10.836248",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  },
+  "operator": {
+    "username": "operator",
+    "password_hash": "$2b$12$y3xLBTQXq7jXxsE38S0q9.bI/iRQx4PMRE7XNKv6n72/owvGEltty",
+    "role": "operator",
+    "display_name": "Operator",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-24T14:23:11.294814",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  },
+  "guest": {
+    "username": "guest",
+    "password_hash": "$2b$12$jrIfkxyw.duYPm8eOOYLQO6C7MmzakaD0o54RmP8IIlxBGqQNFxiu",
+    "role": "guest",
+    "display_name": "Guest",
+    "email": "",
+    "enabled": true,
+    "created_at": "2026-01-24T14:23:11.735806",
+    "last_login": "",
+    "failed_attempts": 0,
+    "locked_until": null,
+    "custom_permissions": []
+  }
+}
