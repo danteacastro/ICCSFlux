@@ -731,7 +731,8 @@ const systemSettingsForm = ref({
     enabled: false,
     channel: '',
     rate_hz: 1.0
-  }
+  },
+  confirm_output_changes: false
 })
 
 // Auto-Gen Widgets Modal State
@@ -1520,7 +1521,8 @@ function openSystemSettings() {
       enabled: wd?.enabled || false,
       channel: wd?.channel || '',
       rate_hz: wd?.rate_hz || 1.0
-    }
+    },
+    confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false
   }
   showSystemSettings.value = true
 }
@@ -1545,6 +1547,7 @@ function saveSystemSettings() {
       projectFiles.currentProjectData.value.system = {} as any
     }
     (projectFiles.currentProjectData.value.system as any).project_mode = newMode
+    ;(projectFiles.currentProjectData.value.system as any).confirm_output_changes = systemSettingsForm.value.confirm_output_changes
     projectFiles.markDirty()
   }
 
@@ -6332,6 +6335,23 @@ watch(
                   step="0.1"
                 />
                 <span class="form-hint">Toggle frequency (1 Hz = 1 full cycle/sec)</span>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h4>Output Safety (ISA-101)</h4>
+              <span class="form-hint" style="margin-bottom: 8px; display: block;">
+                Require operator confirmation before energizing digital outputs and relays.
+              </span>
+              <div class="form-row">
+                <label>Confirm Output Changes</label>
+                <label class="toggle-label">
+                  <input
+                    type="checkbox"
+                    v-model="systemSettingsForm.confirm_output_changes"
+                  />
+                  <span>{{ systemSettingsForm.confirm_output_changes ? 'Required' : 'Off' }}</span>
+                </label>
               </div>
             </div>
 

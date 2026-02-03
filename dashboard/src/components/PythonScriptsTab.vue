@@ -344,6 +344,7 @@ function registerPythonLanguage() {
 
       // ── Helper classes ──────────────────────────────────────────────
       const helpers = [
+        { name: 'Counter', snippet: 'Counter(target=$1, window=$2, debounce=$3, auto_reset=$4)', doc: 'Universal counter: totalizer, batch, sliding window, debounce, duty cycle, run hours, cycle tracking, stopwatch' },
         { name: 'RateCalculator', snippet: 'RateCalculator(window_seconds=$1)', doc: 'Calculate rate of change over time window' },
         { name: 'Accumulator', snippet: 'Accumulator(initial=$1)', doc: 'Accumulate incremental changes with rollover handling' },
         { name: 'EdgeDetector', snippet: 'EdgeDetector(threshold=$1)', doc: 'Detect rising/falling edges on a signal' },
@@ -360,6 +361,47 @@ function registerPythonLanguage() {
           insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
           detail: 'Helper class',
           documentation: h.doc,
+          range
+        })
+      }
+
+      // ── Counter properties & methods ────────────────────────────────
+      const counterMembers = [
+        { name: 'Counter.increment', snippet: '.increment($1)', doc: 'Add to count (default 1)' },
+        { name: 'Counter.decrement', snippet: '.decrement($1)', doc: 'Subtract from count (default 1)' },
+        { name: 'Counter.tick', snippet: '.tick()', doc: 'Record timestamped event (for sliding window rate)' },
+        { name: 'Counter.update', snippet: '.update($1)', doc: 'Smart update: edge detect on bool, integrate on float rate' },
+        { name: 'Counter.reset', snippet: '.reset()', doc: 'Reset count to 0 (total and cycles preserved)' },
+        { name: 'Counter.set', snippet: '.set($1)', doc: 'Set count to specific value (tare/preset)' },
+        { name: 'Counter.lap', snippet: ".lap('$1')", doc: 'Record named lap time' },
+        { name: '.count', snippet: '.count', doc: 'Current count (resets with reset())' },
+        { name: '.total', snippet: '.total', doc: 'Lifetime cumulative total (never auto-resets)' },
+        { name: '.done', snippet: '.done', doc: 'True when count >= target' },
+        { name: '.remaining', snippet: '.remaining', doc: 'How many left until target' },
+        { name: '.batch', snippet: '.batch', doc: 'Batch number (times target reached with auto_reset)' },
+        { name: '.window_count', snippet: '.window_count', doc: 'Events in sliding time window' },
+        { name: '.rate', snippet: '.rate', doc: 'Events per second over sliding window' },
+        { name: '.state', snippet: '.state', doc: 'Debounced boolean state' },
+        { name: '.stable', snippet: '.stable', doc: 'True if debounce buffer is unanimous' },
+        { name: '.duty', snippet: '.duty', doc: 'Duty cycle percentage (0-100) over window' },
+        { name: '.run_time', snippet: '.run_time', doc: 'Cumulative seconds signal was ON' },
+        { name: '.run_hours', snippet: '.run_hours', doc: 'Cumulative hours signal was ON' },
+        { name: '.cycles', snippet: '.cycles', doc: 'Completed ON→OFF cycle count' },
+        { name: '.cycle_avg', snippet: '.cycle_avg', doc: 'Mean cycle duration (seconds)' },
+        { name: '.cycle_min', snippet: '.cycle_min', doc: 'Shortest cycle (seconds)' },
+        { name: '.cycle_max', snippet: '.cycle_max', doc: 'Longest cycle (seconds)' },
+        { name: '.elapsed', snippet: '.elapsed', doc: 'Seconds since creation or last reset' },
+        { name: '.laps', snippet: '.laps', doc: 'Dict of {name: duration_seconds}' },
+      ]
+
+      for (const m of counterMembers) {
+        suggestions.push({
+          label: m.name,
+          kind: m.name.startsWith('Counter.') ? monaco.languages.CompletionItemKind.Method : monaco.languages.CompletionItemKind.Property,
+          insertText: m.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'Counter',
+          documentation: m.doc,
           range
         })
       }

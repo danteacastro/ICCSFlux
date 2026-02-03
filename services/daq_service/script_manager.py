@@ -270,6 +270,296 @@ class RollingStats:
         self._buffer.clear()
 
 
+class Counter:
+    """Universal counter with totalizing, batch, sliding window, debounce,
+    duty cycle, run hours, cycle tracking, and stopwatch capabilities.
+
+    Enable features via constructor — use only what you need.
+
+    Args:
+        target:     Preset value. ``done`` becomes True when count >= target.
+        window:     Sliding window in seconds for ``window_count`` and ``rate``.
+        debounce:   Require N consecutive stable readings before accepting
+                    a state change (0 = disabled).
+        auto_reset: Automatically reset count when target is reached
+                    (increments ``batch`` number).
+
+    Quick examples::
+
+        # Simple event counter with target
+        parts = Counter(target=500)
+        parts.increment()
+        if parts.done: ...
+
+        # Totalizer (integrate rate signal)
+        fuel = Counter()
+        fuel.update(tags.Gas_SCFM)   # call every scan
+        fuel.total                    # cumulative value
+
+        # Shifting count — events in rolling window
+        faults = Counter(window=600)
+        faults.tick()                 # record event
+        faults.window_count           # events in last 10 min
+        faults.rate                   # events per second
+    """
+
+    def __init__(self, target=None, window=None, debounce=0, auto_reset=False):
+        # Core counting
+        self._count = 0
+        self._total = 0
+        self._target = target
+        self._auto_reset = auto_reset
+        self._batch = 0
+
+        # Sliding window
+        self._window_seconds = window
+        self._events: list = []
+
+        # Debounce
+        self._debounce_n = max(0, int(debounce))
+        self._debounce_buf: list = []
+        self._debounced_state = False
+
+        # Edge detection
+        self._last_bool: Any = None
+
+        # Totalizer
+        self._last_value: Any = None
+        self._last_update_time = time.time()
+
+        # Duty cycle / run hours
+        self._is_on = False
+        self._on_accum = 0.0
+        self._total_on = 0.0
+        self._last_duty_time = time.time()
+        self._duty_events: list = []
+
+        # Cycle tracking
+        self._cycle_count = 0
+        self._cycle_start: Any = None
+        self._cycle_times: list = []
+
+        # Stopwatch / laps
+        self._start_time = time.time()
+        self._laps: dict = {}
+        self._lap_start = time.time()
+
+    # ----- core counting ------------------------------------------------
+
+    def increment(self, n: int = 1):
+        self._count += n
+        self._total += n
+        self._check_target()
+
+    def decrement(self, n: int = 1):
+        self._count -= n
+
+    def tick(self):
+        self._events.append(time.time())
+        self.increment()
+
+    def reset(self):
+        self._count = 0
+        self._start_time = time.time()
+        self._lap_start = time.time()
+
+    def set(self, value):
+        self._count = value
+
+    # ----- smart update -------------------------------------------------
+
+    def update(self, value):
+        now = time.time()
+        is_bool = isinstance(value, bool) or (isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0, True, False))
+        if is_bool:
+            self._update_bool(bool(value), now)
+        else:
+            self._update_analog(float(value), now)
+
+    def _update_bool(self, current: bool, now: float):
+        if self._debounce_n > 0:
+            self._debounce_buf.append(current)
+            if len(self._debounce_buf) > self._debounce_n:
+                self._debounce_buf.pop(0)
+            if len(self._debounce_buf) >= self._debounce_n:
+                if not all(v == current for v in self._debounce_buf):
+                    current = self._debounced_state
+        self._debounced_state = current
+
+        if self._last_bool is not None:
+            if current and not self._last_bool:
+                self.increment()
+                self._events.append(now)
+                self._cycle_start = now
+            if not current and self._last_bool:
+                if self._cycle_start is not None:
+                    dt = now - self._cycle_start
+                    self._cycle_times.append(dt)
+                    if len(self._cycle_times) > 200:
+                        self._cycle_times.pop(0)
+                    self._cycle_count += 1
+                    self._cycle_start = None
+        self._last_bool = current
+
+        dt = now - self._last_duty_time
+        if current:
+            self._on_accum += dt
+            self._total_on += dt
+        self._last_duty_time = now
+        self._is_on = current
+
+        if self._window_seconds:
+            self._duty_events.append((now, current))
+            cutoff = now - self._window_seconds
+            self._duty_events = [(t, v) for t, v in self._duty_events if t >= cutoff]
+
+    def _update_analog(self, value: float, now: float):
+        if self._last_value is not None:
+            dt = now - self._last_update_time
+            if dt > 0:
+                increment = value * dt
+                self._count += increment
+                self._total += increment
+        self._last_value = value
+        self._last_update_time = now
+
+    # ----- target / batch -----------------------------------------------
+
+    def _check_target(self):
+        if self._target is not None and self._count >= self._target:
+            if self._auto_reset:
+                self._batch += 1
+                self._count = 0
+
+    @property
+    def target(self):
+        return self._target
+
+    @target.setter
+    def target(self, value):
+        self._target = value
+
+    @property
+    def done(self) -> bool:
+        if self._target is None:
+            return False
+        return self._count >= self._target
+
+    @property
+    def remaining(self):
+        if self._target is None:
+            return 0
+        return max(0, self._target - self._count)
+
+    @property
+    def batch(self) -> int:
+        return self._batch
+
+    @property
+    def count(self):
+        return self._count
+
+    @property
+    def total(self):
+        return self._total
+
+    # ----- sliding window ------------------------------------------------
+
+    @property
+    def window_count(self) -> int:
+        if not self._window_seconds:
+            return len(self._events)
+        cutoff = time.time() - self._window_seconds
+        self._events = [t for t in self._events if t >= cutoff]
+        return len(self._events)
+
+    @property
+    def rate(self) -> float:
+        wc = self.window_count
+        w = self._window_seconds or (time.time() - self._start_time)
+        return wc / w if w > 0 else 0.0
+
+    # ----- debounce ------------------------------------------------------
+
+    @property
+    def state(self) -> bool:
+        return self._debounced_state
+
+    @property
+    def stable(self) -> bool:
+        if self._debounce_n <= 0:
+            return True
+        if len(self._debounce_buf) < self._debounce_n:
+            return False
+        return len(set(self._debounce_buf)) == 1
+
+    # ----- duty cycle / run hours ----------------------------------------
+
+    @property
+    def duty(self) -> float:
+        if self._window_seconds and self._duty_events:
+            now = time.time()
+            cutoff = now - self._window_seconds
+            events = [(t, v) for t, v in self._duty_events if t >= cutoff]
+            if not events:
+                return 0.0
+            on_time = 0.0
+            for i in range(len(events) - 1):
+                if events[i][1]:
+                    on_time += events[i + 1][0] - events[i][0]
+            if events[-1][1]:
+                on_time += now - events[-1][0]
+            return min(100.0, (on_time / self._window_seconds) * 100)
+        elapsed = time.time() - self._start_time
+        if elapsed <= 0:
+            return 0.0
+        return min(100.0, (self._total_on / elapsed) * 100)
+
+    @property
+    def run_time(self) -> float:
+        extra = 0.0
+        if self._is_on:
+            extra = time.time() - self._last_duty_time
+        return self._total_on + extra
+
+    @property
+    def run_hours(self) -> float:
+        return self.run_time / 3600.0
+
+    # ----- cycle tracking ------------------------------------------------
+
+    @property
+    def cycles(self) -> int:
+        return self._cycle_count
+
+    @property
+    def cycle_avg(self) -> float:
+        return sum(self._cycle_times) / len(self._cycle_times) if self._cycle_times else 0.0
+
+    @property
+    def cycle_min(self) -> float:
+        return min(self._cycle_times) if self._cycle_times else 0.0
+
+    @property
+    def cycle_max(self) -> float:
+        return max(self._cycle_times) if self._cycle_times else 0.0
+
+    # ----- stopwatch / laps ----------------------------------------------
+
+    @property
+    def elapsed(self) -> float:
+        return time.time() - self._start_time
+
+    def lap(self, name: str):
+        now = time.time()
+        self._laps[name] = now - self._lap_start
+        self._lap_start = now
+
+    @property
+    def laps(self) -> dict:
+        return dict(self._laps)
+
+
 class Scheduler:
     """Simple job scheduler for timed operations.
 
@@ -1048,6 +1338,7 @@ class ScriptRuntime:
             'print': script_print,
 
             # Helper classes (make available in shared namespace too)
+            'Counter': Counter,
             'RateCalculator': RateCalculator,
             'Accumulator': Accumulator,
             'EdgeDetector': EdgeDetector,

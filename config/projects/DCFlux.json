@@ -4490,7 +4490,8 @@
         "enabled": true,
         "code": "# Digital Output Cycle Test\n# Cycles through tag_72, tag_73, tag_74, tag_75\n# Each output: ON 5 sec, OFF 5 sec, then next\n\nDIGITAL_OUTPUTS = ['tag_72', 'tag_73', 'tag_74', 'tag_75']\nON_TIME = 5   # seconds ON\nOFF_TIME = 5  # seconds OFF before next\n\nprint('Digital Output Cycle Test Started')\nprint(f'Outputs: {DIGITAL_OUTPUTS}')\nprint(f'ON: {ON_TIME}s, OFF: {OFF_TIME}s')\n\n# Ensure all outputs are OFF at start\nfor do in DIGITAL_OUTPUTS:\n    outputs.set(do, 0)\nprint('All outputs OFF')\n\ncycle = 0\ntry:\n    while session.active:\n        cycle += 1\n        print(f'\\n--- Cycle {cycle} ---')\n        \n        for do in DIGITAL_OUTPUTS:\n            if not session.active:\n                break\n            \n            # Turn ON\n            outputs.set(do, 1)\n            print(f'{do} ON')\n            publish('ActiveOutput', DIGITAL_OUTPUTS.index(do) + 1)\n            wait_for(ON_TIME)\n            \n            if not session.active:\n                break\n            \n            # Turn OFF and wait\n            outputs.set(do, 0)\n            print(f'{do} OFF - waiting {OFF_TIME}s')\n            wait_for(OFF_TIME)\n        \n        publish('CycleCount', cycle)\n\nfinally:\n    print('\\nStopping - all outputs OFF')\n    for do in DIGITAL_OUTPUTS:\n        outputs.set(do, 0)\n"
       }
-    ]
+    ],
+    "alarms": []
   },
   "recording": {
     "config": {

@@ -19,7 +19,7 @@ import json
 import time
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Callable, Set
@@ -146,6 +146,7 @@ class Interlock:
     demand_count: int = 0
     last_demand_time: Optional[str] = None
     last_proof_test: Optional[str] = None
+    proof_test_interval_days: Optional[float] = None  # IEC 61511: periodic verification interval
 
     def to_dict(self) -> dict:
         return {
@@ -164,7 +165,8 @@ class Interlock:
             'maxBypassDuration': self.max_bypass_duration,
             'demandCount': self.demand_count,
             'lastDemandTime': self.last_demand_time,
-            'lastProofTest': self.last_proof_test
+            'lastProofTest': self.last_proof_test,
+            'proofTestIntervalDays': self.proof_test_interval_days
         }
 
     @staticmethod
@@ -185,7 +187,8 @@ class Interlock:
             max_bypass_duration=d.get('maxBypassDuration', d.get('max_bypass_duration')),
             demand_count=d.get('demandCount', d.get('demand_count', 0)),
             last_demand_time=d.get('lastDemandTime', d.get('last_demand_time')),
-            last_proof_test=d.get('lastProofTest', d.get('last_proof_test'))
+            last_proof_test=d.get('lastProofTest', d.get('last_proof_test')),
+            proof_test_interval_days=d.get('proofTestIntervalDays', d.get('proof_test_interval_days'))
         )
 
 
@@ -885,6 +888,14 @@ class SafetyManager:
                 reason = f"Interlock failed: {', '.join([f.name for f in failed])}"
                 self.trip_system(reason)
 
+            # Collect proof test status for interlocks with intervals
+            proof_tests_due = []
+            for interlock in self.interlocks.values():
+                if interlock.proof_test_interval_days is not None:
+                    info = self._compute_proof_test_info(interlock)
+                    if info['overdue']:
+                        proof_tests_due.append(info)
+
             return {
                 'latchState': self.latch_state.value,
                 'isTripped': self.is_tripped,
@@ -892,6 +903,7 @@ class SafetyManager:
                 'lastTripReason': self.last_trip_reason,
                 'hasFailedInterlocks': any_failed,
                 'interlockStatuses': [s.to_dict() for s in statuses],
+                'proofTestsDue': proof_tests_due,
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -989,6 +1001,130 @@ class SafetyManager:
             entries = [e for e in entries if e.interlock_id == interlock_id]
         entries.reverse()  # Most recent first
         return [e.to_dict() for e in entries[:limit]]
+
+    # ========================================================================
+    # Proof Test Scheduling (IEC 61511)
+    # ========================================================================
+
+    def record_proof_test(self, interlock_id: str, user: str = "system", result: str = "pass",
+                          notes: str = "") -> bool:
+        """
+        Record that a proof test was performed on an interlock.
+
+        IEC 61511 requires periodic verification that safety interlocks
+        will function when demanded. This records the test completion.
+
+        Args:
+            interlock_id: The interlock that was tested
+            user: Who performed the test
+            result: 'pass' or 'fail'
+            notes: Optional test notes
+        """
+        with self.lock:
+            interlock = self.interlocks.get(interlock_id)
+            if not interlock:
+                logger.warning(f"Cannot record proof test: interlock {interlock_id} not found")
+                return False
+
+            interlock.last_proof_test = datetime.now().isoformat()
+            self._record_event(interlock, 'proof_test', user, notes, {
+                'result': result,
+                'notes': notes
+            })
+            self._save_interlocks()
+
+            logger.info(f"Proof test recorded for '{interlock.name}': {result} by {user}")
+
+            if self._publish:
+                self._publish('safety/proof_test', {
+                    'interlockId': interlock_id,
+                    'interlockName': interlock.name,
+                    'result': result,
+                    'user': user,
+                    'notes': notes,
+                    'timestamp': interlock.last_proof_test
+                })
+
+            return True
+
+    def get_proof_test_status(self, interlock_id: str) -> Optional[Dict[str, Any]]:
+        """Get proof test status for a single interlock"""
+        interlock = self.interlocks.get(interlock_id)
+        if not interlock:
+            return None
+
+        return self._compute_proof_test_info(interlock)
+
+    def get_all_proof_test_status(self) -> List[Dict[str, Any]]:
+        """Get proof test status for all interlocks that have a test interval configured"""
+        results = []
+        for interlock in self.interlocks.values():
+            if interlock.proof_test_interval_days is not None:
+                results.append(self._compute_proof_test_info(interlock))
+        return results
+
+    def _compute_proof_test_info(self, interlock: Interlock) -> Dict[str, Any]:
+        """Compute proof test scheduling info for an interlock"""
+        info = {
+            'interlockId': interlock.id,
+            'interlockName': interlock.name,
+            'intervalDays': interlock.proof_test_interval_days,
+            'lastTest': interlock.last_proof_test,
+            'nextDue': None,
+            'daysUntilDue': None,
+            'overdue': False
+        }
+
+        if interlock.proof_test_interval_days is None:
+            return info
+
+        if interlock.last_proof_test:
+            try:
+                last_test_dt = datetime.fromisoformat(interlock.last_proof_test)
+                next_due_dt = last_test_dt + timedelta(days=interlock.proof_test_interval_days)
+                now = datetime.now()
+                days_until = (next_due_dt - now).total_seconds() / 86400.0
+
+                info['nextDue'] = next_due_dt.isoformat()
+                info['daysUntilDue'] = round(days_until, 1)
+                info['overdue'] = days_until < 0
+            except (ValueError, TypeError):
+                # If last_proof_test is malformed, treat as overdue
+                info['overdue'] = True
+        else:
+            # Never tested — overdue
+            info['overdue'] = True
+
+        return info
+
+    def check_proof_tests(self) -> List[Dict[str, Any]]:
+        """
+        Check all interlocks for overdue proof tests.
+        Called periodically (e.g., once per minute from main loop).
+
+        Returns list of overdue interlocks and publishes notifications.
+        """
+        overdue = []
+
+        with self.lock:
+            for interlock in self.interlocks.values():
+                if not interlock.enabled:
+                    continue
+                if interlock.proof_test_interval_days is None:
+                    continue
+
+                info = self._compute_proof_test_info(interlock)
+                if info['overdue']:
+                    overdue.append(info)
+
+        if overdue and self._publish:
+            self._publish('safety/proof_tests_due', {
+                'count': len(overdue),
+                'interlocks': overdue,
+                'timestamp': datetime.now().isoformat()
+            })
+
+        return overdue
 
     # ========================================================================
     # MQTT Publishing

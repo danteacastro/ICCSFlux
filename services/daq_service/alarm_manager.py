@@ -429,6 +429,15 @@ class AlarmManager:
             'total_shelved': 0
         }
 
+        # Alarm flood detection (ISA-18.2)
+        self.FLOOD_THRESHOLD = 10       # Alarms within window to trigger flood
+        self.FLOOD_WINDOW_S = 60.0      # Time window for flood detection
+        self._flood_active = False
+        self._flood_start_time: Optional[float] = None
+        self._flood_alarm_times: List[float] = []   # timestamps of recent alarm triggers
+        self._flood_suppressed_count = 0
+        self._flood_root_cause_id: Optional[str] = None  # First alarm in the flood
+
         # Event Correlation
         self.correlation_rules: Dict[str, CorrelationRule] = {}
         self.active_correlations: Dict[str, EventCorrelation] = {}
@@ -496,6 +505,9 @@ class AlarmManager:
 
             # Check shelve expiry
             self._check_shelve_expiry()
+
+            # Check if alarm flood has ended
+            self._check_flood_clear(timestamp)
 
     def _update_rate_history(self, channel: str, value: float, timestamp: float):
         """Track value history for rate-of-change detection"""
@@ -781,9 +793,125 @@ class AlarmManager:
                 if now >= alarm.shelve_expires_at:
                     self.unshelve_alarm(alarm_id, "System", "Shelve time expired")
 
+    def _check_flood_clear(self, timestamp: float):
+        """Check if alarm flood condition has ended"""
+        if not self._flood_active:
+            return
+
+        # Prune old timestamps
+        cutoff = timestamp - self.FLOOD_WINDOW_S
+        self._flood_alarm_times = [t for t in self._flood_alarm_times if t >= cutoff]
+
+        # Flood clears when alarm rate drops below half the threshold
+        if len(self._flood_alarm_times) < self.FLOOD_THRESHOLD // 2:
+            duration = timestamp - self._flood_start_time if self._flood_start_time else 0
+            logger.info(
+                f"ALARM FLOOD CLEARED: lasted {duration:.1f}s, "
+                f"suppressed {self._flood_suppressed_count} alarms"
+            )
+            self._log_flood_event('flood_end', {
+                'duration_s': round(duration, 1),
+                'suppressed_count': self._flood_suppressed_count,
+                'root_cause': self._flood_root_cause_id
+            })
+            if self.publish_callback:
+                self.publish_callback('alarm_flood', {
+                    'active': False,
+                    'duration_s': round(duration, 1),
+                    'suppressed_count': self._flood_suppressed_count,
+                    'root_cause': self._flood_root_cause_id,
+                    'timestamp': datetime.now().isoformat()
+                })
+
+            self._flood_active = False
+            self._flood_start_time = None
+            self._flood_suppressed_count = 0
+            self._flood_root_cause_id = None
+
+    def _log_flood_event(self, event_type: str, details: Dict[str, Any]):
+        """Log a flood event to alarm history"""
+        entry = AlarmHistoryEntry(
+            timestamp=datetime.now(),
+            alarm_id='__flood__',
+            channel='',
+            event_type=event_type,
+            severity=AlarmSeverity.CRITICAL,
+            value=None,
+            threshold=None,
+            user=None,
+            message=f"Alarm flood {event_type.replace('flood_', '')}: {json.dumps(details)}"
+        )
+        self.history.append(entry)
+        if len(self.history) > self.max_history:
+            self.history = self.history[-self.max_history:]
+
+    def get_flood_status(self) -> Dict[str, Any]:
+        """Get current alarm flood status"""
+        with self.lock:
+            # Prune for current count
+            if self._flood_alarm_times:
+                cutoff = time.monotonic() - self.FLOOD_WINDOW_S
+                current_count = sum(1 for t in self._flood_alarm_times if t >= cutoff)
+            else:
+                current_count = 0
+
+            return {
+                'active': self._flood_active,
+                'alarm_rate': current_count,
+                'threshold': self.FLOOD_THRESHOLD,
+                'window_s': self.FLOOD_WINDOW_S,
+                'suppressed_count': self._flood_suppressed_count,
+                'root_cause': self._flood_root_cause_id,
+                'duration_s': round(time.monotonic() - self._flood_start_time, 1) if self._flood_start_time else 0
+            }
+
     def _trigger_alarm(self, config: AlarmConfig, value: float, threshold_type: str, threshold_value: float):
         """Create a new active alarm"""
         now = datetime.now()
+        mono_now = time.monotonic()
+
+        # --- Alarm flood detection (ISA-18.2) ---
+        self._flood_alarm_times.append(mono_now)
+        # Prune timestamps outside the window
+        cutoff = mono_now - self.FLOOD_WINDOW_S
+        self._flood_alarm_times = [t for t in self._flood_alarm_times if t >= cutoff]
+
+        if not self._flood_active:
+            if len(self._flood_alarm_times) >= self.FLOOD_THRESHOLD:
+                # Flood detected
+                self._flood_active = True
+                self._flood_start_time = mono_now
+                self._flood_suppressed_count = 0
+                self._flood_root_cause_id = self.first_out_alarm_id or config.id
+                logger.critical(
+                    f"ALARM FLOOD DETECTED: {len(self._flood_alarm_times)} alarms "
+                    f"in {self.FLOOD_WINDOW_S}s (threshold: {self.FLOOD_THRESHOLD}). "
+                    f"Root cause: {self._flood_root_cause_id}"
+                )
+                self._log_flood_event('flood_start', {
+                    'alarm_count': len(self._flood_alarm_times),
+                    'root_cause': self._flood_root_cause_id,
+                    'threshold': self.FLOOD_THRESHOLD,
+                    'window_s': self.FLOOD_WINDOW_S
+                })
+                if self.publish_callback:
+                    self.publish_callback('alarm_flood', {
+                        'active': True,
+                        'alarm_count': len(self._flood_alarm_times),
+                        'root_cause': self._flood_root_cause_id,
+                        'timestamp': now.isoformat()
+                    })
+
+        if self._flood_active:
+            # During a flood, suppress non-critical alarms
+            if config.severity not in (AlarmSeverity.CRITICAL, AlarmSeverity.HIGH):
+                self._flood_suppressed_count += 1
+                logger.info(
+                    f"ALARM SUPPRESSED (flood): {config.name} "
+                    f"(severity={config.severity.name}, suppressed={self._flood_suppressed_count})"
+                )
+                self.stats['total_alarms'] += 1
+                return  # Do not create ActiveAlarm for suppressed alarms
 
         # Determine first-out
         is_first_out = False
@@ -1179,7 +1307,8 @@ class AlarmManager:
                 **self.stats,
                 'counts': self.get_alarm_counts(),
                 'first_out': self.first_out_alarm_id,
-                'config_count': len(self.alarm_configs)
+                'config_count': len(self.alarm_configs),
+                'flood': self.get_flood_status()
             }
 
     # ========================
@@ -1641,6 +1770,13 @@ class AlarmManager:
             # Clear correlations
             self.active_correlations.clear()
             self.recent_alarms.clear()
+
+            # Clear flood state
+            self._flood_active = False
+            self._flood_start_time = None
+            self._flood_alarm_times.clear()
+            self._flood_suppressed_count = 0
+            self._flood_root_cause_id = None
 
             # Reset stats
             self.stats = {

@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
+import { useProjectFiles } from '../composables/useProjectFiles'
 import { getWidgetComponent } from '../widgets'
 import WidgetConfigModal from './WidgetConfigModal.vue'
 import PipeOverlay from './PipeOverlay.vue'
@@ -12,6 +13,7 @@ import { SYMBOL_PORTS, type ScadaSymbolType } from '../assets/symbols'
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
+const projectFiles = useProjectFiles()
 
 // Widget config modal
 const configWidgetId = ref<string | null>(null)
@@ -187,6 +189,9 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.offLabel !== undefined) props.offLabel = widget.offLabel
   if (widget.confirmOn !== undefined) props.confirmOn = widget.confirmOn
   if (widget.confirmOff !== undefined) props.confirmOff = widget.confirmOff
+  // ISA-101 global output confirmation setting
+  const globalConfirm = (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false
+  if (globalConfirm) props.globalConfirmOutputs = true
 
   // Setpoint props
   if (widget.setpointMin !== undefined) props.setpointMin = widget.setpointMin

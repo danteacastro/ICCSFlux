@@ -1,7 +1,9 @@
 {
   "type": "nisystem-project",
-  "name": "Validation Error Test",
   "version": "2.0",
+  "name": "Validation Error Test",
+  "created": "2025-01-01T00:00:00",
+  "modified": "2025-01-01T00:00:00",
   "system": {
     "mqtt_broker": "localhost",
     "mqtt_port": 1883,
@@ -14,7 +16,6 @@
     "system_id": "VAL-ERR-TEST-001"
   },
   "channels": {
-
     "GOOD_CHANNEL": {
       "name": "GOOD_CHANNEL",
       "physical_channel": "Mod1/ai0",
@@ -52,9 +53,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "ERR_missing_type": {
       "name": "ERR_missing_type",
       "physical_channel": "Mod1/ai1",
@@ -92,7 +90,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "": {
       "name": "",
       "physical_channel": "Mod1/ai2",
@@ -130,7 +127,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "123_bad_name": {
       "name": "123_bad_name",
       "physical_channel": "Mod2/ai0",
@@ -168,7 +164,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "bad-name-hyphens": {
       "name": "bad-name-hyphens",
       "physical_channel": "Mod2/ai1",
@@ -206,9 +201,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "ERR_min_gt_max": {
       "name": "ERR_min_gt_max",
       "physical_channel": "Mod2/ai2",
@@ -248,7 +240,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "ERR_eu_min_gt_max": {
       "name": "ERR_eu_min_gt_max",
       "physical_channel": "Mod2/ai3",
@@ -288,9 +279,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "ERR_tc_no_type": {
       "name": "ERR_tc_no_type",
       "physical_channel": "Mod3/ai0",
@@ -328,7 +316,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "ERR_rtd_no_type": {
       "name": "ERR_rtd_no_type",
       "physical_channel": "Mod3/ai1",
@@ -367,9 +354,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "ERR_dup_phys_A": {
       "name": "ERR_dup_phys_A",
       "physical_channel": "Mod4/ai0",
@@ -407,7 +391,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "ERR_dup_phys_B": {
       "name": "ERR_dup_phys_B",
       "physical_channel": "Mod4/ai0",
@@ -445,7 +428,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "ERR_dup_phys_C": {
       "name": "ERR_dup_phys_C",
       "physical_channel": "Mod4/ai0",
@@ -483,9 +465,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "WARN_no_physical": {
       "name": "WARN_no_physical",
       "physical_channel": "",
@@ -523,7 +502,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "WARN_crio_no_node": {
       "name": "WARN_crio_no_node",
       "physical_channel": "Mod1/ai0",
@@ -561,7 +539,6 @@
       "source_type": "crio",
       "node_id": ""
     },
-
     "WARN_disabled_ch": {
       "name": "WARN_disabled_ch",
       "physical_channel": "Mod5/ai0",
@@ -600,9 +577,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "WARN_hi_gt_hihi": {
       "name": "WARN_hi_gt_hihi",
       "physical_channel": "Mod5/ai1",
@@ -644,7 +618,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "WARN_lo_lt_lolo": {
       "name": "WARN_lo_lt_lolo",
       "physical_channel": "Mod5/ai2",
@@ -686,7 +659,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "WARN_all_alarms_wrong": {
       "name": "WARN_all_alarms_wrong",
       "physical_channel": "Mod5/ai3",
@@ -728,9 +700,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
-
-
     "COMBO_multi_error": {
       "name": "COMBO_multi_error",
       "physical_channel": "",
@@ -768,7 +737,6 @@
       "source_type": "cdaq",
       "node_id": ""
     },
-
     "COMBO_err_and_warn": {
       "name": "COMBO_err_and_warn",
       "physical_channel": "",
@@ -811,7 +779,6 @@
       "source_type": "crio",
       "node_id": ""
     },
-
     "COMBO_worst_case": {
       "name": "COMBO_worst_case",
       "physical_channel": "Mod4/ai0",
@@ -858,6 +825,34 @@
       "node_id": ""
     }
   },
-  "safety_actions": {},
-  "pages": {}
+  "layout": {
+    "gridColumns": 12,
+    "rowHeight": 80,
+    "pages": [
+      {
+        "id": "default",
+        "name": "Dashboard",
+        "widgets": [],
+        "order": 0
+      }
+    ],
+    "currentPageId": "default"
+  },
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [],
+    "schedules": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": []
+  },
+  "recording": {
+    "config": {},
+    "selectedChannels": []
+  },
+  "safety": {
+    "alarmConfigs": {},
+    "interlocks": [],
+    "safetyActions": {}
+  }
 }

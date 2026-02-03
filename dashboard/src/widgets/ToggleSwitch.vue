@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
 import InterlockBlockOverlay from '../components/InterlockBlockOverlay.vue'
@@ -13,6 +13,7 @@ const props = defineProps<{
   offLabel?: string     // Label when OFF
   confirmOn?: boolean   // Require confirmation to turn ON
   confirmOff?: boolean  // Require confirmation to turn OFF
+  globalConfirmOutputs?: boolean  // ISA-101 global output confirmation
   style?: { onColor?: string; offColor?: string }
 }>()
 
@@ -63,16 +64,57 @@ const statusText = computed(() => {
   return ''
 })
 
+// Confirmation state
+const showConfirm = ref(false)
+let confirmTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearConfirmTimer() {
+  if (confirmTimer) {
+    clearTimeout(confirmTimer)
+    confirmTimer = null
+  }
+}
+
 function toggle() {
   if (!canToggle.value) return
+  const newValue = !isOn.value
+
+  // Check if confirmation is needed
+  const needsConfirm = newValue
+    ? (props.confirmOn || props.globalConfirmOutputs)
+    : props.confirmOff
+
+  if (needsConfirm && !showConfirm.value) {
+    showConfirm.value = true
+    clearConfirmTimer()
+    confirmTimer = setTimeout(() => { showConfirm.value = false }, 3000)
+    return
+  }
+
+  showConfirm.value = false
+  clearConfirmTimer()
+  emit('change', newValue)
+}
+
+function confirmAction() {
+  clearConfirmTimer()
+  showConfirm.value = false
   emit('change', !isOn.value)
 }
+
+function cancelConfirm() {
+  clearConfirmTimer()
+  showConfirm.value = false
+}
+
+onUnmounted(() => clearConfirmTimer())
 </script>
 
 <template>
   <div class="toggle-switch" :class="{ disabled: !canToggle, blocked: isBlocked }" :title="statusText">
     <div class="label">{{ displayLabel }}</div>
     <button
+      v-if="!showConfirm"
       class="switch"
       :class="{ on: isOn }"
       :style="{ backgroundColor: isOn ? onColor : offColor }"
@@ -81,6 +123,11 @@ function toggle() {
     >
       <span class="slider"></span>
     </button>
+    <div v-else class="confirm-panel">
+      <span class="confirm-text">Confirm?</span>
+      <button class="confirm-btn yes" @click="confirmAction">✓</button>
+      <button class="confirm-btn no" @click="cancelConfirm">✕</button>
+    </div>
     <InterlockBlockOverlay v-if="isBlocked" :blocked-by="blockStatus.blockedBy" />
   </div>
 </template>
@@ -181,5 +228,44 @@ function toggle() {
 @keyframes pulse-blocked {
   0%, 100% { box-shadow: 0 0 4px rgba(220, 38, 38, 0.3); }
   50% { box-shadow: 0 0 12px rgba(220, 38, 38, 0.6); }
+}
+
+/* ISA-101 confirmation panel */
+.confirm-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirm-text {
+  font-size: 0.7rem;
+  color: #fbbf24;
+  font-weight: bold;
+}
+
+.confirm-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  transition: opacity 0.15s;
+}
+
+.confirm-btn:hover {
+  opacity: 0.85;
+}
+
+.confirm-btn.yes {
+  background: #22c55e;
+}
+
+.confirm-btn.no {
+  background: #6b7280;
 }
 </style>

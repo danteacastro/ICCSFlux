@@ -126,6 +126,348 @@ class RollingStats:
 
 
 # =============================================================================
+# UNIVERSAL COUNTER
+# =============================================================================
+
+class Counter:
+    """Universal counter with totalizing, batch, sliding window, debounce,
+    duty cycle, run hours, cycle tracking, and stopwatch capabilities.
+
+    Enable features via constructor — use only what you need.
+
+    Args:
+        target:     Preset value. ``done`` becomes True when count >= target.
+        window:     Sliding window in seconds for ``window_count`` and ``rate``.
+        debounce:   Require N consecutive stable readings before accepting
+                    a state change (0 = disabled).
+        auto_reset: Automatically reset count when target is reached
+                    (increments ``batch`` number).
+
+    Quick examples::
+
+        # Simple event counter with target
+        parts = Counter(target=500)
+        parts.increment()
+        if parts.done: ...
+
+        # Totalizer (integrate rate signal)
+        fuel = Counter()
+        fuel.update(tags.Gas_SCFM)   # call every scan
+        fuel.total                    # cumulative value
+
+        # Shifting count — events in rolling window
+        faults = Counter(window=600)
+        faults.tick()                 # record event
+        faults.window_count           # events in last 10 min
+        faults.rate                   # events per second
+    """
+
+    def __init__(self, target=None, window=None, debounce=0, auto_reset=False):
+        # Core counting
+        self._count = 0
+        self._total = 0
+        self._target = target
+        self._auto_reset = auto_reset
+        self._batch = 0
+
+        # Sliding window
+        self._window_seconds = window
+        self._events: list = []  # timestamps of tick() events
+
+        # Debounce
+        self._debounce_n = max(0, int(debounce))
+        self._debounce_buf: list = []
+        self._debounced_state = False
+
+        # Edge detection (for update())
+        self._last_bool: Any = None
+
+        # Totalizer (rate integration)
+        self._last_value: Any = None
+        self._last_update_time = time.time()
+
+        # Duty cycle / run hours
+        self._is_on = False
+        self._on_accum = 0.0        # seconds ON (within window or total)
+        self._total_on = 0.0        # lifetime seconds ON
+        self._last_duty_time = time.time()
+        self._duty_events: list = []  # (timestamp, is_on) for windowed duty
+
+        # Cycle tracking (ON→OFF = 1 cycle)
+        self._cycle_count = 0
+        self._cycle_start: Any = None
+        self._cycle_times: list = []  # durations of completed cycles
+
+        # Stopwatch / laps
+        self._start_time = time.time()
+        self._laps: dict = {}
+        self._lap_start = time.time()
+
+    # ----- core counting ------------------------------------------------
+
+    def increment(self, n: int = 1):
+        """Add *n* to count (default 1)."""
+        self._count += n
+        self._total += n
+        self._check_target()
+
+    def decrement(self, n: int = 1):
+        """Subtract *n* from count (default 1)."""
+        self._count -= n
+
+    def tick(self):
+        """Record a timestamped event (for sliding-window rate)."""
+        self._events.append(time.time())
+        self.increment()
+
+    def reset(self):
+        """Reset count to 0. Total and cycles are preserved."""
+        self._count = 0
+        self._start_time = time.time()
+        self._lap_start = time.time()
+
+    def set(self, value):
+        """Set count to a specific value (tare / preset)."""
+        self._count = value
+
+    # ----- smart update -------------------------------------------------
+
+    def update(self, value):
+        """Smart update — call once per scan with the signal value.
+
+        * **bool / 0-1 digital**: detects rising edges → increment,
+          tracks duty cycle, run hours, and cycles.
+        * **float / analog rate**: integrates value over dt → totalizer.
+        """
+        now = time.time()
+
+        # Decide bool vs analog
+        is_bool = isinstance(value, bool) or (isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0, True, False))
+
+        if is_bool:
+            self._update_bool(bool(value), now)
+        else:
+            self._update_analog(float(value), now)
+
+    def _update_bool(self, current: bool, now: float):
+        """Handle boolean/digital signal."""
+        # Debounce
+        if self._debounce_n > 0:
+            self._debounce_buf.append(current)
+            if len(self._debounce_buf) > self._debounce_n:
+                self._debounce_buf.pop(0)
+            if len(self._debounce_buf) >= self._debounce_n:
+                if all(v == current for v in self._debounce_buf):
+                    current = current
+                else:
+                    current = self._debounced_state  # not stable yet
+        self._debounced_state = current
+
+        # Edge detection
+        if self._last_bool is not None:
+            # Rising edge → increment
+            if current and not self._last_bool:
+                self.increment()
+                self._events.append(now)
+                self._cycle_start = now
+
+            # Falling edge → cycle complete
+            if not current and self._last_bool:
+                if self._cycle_start is not None:
+                    dt = now - self._cycle_start
+                    self._cycle_times.append(dt)
+                    if len(self._cycle_times) > 200:
+                        self._cycle_times.pop(0)
+                    self._cycle_count += 1
+                    self._cycle_start = None
+
+        self._last_bool = current
+
+        # Duty cycle tracking
+        dt = now - self._last_duty_time
+        if current:
+            self._on_accum += dt
+            self._total_on += dt
+        self._last_duty_time = now
+        self._is_on = current
+
+        # Windowed duty events
+        if self._window_seconds:
+            self._duty_events.append((now, current))
+            cutoff = now - self._window_seconds
+            self._duty_events = [(t, v) for t, v in self._duty_events if t >= cutoff]
+
+    def _update_analog(self, value: float, now: float):
+        """Handle analog rate signal — integrate over dt."""
+        if self._last_value is not None:
+            dt = now - self._last_update_time
+            if dt > 0:
+                increment = value * dt
+                self._count += increment
+                self._total += increment
+        self._last_value = value
+        self._last_update_time = now
+
+    # ----- target / batch -----------------------------------------------
+
+    def _check_target(self):
+        if self._target is not None and self._count >= self._target:
+            if self._auto_reset:
+                self._batch += 1
+                self._count = 0
+
+    @property
+    def target(self):
+        return self._target
+
+    @target.setter
+    def target(self, value):
+        self._target = value
+
+    @property
+    def done(self) -> bool:
+        """True when count >= target."""
+        if self._target is None:
+            return False
+        return self._count >= self._target
+
+    @property
+    def remaining(self):
+        """How many left until target (0 if no target)."""
+        if self._target is None:
+            return 0
+        return max(0, self._target - self._count)
+
+    @property
+    def batch(self) -> int:
+        """How many times target has been reached (with auto_reset)."""
+        return self._batch
+
+    # ----- core properties -----------------------------------------------
+
+    @property
+    def count(self):
+        """Current count (resets with ``reset()``)."""
+        return self._count
+
+    @property
+    def total(self):
+        """Lifetime cumulative total (never auto-resets)."""
+        return self._total
+
+    # ----- sliding window ------------------------------------------------
+
+    @property
+    def window_count(self) -> int:
+        """Number of events in the sliding window."""
+        if not self._window_seconds:
+            return len(self._events)
+        cutoff = time.time() - self._window_seconds
+        self._events = [t for t in self._events if t >= cutoff]
+        return len(self._events)
+
+    @property
+    def rate(self) -> float:
+        """Events per second over the sliding window."""
+        wc = self.window_count
+        w = self._window_seconds or (time.time() - self._start_time)
+        return wc / w if w > 0 else 0.0
+
+    # ----- debounce ------------------------------------------------------
+
+    @property
+    def state(self) -> bool:
+        """Current debounced boolean state."""
+        return self._debounced_state
+
+    @property
+    def stable(self) -> bool:
+        """True if debounce buffer is unanimous."""
+        if self._debounce_n <= 0:
+            return True
+        if len(self._debounce_buf) < self._debounce_n:
+            return False
+        return len(set(self._debounce_buf)) == 1
+
+    # ----- duty cycle / run hours ----------------------------------------
+
+    @property
+    def duty(self) -> float:
+        """Duty cycle percentage (0-100) over the window (or lifetime)."""
+        if self._window_seconds and self._duty_events:
+            now = time.time()
+            cutoff = now - self._window_seconds
+            events = [(t, v) for t, v in self._duty_events if t >= cutoff]
+            if not events:
+                return 0.0
+            on_time = 0.0
+            for i in range(len(events) - 1):
+                if events[i][1]:
+                    on_time += events[i + 1][0] - events[i][0]
+            # Handle current state for last segment
+            if events[-1][1]:
+                on_time += now - events[-1][0]
+            return min(100.0, (on_time / self._window_seconds) * 100)
+        elapsed = time.time() - self._start_time
+        if elapsed <= 0:
+            return 0.0
+        return min(100.0, (self._total_on / elapsed) * 100)
+
+    @property
+    def run_time(self) -> float:
+        """Cumulative seconds the signal has been ON."""
+        extra = 0.0
+        if self._is_on:
+            extra = time.time() - self._last_duty_time
+        return self._total_on + extra
+
+    @property
+    def run_hours(self) -> float:
+        """Cumulative hours the signal has been ON."""
+        return self.run_time / 3600.0
+
+    # ----- cycle tracking ------------------------------------------------
+
+    @property
+    def cycles(self) -> int:
+        """Total completed ON→OFF cycles."""
+        return self._cycle_count
+
+    @property
+    def cycle_avg(self) -> float:
+        """Mean cycle duration (seconds)."""
+        return sum(self._cycle_times) / len(self._cycle_times) if self._cycle_times else 0.0
+
+    @property
+    def cycle_min(self) -> float:
+        """Shortest cycle duration (seconds)."""
+        return min(self._cycle_times) if self._cycle_times else 0.0
+
+    @property
+    def cycle_max(self) -> float:
+        """Longest cycle duration (seconds)."""
+        return max(self._cycle_times) if self._cycle_times else 0.0
+
+    # ----- stopwatch / laps ----------------------------------------------
+
+    @property
+    def elapsed(self) -> float:
+        """Seconds since creation or last ``reset()``."""
+        return time.time() - self._start_time
+
+    def lap(self, name: str):
+        """Record a named lap. Duration is time since last lap or start."""
+        now = time.time()
+        self._laps[name] = now - self._lap_start
+        self._lap_start = now
+
+    @property
+    def laps(self) -> dict:
+        """Dict of ``{name: duration_seconds}``."""
+        return dict(self._laps)
+
+
+# =============================================================================
 # UNIT CONVERSIONS
 # =============================================================================
 
@@ -743,6 +1085,7 @@ class ScriptEngine:
             'restore': lambda key, default=None: self._persistence.restore(script_id, key, default),
 
             # Helper classes
+            'Counter': Counter,
             'RateCalculator': RateCalculator,
             'Accumulator': Accumulator,
             'EdgeDetector': EdgeDetector,
