@@ -230,7 +230,7 @@ def create_azure_venv():
         log(f"Failed to install PyInstaller: {e.stderr.decode() if e.stderr else e}", "ERROR")
         return None
 
-    # Install Azure packages (prefer vendor wheels for offline builds)
+    # Install Azure packages from vendor wheels (no internet required)
     log("  Installing azure-iot-device + paho-mqtt 1.x...")
     pip_args = [
         str(venv_python), "-m", "pip", "install",
@@ -239,7 +239,7 @@ def create_azure_venv():
         "--quiet",
     ]
     if has_vendor_packages:
-        pip_args.extend(["--find-links", str(azure_packages_dir)])
+        pip_args.extend(["--find-links", str(azure_packages_dir), "--no-index"])
 
     try:
         subprocess.run(pip_args, check=True, capture_output=True)
