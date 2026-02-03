@@ -11,6 +11,7 @@ Scripts have access to the same API as the browser Pyodide playground:
 Scripts run in isolated threads and can be controlled via MQTT.
 """
 
+import ast
 import json
 import time
 import asyncio
@@ -1205,8 +1206,48 @@ class ScriptRuntime:
             # Replace 'await wait_until(...)' with 'wait_until(...)'
             code = re.sub(r'\bawait\s+(next_scan|wait_for|wait_until)\s*\(', r'\1(', code)
 
+            # AST-based sandbox validation before execution
+            _blocked_dunder_attrs = frozenset({
+                '__import__', '__subclasses__', '__bases__', '__globals__',
+                '__code__', '__class__', '__builtins__', '__dict__',
+                '__getattribute__', '__setattr__', '__delattr__',
+                '__init_subclass__', '__mro__', '__mro_entries__',
+                '__reduce__', '__reduce_ex__',
+            })
+            _blocked_func_names = frozenset({
+                'getattr', 'setattr', 'delattr', 'eval', 'exec',
+                'compile', 'open', '__import__', 'vars', 'dir',
+                'globals', 'locals', 'breakpoint', 'memoryview',
+            })
+            _blocked_module_names = frozenset({
+                'os', 'sys', 'subprocess', 'importlib', 'ctypes',
+                'socket', 'signal', 'shutil', 'pathlib', 'io',
+                'builtins', 'code', 'codeop', 'compileall',
+            })
+
+            class _SandboxValidator(ast.NodeVisitor):
+                def visit_Import(self, node):
+                    raise SecurityError("Import statements are not allowed")
+                def visit_ImportFrom(self, node):
+                    raise SecurityError("Import statements are not allowed")
+                def visit_Attribute(self, node):
+                    if node.attr in _blocked_dunder_attrs:
+                        raise SecurityError(f"Access to '{node.attr}' is not allowed")
+                    self.generic_visit(node)
+                def visit_Call(self, node):
+                    if isinstance(node.func, ast.Name) and node.func.id in _blocked_func_names:
+                        raise SecurityError(f"Call to '{node.func.id}()' is not allowed")
+                    self.generic_visit(node)
+                def visit_Name(self, node):
+                    if node.id in _blocked_module_names:
+                        raise SecurityError(f"Access to '{node.id}' module is not allowed")
+                    self.generic_visit(node)
+
+            tree = ast.parse(code, mode='exec')
+            _SandboxValidator().visit(tree)
+
             # Compile and execute (timeout enforced by _monitor_timeout thread)
-            code_obj = compile(code, f"<script:{self.script.name}>", 'exec')
+            code_obj = compile(tree, f"<script:{self.script.name}>", 'exec')
             logger.info(f"Script {self.script.name}: executing with timeout={self.script.max_runtime_seconds}s")
             exec(code_obj, namespace)
 
@@ -1761,6 +1802,11 @@ class ScriptRuntime:
 
 class StopScript(Exception):
     """Raised to stop script execution gracefully"""
+    pass
+
+
+class SecurityError(Exception):
+    """Raised when script sandbox detects a disallowed operation"""
     pass
 
 

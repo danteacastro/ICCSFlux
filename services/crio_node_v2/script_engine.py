@@ -1138,7 +1138,6 @@ class ScriptEngine:
             'str': str,
             'sum': sum,
             'tuple': tuple,
-            'type': type,
             'zip': zip,
             'True': True,
             'False': False,
@@ -1155,14 +1154,21 @@ class ScriptEngine:
             # AST-based sandbox validation
             _blocked_dunder_attrs = frozenset({
                 '__import__', '__subclasses__', '__bases__', '__globals__',
-                '__code__', '__class__', '__builtins__',
+                '__code__', '__class__', '__builtins__', '__dict__',
+                '__getattribute__', '__setattr__', '__delattr__',
+                '__init_subclass__', '__mro__', '__mro_entries__',
+                '__reduce__', '__reduce_ex__',
             })
             _blocked_func_names = frozenset({
                 'getattr', 'setattr', 'delattr', 'eval', 'exec',
-                'compile', 'open', '__import__',
+                'compile', 'open', '__import__', 'vars', 'dir',
+                'globals', 'locals', 'breakpoint', 'memoryview',
+                'classmethod', 'staticmethod', 'property', 'super',
             })
             _blocked_module_names = frozenset({
-                'os', 'sys', 'subprocess', 'importlib',
+                'os', 'sys', 'subprocess', 'importlib', 'ctypes',
+                'socket', 'signal', 'shutil', 'pathlib', 'io',
+                'builtins', 'code', 'codeop', 'compileall',
             })
 
             class _ScriptValidator(ast.NodeVisitor):

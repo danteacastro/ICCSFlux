@@ -7,6 +7,7 @@ Handles data recording with configurable options, triggered recording, and scrip
 import csv
 import json
 import os
+import shutil
 import stat
 import hashlib
 import threading
@@ -21,6 +22,9 @@ logger = logging.getLogger('RecordingManager')
 # Maximum pre-trigger buffer size to prevent memory exhaustion
 # Even if user requests more, we cap at this limit
 MAX_PRE_TRIGGER_SAMPLES = 10000
+
+# Minimum free disk space required to start recording (100 MB)
+MIN_FREE_DISK_BYTES = 100 * 1024 * 1024
 
 
 def _get_default_data_path() -> str:
@@ -424,6 +428,16 @@ class RecordingManager:
             # Build output directory based on directory structure
             output_dir = self._get_output_directory()
             output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Check available disk space before opening file
+            try:
+                disk_usage = shutil.disk_usage(output_dir)
+                if disk_usage.free < MIN_FREE_DISK_BYTES:
+                    free_mb = disk_usage.free / (1024 * 1024)
+                    logger.error(f"Insufficient disk space to start recording: {free_mb:.0f} MB free (need {MIN_FREE_DISK_BYTES // (1024*1024)} MB)")
+                    return False
+            except OSError as e:
+                logger.warning(f"Could not check disk space: {e}")
 
             # Generate filename
             if not filename:

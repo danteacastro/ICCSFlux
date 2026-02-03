@@ -17,6 +17,7 @@ Features:
 
 import json
 import hashlib
+import os
 import secrets
 import threading
 import logging
@@ -265,10 +266,27 @@ class UserSessionManager:
                 if username in self.users:
                     self.users[username].must_change_password = True
 
-            logger.warning(
-                f"Created default users with random passwords. "
-                f"Initial admin password: {admin_pw} — CHANGE IMMEDIATELY"
-            )
+            # Write initial admin password to a secure file instead of logging it
+            cred_file = Path(__file__).parent.parent.parent / "data" / "initial_admin_password.txt"
+            try:
+                cred_file.parent.mkdir(parents=True, exist_ok=True)
+                cred_file.write_text(
+                    f"Initial admin password (delete this file after first login):\n{admin_pw}\n"
+                )
+                # Restrict file permissions on Unix
+                try:
+                    os.chmod(cred_file, 0o600)
+                except (OSError, AttributeError):
+                    pass
+                logger.warning(
+                    "Created default users with random passwords. "
+                    f"Admin password written to: {cred_file}"
+                )
+            except OSError:
+                # Fall back to logging if file write fails (e.g. read-only filesystem)
+                logger.warning(
+                    f"Created default users. Initial admin password: {admin_pw} — CHANGE IMMEDIATELY"
+                )
             logger.info("All default accounts require password change on first login")
 
     def _hash_password(self, password: str) -> str:

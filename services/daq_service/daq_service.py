@@ -1267,6 +1267,9 @@ class DAQService:
     # SCRIPT MQTT HANDLERS
     # =========================================================================
 
+    # Maximum allowed script code size (256 KB)
+    MAX_SCRIPT_CODE_BYTES = 256 * 1024
+
     def _handle_script_add(self, payload) -> None:
         """Add a new backend script"""
         if not isinstance(payload, dict):
@@ -1278,6 +1281,14 @@ class DAQService:
         code = payload.get('code', '')
         run_mode = payload.get('run_mode', 'manual')
         enabled = payload.get('enabled', True)
+
+        # Validate payload sizes
+        if len(str(code)) > self.MAX_SCRIPT_CODE_BYTES:
+            logger.error(f"Script code exceeds {self.MAX_SCRIPT_CODE_BYTES} byte limit ({len(str(code))} bytes)")
+            return
+        if len(str(name)) > 256:
+            logger.error(f"Script name exceeds 256 char limit")
+            return
 
         # In CRIO mode, forward to cRIO - scripts run on cRIO
         if self.config.system.project_mode == ProjectMode.CRIO:
@@ -1342,6 +1353,12 @@ class DAQService:
         """Update an existing backend script"""
         script_id = payload.get('id')
         if not script_id:
+            return
+
+        # Validate code size if code is being updated
+        code = payload.get('code')
+        if code is not None and len(str(code)) > self.MAX_SCRIPT_CODE_BYTES:
+            logger.error(f"Script code exceeds {self.MAX_SCRIPT_CODE_BYTES} byte limit ({len(str(code))} bytes)")
             return
 
         # In CRIO mode, forward to cRIO - scripts run on cRIO
@@ -5086,7 +5103,7 @@ Unit conversions:
                     self._send_crio_discovery_ping()
 
             except Exception as e:
-                logger.error(f"Error in heartbeat loop: {e}")
+                logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
 
         logger.info("Heartbeat loop stopped")
 
@@ -12660,7 +12677,7 @@ Unit conversions:
                         self.safety_manager.evaluate_all()
 
                 except Exception as e:
-                    logger.error(f"Error in scan loop: {e}")
+                    logger.error(f"Error in scan loop: {e}", exc_info=True)
 
             # Track loop timing
             elapsed = time.time() - start_time
@@ -13080,8 +13097,16 @@ def main():
     logger.info("DAQ Service Single Instance Lock Acquired")
     logger.info("=" * 80)
 
-    service = DAQService(args.config)
-    service.run()
+    try:
+        service = DAQService(args.config)
+        service.run()
+    except KeyboardInterrupt:
+        logger.info("DAQ Service interrupted by user")
+    except Exception:
+        logger.critical("DAQ Service fatal error", exc_info=True)
+        sys.exit(1)
+    finally:
+        instance.release()
 
 
 if __name__ == "__main__":

@@ -117,13 +117,16 @@ class Supervisor:
         """Main loop: check service health and restart as needed."""
         logger.info("Supervisor monitoring started")
         while not self._shutdown:
-            for name, state in self.services.items():
-                if state.status == "running" and state.process:
-                    retcode = state.process.poll()
-                    if retcode is not None:
-                        logger.error(f"[{name}] Exited with code {retcode}")
-                        state.last_crash_time = time.time()
-                        self._handle_restart(state)
+            try:
+                for name, state in self.services.items():
+                    if state.status == "running" and state.process:
+                        retcode = state.process.poll()
+                        if retcode is not None:
+                            logger.error(f"[{name}] Exited with code {retcode}")
+                            state.last_crash_time = time.time()
+                            self._handle_restart(state)
+            except Exception:
+                logger.error("Error in supervisor monitor loop", exc_info=True)
             time.sleep(2.0)
 
     def _handle_restart(self, state: ServiceState):
