@@ -68,13 +68,29 @@ class InterlockCondition:
             'delay_s': self.delay_s
         }
 
+    VALID_OPERATORS = {'==', '!=', '<', '>', '<=', '>='}
+    VALID_CONDITION_TYPES = {'channel_value', 'digital_state', 'alarm_state'}
+
     @staticmethod
     def from_dict(d: dict) -> 'InterlockCondition':
+        operator = d.get('operator')
+        condition_type = d.get('type', d.get('condition_type', 'channel_value'))
+
+        if operator and operator not in InterlockCondition.VALID_OPERATORS:
+            logger.error(f"Interlock condition has invalid operator '{operator}' — must be one of {InterlockCondition.VALID_OPERATORS}")
+            return None
+        if condition_type not in InterlockCondition.VALID_CONDITION_TYPES:
+            logger.error(f"Interlock condition has unknown type '{condition_type}' — must be one of {InterlockCondition.VALID_CONDITION_TYPES}")
+            return None
+        if condition_type == 'channel_value' and not d.get('channel'):
+            logger.error("Interlock condition of type 'channel_value' has no channel specified")
+            return None
+
         return InterlockCondition(
             id=d.get('id', str(uuid.uuid4())),
-            condition_type=d.get('type', d.get('condition_type', 'channel_value')),
+            condition_type=condition_type,
             channel=d.get('channel'),
-            operator=d.get('operator'),
+            operator=operator,
             value=d.get('value'),
             invert=d.get('invert', False),
             delay_s=d.get('delay_s', 0.0)
@@ -158,7 +174,7 @@ class Interlock:
             name=d.get('name', ''),
             description=d.get('description', ''),
             enabled=d.get('enabled', True),
-            conditions=[InterlockCondition.from_dict(c) for c in d.get('conditions', [])],
+            conditions=[cond for c in d.get('conditions', []) if (cond := InterlockCondition.from_dict(c)) is not None],
             condition_logic=d.get('conditionLogic', d.get('condition_logic', 'AND')),
             controls=[InterlockControl.from_dict(c) for c in d.get('controls', [])],
             bypass_allowed=d.get('bypassAllowed', d.get('bypass_allowed', False)),
@@ -344,7 +360,22 @@ class SafetyManager:
     # ========================================================================
 
     def add_interlock(self, interlock: Interlock, user: str = "system") -> str:
-        """Add or update an interlock"""
+        """Add or update an interlock. Warns if condition channels don't exist."""
+        # Cross-validate: check condition channels exist in current hardware config
+        if self._get_all_channels:
+            try:
+                all_channels = self._get_all_channels()
+                if all_channels:
+                    known = set(all_channels.keys())
+                    for cond in interlock.conditions:
+                        if cond.channel and cond.channel not in known:
+                            logger.warning(
+                                f"Interlock '{interlock.name}': condition channel "
+                                f"'{cond.channel}' not found in hardware config"
+                            )
+            except Exception as e:
+                logger.debug(f"Channel cross-validation skipped: {e}")
+
         with self.lock:
             self.interlocks[interlock.id] = interlock
             self._record_event(interlock, 'created' if interlock.id not in self.interlocks else 'modified', user)

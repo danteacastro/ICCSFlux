@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import type { DeviceCommandResult } from '../types'
 
 const mqtt = useMqtt()
 
@@ -85,12 +86,13 @@ function subscribeToStatus() {
       for (const [name, status] of Object.entries(message)) {
         const existingIdx = devices.value.findIndex(d => d.name === name)
         if (existingIdx < 0) {
+          const s = status as Record<string, unknown>
           devices.value.push({
             name,
             enabled: true,
-            ip_address: (status as any).ip_address || '',
-            slot: (status as any).slot || 0,
-            plc_type: (status as any).plc_type || 'controllogix',
+            ip_address: (s.ip_address as string) || '',
+            slot: (s.slot as number) || 0,
+            plc_type: (s.plc_type as string) || 'controllogix',
             init_tags: true,
             init_program_tags: false,
             use_batch_read: true,
@@ -231,12 +233,13 @@ async function testConnection(deviceName: string) {
 
     if (result.success) {
       // Store PLC info if returned
-      if ((result as any).plc_info) {
-        plcInfo.value[deviceName] = (result as any).plc_info
+      const cmdResult = result as DeviceCommandResult
+      if (cmdResult.plc_info) {
+        plcInfo.value[deviceName] = cmdResult.plc_info
       }
-      showFeedback('success', (result as any).message || `Connection to ${deviceName} successful`)
+      showFeedback('success', cmdResult.message || `Connection to ${deviceName} successful`)
     } else {
-      showFeedback('error', (result as any).message || result.error || `Connection to ${deviceName} failed`)
+      showFeedback('error', (result as DeviceCommandResult).message || result.error || `Connection to ${deviceName} failed`)
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Connection test timed out')
@@ -261,10 +264,11 @@ async function loadTags() {
       name: browseDeviceName.value
     }, 30000)
 
-    if (result.success && Array.isArray((result as any).tags)) {
-      tagList.value = (result as any).tags
+    const cmdResult = result as DeviceCommandResult
+    if (result.success && Array.isArray(cmdResult.tags)) {
+      tagList.value = cmdResult.tags
     } else {
-      showFeedback('error', (result as any).error || 'Failed to load tags')
+      showFeedback('error', cmdResult.error || 'Failed to load tags')
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Tag list timed out')

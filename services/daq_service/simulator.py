@@ -536,6 +536,7 @@ class HardwareSimulator:
             sim = self.channel_simulators[channel_name]
             if sim.channel.channel_type == ChannelType.COUNTER:
                 sim.state.value = 0.0
+                sim.state.last_update = time.time()
                 logger.info(f"Simulator: Reset counter {channel_name} to 0")
 
 

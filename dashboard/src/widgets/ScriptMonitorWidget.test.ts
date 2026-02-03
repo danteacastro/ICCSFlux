@@ -16,15 +16,23 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelValue } from '../types'
+
+interface MockMonitorState {
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+}
+
+const getMonitorMockState = () =>
+  (globalThis as unknown as Record<string, MockMonitorState>).__mockMonitorState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
   const { ref } = require('vue')
 
-  const mockValues = ref<Record<string, any>>({})
+  const mockValues = ref<Record<string, Partial<ChannelValue>>>({})
 
-  ;(global as any).__mockMonitorState = {
+  ;(globalThis as unknown as Record<string, MockMonitorState>).__mockMonitorState = {
     mockValues
   }
 
@@ -41,7 +49,7 @@ import ScriptMonitorWidget from './ScriptMonitorWidget.vue'
 describe('ScriptMonitorWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockMonitorState
+    const state = getMonitorMockState()
     if (state) {
       state.mockValues.value = {}
     }
@@ -148,7 +156,7 @@ describe('ScriptMonitorWidget', () => {
     })
 
     it('should display unit when provided', () => {
-      const state = (global as any).__mockMonitorState
+      const state = getMonitorMockState()
       state.mockValues.value = { 'py.temp': { value: 25 } }
 
       const wrapper = mount(ScriptMonitorWidget, {
@@ -218,7 +226,7 @@ describe('ScriptMonitorWidget', () => {
 
   describe('Status Indicator', () => {
     it('should show status indicator for status format', () => {
-      const state = (global as any).__mockMonitorState
+      const state = getMonitorMockState()
       state.mockValues.value = { 'py.running': { value: true } }
 
       const wrapper = mount(ScriptMonitorWidget, {
@@ -228,7 +236,7 @@ describe('ScriptMonitorWidget', () => {
     })
 
     it('should not show status indicator for number format', () => {
-      const state = (global as any).__mockMonitorState
+      const state = getMonitorMockState()
       state.mockValues.value = { 'py.temp': { value: 25 } }
 
       const wrapper = mount(ScriptMonitorWidget, {
@@ -248,7 +256,7 @@ describe('ScriptMonitorWidget', () => {
     })
 
     it('should have status-off class when value is false', () => {
-      const state = (global as any).__mockMonitorState
+      const state = getMonitorMockState()
       state.mockValues.value = { 'py.running': { value: false } }
 
       const wrapper = mount(ScriptMonitorWidget, {

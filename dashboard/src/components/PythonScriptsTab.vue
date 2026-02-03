@@ -147,13 +147,18 @@ function registerPythonLanguage() {
         })
       }
 
-      // NISystem API functions
+      // ── Core API functions ─────────────────────────────────────────
       const apiFuncs = [
-        { name: 'publish', snippet: "publish('$1', $2, units='$3')", doc: 'Publish computed value' },
-        { name: 'next_scan', snippet: 'await next_scan()', doc: 'Wait for next cDAQ scan cycle' },
-        { name: 'wait_for', snippet: 'await wait_for($1)', doc: 'Wait for N seconds' },
-        { name: 'wait_until', snippet: 'await wait_until(lambda: $1, timeout=$2)', doc: 'Wait until condition is true' },
-        { name: 'outputs.set', snippet: "outputs.set('$1', $2)", doc: 'Set output value' },
+        // Publishing
+        { name: 'publish', snippet: "publish('$1', $2, units='$3')", doc: 'Publish computed value to dashboard' },
+        // Control flow
+        { name: 'next_scan', snippet: 'next_scan()', doc: 'Wait for next scan cycle (matches scan rate)' },
+        { name: 'wait_for', snippet: 'wait_for($1)', doc: 'Wait for N seconds (respects stop requests)' },
+        { name: 'wait_until', snippet: 'wait_until(lambda: $1, timeout=$2)', doc: 'Wait until condition is true (returns False on timeout)' },
+        { name: 'should_stop', snippet: 'should_stop()', doc: 'Check if script should exit (True when stop requested)' },
+        // State persistence
+        { name: 'persist', snippet: "persist('$1', $2)", doc: 'Save state to disk (survives restarts)' },
+        { name: 'restore', snippet: "restore('$1', $2)", doc: 'Load saved state from disk (key, default)' },
       ]
 
       for (const fn of apiFuncs) {
@@ -168,7 +173,148 @@ function registerPythonLanguage() {
         })
       }
 
-      // Conversion functions
+      // ── Tags API ────────────────────────────────────────────────────
+      const tagsMethods = [
+        { name: 'tags.get', snippet: "tags.get('$1', $2)", doc: 'Read channel value with default (name, default=0.0)' },
+        { name: 'tags.keys', snippet: 'tags.keys()', doc: 'List all available channel names' },
+        { name: 'tags.age', snippet: "tags.age('$1')", doc: 'Seconds since last update for channel' },
+        { name: 'tags.timestamp', snippet: "tags.timestamp('$1')", doc: 'Acquisition timestamp (Unix ms) for channel' },
+        { name: 'tags.get_with_timestamp', snippet: "tags.get_with_timestamp('$1')", doc: 'Get (value, timestamp) tuple for channel' },
+      ]
+
+      for (const fn of tagsMethods) {
+        suggestions.push({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Method,
+          insertText: fn.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'Tags API',
+          documentation: fn.doc,
+          range
+        })
+      }
+
+      // ── Outputs API ─────────────────────────────────────────────────
+      const outputsMethods = [
+        { name: 'outputs.set', snippet: "outputs.set('$1', $2)", doc: 'Set output channel value' },
+        { name: 'outputs.claim', snippet: "outputs.claim('$1')", doc: 'Claim exclusive control of output channel' },
+        { name: 'outputs.release', snippet: "outputs.release('$1')", doc: 'Release exclusive control of output channel' },
+        { name: 'outputs.available', snippet: "outputs.available('$1')", doc: 'Check if output is available (not claimed by another script)' },
+        { name: 'outputs.claimed_by', snippet: "outputs.claimed_by('$1')", doc: 'Get name of script that claimed this output' },
+        { name: 'outputs.claims', snippet: 'outputs.claims()', doc: 'Get all current output claims' },
+      ]
+
+      for (const fn of outputsMethods) {
+        suggestions.push({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Method,
+          insertText: fn.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'Outputs API',
+          documentation: fn.doc,
+          range
+        })
+      }
+
+      // ── Vars API (shared variables between scripts) ─────────────────
+      const varsMethods = [
+        { name: 'vars.set', snippet: "vars.set('$1', $2)", doc: 'Set shared variable (visible to all scripts)' },
+        { name: 'vars.get', snippet: "vars.get('$1', $2)", doc: 'Get shared variable with default (name, default=0.0)' },
+        { name: 'vars.reset', snippet: "vars.reset('$1')", doc: 'Reset variable to zero (numeric) or empty (string)' },
+        { name: 'vars.delete', snippet: "vars.delete('$1')", doc: 'Remove shared variable' },
+        { name: 'vars.keys', snippet: 'vars.keys()', doc: 'List all shared variable names' },
+        { name: 'vars.flush', snippet: 'vars.flush()', doc: 'Force save pending variable changes to disk' },
+      ]
+
+      for (const fn of varsMethods) {
+        suggestions.push({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Method,
+          insertText: fn.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'Vars API',
+          documentation: fn.doc,
+          range
+        })
+      }
+
+      // ── Session API ─────────────────────────────────────────────────
+      const sessionProps = [
+        { name: 'session.active', text: 'session.active', doc: 'True if test session is active', kind: 'prop' },
+        { name: 'session.elapsed', text: 'session.elapsed', doc: 'Seconds since session started', kind: 'prop' },
+        { name: 'session.recording', text: 'session.recording', doc: 'True if currently recording data', kind: 'prop' },
+        { name: 'session.start', text: 'session.start()', doc: 'Start data acquisition', kind: 'method' },
+        { name: 'session.stop', text: 'session.stop()', doc: 'Stop data acquisition', kind: 'method' },
+        { name: 'session.start_recording', text: "session.start_recording(filename='$1')", doc: 'Start recording to file', kind: 'snippet' },
+        { name: 'session.stop_recording', text: 'session.stop_recording()', doc: 'Stop recording', kind: 'method' },
+        { name: 'session.now', text: 'session.now()', doc: 'Current timestamp (Unix ms)', kind: 'method' },
+        { name: 'session.now_iso', text: 'session.now_iso()', doc: 'Current time as ISO 8601 string', kind: 'method' },
+        { name: 'session.time_of_day', text: 'session.time_of_day()', doc: 'Current time as HH:MM:SS', kind: 'method' },
+      ]
+
+      for (const s of sessionProps) {
+        const isSnippet = s.kind === 'snippet'
+        suggestions.push({
+          label: s.name,
+          kind: s.kind === 'prop'
+            ? monaco.languages.CompletionItemKind.Property
+            : monaco.languages.CompletionItemKind.Method,
+          insertText: s.text,
+          ...(isSnippet ? { insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet } : {}),
+          detail: 'Session API',
+          documentation: s.doc,
+          range
+        })
+      }
+
+      // ── PID API ─────────────────────────────────────────────────────
+      const pidMethods = [
+        { name: 'pid.keys', snippet: 'pid.keys()', doc: 'List all PID loop IDs' },
+        { name: 'pid.status', snippet: "pid.status('$1')", doc: 'Get PID loop status (setpoint, output, pv, error, mode)' },
+        { name: 'pid.all_status', snippet: 'pid.all_status()', doc: 'Get status of all PID loops' },
+        { name: 'pid.tune', snippet: "pid['$1'].tune(kp=$2, ki=$3, kd=$4)", doc: 'Tune PID gains' },
+        { name: 'pid.setpoint', snippet: "pid['$1'].setpoint = $2", doc: 'Set PID loop setpoint' },
+        { name: 'pid.auto', snippet: "pid['$1'].auto()", doc: 'Switch PID loop to automatic mode' },
+        { name: 'pid.manual', snippet: "pid['$1'].manual()", doc: 'Switch PID loop to manual mode' },
+        { name: 'pid.enable', snippet: "pid['$1'].enable()", doc: 'Enable PID loop' },
+        { name: 'pid.disable', snippet: "pid['$1'].disable()", doc: 'Disable PID loop' },
+      ]
+
+      for (const fn of pidMethods) {
+        suggestions.push({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Method,
+          insertText: fn.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'PID API',
+          documentation: fn.doc,
+          range
+        })
+      }
+
+      // ── Time functions ──────────────────────────────────────────────
+      const timeFuncs = [
+        { name: 'now', snippet: 'now()', doc: 'Current Unix timestamp (seconds)' },
+        { name: 'now_ms', snippet: 'now_ms()', doc: 'Current Unix timestamp (milliseconds)' },
+        { name: 'now_iso', snippet: 'now_iso()', doc: 'Current time as ISO 8601 string' },
+        { name: 'time_of_day', snippet: 'time_of_day()', doc: 'Current time as HH:MM:SS' },
+        { name: 'elapsed_since', snippet: 'elapsed_since($1)', doc: 'Seconds elapsed since timestamp' },
+        { name: 'format_timestamp', snippet: "format_timestamp($1, '$2')", doc: 'Format Unix timestamp with strftime pattern' },
+      ]
+
+      for (const fn of timeFuncs) {
+        suggestions.push({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: fn.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          detail: 'Time function',
+          documentation: fn.doc,
+          range
+        })
+      }
+
+      // ── Unit conversion functions ───────────────────────────────────
       const convFuncs = [
         { name: 'F_to_C', doc: 'Fahrenheit to Celsius' },
         { name: 'C_to_F', doc: 'Celsius to Fahrenheit' },
@@ -178,6 +324,10 @@ function registerPythonLanguage() {
         { name: 'bar_to_PSI', doc: 'bar to PSI' },
         { name: 'gal_to_L', doc: 'Gallons to Liters' },
         { name: 'L_to_gal', doc: 'Liters to Gallons' },
+        { name: 'BTU_to_kJ', doc: 'BTU to kilojoules' },
+        { name: 'kJ_to_BTU', doc: 'Kilojoules to BTU' },
+        { name: 'lb_to_kg', doc: 'Pounds to kilograms' },
+        { name: 'kg_to_lb', doc: 'Kilograms to pounds' },
       ]
 
       for (const fn of convFuncs) {
@@ -192,12 +342,14 @@ function registerPythonLanguage() {
         })
       }
 
-      // Helper classes
+      // ── Helper classes ──────────────────────────────────────────────
       const helpers = [
-        { name: 'RateCalculator', snippet: 'RateCalculator(window_seconds=$1)', doc: 'Calculate rate of change' },
-        { name: 'Accumulator', snippet: 'Accumulator(initial=$1)', doc: 'Accumulate incremental changes' },
-        { name: 'EdgeDetector', snippet: 'EdgeDetector(threshold=$1)', doc: 'Detect rising/falling edges' },
+        { name: 'RateCalculator', snippet: 'RateCalculator(window_seconds=$1)', doc: 'Calculate rate of change over time window' },
+        { name: 'Accumulator', snippet: 'Accumulator(initial=$1)', doc: 'Accumulate incremental changes with rollover handling' },
+        { name: 'EdgeDetector', snippet: 'EdgeDetector(threshold=$1)', doc: 'Detect rising/falling edges on a signal' },
         { name: 'RollingStats', snippet: 'RollingStats(window_size=$1)', doc: 'Rolling statistics (mean, min, max, std)' },
+        { name: 'Scheduler', snippet: 'Scheduler()', doc: 'Job scheduler for interval/cron/one-shot tasks' },
+        { name: 'StateMachine', snippet: "StateMachine(initial_state='$1')", doc: 'Finite state machine for sequences' },
       ]
 
       for (const h of helpers) {
@@ -211,25 +363,6 @@ function registerPythonLanguage() {
           range
         })
       }
-
-      // Built-in globals
-      suggestions.push({
-        label: 'session.active',
-        kind: monaco.languages.CompletionItemKind.Property,
-        insertText: 'session.active',
-        detail: 'Session state',
-        documentation: 'True if test session is active',
-        range
-      })
-
-      suggestions.push({
-        label: 'session.elapsed',
-        kind: monaco.languages.CompletionItemKind.Property,
-        insertText: 'session.elapsed',
-        detail: 'Session state',
-        documentation: 'Seconds since session started',
-        range
-      })
 
       return { suggestions }
     }

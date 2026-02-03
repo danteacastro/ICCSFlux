@@ -56,7 +56,7 @@ export function usePlayground() {
 
   function publish(topic: string, payload: any) {
     if (mqttPublish) {
-      console.log('Playground: Publishing to', topic, payload)
+      console.debug('Playground: Publishing to', topic, payload)
       mqttPublish(topic, payload)
     } else {
       console.warn('Playground: MQTT not connected, cannot publish:', topic, payload)
@@ -95,7 +95,7 @@ export function usePlayground() {
       name,
       display_name: config.displayName || name,
       variable_type: config.variableType || 'manual',
-      description: (config as any).description || '',
+      description: config.description || '',
       value: config.value ?? 0,
       units: config.units || '',
       persistent: config.persistent ?? true,

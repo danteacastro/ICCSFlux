@@ -35,7 +35,7 @@ const rows = computed(() => {
 
     return {
       name: channelName,
-      label: channelName,  // TAG is the only identifier
+      label: channelName.replace(/^py\./, ''),  // Strip py. prefix for display
       value: formattedValue,
       unit: formatUnit(config?.unit),
       isStale,

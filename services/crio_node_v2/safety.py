@@ -85,12 +85,17 @@ class SafetyManager:
     def __init__(self):
         self._configs: Dict[str, AlarmConfig] = {}
         self._states: Dict[str, ChannelAlarmState] = {}
+        self._output_channels: set = set()
 
         # Callback for alarm events
         self.on_alarm: Optional[Callable[[AlarmEvent], None]] = None
 
         # Callback for safety actions
         self.on_action: Optional[Callable[[str, str, float], None]] = None
+
+    def set_output_channels(self, channels: set):
+        """Update the set of known valid output channels."""
+        self._output_channels = set(channels)
 
     def configure(self, channel: str, config: AlarmConfig):
         """Configure alarm limits for a channel."""
@@ -140,7 +145,7 @@ class SafetyManager:
                     try:
                         self.on_alarm(event)
                     except Exception as e:
-                        logger.error(f"Alarm callback error: {e}")
+                        logger.error(f"Alarm callback error: {e}", exc_info=True)
 
                 # Execute safety action
                 if config.safety_action and event.state == AlarmState.ACTIVE:
@@ -247,10 +252,13 @@ class SafetyManager:
 
         if len(parts) == 3 and parts[0] == 'set':
             target_channel = parts[1]
+            if self._output_channels and target_channel not in self._output_channels:
+                logger.error(f"Safety action target '{target_channel}' is not a known output channel, ignoring action: {action}")
+                return
             try:
                 target_value = float(parts[2])
             except ValueError:
-                logger.error(f"Invalid safety action value: {action}")
+                logger.error(f"Invalid safety action value: {action}", exc_info=True)
                 return
 
             logger.warning(f"Safety action: {target_channel} = {target_value} "
@@ -260,7 +268,7 @@ class SafetyManager:
                 try:
                     self.on_action(target_channel, action, target_value)
                 except Exception as e:
-                    logger.error(f"Safety action callback error: {e}")
+                    logger.error(f"Safety action callback error: {e}", exc_info=True)
         else:
             logger.warning(f"Unknown safety action format: {action}")
 

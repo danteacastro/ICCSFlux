@@ -526,7 +526,8 @@ class TriggerEngine:
         # Parse schedule time (HH:MM)
         try:
             hour, minute = map(int, cond.schedule_time.split(':'))
-        except:
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Invalid schedule_time format '{cond.schedule_time}': {e}")
             return False
 
         current_dt = datetime.now()

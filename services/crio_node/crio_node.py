@@ -5657,8 +5657,8 @@ Time functions:
                 logger.error(f"Failed to create counter task for {ch.name}: {e}")
                 try:
                     task.close()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to close counter task for {ch.name} during cleanup: {e}")
 
     def _create_strain_task(self, channels: List[ChannelConfig]):
         """Create strain gauge input task with CONTINUOUS acquisition"""

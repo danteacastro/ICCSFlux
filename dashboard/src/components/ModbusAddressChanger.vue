@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import type { DeviceCommandResult } from '../types'
 
 const mqtt = useMqtt()
 
@@ -82,9 +83,9 @@ async function writeAddress() {
     const result = await mqtt.sendCommandWithAck('modbus/write_register', payload, 10000)
 
     if (result.success) {
-      showFeedback('success', (result as any).message || 'Address changed successfully. Device may need power cycle.')
+      showFeedback('success', (result as DeviceCommandResult).message || 'Address changed successfully. Device may need power cycle.')
     } else {
-      showFeedback('error', (result as any).message || result.error || 'Failed to write register')
+      showFeedback('error', (result as DeviceCommandResult).message || result.error || 'Failed to write register')
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Command timed out')

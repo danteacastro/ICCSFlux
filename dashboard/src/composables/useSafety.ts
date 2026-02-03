@@ -15,6 +15,7 @@
 import { ref, computed, watch, readonly } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from './useMqtt'
+import { useAuth } from './useAuth'
 import { usePlayground } from './usePlayground'
 import type {
   AlarmConfig,
@@ -305,7 +306,7 @@ export function useSafety() {
    * @param addToHistory If true, add "cleared" entries to history for each alarm
    */
   function clearAllAlarms(addToHistory: boolean = false) {
-    console.log(`[SAFETY] Clearing all ${activeAlarms.value.length} active alarms`)
+    console.debug(`[SAFETY] Clearing all ${activeAlarms.value.length} active alarms`)
 
     if (addToHistory) {
       // Log each alarm being cleared
@@ -338,7 +339,7 @@ export function useSafety() {
    * Called when project changes or is closed to ensure no ghost/stale state
    */
   function clearAllSafetyState(reason: string = 'project_change') {
-    console.log(`[SAFETY] Clearing ALL safety state, reason: ${reason}`)
+    console.debug(`[SAFETY] Clearing ALL safety state, reason: ${reason}`)
 
     // Clear active alarms (don't add to history since we're clearing history too)
     activeAlarms.value = []
@@ -387,7 +388,7 @@ export function useSafety() {
       localStorage.removeItem('nisystem-safety-actions')
       localStorage.removeItem('nisystem-safe-state-config')
       localStorage.removeItem('nisystem-auto-execute-safety-actions')
-      console.log('[SAFETY] Cleared all localStorage safety/alarm data')
+      console.debug('[SAFETY] Cleared all localStorage safety/alarm data')
     } catch (e) {
       console.warn('[SAFETY] Failed to clear localStorage:', e)
     }
@@ -401,7 +402,7 @@ export function useSafety() {
     const orphanedAlarms = activeAlarms.value.filter(a => !validChannels.has(a.channel))
 
     if (orphanedAlarms.length > 0) {
-      console.log(`[SAFETY] Clearing ${orphanedAlarms.length} orphaned alarms for removed channels`)
+      console.debug(`[SAFETY] Clearing ${orphanedAlarms.length} orphaned alarms for removed channels`)
 
       orphanedAlarms.forEach(alarm => {
         addHistoryEntry({
@@ -649,9 +650,15 @@ export function useSafety() {
   }
 
   function removeInterlock(id: string, user: string = 'User') {
+    const auth = useAuth()
+    if (!auth.isSupervisor.value) {
+      console.warn(`[SAFETY] Remove interlock denied: user ${user} lacks supervisor role`)
+      return
+    }
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
       const removed = interlocks.value[index]
+      recordInterlockEvent(removed, 'removed', user, `Interlock removed: ${removed.name}`)
       interlocks.value.splice(index, 1)
       saveInterlocks()
 
@@ -663,6 +670,11 @@ export function useSafety() {
   }
 
   function bypassInterlock(id: string, bypass: boolean, user: string = 'User', reason?: string) {
+    const auth = useAuth()
+    if (!auth.isSupervisor.value) {
+      console.warn(`[SAFETY] Bypass interlock denied: user ${user} lacks supervisor role`)
+      return
+    }
     const interlock = interlocks.value.find(i => i.id === id)
     if (interlock && interlock.bypassAllowed) {
       const wasBypassed = interlock.bypassed
@@ -729,6 +741,17 @@ export function useSafety() {
    * Evaluate a single condition without timer/delay logic
    */
   function evaluateConditionRaw(condition: InterlockCondition): { satisfied: boolean; currentValue?: unknown; reason: string } {
+    // FE-H4: Guard against null/undefined/malformed condition objects
+    if (!condition || typeof condition !== 'object') {
+      console.warn('[SAFETY] evaluateConditionRaw called with invalid condition:', condition)
+      return { satisfied: false, reason: 'Invalid condition object (null or not an object)' }
+    }
+
+    if (!condition.type) {
+      console.warn('[SAFETY] evaluateConditionRaw called with missing condition type:', condition)
+      return { satisfied: false, reason: 'Condition has no type specified' }
+    }
+
     switch (condition.type) {
       case 'mqtt_connected':
         return {
@@ -857,11 +880,25 @@ export function useSafety() {
         if (!condition.channel || condition.operator === undefined || condition.value === undefined) {
           return { satisfied: false, reason: 'Invalid channel condition' }
         }
+        // FE-H4: Safe channel lookup - channel may not exist in store
+        if (!store.values || !(condition.channel in store.values)) {
+          console.warn(`[SAFETY] Channel "${condition.channel}" not found in store values`)
+          return { satisfied: false, currentValue: undefined, reason: `Channel ${condition.channel} not found` }
+        }
         const channelValue = store.values[condition.channel]?.value
-        if (channelValue === undefined) {
+        if (channelValue === undefined || channelValue === null) {
           return { satisfied: false, currentValue: undefined, reason: `Channel ${condition.channel} has no value` }
         }
-        const numValue = condition.value as number
+        // FE-H4: Ensure channelValue is numeric before comparison
+        if (typeof channelValue !== 'number' || isNaN(channelValue)) {
+          console.warn(`[SAFETY] Channel "${condition.channel}" has non-numeric value: ${channelValue}`)
+          return { satisfied: false, currentValue: channelValue, reason: `Channel ${condition.channel} value is not numeric (${channelValue})` }
+        }
+        const numValue = Number(condition.value)
+        if (isNaN(numValue)) {
+          console.warn(`[SAFETY] Condition value is not numeric: ${condition.value}`)
+          return { satisfied: false, currentValue: channelValue, reason: `Condition threshold is not numeric (${condition.value})` }
+        }
         let satisfied = false
         switch (condition.operator) {
           case '<': satisfied = channelValue < numValue; break
@@ -882,6 +919,11 @@ export function useSafety() {
       case 'digital_input':
         if (!condition.channel) {
           return { satisfied: false, reason: 'Invalid digital input condition' }
+        }
+        // FE-H4: Safe channel lookup for digital input
+        if (!store.values || !(condition.channel in store.values)) {
+          console.warn(`[SAFETY] Digital input channel "${condition.channel}" not found in store values`)
+          return { satisfied: false, currentValue: undefined, reason: `Digital input ${condition.channel} not found` }
         }
         const diValue = store.values[condition.channel]?.value
         const rawDiState = diValue === 1
@@ -929,9 +971,18 @@ export function useSafety() {
     processed = processed.replace(/\bNOT\b/gi, '!')
     processed = processed.replace(/==/g, '===')
 
-    // Safe evaluation (no function calls, only math/logic)
+    // Safe evaluation: only allow numbers, operators, and parenthesized sub-expressions.
+    // Block property access (dot followed by identifier) and empty parens (function calls).
     if (!/^[0-9\s+\-*/<>=!&|.()]+$/.test(processed)) {
       throw new Error('Invalid expression characters')
+    }
+    // Block property access patterns: 1.constructor, value.toString, etc.
+    if (/\.\s*[a-zA-Z_]/.test(processed)) {
+      throw new Error('Property access not allowed in expressions')
+    }
+    // Block empty function call patterns: ()  or (  )
+    if (/\(\s*\)/.test(processed)) {
+      throw new Error('Function calls not allowed in expressions')
     }
 
     // eslint-disable-next-line no-new-func
@@ -1227,7 +1278,7 @@ export function useSafety() {
     // Persist to localStorage
     saveInterlockHistory()
 
-    console.log(`[Interlock] ${event}: ${interlock.name}${reason ? ` - ${reason}` : ''}`)
+    console.debug(`[Interlock] ${event}: ${interlock.name}${reason ? ` - ${reason}` : ''}`)
   }
 
   function saveInterlockHistory() {
@@ -1359,7 +1410,7 @@ export function useSafety() {
     const interlock = interlocks.value.find(i => i.id === interlockStatus.id)
     if (!interlock) return
 
-    console.log(`[SAFETY] Executing actions for failed interlock: ${interlock.name}`)
+    console.debug(`[SAFETY] Executing actions for failed interlock: ${interlock.name}`)
 
     for (const control of interlock.controls) {
       // Create unique key for this action
@@ -1374,7 +1425,7 @@ export function useSafety() {
         case 'set_digital_output':
           if (control.channel) {
             const value = control.setValue ?? 0
-            console.log(`[SAFETY] Setting DO ${control.channel} to ${value}`)
+            console.debug(`[SAFETY] Setting DO ${control.channel} to ${value}`)
             mqtt.setOutput(control.channel, value)
             executedInterlockActions.value.add(actionKey)
           }
@@ -1383,20 +1434,20 @@ export function useSafety() {
         case 'set_analog_output':
           if (control.channel) {
             const value = control.setValue ?? 0
-            console.log(`[SAFETY] Setting AO ${control.channel} to ${value}`)
+            console.debug(`[SAFETY] Setting AO ${control.channel} to ${value}`)
             mqtt.setOutput(control.channel, value)
             executedInterlockActions.value.add(actionKey)
           }
           break
 
         case 'stop_session':
-          console.log(`[SAFETY] Stopping session`)
+          console.debug(`[SAFETY] Stopping session`)
           mqtt.sendCommand('test-session/stop', {})
           executedInterlockActions.value.add(actionKey)
           break
 
         case 'stop_acquisition':
-          console.log(`[SAFETY] Stopping acquisition`)
+          console.debug(`[SAFETY] Stopping acquisition`)
           mqtt.sendCommand('acquisition/stop', {})
           executedInterlockActions.value.add(actionKey)
           break
@@ -1497,7 +1548,7 @@ export function useSafety() {
    * This ensures safety logic runs even if browser closes
    */
   function tripSystem(reason: string) {
-    console.log(`[SAFETY] Requesting system trip: ${reason}`)
+    console.debug(`[SAFETY] Requesting system trip: ${reason}`)
 
     // Optimistically update local state (will be confirmed by backend)
     isTripped.value = true
@@ -1524,7 +1575,7 @@ export function useSafety() {
 
     // Note: Backend will verify interlocks are clear before allowing reset
     // The actual state change will come from the backend status update
-    console.log('[SAFETY] Sent trip reset request to backend')
+    console.debug('[SAFETY] Sent trip reset request to backend')
     return true  // Return true to indicate request was sent
   }
 
@@ -1537,7 +1588,7 @@ export function useSafety() {
       user,
       timestamp: new Date().toISOString()
     })
-    console.log(`[SAFETY] Sent latch arm request to backend (user: ${user})`)
+    console.debug(`[SAFETY] Sent latch arm request to backend (user: ${user})`)
     return true  // Request sent, backend will confirm
   }
 
@@ -1549,7 +1600,7 @@ export function useSafety() {
       user,
       timestamp: new Date().toISOString()
     })
-    console.log(`[SAFETY] Sent latch disarm request to backend (user: ${user})`)
+    console.debug(`[SAFETY] Sent latch disarm request to backend (user: ${user})`)
   }
 
   // Load safe state config on init
@@ -1560,6 +1611,11 @@ export function useSafety() {
   // ============================================
 
   function addSafetyAction(action: Omit<SafetyAction, 'id'>): string {
+    const auth = useAuth()
+    if (!auth.isSupervisor.value) {
+      console.warn('[SAFETY] addSafetyAction denied: requires supervisor or admin role')
+      return ''
+    }
     const id = `safety-action-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     const newAction: SafetyAction = {
       ...action,
@@ -1770,11 +1826,11 @@ export function useSafety() {
     // Subscribe to project/loaded to clear state on project change
     mqtt.subscribe('nisystem/nodes/+/project/loaded', (payload: any) => {
       const newProjectName = payload?.project_name || payload?.filename || 'unknown'
-      console.log(`[SAFETY] Project loaded: ${newProjectName}, previous: ${currentProjectId}`)
+      console.debug(`[SAFETY] Project loaded: ${newProjectName}, previous: ${currentProjectId}`)
 
       // If project changed, clear ALL state
       if (currentProjectId !== null && currentProjectId !== newProjectName) {
-        console.log('[SAFETY] Project changed, clearing all safety state')
+        console.debug('[SAFETY] Project changed, clearing all safety state')
         clearAllSafetyState('project_changed')
       }
 
@@ -1785,7 +1841,7 @@ export function useSafety() {
 
     // Subscribe to project/closed to clear state
     mqtt.subscribe('nisystem/nodes/+/project/closed', () => {
-      console.log('[SAFETY] Project closed, clearing all safety state')
+      console.debug('[SAFETY] Project closed, clearing all safety state')
       clearAllSafetyState('project_closed')
       currentProjectId = null
     })
@@ -1811,7 +1867,7 @@ export function useSafety() {
       if (newCount === 0) {
         if (activeAlarms.value.length > 0 || alarmHistory.value.length > 0 ||
             Object.keys(alarmConfigs.value).length > 0 || interlocks.value.length > 0) {
-          console.log('[SAFETY] No channels (no project loaded), clearing all safety state')
+          console.debug('[SAFETY] No channels (no project loaded), clearing all safety state')
           clearAllSafetyState('no_channels')
         }
       } else {
@@ -1821,7 +1877,7 @@ export function useSafety() {
         if (oldCount === 0 && newCount > 0) {
           // Project just loaded (went from no channels to having channels)
           // Reload all safety settings from localStorage (useProjectFiles may have updated them)
-          console.log('[SAFETY] Project loaded - reloading safety settings from localStorage')
+          console.debug('[SAFETY] Project loaded - reloading safety settings from localStorage')
           loadAlarmConfigs()
           loadInterlocks()
           loadSafetyActions()
@@ -1871,7 +1927,7 @@ export function useSafety() {
     // This ensures frontend clears stale alarm data and localStorage
     mqtt.subscribe('nisystem/nodes/+/alarms/cleared', (payload: any) => {
       const reason = payload?.reason || 'backend_signal'
-      console.log(`[SAFETY] Received alarms/cleared from backend, reason: ${reason}`)
+      console.debug(`[SAFETY] Received alarms/cleared from backend, reason: ${reason}`)
       clearAllSafetyState(reason)
     })
 
@@ -1941,7 +1997,7 @@ export function useSafety() {
     // Update latch state from backend
     if (payload.latchState) {
       // Store for reference (frontend doesn't change this directly)
-      console.log(`[SAFETY] Backend latch state: ${payload.latchState}`)
+      console.debug(`[SAFETY] Backend latch state: ${payload.latchState}`)
     }
 
     // Update trip state from backend
@@ -1958,8 +2014,8 @@ export function useSafety() {
         const local = interlocks.value.find(i => i.id === status.id)
         if (local) {
           // Store the backend-evaluated status
-          (local as any)._backendSatisfied = status.satisfied
-          (local as any)._backendFailedConditions = status.failedConditions
+          local._backendSatisfied = status.satisfied
+          local._backendFailedConditions = status.failedConditions
         }
       }
     }
@@ -1971,7 +2027,7 @@ export function useSafety() {
   function handleBackendLatchState(payload: any) {
     if (!payload) return
 
-    console.log(`[SAFETY] Backend latch state change: ${payload.state} (armed: ${payload.armed}, tripped: ${payload.tripped})`)
+    console.debug(`[SAFETY] Backend latch state change: ${payload.state} (armed: ${payload.armed}, tripped: ${payload.tripped})`)
 
     // Update trip state if tripped
     if (payload.tripped) {
@@ -1999,7 +2055,7 @@ export function useSafety() {
   function handleBackendInterlockList(payload: any) {
     if (!payload?.interlocks) return
 
-    console.log(`[SAFETY] Received ${payload.interlocks.length} interlocks from backend`)
+    console.debug(`[SAFETY] Received ${payload.interlocks.length} interlocks from backend`)
 
     // Merge backend interlocks with local (backend is authoritative)
     for (const backendInterlock of payload.interlocks) {
@@ -2039,7 +2095,7 @@ export function useSafety() {
     const existing = interlocks.value.find(i => i.id === payload.id)
     if (existing) {
       Object.assign(existing, payload)
-      console.log(`[SAFETY] Updated interlock from backend: ${payload.name}`)
+      console.debug(`[SAFETY] Updated interlock from backend: ${payload.name}`)
     }
   }
 
@@ -2047,6 +2103,14 @@ export function useSafety() {
    * Handle alarms received from the backend via MQTT
    */
   function handleBackendAlarm(alarm: any, event: 'triggered' | 'updated' | 'cleared') {
+    try {
+      _processBackendAlarm(alarm, event)
+    } catch (e) {
+      console.warn('[SAFETY] Error processing backend alarm:', e)
+    }
+  }
+
+  function _processBackendAlarm(alarm: any, event: 'triggered' | 'updated' | 'cleared') {
     const alarmId = alarm.alarm_id || alarm.id
 
     if (event === 'cleared') {

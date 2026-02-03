@@ -12,7 +12,17 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockSparklineState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getSparklineMockState = () =>
+  (globalThis as unknown as Record<string, MockSparklineState>).__mockSparklineState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -30,7 +40,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockSparklineState = {
+  ;(globalThis as unknown as Record<string, MockSparklineState>).__mockSparklineState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -55,7 +65,7 @@ describe('SparklineWidget', () => {
     vi.useFakeTimers()
     vi.setSystemTime(testTime)
     vi.clearAllMocks()
-    const state = (global as any).__mockSparklineState
+    const state = getSparklineMockState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -171,7 +181,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should show min/max when showMinMax is true', async () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
 
       // Add multiple values to create history
       const wrapper = mount(SparklineWidget, {
@@ -206,7 +216,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should have alarm class when in alarm', () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -218,7 +228,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should have warning class when in warning', () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }
@@ -244,7 +254,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should use red color for alarm state', () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -257,7 +267,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should use yellow color for warning state', () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }
@@ -285,7 +295,7 @@ describe('SparklineWidget', () => {
     })
 
     it('should generate path with multiple values', async () => {
-      const state = (global as any).__mockSparklineState
+      const state = getSparklineMockState()
 
       const wrapper = mount(SparklineWidget, {
         props: { channel: 'temp' }

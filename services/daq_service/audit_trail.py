@@ -22,6 +22,7 @@ References:
 
 import json
 import hashlib
+import os
 import threading
 import logging
 from datetime import datetime, timedelta
@@ -272,6 +273,9 @@ class AuditTrail:
                 with open(self.current_file, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(entry_dict, default=str) + '\n')
                     f.flush()
+                # Restrict audit trail file to owner-only (contains sensitive records)
+                if os.name != 'nt':
+                    os.chmod(self.current_file, 0o600)
             except Exception as e:
                 logger.error(f"Failed to write audit entry: {e}")
                 raise

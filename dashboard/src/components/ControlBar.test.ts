@@ -372,7 +372,7 @@ describe('ControlBar', () => {
       })
 
       // Check that component can emit these events (emitDefinitions)
-      const emits = (wrapper.vm.$options as any).emits
+      const emits = (wrapper.vm.$options as Record<string, unknown>).emits
       // Vue 3 with script setup doesn't expose emits the same way,
       // but we can verify by attempting to trigger them
       expect(typeof wrapper.vm.$emit).toBe('function')

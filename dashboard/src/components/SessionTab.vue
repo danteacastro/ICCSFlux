@@ -18,6 +18,18 @@ const idleScripts = computed(() => {
   return backendScripts.scriptsList.value.filter(s => s.state !== 'running')
 })
 
+// Published variables (py.* channels from scripts)
+const publishedVariables = computed(() => {
+  const vars: Array<{ name: string; value: number | string }> = []
+  for (const [name, val] of Object.entries(mqtt.channelValues.value)) {
+    if (name.startsWith('py.')) {
+      vars.push({ name: name.slice(3), value: val })
+    }
+  }
+  vars.sort((a, b) => a.name.localeCompare(b.name))
+  return vars
+})
+
 // All script outputs combined and sorted by timestamp
 const allScriptOutputs = computed(() => {
   const outputs: Array<{ scriptId: string; type: string; message: string; timestamp: number }> = []
@@ -68,46 +80,53 @@ onMounted(() => {
 <template>
   <div class="session-tab">
     <div class="tab-header">
-      <h2>Session Monitor</h2>
-      <p class="subtitle">Overview of all active scripts, jobs, and recording status</p>
+      <div class="header-left">
+        <h2>Session Monitor</h2>
+        <p class="subtitle">Overview of all active scripts, jobs, and recording status</p>
+      </div>
+      <div class="header-status">
+        <div class="status-pill" :class="{ active: store.isAcquiring }">
+          <span class="status-dot" :class="{ active: store.isAcquiring }"></span>
+          <span class="pill-label">Acquisition</span>
+          <span class="pill-value">{{ store.isAcquiring ? 'Running' : 'Stopped' }}</span>
+        </div>
+        <div class="status-pill" :class="{ active: store.isRecording }">
+          <span class="status-dot recording" :class="{ active: store.isRecording }"></span>
+          <span class="pill-label">Recording</span>
+          <span class="pill-value">{{ store.isRecording ? 'Recording' : 'Idle' }}</span>
+        </div>
+        <div class="status-pill" :class="{ active: playground.isSessionActive.value }">
+          <span class="status-dot session" :class="{ active: playground.isSessionActive.value }"></span>
+          <span class="pill-label">Session</span>
+          <span class="pill-value">{{ playground.isSessionActive.value ? 'Active' : 'Inactive' }}</span>
+        </div>
+        <div class="status-pill elapsed-pill" v-if="playground.isSessionActive.value">
+          <span class="pill-value elapsed">{{ playground.sessionElapsed.value }}</span>
+        </div>
+      </div>
     </div>
 
     <div class="session-grid">
-      <!-- System Status Panel -->
-      <div class="status-panel system-status">
+      <!-- Published Variables Panel -->
+      <div class="status-panel published-variables">
         <h3>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12,6 12,12 16,14"/>
+            <path d="M12 20V10"/>
+            <path d="M18 20V4"/>
+            <path d="M6 20v-4"/>
           </svg>
-          System Status
+          Published Variables
+          <span class="count-badge" v-if="publishedVariables.length > 0">{{ publishedVariables.length }}</span>
         </h3>
-        <div class="status-grid">
-          <div class="status-item">
-            <span class="status-label">Acquisition</span>
-            <span class="status-value" :class="{ active: store.isAcquiring }">
-              <span class="status-dot" :class="{ active: store.isAcquiring }"></span>
-              {{ store.isAcquiring ? 'Running' : 'Stopped' }}
-            </span>
+        <div class="values-grid" v-if="publishedVariables.length > 0">
+          <div v-for="v in publishedVariables" :key="v.name" class="value-item">
+            <span class="value-name">{{ v.name }}</span>
+            <span class="value-number">{{ typeof v.value === 'number' ? v.value.toFixed(2) : v.value }}</span>
           </div>
-          <div class="status-item">
-            <span class="status-label">Recording</span>
-            <span class="status-value" :class="{ active: store.isRecording }">
-              <span class="status-dot recording" :class="{ active: store.isRecording }"></span>
-              {{ store.isRecording ? 'Recording' : 'Idle' }}
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="status-label">Test Session</span>
-            <span class="status-value" :class="{ active: playground.isSessionActive.value }">
-              <span class="status-dot session" :class="{ active: playground.isSessionActive.value }"></span>
-              {{ playground.isSessionActive.value ? 'Active' : 'Inactive' }}
-            </span>
-          </div>
-          <div class="status-item" v-if="playground.isSessionActive.value">
-            <span class="status-label">Session Elapsed</span>
-            <span class="status-value elapsed">{{ playground.sessionElapsed.value }}</span>
-          </div>
+        </div>
+        <div class="empty-state" v-else>
+          <p>No published variables</p>
+          <p class="hint">Variables from running scripts will appear here</p>
         </div>
       </div>
 
@@ -235,10 +254,15 @@ onMounted(() => {
 }
 
 .tab-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 1.5rem;
+  gap: 1.5rem;
+  flex-wrap: wrap;
 }
 
-.tab-header h2 {
+.header-left h2 {
   margin: 0 0 0.25rem 0;
   font-size: 1.5rem;
   color: var(--text-primary);
@@ -248,6 +272,55 @@ onMounted(() => {
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.9rem;
+}
+
+/* Inline Status Pills */
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.status-pill.active {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.status-pill.active .pill-label {
+  color: var(--color-success);
+}
+
+.pill-label {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pill-value {
+  font-weight: 500;
+}
+
+.pill-value.elapsed {
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  color: var(--color-success);
+}
+
+.elapsed-pill {
+  border-color: var(--color-success);
 }
 
 .session-grid {
@@ -282,47 +355,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-/* Status Grid */
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.75rem;
-}
-
-.status-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.status-label {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-}
-
-.status-value {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.status-value.active {
-  color: var(--color-success);
-}
-
-.status-value.count {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--color-primary);
-}
-
-.status-value.elapsed {
-  font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 1.1rem;
-  color: var(--color-success);
-}
 
 /* Status Dots */
 .status-dot {

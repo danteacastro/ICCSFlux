@@ -35,6 +35,14 @@ from user_session import (
 )
 
 
+def _set_known_passwords(manager):
+    """Reset default users to known passwords for testing."""
+    manager.update_user("admin", password="iccsadmin1969")
+    manager.update_user("supervisor", password="supervisor")
+    manager.update_user("operator", password="operator")
+    manager.update_user("guest", password="guest")
+
+
 class TestUserAuthentication:
     """Test suite for user authentication"""
 
@@ -48,6 +56,7 @@ class TestUserAuthentication:
             max_failed_attempts=3,
             lockout_duration_minutes=5
         )
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -142,6 +151,7 @@ class TestAccountLockout:
             max_failed_attempts=3,
             lockout_duration_minutes=1  # Short lockout for testing
         )
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -211,6 +221,7 @@ class TestSessionManagement:
             data_dir=Path(self.temp_dir),
             session_timeout_minutes=1  # 1 minute timeout for testing
         )
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -279,6 +290,7 @@ class TestPermissions:
         """Set up test session manager"""
         self.temp_dir = tempfile.mkdtemp()
         self.manager = UserSessionManager(data_dir=Path(self.temp_dir))
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -373,6 +385,7 @@ class TestUserManagement:
         """Set up test session manager"""
         self.temp_dir = tempfile.mkdtemp()
         self.manager = UserSessionManager(data_dir=Path(self.temp_dir))
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -478,6 +491,7 @@ class TestElectronicSignature:
         """Set up test session manager"""
         self.temp_dir = tempfile.mkdtemp()
         self.manager = UserSessionManager(data_dir=Path(self.temp_dir))
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -534,6 +548,7 @@ class TestPasswordHashing:
         """Set up test session manager"""
         self.temp_dir = tempfile.mkdtemp()
         self.manager = UserSessionManager(data_dir=Path(self.temp_dir))
+        _set_known_passwords(self.manager)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 

@@ -208,7 +208,7 @@ class RestDataSource(DataSource):
                 # Try to parse JSON, fall back to text
                 try:
                     return response.json()
-                except:
+                except (json.JSONDecodeError, ValueError):
                     return response.text
 
             elif self._session:
@@ -230,7 +230,7 @@ class RestDataSource(DataSource):
 
                 try:
                     return response.json()
-                except:
+                except (json.JSONDecodeError, ValueError):
                     return response.text
             else:
                 raise RuntimeError("No HTTP client available")

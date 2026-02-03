@@ -22,7 +22,7 @@ import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
-import type { WidgetConfig } from './types'
+import type { WidgetConfig, WidgetType } from './types'
 
 const store = useDashboardStore()
 const scripts = useScripts()
@@ -143,7 +143,7 @@ function addWidget() {
   const maxY = store.widgets.reduce((max, w) => Math.max(max, w.y + w.h), 0)
 
   const newWidget: Omit<WidgetConfig, 'id'> = {
-    type: wt.type as any,
+    type: wt.type as WidgetType,
     x: 0,
     y: maxY,
     w: wt.defaultSize.w,
@@ -530,7 +530,15 @@ function handleRetryConnection() {
   }, 100)
 }
 
+const saveDenied = ref(false)
+
 async function handleManualSave() {
+  if (!auth.isSupervisor.value) {
+    saveDenied.value = true
+    setTimeout(() => { saveDenied.value = false }, 800)
+    console.warn('[APP] Save denied - requires supervisor or admin role')
+    return
+  }
   const success = await projectFiles.saveNow()
   if (success) {
     console.log('[APP] Project saved manually')
@@ -661,7 +669,7 @@ async function handleManualSave() {
           <span
             v-if="projectFiles.isDirty.value"
             class="dirty-indicator"
-            title="Unsaved changes - will auto-save shortly"
+            title="Unsaved changes"
           >
             <span class="dot"></span>
             Modified
@@ -669,8 +677,9 @@ async function handleManualSave() {
           <button
             v-if="projectFiles.isDirty.value"
             class="btn-save"
+            :class="{ 'save-denied': saveDenied }"
             @click="handleManualSave"
-            title="Save now"
+            :title="auth.isSupervisor.value ? 'Save now' : 'Save requires supervisor or admin role'"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
@@ -678,12 +687,6 @@ async function handleManualSave() {
               <polyline points="7,3 7,8 15,8"/>
             </svg>
           </button>
-          <span v-else class="saved-indicator" title="All changes saved">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="20,6 9,17 4,12"/>
-            </svg>
-            Saved
-          </span>
         </div>
 
         <!-- User Auth Section -->
@@ -1235,14 +1238,6 @@ async function handleManualSave() {
   50% { opacity: 0.4; }
 }
 
-.saved-indicator {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.7rem;
-  color: #22c55e;
-}
-
 .btn-save {
   display: flex;
   align-items: center;
@@ -1258,6 +1253,21 @@ async function handleManualSave() {
 
 .btn-save:hover {
   background: rgba(251, 191, 36, 0.2);
+}
+
+.btn-save.save-denied {
+  border-color: #ef4444;
+  color: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
 }
 
 /* User Auth Section */

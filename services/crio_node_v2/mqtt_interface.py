@@ -36,6 +36,8 @@ class MQTTConfig:
     node_id: str = "crio-001"
     keepalive: int = 60
     reconnect_delay: float = 5.0
+    tls_enabled: bool = False
+    tls_ca_cert: Optional[str] = None  # Path to CA certificate file
 
 
 class MQTTInterface:
@@ -109,6 +111,16 @@ class MQTTInterface:
                     self.config.username,
                     self.config.password
                 )
+
+            # Configure TLS if enabled
+            if self.config.tls_enabled and self.config.tls_ca_cert:
+                import ssl
+                self._client.tls_set(
+                    ca_certs=self.config.tls_ca_cert,
+                    cert_reqs=ssl.CERT_REQUIRED,
+                    tls_version=ssl.PROTOCOL_TLS_CLIENT,
+                )
+                logger.info(f"MQTT TLS enabled with CA: {self.config.tls_ca_cert}")
 
             # Set callbacks
             self._client.on_connect = self._on_connect
@@ -209,6 +221,10 @@ class MQTTInterface:
             logger.error(f"MQTT publish failed: {e}")
             return False
 
+    def publish_critical(self, topic: str, payload: Any, retain: bool = False) -> bool:
+        """Publish critical message with QoS 1 (guaranteed delivery)."""
+        return self.publish(topic, payload, qos=1, retain=retain)
+
     def is_connected(self) -> bool:
         """Check if connected to broker."""
         return self._connected.is_set()
@@ -255,8 +271,13 @@ class MQTTInterface:
             rc = reason_code
             is_unexpected = reason_code.is_failure if hasattr(reason_code, 'is_failure') else (reason_code != 0)
 
-        if is_unexpected:
-            logger.warning(f"MQTT unexpected disconnect: rc={rc}")
+        if is_unexpected and not self._shutdown.is_set():
+            logger.warning(
+                f"MQTT unexpected disconnect: rc={rc} — "
+                f"paho will attempt automatic reconnection"
+            )
+        elif is_unexpected:
+            logger.info(f"MQTT disconnected during shutdown: rc={rc}")
         else:
             logger.info("MQTT disconnected normally")
 
@@ -267,12 +288,22 @@ class MQTTInterface:
             except Exception as e:
                 logger.error(f"Disconnection callback error: {e}")
 
+    # Maximum accepted MQTT payload size (256 KB)
+    MAX_PAYLOAD_SIZE = 262144
+
     def _on_message(self, client, userdata, msg):
         """
         Handle incoming message.
         IMPORTANT: This runs in paho's thread - must be non-blocking!
         """
         if not self.on_message:
+            return
+
+        if len(msg.payload) > self.MAX_PAYLOAD_SIZE:
+            logger.warning(
+                f"Oversized MQTT payload on {msg.topic}: "
+                f"{len(msg.payload)} bytes (limit {self.MAX_PAYLOAD_SIZE}), dropping"
+            )
             return
 
         try:

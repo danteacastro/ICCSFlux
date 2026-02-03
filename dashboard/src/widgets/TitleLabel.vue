@@ -129,7 +129,7 @@ watch(() => props.text, (newText) => {
               v-for="size in ['small', 'medium', 'large', 'xlarge']"
               :key="size"
               :class="{ active: fontSize === size }"
-              @click="updateStyle({ fontSize: size as any })"
+              @click="updateStyle({ fontSize: size as WidgetStyle['fontSize'] })"
             >{{ size }}</button>
           </div>
         </div>

@@ -15,19 +15,42 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
+
+interface ScheduleItem {
+  id: string
+  name: string
+  enabled: boolean
+  startTime: string
+  nextRun?: string
+  isRunning?: boolean
+}
+
+interface MockSchedulerState {
+  mockIsEnabled: Ref<boolean>
+  mockSchedules: Ref<ScheduleItem[]>
+}
+
+const getSchedulerMockState = () =>
+  (globalThis as unknown as Record<string, MockSchedulerState>).__mockSchedulerState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
   const { ref } = require('vue')
 
-  const mockIsSchedulerEnabled = ref(false)
+  const mockIsEnabled = ref(false)
 
-  ;(global as any).__mockSchedulerIsEnabled = mockIsSchedulerEnabled
+  const existing = (globalThis as unknown as Record<string, Partial<MockSchedulerState>>).__mockSchedulerState ?? {}
+  ;(globalThis as unknown as Record<string, MockSchedulerState>).__mockSchedulerState = {
+    ...existing,
+    mockIsEnabled
+  } as MockSchedulerState
 
   return {
     useDashboardStore: () => ({
-      get isSchedulerEnabled() { return (global as any).__mockSchedulerIsEnabled.value }
+      get isSchedulerEnabled() {
+        return (globalThis as unknown as Record<string, MockSchedulerState>).__mockSchedulerState.mockIsEnabled.value
+      }
     })
   }
 })
@@ -36,13 +59,17 @@ vi.mock('../stores/dashboard', () => {
 vi.mock('../composables/useScripts', () => {
   const { ref } = require('vue')
 
-  const mockSchedules = ref<any[]>([])
+  const mockSchedules = ref<ScheduleItem[]>([])
 
-  ;(global as any).__mockSchedulerSchedules = mockSchedules
+  const existing = (globalThis as unknown as Record<string, Partial<MockSchedulerState>>).__mockSchedulerState ?? {}
+  ;(globalThis as unknown as Record<string, MockSchedulerState>).__mockSchedulerState = {
+    ...existing,
+    mockSchedules
+  } as MockSchedulerState
 
   return {
     useScripts: () => ({
-      schedules: (global as any).__mockSchedulerSchedules
+      schedules: (globalThis as unknown as Record<string, MockSchedulerState>).__mockSchedulerState.mockSchedules
     })
   }
 })
@@ -61,8 +88,8 @@ import SchedulerStatusWidget from './SchedulerStatusWidget.vue'
 describe('SchedulerStatusWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    ;(global as any).__mockSchedulerIsEnabled.value = false
-    ;(global as any).__mockSchedulerSchedules.value = []
+    ;getSchedulerMockState().mockIsEnabled.value = false
+    ;getSchedulerMockState().mockSchedules.value = []
   })
 
   // ===========================================================================
@@ -145,8 +172,8 @@ describe('SchedulerStatusWidget', () => {
 
   describe('Enabled State - No Schedules', () => {
     beforeEach(() => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
-      ;(global as any).__mockSchedulerSchedules.value = []
+      ;getSchedulerMockState().mockIsEnabled.value = true
+      ;getSchedulerMockState().mockSchedules.value = []
     })
 
     it('should have enabled class when scheduler enabled', () => {
@@ -172,8 +199,8 @@ describe('SchedulerStatusWidget', () => {
 
   describe('Enabled State - With Schedules', () => {
     beforeEach(() => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockIsEnabled.value = true
+      ;getSchedulerMockState().mockSchedules.value = [
         {
           id: 'sched1',
           name: 'Morning Run',
@@ -225,7 +252,7 @@ describe('SchedulerStatusWidget', () => {
     })
 
     it('should not show disabled schedules', () => {
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockSchedules.value = [
         {
           id: 'sched1',
           name: 'Disabled Schedule',
@@ -245,8 +272,8 @@ describe('SchedulerStatusWidget', () => {
 
   describe('Max Items', () => {
     beforeEach(() => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockIsEnabled.value = true
+      ;getSchedulerMockState().mockSchedules.value = [
         { id: '1', name: 'Schedule 1', enabled: true, startTime: '08:00', nextRun: new Date(Date.now() + 1000000).toISOString() },
         { id: '2', name: 'Schedule 2', enabled: true, startTime: '09:00', nextRun: new Date(Date.now() + 2000000).toISOString() },
         { id: '3', name: 'Schedule 3', enabled: true, startTime: '10:00', nextRun: new Date(Date.now() + 3000000).toISOString() },
@@ -273,11 +300,11 @@ describe('SchedulerStatusWidget', () => {
 
   describe('Time Formatting', () => {
     beforeEach(() => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
+      ;getSchedulerMockState().mockIsEnabled.value = true
     })
 
     it('should format 00:00 as 12:00 AM', () => {
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockSchedules.value = [
         { id: '1', name: 'Midnight', enabled: true, startTime: '00:00', nextRun: new Date().toISOString() }
       ]
 
@@ -286,7 +313,7 @@ describe('SchedulerStatusWidget', () => {
     })
 
     it('should format 12:00 as 12:00 PM', () => {
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockSchedules.value = [
         { id: '1', name: 'Noon', enabled: true, startTime: '12:00', nextRun: new Date().toISOString() }
       ]
 
@@ -295,7 +322,7 @@ describe('SchedulerStatusWidget', () => {
     })
 
     it('should format 15:30 as 3:30 PM', () => {
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockSchedules.value = [
         { id: '1', name: 'Afternoon', enabled: true, startTime: '15:30', nextRun: new Date().toISOString() }
       ]
 
@@ -310,8 +337,8 @@ describe('SchedulerStatusWidget', () => {
 
   describe('Running State', () => {
     it('should have running class when schedule is running', () => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockIsEnabled.value = true
+      ;getSchedulerMockState().mockSchedules.value = [
         {
           id: '1',
           name: 'Active Schedule',
@@ -327,8 +354,8 @@ describe('SchedulerStatusWidget', () => {
     })
 
     it('should not have running class when schedule is not running', () => {
-      ;(global as any).__mockSchedulerIsEnabled.value = true
-      ;(global as any).__mockSchedulerSchedules.value = [
+      ;getSchedulerMockState().mockIsEnabled.value = true
+      ;getSchedulerMockState().mockSchedules.value = [
         {
           id: '1',
           name: 'Idle Schedule',

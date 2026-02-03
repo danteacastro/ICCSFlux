@@ -13,7 +13,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockGaugeState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getGaugeMockState = () =>
+  (globalThis as unknown as Record<string, MockGaugeState>).__mockGaugeState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -33,7 +43,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockGaugeState = {
+  ;(globalThis as unknown as Record<string, MockGaugeState>).__mockGaugeState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -58,7 +68,7 @@ import GaugeWidget from './GaugeWidget.vue'
 describe('GaugeWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockGaugeState
+    const state = getGaugeMockState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -173,7 +183,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should display -- when stale', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now() - 10000 }
       }
@@ -185,7 +195,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should display -- when not acquiring', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(GaugeWidget, {
@@ -195,7 +205,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should display -- when no value exists', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {}
 
       const wrapper = mount(GaugeWidget, {
@@ -300,7 +310,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should show 0% when value equals min', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 0, timestamp: Date.now() }
       }
@@ -313,7 +323,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should cap at 100% when value exceeds max', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 150, timestamp: Date.now() }
       }
@@ -326,7 +336,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should cap at 0% when value below min', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: -50, timestamp: Date.now() }
       }
@@ -352,7 +362,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should have alarm class when in alarm', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -364,7 +374,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should have warning class when in warning', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }
@@ -376,7 +386,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should have stale class when data is stale', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now() - 10000 }
       }
@@ -388,7 +398,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should use alarm color when in alarm', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -401,7 +411,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should use warning color when in warning', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }
@@ -422,7 +432,7 @@ describe('GaugeWidget', () => {
     })
 
     it('should use gray color when stale', () => {
-      const state = (global as any).__mockGaugeState
+      const state = getGaugeMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(GaugeWidget, {

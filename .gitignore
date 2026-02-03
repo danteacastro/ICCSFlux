@@ -61,6 +61,7 @@ services/daq_service/data/audit/*.jsonl
 .pytest_cache/
 
 # Config backups (auto-generated)
+config/projects/backups/
 config/projects/backups/*.json
 config/projects/backups/backup.log
 !config/projects/backups/manifest.json
@@ -72,8 +73,11 @@ nul
 .DS_Store
 Thumbs.db
 
-# Credentials/Secrets
-credentials*.json
+# Credentials and secrets
+*credentials*.json
 *_secret*
 *.pem
 *.key
+mosquitto_passwd
+**/users.json
+.env.production

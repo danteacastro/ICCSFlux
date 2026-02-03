@@ -397,23 +397,23 @@ export function usePythonScripts() {
       const sheet = workbook.Sheets[sheetName]
 
       // Convert to JSON with header row
-      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][]
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][]
 
       if (jsonData.length === 0) {
         throw new Error('Empty spreadsheet')
       }
 
       // First row is headers
-      const headerRow = jsonData[0] as any[]
+      const headerRow = jsonData[0] as unknown[]
       if (!headerRow || headerRow.length === 0) {
         throw new Error('No header row found')
       }
       const columns = headerRow.map(h => String(h ?? ''))
-      const data: Record<string, any>[] = []
+      const data: Record<string, string | number | boolean | null>[] = []
 
       for (let i = 1; i < jsonData.length; i++) {
-        const row: Record<string, any> = {}
-        const values = jsonData[i] as any[]
+        const row: Record<string, string | number | boolean | null> = {}
+        const values = jsonData[i] as unknown[]
         if (!values || values.length === 0) continue
         for (let j = 0; j < columns.length; j++) {
           const colName = columns[j]
@@ -1013,18 +1013,19 @@ except Exception as e:
           signal.addEventListener('abort', abortHandler, { once: true })
 
           // Wait for next scan data
-          scanCallbacks.push(() => {
+          const scanCallback = () => {
             signal.removeEventListener('abort', abortHandler)
             if (signal.aborted) {
               reject(new Error('Script aborted'))
             } else {
               resolve()
             }
-          })
+          }
+          scanCallbacks.push(scanCallback)
 
           // Fallback timeout in case no scan arrives
           setTimeout(() => {
-            const idx = scanCallbacks.indexOf(arguments.callee as any)
+            const idx = scanCallbacks.indexOf(scanCallback)
             if (idx >= 0) {
               scanCallbacks.splice(idx, 1)
               signal.removeEventListener('abort', abortHandler)

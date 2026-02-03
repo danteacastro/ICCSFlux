@@ -32,6 +32,10 @@ except ImportError:
 
 TOPIC_BASE = "nisystem/nodes/node-001"
 
+# Test credentials - NOT for production use
+TEST_USERNAME = "admin"
+TEST_PASSWORD = "admin"  # Default password from UserSessionManager fixture
+
 
 @dataclass
 class DAQIntegrationTest:
@@ -167,7 +171,7 @@ class DAQIntegrationTest:
 
     # === TEST METHODS ===
 
-    def login(self, username: str = "admin", password: str = "admin", retries: int = 3) -> bool:
+    def login(self, username: str = TEST_USERNAME, password: str = TEST_PASSWORD, retries: int = 3) -> bool:
         """Step 1: Login as admin with retry."""
         for attempt in range(retries):
             self.prepare_wait('auth')  # Prepare BEFORE publishing

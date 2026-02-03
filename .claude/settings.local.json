@@ -228,7 +228,15 @@
       "Bash(sort:*)",
       "Read(//c/Users/User/Documents/Projects/NISystem/**)",
       "Bash(git remote set-url:*)",
-      "Bash(./venv/Scripts/python.exe:*)"
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(npx vitest run:*)",
+      "Bash(Select-String \"FAIL|failed\")",
+      "Bash(git stash:*)",
+      "Bash(del \"c:\\\\Users\\\\User\\\\Documents\\\\Projects\\\\NISystem\\\\config\\\\mosquitto_secure.conf\")",
+      "Bash(git check-ignore:*)",
+      "Bash(del \"c:\\\\Users\\\\User\\\\Documents\\\\Projects\\\\NISystem\\\\tests\\\\test_discovery_all_paths.py\")",
+      "Bash(venvScriptspython.exe -m pytest teststest_channel_types.py teststest_discovery_extras.py teststest_crio_discovery_e2e.py teststest_config_parser.py teststest_device_discovery.py -v --tb=short)",
+      "Bash(git status:*)"
     ],
     "additionalDirectories": [
       "c:\\users\\user\\documents\\projects\\nisystem\\%temp%\\nidaqmx_pkg"

@@ -16,7 +16,9 @@ opcua>=0.98.0
 pyserial>=3.5
 requests>=2.28.0
 psutil>=5.9.0
-# nidaqmx - install from NI website
+# nidaqmx - REQUIRED for hardware I/O. Not pip-installable.
+#   Install NI-DAQmx driver from https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html
+#   Then: pip install nidaqmx (Python bindings, requires driver to be installed first)
 
 # ===========================================
 # OPTO22 NODE
@@ -27,8 +29,13 @@ psutil>=5.9.0
 # ===========================================
 # CRIO NODE
 # ===========================================
-# nidaqmx - install from NI website
+# nidaqmx - see DAQ SERVICE section above
 # numpy, scipy (listed above)
+
+# ===========================================
+# DATABASE (optional)
+# ===========================================
+psycopg2-binary>=2.9.0  # PostgreSQL (no server install needed, client-only)
 
 # ===========================================
 # BUILD

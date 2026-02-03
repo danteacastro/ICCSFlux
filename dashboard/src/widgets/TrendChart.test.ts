@@ -13,7 +13,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockTrendState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getTrendMockState = () =>
+  (globalThis as unknown as Record<string, MockTrendState>).__mockTrendState
 
 // Mock uPlot (charting library) - must be a class constructor
 vi.mock('uplot', () => {
@@ -22,7 +32,7 @@ vi.mock('uplot', () => {
     setData = vi.fn()
     setSize = vi.fn()
     cursor = { drag: {}, idx: null }
-    series: any[] = []
+    series: Record<string, unknown>[] = []
     setSeries = vi.fn()
     select = { width: 0, left: 0 }
     setSelect = vi.fn()
@@ -46,7 +56,7 @@ vi.mock('uplot', () => {
     }
     bbox = { left: 0, top: 0, width: 400, height: 200 }
 
-    constructor(_opts: any, _data: any, _container: HTMLElement) {
+    constructor(_opts: Record<string, unknown>, _data: unknown, _container: HTMLElement) {
       // Mock constructor
     }
   }
@@ -74,7 +84,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockTrendState = {
+  ;(globalThis as unknown as Record<string, MockTrendState>).__mockTrendState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -111,7 +121,7 @@ import TrendChart from './TrendChart.vue'
 describe('TrendChart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockTrendState
+    const state = getTrendMockState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -141,7 +151,7 @@ describe('TrendChart', () => {
       unobserve = vi.fn()
       disconnect = vi.fn()
       constructor(_callback: ResizeObserverCallback) {}
-    } as any
+    } as unknown as typeof ResizeObserver
   })
 
   // ===========================================================================

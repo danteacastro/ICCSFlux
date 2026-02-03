@@ -28,12 +28,12 @@ from enum import Enum
 # Support both package import and direct import
 try:
     from .backup_logger import BackupLogger
+    from .schema_migrations import migrate_project, SCHEMA_VERSIONS
 except ImportError:
     from backup_logger import BackupLogger
+    from schema_migrations import migrate_project, SCHEMA_VERSIONS
 
 logger = logging.getLogger('ProjectManager')
-
-
 class ProjectStatus(Enum):
     """Project load/save status"""
     SUCCESS = "success"
@@ -41,8 +41,6 @@ class ProjectStatus(Enum):
     VALIDATION_ERROR = "validation_error"
     LOCKED = "locked"
     BACKUP_FAILED = "backup_failed"
-
-
 # Project schema definition for validation
 PROJECT_SCHEMA = {
     "required_fields": ["type", "version"],
@@ -63,8 +61,6 @@ PROJECT_SCHEMA = {
         "modbus_register", "modbus_coil"
     ]
 }
-
-
 @dataclass
 class ValidationResult:
     """Result of schema validation"""
@@ -78,8 +74,6 @@ class ValidationResult:
 
     def add_warning(self, msg: str):
         self.warnings.append(msg)
-
-
 @dataclass
 class BackupInfo:
     """Information about a project backup"""
@@ -99,8 +93,6 @@ class BackupInfo:
             "size_bytes": self.size_bytes,
             "reason": self.reason
         }
-
-
 class ProjectManager:
     """
     Manages project lifecycle with compliance features.
@@ -626,6 +618,14 @@ class ProjectManager:
         try:
             with open(project_path, 'r') as f:
                 data = json.load(f)
+
+            # Auto-migrate older schema versions
+            current_version = data.get("version", "1.0")
+            latest_version = SCHEMA_VERSIONS[-1]
+            if current_version != latest_version:
+                data, migrations = migrate_project(data, latest_version)
+                if migrations:
+                    logger.info(f"Project schema migrated: {' -> '.join(migrations)}")
 
             # Validate if enabled
             if self.validate_on_load:

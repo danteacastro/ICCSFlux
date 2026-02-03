@@ -199,7 +199,7 @@ class TestJSONSerialization:
             name="test_channel",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             description="Test voltage channel",
             units="V",
             scale_type="linear",
@@ -231,7 +231,7 @@ class TestJSONSerialization:
         # Should roundtrip correctly
         parsed = json.loads(json_str)
         assert parsed["name"] == "test_channel"
-        assert parsed["channel_type"] == "voltage"
+        assert parsed["channel_type"] == "voltage_input"
         assert parsed["scale_slope"] == 2.0
 
     def test_thermocouple_type_serialization(self):
@@ -258,7 +258,7 @@ class TestJSONSerialization:
             name="test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             low_limit=None,
             high_limit=None
         )

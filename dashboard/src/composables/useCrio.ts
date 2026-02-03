@@ -134,7 +134,12 @@ export function useCrio() {
 
   function handleStatusMessage(payload: any) {
     try {
-      const status = (typeof payload === 'string' ? JSON.parse(payload) : payload) as CrioStatus
+      const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.online !== 'boolean') {
+        console.warn('[cRIO] Status payload missing expected fields:', parsed)
+        return
+      }
+      const status = parsed as CrioStatus
       crioStatus.value = status
       crioConnected.value = status.online
 
@@ -142,13 +147,18 @@ export function useCrio() {
         lastHeartbeatTime.value = Date.now()
       }
     } catch (e) {
-      console.error('Error parsing cRIO status:', e)
+      console.warn('[cRIO] Error parsing cRIO status:', e)
     }
   }
 
   function handleHeartbeatMessage(payload: any) {
     try {
-      const heartbeat = (typeof payload === 'string' ? JSON.parse(payload) : payload) as CrioHeartbeat
+      const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.state !== 'string') {
+        console.warn('[cRIO] Heartbeat payload missing expected fields:', parsed)
+        return
+      }
+      const heartbeat = parsed as CrioHeartbeat
       lastHeartbeatTime.value = Date.now()
       crioConnected.value = true
 
@@ -163,7 +173,7 @@ export function useCrio() {
         crioStatus.value.state = heartbeat.state as CrioStatus['state']
       }
     } catch (e) {
-      console.error('Error parsing cRIO heartbeat:', e)
+      console.warn('[cRIO] Error parsing cRIO heartbeat:', e)
     }
   }
 

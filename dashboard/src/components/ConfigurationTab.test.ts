@@ -11,7 +11,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockConfigTabState {
+  mockChannels: Ref<Partial<ChannelConfig>[]>
+  mockIsAcquiring: Ref<boolean>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+}
+
+const getConfigTabMockState = () =>
+  (globalThis as unknown as Record<string, MockConfigTabState>).__mockConfigTabState
 
 // Mock all composables before importing the component
 vi.mock('../stores/dashboard', () => {
@@ -26,7 +36,7 @@ vi.mock('../stores/dashboard', () => {
   const mockIsAcquiring = ref(false)
   const mockValues = ref({})
 
-  ;(global as any).__mockConfigTabState = {
+  ;(globalThis as unknown as Record<string, MockConfigTabState>).__mockConfigTabState = {
     mockChannels,
     mockIsAcquiring,
     mockValues
@@ -120,7 +130,39 @@ vi.mock('../composables/useMqtt', () => {
 
       // Connection
       connect: vi.fn(),
-      disconnect: vi.fn()
+      disconnect: vi.fn(),
+
+      // Multi-node support
+      knownNodes: ref(new Map()),
+      activeNodeId: ref(null),
+      setActiveNode: vi.fn(),
+      getNodeList: vi.fn().mockReturnValue([]),
+
+      // cRIO sync status
+      crioConfigVersions: ref({}),
+
+      // Channel collision detection
+      getChannelOwner: vi.fn().mockReturnValue(null),
+      checkChannelCollision: vi.fn().mockReturnValue({ collides: false, owner: null }),
+
+      // Heartbeat
+      lastHeartbeat: ref(null),
+      lastHeartbeatTime: ref(0),
+
+      // Command acknowledgment
+      sendCommandWithAck: vi.fn().mockResolvedValue({ success: true }),
+      sendSystemCommandWithAck: vi.fn().mockResolvedValue({ success: true }),
+
+      // Counter reset
+      resetCounter: vi.fn(),
+      resetAllLatched: vi.fn(),
+
+      // SOE
+      soe: {
+        events: ref([]),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn()
+      }
     })
   }
 })
@@ -206,13 +248,13 @@ import ConfigurationTab from './ConfigurationTab.vue'
 describe('ConfigurationTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    if ((global as any).__mockConfigTabState) {
-      (global as any).__mockConfigTabState.mockChannels.value = [
+    if (getConfigTabMockState()) {
+      getConfigTabMockState().mockChannels.value = [
         { name: 'TC_001', physical_channel: 'cDAQ1Mod1/ai0', channel_type: 'thermocouple', group: 'Temps' },
         { name: 'TC_002', physical_channel: 'cDAQ1Mod1/ai1', channel_type: 'thermocouple', group: 'Temps' },
         { name: 'PRESS_001', physical_channel: 'cDAQ1Mod2/ai0', channel_type: 'analog_input', group: 'Pressures' }
       ]
-      ;(global as any).__mockConfigTabState.mockIsAcquiring.value = false
+      ;getConfigTabMockState().mockIsAcquiring.value = false
     }
   })
 
@@ -585,8 +627,8 @@ describe('ConfigurationTab', () => {
   describe('Can Edit Computed', () => {
     it('should not allow edit when acquisition is running', () => {
       // Set acquiring to true
-      if ((global as any).__mockConfigTabState) {
-        (global as any).__mockConfigTabState.mockIsAcquiring.value = true
+      if (getConfigTabMockState()) {
+        getConfigTabMockState().mockIsAcquiring.value = true
       }
 
       const wrapper = shallowMount(ConfigurationTab, {

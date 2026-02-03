@@ -144,7 +144,7 @@ function updateDevicesFromStatus(status: any) {
       // Get channels for this source
       const channels: RestEndpoint[] = []
       for (const [chName, chInfo] of Object.entries(status.channels || {})) {
-        const ch = chInfo as any
+        const ch = chInfo as Record<string, unknown>
         if (ch.source === name) {
           channels.push({
             name: chName,

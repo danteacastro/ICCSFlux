@@ -13,7 +13,28 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockToggleState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+interface BlockedInfo {
+  blocked: boolean
+  blockedBy: Array<{ name: string, failedConditions: Array<{ condition: any, reason: string }> }>
+}
+
+interface MockToggleSafetyState {
+  mockBlockedChannels: Ref<Record<string, BlockedInfo>>
+}
+
+const getToggleMockState = () =>
+  (globalThis as unknown as Record<string, MockToggleState>).__mockToggleState
+const getToggleSafetyState = () =>
+  (globalThis as unknown as Record<string, MockToggleSafetyState>).__mockSafetyState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -31,7 +52,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockToggleState = {
+  ;(globalThis as unknown as Record<string, MockToggleState>).__mockToggleState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -55,7 +76,7 @@ vi.mock('../composables/useSafety', () => {
     'DO_002': { blocked: false, blockedBy: [] }
   })
 
-  ;(global as any).__mockSafetyState = { mockBlockedChannels }
+  ;(globalThis as unknown as Record<string, MockToggleSafetyState>).__mockSafetyState = { mockBlockedChannels }
 
   return {
     useSafety: () => ({
@@ -72,8 +93,8 @@ import ToggleSwitch from './ToggleSwitch.vue'
 describe('ToggleSwitch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockToggleState
-    const safetyState = (global as any).__mockSafetyState
+    const state = getToggleMockState()
+    const safetyState = getToggleSafetyState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -219,7 +240,7 @@ describe('ToggleSwitch', () => {
     })
 
     it('should fallback to channel ID if no config name', () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockChannels.value = {}
 
       const wrapper = mount(ToggleSwitch, {
@@ -276,7 +297,7 @@ describe('ToggleSwitch', () => {
 
   describe('Disabled States', () => {
     it('should be disabled when not acquiring', async () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(ToggleSwitch, {
@@ -288,7 +309,7 @@ describe('ToggleSwitch', () => {
     })
 
     it('should not emit when not acquiring', async () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(ToggleSwitch, {
@@ -315,9 +336,9 @@ describe('ToggleSwitch', () => {
 
   describe('Safety Interlocks', () => {
     it('should show blocked class when blocked by interlock', () => {
-      const safetyState = (global as any).__mockSafetyState
+      const safetyState = getToggleSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'DO_001': { blocked: true, blockedBy: [{ name: 'High Temp Alarm' }] }
+        'DO_001': { blocked: true, blockedBy: [{ name: 'High Temp Alarm', failedConditions: [{ condition: {}, reason: 'Temperature exceeded limit' }] }] }
       }
 
       const wrapper = mount(ToggleSwitch, {
@@ -328,16 +349,16 @@ describe('ToggleSwitch', () => {
     })
 
     it('should show lock indicator when blocked', () => {
-      const safetyState = (global as any).__mockSafetyState
+      const safetyState = getToggleSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'DO_001': { blocked: true, blockedBy: [{ name: 'Interlock 1' }] }
+        'DO_001': { blocked: true, blockedBy: [{ name: 'Interlock 1', failedConditions: [{ condition: {}, reason: 'Condition not met' }] }] }
       }
 
       const wrapper = mount(ToggleSwitch, {
         props: { channel: 'DO_001' }
       })
 
-      expect(wrapper.find('.blocked-indicator').exists()).toBe(true)
+      expect(wrapper.find('.interlock-overlay').exists()).toBe(true)
     })
 
     it('should not show lock indicator when not blocked', () => {
@@ -349,9 +370,9 @@ describe('ToggleSwitch', () => {
     })
 
     it('should not emit when blocked', async () => {
-      const safetyState = (global as any).__mockSafetyState
+      const safetyState = getToggleSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'DO_001': { blocked: true, blockedBy: [{ name: 'Safety Interlock' }] }
+        'DO_001': { blocked: true, blockedBy: [{ name: 'Safety Interlock', failedConditions: [{ condition: {}, reason: 'Safety condition not met' }] }] }
       }
 
       const wrapper = mount(ToggleSwitch, {
@@ -363,9 +384,9 @@ describe('ToggleSwitch', () => {
     })
 
     it('should have title with blocked reason', () => {
-      const safetyState = (global as any).__mockSafetyState
+      const safetyState = getToggleSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'DO_001': { blocked: true, blockedBy: [{ name: 'High Temp Alarm' }] }
+        'DO_001': { blocked: true, blockedBy: [{ name: 'High Temp Alarm', failedConditions: [{ condition: {}, reason: 'Temperature exceeded limit' }] }] }
       }
 
       const wrapper = mount(ToggleSwitch, {
@@ -383,7 +404,7 @@ describe('ToggleSwitch', () => {
 
   describe('Stale Data', () => {
     it('should show OFF when data is stale', () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockValues.value = {
         'DO_001': { value: 1, timestamp: Date.now() - 10000 } // 10 seconds old
       }
@@ -396,7 +417,7 @@ describe('ToggleSwitch', () => {
     })
 
     it('should show OFF when no timestamp', () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockValues.value = {
         'DO_001': { value: 1 } // no timestamp
       }
@@ -409,7 +430,7 @@ describe('ToggleSwitch', () => {
     })
 
     it('should show OFF when channel has no value', () => {
-      const state = (global as any).__mockToggleState
+      const state = getToggleMockState()
       state.mockValues.value = {}
 
       const wrapper = mount(ToggleSwitch, {

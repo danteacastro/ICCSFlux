@@ -12,7 +12,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockNumericState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getNumericMockState = () =>
+  (globalThis as unknown as Record<string, MockNumericState>).__mockNumericState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -30,7 +40,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockNumericState = {
+  ;(globalThis as unknown as Record<string, MockNumericState>).__mockNumericState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -56,7 +66,7 @@ import NumericDisplay from './NumericDisplay.vue'
 describe('NumericDisplay', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockNumericState
+    const state = getNumericMockState()
     if (state) {
       state.mockIsAcquiring.value = true
       state.mockValues.value = {
@@ -148,7 +158,7 @@ describe('NumericDisplay', () => {
 
   describe('Stale Data', () => {
     it('should show -- when not acquiring', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(NumericDisplay, {
@@ -158,7 +168,7 @@ describe('NumericDisplay', () => {
     })
 
     it('should show -- for stale timestamp', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: 25.5, timestamp: Date.now() - 10000 } // 10 seconds ago
       }
@@ -170,7 +180,7 @@ describe('NumericDisplay', () => {
     })
 
     it('should have stale class for stale data', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(NumericDisplay, {
@@ -186,7 +196,7 @@ describe('NumericDisplay', () => {
 
   describe('Alarm States', () => {
     it('should have warning class when channel has warning', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: 25.5, timestamp: Date.now(), warning: true }
       }
@@ -198,7 +208,7 @@ describe('NumericDisplay', () => {
     })
 
     it('should have alarm class when channel has alarm', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: 25.5, timestamp: Date.now(), alarm: true }
       }
@@ -223,7 +233,7 @@ describe('NumericDisplay', () => {
 
   describe('Error States', () => {
     it('should show NaN for disconnected channel', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: NaN, timestamp: Date.now(), disconnected: true }
       }
@@ -235,7 +245,7 @@ describe('NumericDisplay', () => {
     })
 
     it('should have disconnected class', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: NaN, timestamp: Date.now(), disconnected: true }
       }
@@ -247,7 +257,7 @@ describe('NumericDisplay', () => {
     })
 
     it('should show value string for open thermocouple', () => {
-      const state = (global as any).__mockNumericState
+      const state = getNumericMockState()
       state.mockValues.value = {
         'TC_001': { value: NaN, timestamp: Date.now(), disconnected: true, valueString: 'Open TC' }
       }

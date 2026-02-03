@@ -174,11 +174,21 @@ class ModbusConnection:
             except Exception as e:
                 logger.error(f"Error disconnecting from {self.config.name}: {e}")
 
+    _reconnect_attempts: int = 0
+
     def reconnect(self) -> bool:
-        """Attempt to reconnect"""
+        """Attempt to reconnect with exponential backoff"""
         self.disconnect()
-        time.sleep(self.config.retry_delay)
-        return self.connect()
+        # Exponential backoff: base_delay * 2^attempts, capped at 30s
+        delay = min(self.config.retry_delay * (2 ** self._reconnect_attempts), 30.0)
+        logger.info(f"Modbus reconnect to {self.config.name}: attempt {self._reconnect_attempts + 1}, waiting {delay:.1f}s")
+        time.sleep(delay)
+        success = self.connect()
+        if success:
+            self._reconnect_attempts = 0
+        else:
+            self._reconnect_attempts += 1
+        return success
 
     def read_holding_registers(self, address: int, count: int, slave_id: int) -> Optional[List[int]]:
         """Read holding registers (function code 3)"""

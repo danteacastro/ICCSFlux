@@ -65,10 +65,34 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         # Health check
         if path == '/health':
+            health_data = {'status': 'ok', 'server': 'dashboard'}
+            if hasattr(self, 'metrics_provider') and self.metrics_provider:
+                try:
+                    metrics = self.metrics_provider()
+                    health_data['acquiring'] = metrics.get('acquiring', False)
+                    health_data['uptime_seconds'] = metrics.get('uptime_seconds', 0)
+                    health_data['channel_count'] = metrics.get('channel_count', 0)
+                except Exception:
+                    pass
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({'status': 'ok', 'server': 'dashboard'}).encode())
+            self.wfile.write(json.dumps(health_data).encode())
+            return
+
+        # Metrics endpoint
+        if path == '/metrics':
+            if hasattr(self, 'metrics_provider') and self.metrics_provider:
+                try:
+                    metrics_data = self.metrics_provider()
+                except Exception as e:
+                    metrics_data = {'error': str(e)}
+            else:
+                metrics_data = {'status': 'no metrics provider configured'}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(metrics_data).encode())
             return
 
         # Try to serve the file
@@ -102,19 +126,22 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 class DashboardServer:
     """Threaded HTTP server for dashboard"""
 
-    def __init__(self, port: int = 8080, dist_path: Optional[Path] = None):
+    def __init__(self, port: int = 8080, dist_path: Optional[Path] = None, metrics_provider=None):
         self.port = port
         self.dist_path = dist_path or Path(__file__).parent.parent.parent / 'dashboard' / 'dist'
+        self.metrics_provider = metrics_provider
         self.server: Optional[socketserver.TCPServer] = None
         self.thread: Optional[threading.Thread] = None
 
     def _make_handler(self):
-        """Create handler class with custom dist_path"""
+        """Create handler class with custom dist_path and metrics_provider"""
         dist_path = self.dist_path
+        metrics_provider = self.metrics_provider
 
         class CustomHandler(DashboardHandler):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, dist_path=dist_path, **kwargs)
+                self.metrics_provider = metrics_provider
 
         return CustomHandler
 

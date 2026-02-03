@@ -14,7 +14,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockBarState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getBarMockState = () =>
+  (globalThis as unknown as Record<string, MockBarState>).__mockBarState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -34,7 +44,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockBarState = {
+  ;(globalThis as unknown as Record<string, MockBarState>).__mockBarState = {
     mockChannels,
     mockValues,
     mockIsAcquiring
@@ -55,7 +65,7 @@ import BarGraphWidget from './BarGraphWidget.vue'
 describe('BarGraphWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockBarState
+    const state = getBarMockState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -237,7 +247,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should cap at 100% when value exceeds max', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 150, timestamp: Date.now() }
       }
@@ -251,7 +261,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should show 0% when value below min', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: -50, timestamp: Date.now() }
       }
@@ -319,7 +329,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should have alarm class when in alarm', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -331,7 +341,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should have warning class when in warning', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }
@@ -343,7 +353,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should have stale class when data is stale', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now() - 10000 }
       }
@@ -355,7 +365,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should use alarm color for bar fill', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), alarm: true }
       }
@@ -368,7 +378,7 @@ describe('BarGraphWidget', () => {
     })
 
     it('should use warning color for bar fill', () => {
-      const state = (global as any).__mockBarState
+      const state = getBarMockState()
       state.mockValues.value = {
         'temp': { value: 50, timestamp: Date.now(), warning: true }
       }

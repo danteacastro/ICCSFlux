@@ -129,14 +129,14 @@ export function useNotebook() {
     const amendment: Amendment = {
       timestamp: new Date().toISOString(),
       field,
-      oldValue: JSON.stringify((entry as any)[field]),
+      oldValue: JSON.stringify(entry[field]),
       newValue: JSON.stringify(newValue),
       reason
     }
 
     if (!entry.amendments) entry.amendments = []
     entry.amendments.push(amendment)
-    ;(entry as any)[field] = newValue
+    Object.assign(entry, { [field]: newValue })
 
     saveEntries()
   }

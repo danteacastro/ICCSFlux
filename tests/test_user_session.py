@@ -20,6 +20,14 @@ from user_session import (
 )
 
 
+def _set_known_passwords(manager):
+    """Reset default users to known passwords for testing."""
+    manager.update_user("admin", password="iccsadmin1969")
+    manager.update_user("supervisor", password="supervisor")
+    manager.update_user("operator", password="operator")
+    manager.update_user("guest", password="guest")
+
+
 class TestUserRole:
     """Tests for UserRole enum"""
 
@@ -183,12 +191,14 @@ class TestUserSessionManager:
     @pytest.fixture
     def manager(self, data_dir):
         """Create a UserSessionManager instance"""
-        return UserSessionManager(
+        mgr = UserSessionManager(
             data_dir=data_dir,
             session_timeout_minutes=30,
             max_failed_attempts=3,
             lockout_duration_minutes=5
         )
+        _set_known_passwords(mgr)
+        return mgr
 
     # =========================================================================
     # USER MANAGEMENT TESTS

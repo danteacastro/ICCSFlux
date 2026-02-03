@@ -174,8 +174,8 @@ class OpcUaDataSource(DataSource):
             if self.subscription:
                 try:
                     self.subscription.delete()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Failed to delete OPC-UA subscription: {e}")
                 self.subscription = None
                 self.sub_handle = None
 

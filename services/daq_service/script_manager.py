@@ -27,6 +27,9 @@ import queue
 
 logger = logging.getLogger('ScriptManager')
 
+# Default maximum runtime for scripts (seconds). Scripts can override via max_runtime_seconds.
+DEFAULT_SCRIPT_TIMEOUT_S = 30
+
 
 # =============================================================================
 # STATE PERSISTENCE
@@ -572,8 +575,9 @@ class StateMachine:
             if state_info and state_info['on_exit']:
                 try:
                     state_info['on_exit']()
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"State machine on_exit callback failed for state '{self._current_state}': {e}")
+                    raise
 
         self._previous_state = self._current_state
         self._current_state = state
@@ -585,8 +589,9 @@ class StateMachine:
             if state_info and state_info['on_enter']:
                 try:
                     state_info['on_enter']()
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"State machine on_enter callback failed for state '{state}': {e}")
+                    raise
 
         self._history.append((time.time(), self._previous_state, state))
 
@@ -737,7 +742,7 @@ class Script:
     run_mode: ScriptRunMode = ScriptRunMode.MANUAL
     created_at: str = ""
     modified_at: str = ""
-    max_runtime_seconds: float = 300.0  # Default 5 minute timeout
+    max_runtime_seconds: float = DEFAULT_SCRIPT_TIMEOUT_S
     auto_restart: bool = False  # Auto-restart if script times out
 
     # Runtime state (not persisted)
@@ -910,8 +915,9 @@ class ScriptRuntime:
             # Replace 'await wait_until(...)' with 'wait_until(...)'
             code = re.sub(r'\bawait\s+(next_scan|wait_for|wait_until)\s*\(', r'\1(', code)
 
-            # Compile and execute
+            # Compile and execute (timeout enforced by _monitor_timeout thread)
             code_obj = compile(code, f"<script:{self.script.name}>", 'exec')
+            logger.info(f"Script {self.script.name}: executing with timeout={self.script.max_runtime_seconds}s")
             exec(code_obj, namespace)
 
             # If script has a main loop, it should have exited by now
@@ -1005,8 +1011,9 @@ class ScriptRuntime:
                 try:
                     if condition_func():
                         return True
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"wait_until condition evaluation error: {e}")
+                    return False
                 if timeout and (time.time() - start) > timeout:
                     return False
                 time.sleep(0.1)

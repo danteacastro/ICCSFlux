@@ -95,7 +95,7 @@ function openEditModal(variable: UserVariable) {
   newVariable.value = {
     name: variable.name,
     displayName: variable.displayName,
-    description: (variable as any).description || '',
+    description: variable.description || '',
     variableType: variable.variableType,
     value: variable.value || 0,
     units: variable.units,
@@ -199,8 +199,8 @@ function openConfigModal() {
     resetVariables: [...(config.resetVariables || [])],
     runSequenceId: config.runSequenceId || '',
     stopSequenceId: config.stopSequenceId || '',
-    enableTriggerIds: (config as any).enableTriggerIds || [],
-    enableScheduleIds: (config as any).enableScheduleIds || []
+    enableTriggerIds: config.enableTriggerIds || [],
+    enableScheduleIds: config.enableScheduleIds || []
   }
   showConfigModal.value = true
 }

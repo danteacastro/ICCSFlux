@@ -670,6 +670,9 @@ function formatBytes(bytes: number): string {
   padding: 12px 16px;
   background: var(--color-background-soft, #2a2a2a);
   border-bottom: 1px solid var(--color-border, #3e3e3e);
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
 }
 
 .section-btn {
@@ -828,6 +831,7 @@ function formatBytes(bytes: number): string {
 .data-table th {
   position: sticky;
   top: 0;
+  z-index: 1;
   background: var(--color-background-soft, #2a2a2a);
   padding: 12px;
   text-align: left;

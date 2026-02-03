@@ -61,9 +61,13 @@ const displayValue = computed(() => {
 const unit = computed(() => formatUnit(channelConfig.value?.unit))
 
 const displayLabel = computed(() =>
-  props.label || props.channel || ''
+  (props.label || props.channel || '').replace(/^py\./, '')
 )
 
+// SECURITY NOTE: v-html usage below is safe - symbolSvg only resolves to
+// hardcoded SVG strings from the SCADA_SYMBOLS constant map (assets/symbols/index.ts).
+// The symbol key comes from a typed prop (ScadaSymbolType) with a static fallback.
+// No user input or MQTT payload can inject content here.
 const symbolSvg = computed(() => {
   const sym = props.symbol || 'solenoidValve'
   return SCADA_SYMBOLS[sym] || SCADA_SYMBOLS.solenoidValve

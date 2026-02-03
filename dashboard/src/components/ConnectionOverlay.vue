@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps<{
   connected: boolean
@@ -15,6 +15,7 @@ const emit = defineEmits<{
 // Calculate next retry delay based on exponential backoff
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
+const GRACE_PERIOD_MS = 4000 // Suppress overlay briefly to allow silent reconnect
 
 const nextRetryDelay = computed(() => {
   if (props.connected) return 0
@@ -49,10 +50,51 @@ watch(() => props.connected, (isConnected) => {
 
 onUnmounted(() => {
   if (countdownInterval) clearInterval(countdownInterval)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
-// Show overlay when disconnected or data is stale
+// Grace period: suppress overlay for a few seconds after disconnect
+// to give auto-reconnect a chance to succeed silently
+const inGracePeriod = ref(false)
+let graceTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(() => props.connected, (isConnected, wasConnected) => {
+  if (!isConnected && wasConnected) {
+    // Just disconnected — start grace period
+    inGracePeriod.value = true
+    if (graceTimer) clearTimeout(graceTimer)
+    graceTimer = setTimeout(() => {
+      inGracePeriod.value = false
+      graceTimer = null
+    }, GRACE_PERIOD_MS)
+  }
+  if (isConnected) {
+    // Reconnected during grace — clear it
+    inGracePeriod.value = false
+    if (graceTimer) { clearTimeout(graceTimer); graceTimer = null }
+  }
+})
+
+// Tab visibility: when returning from background, extend grace period
+// since browser throttles WebSocket activity in background tabs
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible' && !props.connected) {
+    inGracePeriod.value = true
+    if (graceTimer) clearTimeout(graceTimer)
+    graceTimer = setTimeout(() => {
+      inGracePeriod.value = false
+      graceTimer = null
+    }, GRACE_PERIOD_MS)
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+// Show overlay when disconnected or data is stale (respecting grace period)
 const showOverlay = computed(() => {
+  if (inGracePeriod.value) return false
   return !props.connected || (props.dataIsStale && props.lastHeartbeatTime > 0)
 })
 

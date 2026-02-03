@@ -50,7 +50,7 @@ class TestChannelSimulator:
             name="voltage_test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.VOLTAGE,
+            channel_type=ChannelType.VOLTAGE_INPUT,
             voltage_range=10.0
         )
         sim = ChannelSimulator(ch)
@@ -67,7 +67,7 @@ class TestChannelSimulator:
             name="current_test",
             module="mod1",
             physical_channel="ai0",
-            channel_type=ChannelType.CURRENT,
+            channel_type=ChannelType.CURRENT_INPUT,
             current_range_ma=20.0
         )
         sim = ChannelSimulator(ch)
@@ -210,7 +210,7 @@ class TestChannelSimulator:
             name="ao_test",
             module="mod1",
             physical_channel="ao0",
-            channel_type=ChannelType.ANALOG_OUTPUT,
+            channel_type=ChannelType.VOLTAGE_OUTPUT,
             default_value=2.5
         )
         sim = ChannelSimulator(ch)
@@ -289,7 +289,7 @@ class TestHardwareSimulator:
                     name="voltage_1",
                     module="mod1",
                     physical_channel="ai1",
-                    channel_type=ChannelType.VOLTAGE
+                    channel_type=ChannelType.VOLTAGE_INPUT
                 ),
                 "do_1": ChannelConfig(
                     name="do_1",
@@ -405,7 +405,7 @@ class TestHardwareSimulator:
             name="new_channel",
             module="mod1",
             physical_channel="ai5",
-            channel_type=ChannelType.VOLTAGE
+            channel_type=ChannelType.VOLTAGE_INPUT
         )
         sim.add_channel(new_channel)
         assert "new_channel" in sim.channel_simulators

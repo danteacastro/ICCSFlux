@@ -6,7 +6,7 @@ This module provides the single source of truth for channel type mapping.
 """
 
 from enum import Enum
-from typing import Dict
+from typing import Dict, Optional
 
 
 class ChannelType(str, Enum):
@@ -228,6 +228,35 @@ def get_relay_type(model_number: str) -> str:
     """Get relay subtype for a module, or 'none' if not a relay module."""
     clean_number = ''.join(c for c in model_number if c.isdigit())
     return RELAY_MODULES.get(clean_number, 'none')
+
+
+
+
+# Absolute hardware limits per NI C Series output module.
+# These are physical maxima that CANNOT be overridden by user config.
+# Source: NI hardware datasheets.
+MODULE_HARDWARE_LIMITS: Dict[str, Dict[str, float]] = {
+    # Voltage output modules (all +/-10V max)
+    '9260': {'voltage_min': -10.0, 'voltage_max': 10.0},
+    '9262': {'voltage_min': -10.0, 'voltage_max': 10.0},
+    '9263': {'voltage_min': -10.0, 'voltage_max': 10.0},
+    '9264': {'voltage_min': -10.0, 'voltage_max': 10.0},
+    '9269': {'voltage_min': -10.0, 'voltage_max': 10.0},
+    # Current output modules (0-20mA max)
+    '9265': {'current_min_ma': 0.0, 'current_max_ma': 20.0},
+    '9266': {'current_min_ma': 0.0, 'current_max_ma': 20.0},
+}
+
+
+def get_module_hardware_limits(model_number: str) -> Optional[Dict[str, float]]:
+    """Get absolute hardware limits for an output module.
+
+    Returns None if module is not in the limits database (non-output or unknown).
+    These limits represent physical hardware maximums and must not be exceeded.
+    """
+    clean_number = ''.join(c for c in model_number if c.isdigit())
+    return MODULE_HARDWARE_LIMITS.get(clean_number)
+
 
 
 def get_module_channel_type(model_number: str) -> ChannelType:

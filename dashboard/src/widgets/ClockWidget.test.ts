@@ -12,7 +12,14 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+
+interface MockClockState {
+  mockIsAcquiring: Ref<boolean>
+}
+
+const getClockMockState = () =>
+  (globalThis as unknown as Record<string, MockClockState>).__mockClockState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -20,7 +27,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(false)
 
-  ;(global as any).__mockClockState = {
+  ;(globalThis as unknown as Record<string, MockClockState>).__mockClockState = {
     mockIsAcquiring
   }
 
@@ -39,7 +46,7 @@ describe('ClockWidget', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2024-06-15T14:30:45'))
 
-    const state = (global as any).__mockClockState
+    const state = getClockMockState()
     if (state) {
       state.mockIsAcquiring.value = false
     }
@@ -194,7 +201,7 @@ describe('ClockWidget', () => {
     })
 
     it('should display elapsed time when acquiring and showElapsed is true', async () => {
-      const state = (global as any).__mockClockState
+      const state = getClockMockState()
       state.mockIsAcquiring.value = true
 
       const wrapper = mount(ClockWidget, {
@@ -210,7 +217,7 @@ describe('ClockWidget', () => {
     })
 
     it('should show RUN label in elapsed display', async () => {
-      const state = (global as any).__mockClockState
+      const state = getClockMockState()
       state.mockIsAcquiring.value = true
 
       const wrapper = mount(ClockWidget, {
@@ -227,7 +234,7 @@ describe('ClockWidget', () => {
     })
 
     it('should format elapsed time correctly', async () => {
-      const state = (global as any).__mockClockState
+      const state = getClockMockState()
       state.mockIsAcquiring.value = true
 
       const wrapper = mount(ClockWidget, {

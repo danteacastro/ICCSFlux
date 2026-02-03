@@ -380,21 +380,57 @@ copy data\users.db %BACKUP_DIR%\
 echo Backup completed to %BACKUP_DIR%
 ```
 
-### 6.3 Recovery Procedure
+### 6.3 Recovery Targets
 
-1. Stop all ICCSFlux services
-2. Restore configuration files
-3. Restore user database
-4. Restart services
-5. Verify data integrity
+| Metric | Target | Notes |
+|--------|--------|-------|
+| **RTO** (Recovery Time Objective) | 30 minutes | Time to restore from backup and resume operation |
+| **RPO** (Recovery Point Objective) | 24 hours | Maximum acceptable data loss (daily backups) |
+| **RPO (recordings)** | 0 (per-test) | Recording data backed up after each test session |
+| **Backup verification** | Weekly | Verify backup integrity by restoring to test environment |
 
+For tighter RPO, increase backup frequency or enable continuous replication
+of the `config/` and `data/audit/` directories.
+
+### 6.4 Recovery Procedure
+
+**Full system recovery (PC failure or corruption):**
+
+1. Install ICCSFlux on replacement PC (or reinstall on existing)
+2. Stop all ICCSFlux services
+3. Restore configuration and data from backup:
 ```batch
-# Restore from backup
 xcopy /E /Y D:\Backups\ICCSFlux\20260104\config C:\ICCSFlux\config\
+xcopy /E /Y D:\Backups\ICCSFlux\20260104\audit C:\ICCSFlux\data\audit\
 copy D:\Backups\ICCSFlux\20260104\users.db C:\ICCSFlux\data\
 ```
+4. Restart services and verify MQTT connectivity
+5. Open dashboard — verify channels, interlocks, and alarm configurations loaded
+6. Run a short test acquisition to confirm hardware communication
 
-### 6.4 Project Export/Import
+**cRIO node recovery (cRIO failure or reimage):**
+
+1. Redeploy using `deploy_crio_v2.bat [crio_host] [broker_host]`
+2. The cRIO node will receive its channel configuration from the DAQ service
+   on first connection — no manual config restoration needed
+3. Verify channels appear in the dashboard
+
+**Project-only recovery (project file corruption):**
+
+1. Restore project file: `copy D:\Backups\...\projects\*.json config\projects\`
+2. Reload project in dashboard (Config tab → Load Project)
+
+**Post-recovery verification checklist:**
+
+- [ ] All expected channels visible in dashboard
+- [ ] Alarm limits match expected values
+- [ ] Interlocks active and evaluating correctly
+- [ ] Safety actions configured (trip, safe-state)
+- [ ] Audit trail entries present and readable
+- [ ] User accounts and roles correct
+- [ ] Recording can be started and data saved
+
+### 6.5 Project Export/Import
 
 Dashboard method:
 1. Config tab → Export Project
@@ -809,51 +845,67 @@ systemctl restart crio_node.service
 
 ## 9. Security Hardening
 
-### 9.1 MQTT Authentication
+### 9.1 MQTT Security Model (Zero-Config)
 
-```conf
-# mosquitto.conf
-allow_anonymous false
-password_file C:\ICCSFlux\config\mqtt_passwd
+NISystem uses automatic MQTT credential generation. No manual setup is required.
 
-# Generate password file
-mosquitto_passwd -c C:\ICCSFlux\config\mqtt_passwd iccsflux
+**Architecture per portable unit:**
+```
+[PC] ─── localhost ─── [MQTT Broker + DAQ Service + Dashboard]
+  │
+  └── USB Ethernet ─── dedicated physical link ─── [cRIO]
 ```
 
-### 9.2 TLS/SSL Encryption
+**How it works:**
+1. On first `start.bat` run, `scripts/mqtt_credentials.py` generates random credentials
+2. Two MQTT users are created: `backend` (full access) and `dashboard` (controlled access)
+3. Credentials are stored in `config/mqtt_credentials.json` (auto-generated, gitignored)
+4. Password file `config/mosquitto_passwd` uses PBKDF2-SHA512 hashing
+5. Dashboard credentials are written to `dashboard/.env.local` (auto-generated, gitignored)
+6. `deploy_crio_v2.bat` reads credentials and passes them to the cRIO runner
 
-```conf
-# mosquitto.conf
-listener 8883
-cafile C:\ICCSFlux\certs\ca.crt
-certfile C:\ICCSFlux\certs\server.crt
-keyfile C:\ICCSFlux\certs\server.key
-require_certificate false
+**MQTT Users and Permissions (ACL):**
+
+| User | Access | Purpose |
+|------|--------|---------|
+| `backend` | `readwrite #` | DAQ service + cRIO nodes — full access |
+| `dashboard` | Read all, write control topics only | Browser dashboard — can monitor and send commands |
+
+**To regenerate credentials:**
+```batch
+REM Delete the credential store and restart
+del config\mqtt_credentials.json
+start.bat
 ```
 
-### 9.3 Firewall Configuration
+**TLS is intentionally omitted** because:
+- The MQTT broker runs on `localhost` (same PC as all services)
+- cRIO is on a dedicated physical Ethernet link (USB adapter), not a shared network
+- The credential system prevents cross-talk between portable NISystem instances
+- Adding TLS would require certificate management that conflicts with the zero-config goal
+
+### 9.2 Firewall Configuration
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 1883 | TCP | MQTT (internal only) |
-| 8883 | TCP | MQTT over TLS |
-| 9002 | TCP | MQTT WebSocket |
+| 1883 | TCP | MQTT (cRIO → PC, over dedicated USB Ethernet) |
+| 9002 | TCP | MQTT WebSocket (localhost only, for dashboard) |
 | 5173 | TCP | Dashboard (dev) |
 | 80/443 | TCP | Dashboard (prod) |
 
 ```batch
-# Windows Firewall rules
+# Windows Firewall rules (only needed if cRIO is on a routed network)
 netsh advfirewall firewall add rule name="ICCSFlux MQTT" dir=in action=allow protocol=TCP localport=1883
 netsh advfirewall firewall add rule name="ICCSFlux Dashboard" dir=in action=allow protocol=TCP localport=5173
 ```
 
-### 9.4 Network Isolation
+### 9.3 Network Isolation
 
-For production systems:
-- Place DAQ nodes on dedicated VLAN
-- Restrict MQTT broker access
-- Use VPN for remote access
-- Disable unused network services
+Each portable NISystem unit uses physical isolation:
+- cRIO connects via dedicated USB-C/USB-A Ethernet adapter (not shared LAN)
+- MQTT WebSocket listener binds to `127.0.0.1` only (dashboard access)
+- MQTT TCP listener on `0.0.0.0:1883` is accessible only from the dedicated cRIO link
+- No internet or corporate network connectivity required for operation
 
 ---
 

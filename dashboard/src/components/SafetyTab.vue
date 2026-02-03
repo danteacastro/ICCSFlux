@@ -241,6 +241,10 @@ function clearAlarm(alarmId: string) {
 }
 
 function clearAllAlarms() {
+  const count = safety.activeAlarms.value.length
+  if (count > 0 && !confirm(`Clear all ${count} active alarm(s)? This cannot be undone.`)) {
+    return
+  }
   safety.clearAllAlarms(true)  // Add to history when manually clearing
 }
 
@@ -2586,6 +2590,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .config-table th {
   position: sticky;
   top: 0;
+  z-index: 10;
   background: #1a1a2e;
   padding: 10px 8px;
   text-align: left;

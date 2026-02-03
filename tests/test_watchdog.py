@@ -299,11 +299,24 @@ class TestServiceRestart:
 
         watchdog._attempt_restart()
 
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert 'systemctl' in call_args
-        assert 'restart' in call_args
-        assert 'test_service' in call_args
+        assert mock_run.called
+        # On Linux: single systemctl restart call
+        # On Windows: sc stop + sc start (two calls)
+        import platform
+        if platform.system() == "Windows":
+            assert mock_run.call_count == 2
+            stop_args = mock_run.call_args_list[0][0][0]
+            start_args = mock_run.call_args_list[1][0][0]
+            assert 'sc' in stop_args
+            assert 'test_service' in stop_args[2]
+            assert 'sc' in start_args
+            assert 'test_service' in start_args[2]
+        else:
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert 'systemctl' in call_args
+            assert 'restart' in call_args
+            assert 'test_service' in call_args
 
     @patch('watchdog.subprocess.run')
     def test_attempt_restart_failure(self, mock_run, watchdog):

@@ -107,6 +107,14 @@ def build_dashboard():
     # Check if already built
     dist_index = dashboard_dir / "dist" / "index.html"
 
+    # Temporarily remove .env.local to prevent dev credentials from being
+    # baked into the portable build (credentials are generated at runtime)
+    env_local = dashboard_dir / ".env.local"
+    env_local_backup = dashboard_dir / ".env.local.build-backup"
+    if env_local.exists():
+        log("  Temporarily removing .env.local (credentials are runtime-generated)")
+        env_local.rename(env_local_backup)
+
     log("Running npm build...")
     try:
         subprocess.run(
@@ -119,6 +127,10 @@ def build_dashboard():
     except subprocess.CalledProcessError as e:
         log(f"Dashboard build failed: {e.stderr.decode() if e.stderr else e}", "ERROR")
         return False
+    finally:
+        # Restore .env.local if it was backed up
+        if env_local_backup.exists():
+            env_local_backup.rename(env_local)
 
     log("Dashboard built successfully", "OK")
     return True
@@ -177,11 +189,10 @@ def setup_mosquitto():
     mosquitto_dest = BUILD_DIR / "mosquitto"
     mosquitto_dest.mkdir(exist_ok=True)
 
-    # Copy mosquitto files
-    for file in ["mosquitto.exe", "mosquitto.conf"]:
-        src = mosquitto_vendor / file
-        if src.exists():
-            shutil.copy2(src, mosquitto_dest / file)
+    # Copy mosquitto executable only (config comes from config/ directory)
+    src = mosquitto_vendor / "mosquitto.exe"
+    if src.exists():
+        shutil.copy2(src, mosquitto_dest / "mosquitto.exe")
 
     # Copy required DLLs
     for dll in mosquitto_vendor.glob("*.dll"):
@@ -271,7 +282,12 @@ def copy_config():
     shutil.copytree(
         config_src,
         config_dest,
-        ignore=shutil.ignore_patterns('*.log', '*.tmp')
+        ignore=shutil.ignore_patterns(
+            '*.log', '*.tmp',
+            'mqtt_credentials.json',  # Auto-generated at runtime
+            'mosquitto_passwd',       # Auto-generated at runtime
+            'mosquitto_secure.conf',  # Superseded by mosquitto.conf
+        )
     )
 
     log("Configuration copied", "OK")
@@ -410,9 +426,14 @@ echo.
 pause
 
 echo.
+echo [0/4] Setting up MQTT credentials...
+"%~dp0ICCSFlux.exe" --setup
+echo     Done.
+
+echo.
 echo [1/4] Installing Mosquitto MQTT Broker...
 nssm\\nssm.exe install ICCSFlux-MQTT "%~dp0mosquitto\\mosquitto.exe" -c "%~dp0config\\mosquitto.conf"
-nssm\\nssm.exe set ICCSFlux-MQTT AppDirectory "%~dp0mosquitto"
+nssm\\nssm.exe set ICCSFlux-MQTT AppDirectory "%~dp0"
 nssm\\nssm.exe set ICCSFlux-MQTT Description "ICCSFlux MQTT Broker"
 nssm\\nssm.exe set ICCSFlux-MQTT Start SERVICE_AUTO_START
 nssm\\nssm.exe set ICCSFlux-MQTT AppStdout "%~dp0data\\logs\\mosquitto.log"

@@ -707,7 +707,11 @@ function getTankSvgWithFill(symbol: PidSymbol): string {
   // For vertical tank: viewBox is 60x80, level area is y=20 to y=70 (height 50)
   // Fill from bottom: y = 70 - (fillLevel/100 * 50), height = fillLevel/100 * 50
   const fillPercent = fillLevel / 100
-  const fillColor = symbol.fillColor || 'currentColor'
+  // Sanitize fillColor to prevent SVG injection via attribute escape
+  const rawColor = symbol.fillColor || 'currentColor'
+  const fillColor = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgb\(\d+,\s*\d+,\s*\d+\)|currentColor)$/.test(rawColor)
+    ? rawColor
+    : 'currentColor'
 
   // Replace the static level-fill rect with dynamic one
   // Original: <rect x="15" y="40" width="30" height="30" class="level-fill" ...>

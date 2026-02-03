@@ -19,6 +19,12 @@ const azureChannels = ref<string[]>([])
 const azureBatchSize = ref(10)
 const azureBatchInterval = ref(1000)
 
+// PostgreSQL configuration state
+const showPostgresConfig = ref(false)
+const dbTestStatus = ref<{ testing: boolean, result: string | null, success: boolean | null }>({
+  testing: false, result: null, success: null
+})
+
 // Permission-based edit control (injected from App.vue)
 const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(true))
 const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
@@ -329,7 +335,18 @@ function startRecording() {
     // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11)
     append_only: cfg.appendOnly,
     verify_on_close: cfg.verifyOnClose,
-    include_audit_metadata: cfg.includeAuditMetadata
+    include_audit_metadata: cfg.includeAuditMetadata,
+
+    // PostgreSQL Database Storage
+    db_enabled: cfg.dbEnabled,
+    db_host: cfg.dbHost,
+    db_port: cfg.dbPort,
+    db_name: cfg.dbName,
+    db_user: cfg.dbUser,
+    db_password: cfg.dbPassword,
+    db_table: cfg.dbTable,
+    db_batch_size: cfg.dbBatchSize,
+    db_timescale: cfg.dbTimescale
   }
 
   // Update config then start recording
@@ -413,6 +430,46 @@ function selectAllAzureChannels() {
 
 function clearAzureChannels() {
   azureChannels.value = []
+}
+
+// PostgreSQL methods
+function openPostgresConfig() {
+  showPostgresConfig.value = true
+  dbTestStatus.value = { testing: false, result: null, success: null }
+}
+
+function testPostgresConnection() {
+  const cfg = recordingConfig.value
+  dbTestStatus.value = { testing: true, result: null, success: null }
+
+  mqtt.testDbConnection({
+    host: cfg.dbHost,
+    port: cfg.dbPort,
+    dbname: cfg.dbName,
+    user: cfg.dbUser,
+    password: cfg.dbPassword,
+  })
+
+  // Listen for response
+  const unsub = mqtt.onRecordingResponse((result: { success: boolean, message: string }) => {
+    dbTestStatus.value = {
+      testing: false,
+      result: result.message,
+      success: result.success
+    }
+    unsub()
+  })
+
+  // Timeout after 10 seconds
+  setTimeout(() => {
+    if (dbTestStatus.value.testing) {
+      dbTestStatus.value = { testing: false, result: 'Connection test timed out', success: false }
+    }
+  }, 10000)
+}
+
+function togglePostgresEnabled() {
+  store.setRecordingConfig({ dbEnabled: !recordingConfig.value.dbEnabled })
 }
 
 // Cleanup on unmount
@@ -606,7 +663,7 @@ const scheduleDayLabels = [
                 @change="toggleChannel(ch.name)"
               />
               <div class="channel-info">
-                <span class="channel-name">{{ ch.name }}</span>
+                <span class="channel-name">{{ ch.name.replace(/^py\./, '') }}</span>
                 <span class="channel-meta">{{ ch.type }} {{ ch.unit ? `(${ch.unit})` : '' }}</span>
               </div>
             </div>
@@ -1087,7 +1144,7 @@ const scheduleDayLabels = [
                 <select v-model="recordingConfig.triggerChannel" :disabled="configLocked">
                   <option value="">Select tag...</option>
                   <option v-for="ch in availableChannels" :key="ch.name" :value="ch.name">
-                    {{ ch.name }}
+                    {{ ch.name.replace(/^py\./, '') }}
                   </option>
                 </select>
               </div>
@@ -1156,14 +1213,24 @@ const scheduleDayLabels = [
           </h3>
 
           <div class="cloud-destinations">
-            <!-- CSV Recording (always available) -->
+            <!-- CSV Recording -->
             <div class="destination-item">
               <div class="destination-header">
                 <label class="destination-toggle">
-                  <input type="checkbox" checked disabled />
+                  <input
+                    type="checkbox"
+                    :checked="recordingConfig.csvEnabled"
+                    :disabled="configLocked"
+                    @change="store.setRecordingConfig({ csvEnabled: !recordingConfig.csvEnabled })"
+                  />
                   <span class="toggle-label">CSV Recording</span>
                 </label>
-                <span class="destination-status active">Always On</span>
+                <span
+                  class="destination-status"
+                  :class="recordingConfig.csvEnabled ? 'active' : 'inactive'"
+                >
+                  {{ recordingConfig.csvEnabled ? 'Enabled' : 'Disabled' }}
+                </span>
               </div>
               <p class="destination-desc">Local file recording (configured above)</p>
             </div>
@@ -1199,6 +1266,42 @@ const scheduleDayLabels = [
                 class="btn btn-sm btn-secondary"
                 @click="openAzureConfig"
                 :disabled="!azureIot.available.value"
+              >
+                Configure
+              </button>
+            </div>
+
+            <!-- PostgreSQL Database -->
+            <div class="destination-item">
+              <div class="destination-header">
+                <label class="destination-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="recordingConfig.dbEnabled"
+                    :disabled="configLocked || !recordingConfig.dbHost"
+                    @change="togglePostgresEnabled"
+                  />
+                  <span class="toggle-label">PostgreSQL</span>
+                </label>
+                <span
+                  class="destination-status"
+                  :class="{
+                    active: recordingConfig.dbEnabled && store.status?.db_connected,
+                    warning: recordingConfig.dbEnabled && !store.status?.db_connected,
+                    inactive: !recordingConfig.dbEnabled
+                  }"
+                >
+                  {{ recordingConfig.dbEnabled
+                    ? (store.status?.db_connected ? 'Connected' : 'Enabled')
+                    : 'Disabled' }}
+                </span>
+              </div>
+              <p class="destination-desc">
+                Store recording data in a PostgreSQL database
+              </p>
+              <button
+                class="btn btn-sm btn-secondary"
+                @click="openPostgresConfig"
               >
                 Configure
               </button>
@@ -1317,6 +1420,25 @@ const scheduleDayLabels = [
           <div class="info-item" v-if="azureIot.stats.value.last_error">
             <span class="info-label">Error:</span>
             <span class="info-value error">{{ azureIot.stats.value.last_error }}</span>
+          </div>
+        </div>
+
+        <!-- PostgreSQL Status -->
+        <div class="info-section" v-if="recordingConfig.dbEnabled">
+          <h3>PostgreSQL</h3>
+          <div class="info-item">
+            <span class="info-label">Status:</span>
+            <span class="info-value" :class="{ active: store.status?.db_connected }">
+              {{ store.status?.db_connected ? 'Connected' : (isRecording ? 'Disconnected' : 'Idle') }}
+            </span>
+          </div>
+          <div class="info-item" v-if="store.status?.db_rows_written">
+            <span class="info-label">Rows:</span>
+            <span class="info-value">{{ (store.status?.db_rows_written || 0).toLocaleString() }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Target:</span>
+            <span class="info-value" style="font-size: 0.7rem;">{{ recordingConfig.dbHost }}:{{ recordingConfig.dbPort }}/{{ recordingConfig.dbName }}</span>
           </div>
         </div>
       </div>
@@ -1506,6 +1628,175 @@ const scheduleDayLabels = [
             <button class="btn btn-secondary" @click="showAzureConfig = false">Cancel</button>
             <button class="btn btn-primary" @click="saveAzureConfig" :disabled="azureIot.isLoading.value">
               {{ azureIot.isLoading.value ? 'Saving...' : 'Save Configuration' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- PostgreSQL Configuration Modal -->
+    <Transition name="modal">
+      <div v-if="showPostgresConfig" class="modal-overlay" @click.self="showPostgresConfig = false">
+        <div class="modal-dialog postgres-modal">
+          <div class="modal-header">
+            <h2>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+              </svg>
+              PostgreSQL Configuration
+            </h2>
+            <button class="close-btn" @click="showPostgresConfig = false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="modal-body">
+            <!-- Connection Settings -->
+            <div class="form-group">
+              <label>Host</label>
+              <input
+                type="text"
+                :value="recordingConfig.dbHost"
+                @input="store.setRecordingConfig({ dbHost: ($event.target as HTMLInputElement).value })"
+                placeholder="localhost or IP address"
+                :disabled="configLocked"
+              />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Port</label>
+                <input
+                  type="number"
+                  :value="recordingConfig.dbPort"
+                  @input="store.setRecordingConfig({ dbPort: parseInt(($event.target as HTMLInputElement).value) || 5432 })"
+                  min="1" max="65535"
+                  :disabled="configLocked"
+                />
+              </div>
+              <div class="form-group">
+                <label>Database Name</label>
+                <input
+                  type="text"
+                  :value="recordingConfig.dbName"
+                  @input="store.setRecordingConfig({ dbName: ($event.target as HTMLInputElement).value })"
+                  placeholder="iccsflux"
+                  :disabled="configLocked"
+                />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Username</label>
+                <input
+                  type="text"
+                  :value="recordingConfig.dbUser"
+                  @input="store.setRecordingConfig({ dbUser: ($event.target as HTMLInputElement).value })"
+                  placeholder="iccsflux"
+                  :disabled="configLocked"
+                />
+              </div>
+              <div class="form-group">
+                <label>Password</label>
+                <input
+                  type="password"
+                  :value="recordingConfig.dbPassword"
+                  @input="store.setRecordingConfig({ dbPassword: ($event.target as HTMLInputElement).value })"
+                  placeholder="Enter password"
+                  :disabled="configLocked"
+                />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Table Name</label>
+                <input
+                  type="text"
+                  :value="recordingConfig.dbTable"
+                  @input="store.setRecordingConfig({ dbTable: ($event.target as HTMLInputElement).value })"
+                  placeholder="recording_data"
+                  :disabled="configLocked"
+                />
+                <span class="form-hint">Table is auto-created if it doesn't exist</span>
+              </div>
+              <div class="form-group">
+                <label>Batch Size</label>
+                <input
+                  type="number"
+                  :value="recordingConfig.dbBatchSize"
+                  @input="store.setRecordingConfig({ dbBatchSize: parseInt(($event.target as HTMLInputElement).value) || 50 })"
+                  min="1" max="1000"
+                  :disabled="configLocked"
+                />
+                <span class="form-hint">Rows per INSERT batch</span>
+              </div>
+            </div>
+
+            <!-- TimescaleDB Option -->
+            <div class="form-row">
+              <div class="form-group checkbox-group">
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    :checked="recordingConfig.dbTimescale"
+                    @change="store.setRecordingConfig({ dbTimescale: ($event.target as HTMLInputElement).checked })"
+                    :disabled="configLocked"
+                  />
+                  Enable TimescaleDB hypertable
+                </label>
+                <span class="form-hint">Auto-creates hypertable if TimescaleDB extension is installed. Optimizes time-series queries.</span>
+              </div>
+            </div>
+
+            <!-- Test Connection -->
+            <div class="db-test-section">
+              <button
+                class="btn btn-sm btn-secondary"
+                @click="testPostgresConnection"
+                :disabled="dbTestStatus.testing || !recordingConfig.dbHost"
+              >
+                {{ dbTestStatus.testing ? 'Testing...' : 'Test Connection' }}
+              </button>
+              <span v-if="dbTestStatus.result" class="db-test-result" :class="{ success: dbTestStatus.success, error: !dbTestStatus.success }">
+                {{ dbTestStatus.result }}
+              </span>
+            </div>
+
+            <!-- Info -->
+            <div class="postgres-info">
+              <p>PostgreSQL records data alongside CSV files. Each recording session creates rows with JSONB-stored channel values.</p>
+              <p>Schema: <code>ts (timestamptz) | session_id (text) | channel_values (jsonb)</code></p>
+            </div>
+
+            <!-- DB status when recording -->
+            <div class="db-status-box" v-if="store.status?.db_enabled && isRecording">
+              <div class="status-row">
+                <span class="status-label">DB Connected:</span>
+                <span class="status-value" :class="{ connected: store.status?.db_connected }">
+                  {{ store.status?.db_connected ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="status-row">
+                <span class="status-label">Rows Written:</span>
+                <span class="status-value">{{ (store.status?.db_rows_written || 0).toLocaleString() }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="showPostgresConfig = false">Close</button>
+            <button
+              class="btn btn-primary"
+              @click="togglePostgresEnabled(); showPostgresConfig = false"
+              :disabled="configLocked || !recordingConfig.dbHost"
+            >
+              {{ recordingConfig.dbEnabled ? 'Disable PostgreSQL' : 'Enable PostgreSQL' }}
             </button>
           </div>
         </div>
@@ -3133,5 +3424,143 @@ const scheduleDayLabels = [
   color: #ef4444;
   font-size: 0.7rem;
   word-break: break-word;
+}
+
+/* PostgreSQL Config Modal */
+.postgres-modal {
+  background: #12121e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 560px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.postgres-modal .modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.postgres-modal .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.postgres-modal .form-group label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.postgres-modal .form-group input {
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e5e7eb;
+  font-size: 0.85rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.postgres-modal .form-group input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+.postgres-modal .form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-hint {
+  font-size: 0.65rem;
+  color: #6b7280;
+}
+
+.db-test-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.db-test-result {
+  font-size: 0.8rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.db-test-result.success {
+  color: #22c55e;
+}
+
+.db-test-result.error {
+  color: #ef4444;
+}
+
+.postgres-info {
+  padding: 10px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.postgres-info p {
+  margin: 4px 0;
+}
+
+.postgres-info code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.db-status-box {
+  padding: 12px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.db-status-box .status-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.db-status-box .status-row:last-child {
+  border-bottom: none;
+}
+
+.db-status-box .status-label {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.db-status-box .status-value {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.db-status-box .status-value.connected {
+  color: #22c55e;
 }
 </style>

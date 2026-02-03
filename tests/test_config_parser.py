@@ -203,7 +203,7 @@ class TestSystemConfig:
         assert config.mqtt_broker == "localhost"
         assert config.mqtt_port == 1883
         assert config.mqtt_base_topic == "nisystem"
-        assert config.scan_rate_hz == 100.0
+        assert config.scan_rate_hz == 4.0
         assert config.publish_rate_hz == 4.0
         assert config.simulation_mode is True
         assert config.node_id == "node-001"

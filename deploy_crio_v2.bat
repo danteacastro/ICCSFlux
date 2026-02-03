@@ -10,10 +10,28 @@ if "%HOST%"=="" set HOST=192.168.1.20
 set BROKER=%2
 if "%BROKER%"=="" set BROKER=192.168.1.1
 
+REM Auto-generate MQTT credentials if they don't exist (idempotent)
+if not exist "config\mqtt_credentials.json" (
+    echo Generating MQTT credentials...
+    python scripts\mqtt_credentials.py
+)
+
+REM Load MQTT credentials
+set MQTT_USER=
+set MQTT_PASS=
+if exist "config\mqtt_credentials.json" (
+    for /f "tokens=1,2 delims=:" %%a in ('python -c "import json; d=json.load(open('config/mqtt_credentials.json')); print(d['backend']['username']+':'+d['backend']['password'])"') do (
+        set "MQTT_USER=%%a"
+        set "MQTT_PASS=%%b"
+    )
+)
+
 echo ============================================
 echo Deploying cRIO Node V2
 echo   cRIO Host: %HOST%
 echo   MQTT Broker: %BROKER%
+if defined MQTT_USER echo   MQTT Auth: %MQTT_USER% (credentials loaded)
+if not defined MQTT_USER echo   MQTT Auth: anonymous (no credentials found)
 echo ============================================
 
 REM Check SSH connectivity
@@ -100,6 +118,25 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+REM Deploy TLS CA certificate (if available)
+if exist config\tls\ca.crt (
+    echo Deploying TLS CA certificate...
+    scp config\tls\ca.crt admin@%HOST%:/home/admin/nisystem/ca.crt
+)
+
+REM Write persistent credential + identity file to cRIO
+REM This survives reboots so run_crio_v2.py doesn't need CLI args
+echo Writing credential file to cRIO...
+if defined MQTT_USER (
+    ssh admin@%HOST% "cat > /home/admin/nisystem/mqtt_creds.json << 'CREDEOF'
+{\"mqtt_user\": \"%MQTT_USER%\", \"mqtt_pass\": \"%MQTT_PASS%\", \"broker\": \"%BROKER%\", \"node_id\": \"crio-001\"}
+CREDEOF
+chmod 600 /home/admin/nisystem/mqtt_creds.json"
+    echo   Credentials + identity written to cRIO
+) else (
+    echo   WARNING: No credentials to write. Run start.bat first to generate them.
+)
+
 REM Deploy the runner script
 echo Deploying runner script...
 scp scripts\run_crio_v2.py admin@%HOST%:/home/admin/nisystem/run_crio_v2.py
@@ -130,12 +167,20 @@ if %ERRORLEVEL% EQU 0 (
     ping -n 3 127.0.0.1 > nul 2>&1
 )
 
+REM Build MQTT auth args for cRIO runner
+set MQTT_ARGS=
+if defined MQTT_USER set "MQTT_ARGS=--mqtt-user %MQTT_USER% --mqtt-pass %MQTT_PASS%"
+
 echo Starting cRIO Node V2 (broker: %BROKER%)...
-ssh admin@%HOST% "cd /home/admin/nisystem && MALLOC_CHECK_=0 python3 run_crio_v2.py --broker %BROKER% --daemon"
+ssh admin@%HOST% "cd /home/admin/nisystem && MALLOC_CHECK_=0 python3 run_crio_v2.py --broker %BROKER% %MQTT_ARGS% --daemon"
 
 REM Clear any retained acquire/start messages so cRIO doesn't auto-acquire
 echo Clearing retained acquire messages...
-python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.connect('%BROKER%', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
+if defined MQTT_USER (
+    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.username_pw_set('%MQTT_USER%','%MQTT_PASS%'); c.connect('%BROKER%', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
+) else (
+    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.connect('%BROKER%', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
+)
 
 echo.
 echo ============================================

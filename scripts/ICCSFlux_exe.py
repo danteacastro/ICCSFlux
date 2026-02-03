@@ -6,7 +6,11 @@ Starts all compiled services and opens the dashboard in browser.
 When compiled with PyInstaller --noconsole, runs in service/background mode.
 """
 
+import base64
+import hashlib
+import json
 import os
+import secrets
 import sys
 import subprocess
 import time
@@ -33,10 +37,12 @@ else:
 
 # Paths relative to root
 MOSQUITTO = ROOT / "mosquitto" / "mosquitto.exe"
-MOSQUITTO_CONF = ROOT / "mosquitto" / "mosquitto.conf"
+MOSQUITTO_CONF = ROOT / "config" / "mosquitto.conf"
 DAQ_SERVICE = ROOT / "DAQService.exe"
 AZURE_UPLOADER = ROOT / "AzureUploader.exe"
 CONFIG = ROOT / "config" / "system.ini"
+CRED_FILE = ROOT / "config" / "mqtt_credentials.json"
+PASSWD_FILE = ROOT / "config" / "mosquitto_passwd"
 WWW = ROOT / "www"
 DATA = ROOT / "data"
 LOCKFILE = ROOT / "data" / ".iccsflux.lock"
@@ -100,6 +106,59 @@ def release_single_instance():
         _lockfile_handle = None
 
 
+def _hash_mosquitto_password(password, iterations=101):
+    """Generate mosquitto-compatible PBKDF2-SHA512 password hash."""
+    salt = os.urandom(12)
+    dk = hashlib.pbkdf2_hmac('sha512', password.encode('utf-8'), salt, iterations, dklen=64)
+    salt_b64 = base64.b64encode(salt).decode('ascii')
+    hash_b64 = base64.b64encode(dk).decode('ascii')
+    return f"$7${iterations}${salt_b64}${hash_b64}"
+
+
+def setup_mqtt_credentials():
+    """Auto-generate MQTT credentials on first run. Idempotent."""
+    if CRED_FILE.exists():
+        return True
+
+    print("[SETUP] Generating MQTT credentials (first-run)...")
+
+    backend_pass = secrets.token_urlsafe(24)
+    dashboard_pass = secrets.token_urlsafe(24)
+
+    creds = {
+        'backend': {'username': 'backend', 'password': backend_pass},
+        'dashboard': {'username': 'dashboard', 'password': dashboard_pass},
+    }
+
+    # Write credential store
+    CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(CRED_FILE, 'w') as f:
+        json.dump(creds, f, indent=2)
+
+    # Write mosquitto password file (PBKDF2-SHA512)
+    lines = []
+    for username, password in [('backend', backend_pass), ('dashboard', dashboard_pass)]:
+        hashed = _hash_mosquitto_password(password)
+        lines.append(f"{username}:{hashed}")
+    with open(PASSWD_FILE, 'w', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    print("[  OK ] MQTT credentials generated")
+    return True
+
+
+def load_mqtt_credentials():
+    """Load MQTT credentials from the auto-generated file. Returns (username, password) or (None, None)."""
+    if not CRED_FILE.exists():
+        return None, None
+    try:
+        with open(CRED_FILE) as f:
+            creds = json.load(f)
+        return creds['backend']['username'], creds['backend']['password']
+    except Exception:
+        return None, None
+
+
 class QuietHTTPHandler(SimpleHTTPRequestHandler):
     """HTTP handler that doesn't log every request"""
     def log_message(self, format, *args):
@@ -135,10 +194,10 @@ def start_mosquitto():
 
     print("[START] Mosquitto MQTT broker...")
 
-    # Start Mosquitto
+    # Start Mosquitto (CWD=ROOT so relative paths in config resolve correctly)
     proc = subprocess.Popen(
         [str(MOSQUITTO), "-c", str(MOSQUITTO_CONF)],
-        cwd=str(MOSQUITTO.parent),
+        cwd=str(ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -184,9 +243,14 @@ def start_daq_service():
     (DATA / "recordings").mkdir(exist_ok=True)
     (DATA / "logs").mkdir(exist_ok=True)
 
-    # Start DAQ service
+    # Start DAQ service with MQTT credentials
     env = os.environ.copy()
     env["ICCSFLUX_DATA_DIR"] = str(DATA)
+
+    mqtt_user, mqtt_pass = load_mqtt_credentials()
+    if mqtt_user and mqtt_pass:
+        env["MQTT_USERNAME"] = mqtt_user
+        env["MQTT_PASSWORD"] = mqtt_pass
 
     proc = subprocess.Popen(
         [str(DAQ_SERVICE), "-c", str(CONFIG)],
@@ -216,10 +280,18 @@ def start_azure_uploader():
 
     print("[START] Azure IoT Hub uploader (idle)...")
 
+    # Pass MQTT credentials via environment variables
+    env = os.environ.copy()
+    mqtt_user, mqtt_pass = load_mqtt_credentials()
+    if mqtt_user and mqtt_pass:
+        env["MQTT_USERNAME"] = mqtt_user
+        env["MQTT_PASSWORD"] = mqtt_pass
+
     # Start Azure uploader - it connects to MQTT and waits for commands
     proc = subprocess.Popen(
         [str(AZURE_UPLOADER), "--host", "localhost", "--port", "1883"],
         cwd=str(ROOT),
+        env=env,
         stdout=subprocess.DEVNULL if SERVICE_MODE else None,
         stderr=subprocess.DEVNULL if SERVICE_MODE else None,
     )
@@ -315,9 +387,16 @@ Example:
                         help="Don't open browser automatically")
     parser.add_argument("--port", type=int, default=5173,
                         help="Web server port (default: 5173)")
+    parser.add_argument("--setup", action="store_true",
+                        help="Generate MQTT credentials and exit (for service installation)")
     parser.add_argument("-v", "--version", action="version",
                         version="ICCSFlux Portable 1.0")
     args = parser.parse_args()
+
+    # --setup mode: generate credentials and exit
+    if args.setup:
+        setup_mqtt_credentials()
+        return 0
 
     # Check for single instance
     if not acquire_single_instance():
@@ -351,6 +430,9 @@ Example:
     # Set up signal handlers for clean shutdown
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
+
+    # Generate MQTT credentials on first run (before starting mosquitto)
+    setup_mqtt_credentials()
 
     # Start services
     start_mosquitto()

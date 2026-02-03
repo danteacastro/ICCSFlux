@@ -61,19 +61,21 @@ const recordingTime = computed(() => {
         @click="canStartAcquisition && emit('start')"
         :disabled="!store.isConnected || !canStartAcquisition"
         :title="canStartAcquisition ? 'Start Acquisition' : 'Requires Operator or higher'"
+        aria-label="Start acquisition"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <polygon points="5,3 19,12 5,21"/>
         </svg>
         START
-        <span v-if="!canStartAcquisition" class="lock-icon">🔒</span>
+        <span v-if="!canStartAcquisition" class="lock-icon" aria-label="Locked">🔒</span>
       </button>
       <button
         v-else
         class="btn btn-stop"
         @click="emit('stop')"
+        aria-label="Stop acquisition"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <rect x="4" y="4" width="16" height="16"/>
         </svg>
         STOP
@@ -87,40 +89,45 @@ const recordingTime = computed(() => {
         @click="canStartRecording && store.isAcquiring && emit('record-start')"
         :disabled="!store.isAcquiring || !canStartRecording"
         :title="canStartRecording ? 'Start Recording' : 'Requires Operator or higher'"
+        aria-label="Start recording"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="12" cy="12" r="8"/>
         </svg>
         RECORD
-        <span v-if="!canStartRecording" class="lock-icon">🔒</span>
+        <span v-if="!canStartRecording" class="lock-icon" aria-label="Locked">🔒</span>
       </button>
       <button
         v-else
         class="btn btn-record recording"
         @click="emit('record-stop')"
+        aria-label="Stop recording"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="12" cy="12" r="8"/>
         </svg>
-        {{ recordingTime }}
+        <span aria-live="polite">{{ recordingTime }}</span>
       </button>
     </div>
 
 
     <!-- Session toggle - controls test session (session scripts, sequences) -->
     <div class="control-group">
-      <div class="session-toggle" :class="{ locked: !canControlSession, disabled: !store.isAcquiring }">
-        <span class="label">SESSION</span>
+      <div class="session-toggle" :class="{ locked: !canControlSession, disabled: !store.isAcquiring }" role="group" aria-label="Session controls">
+        <span class="label" id="session-label">SESSION</span>
         <button
           class="toggle-btn"
           :class="{ on: playground.isSessionActive.value, locked: !canControlSession, disabled: !store.isAcquiring }"
           @click="canControlSession && store.isAcquiring && (playground.isSessionActive.value ? emit('session-stop') : emit('session-start'))"
           :disabled="!canControlSession || !store.isAcquiring"
           :title="!store.isAcquiring ? 'Start acquisition first' : (canControlSession ? 'Toggle Test Session' : 'Requires Operator or higher')"
+          role="switch"
+          :aria-checked="playground.isSessionActive.value"
+          aria-labelledby="session-label"
         >
           <span class="slider"></span>
         </button>
-        <span v-if="!canControlSession" class="lock-icon">🔒</span>
+        <span v-if="!canControlSession" class="lock-icon" aria-label="Locked">🔒</span>
       </div>
     </div>
 
@@ -130,8 +137,9 @@ const recordingTime = computed(() => {
         v-if="store.editMode"
         class="btn btn-add"
         @click="emit('add-widget')"
+        aria-label="Add widget"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
         ADD WIDGET
@@ -142,8 +150,10 @@ const recordingTime = computed(() => {
         class="btn btn-edit"
         :class="{ active: store.editMode }"
         @click="store.toggleEditMode()"
+        :aria-label="store.editMode ? 'Exit edit mode' : 'Enter edit mode'"
+        :aria-pressed="store.editMode"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
@@ -156,8 +166,10 @@ const recordingTime = computed(() => {
         :class="{ active: store.pidEditMode }"
         @click="store.setPidEditMode(!store.pidEditMode)"
         title="P&ID Drawing Mode - Free-form symbols and pipes"
+        :aria-label="store.pidEditMode ? 'Exit P&ID drawing mode' : 'Enter P&ID drawing mode'"
+        :aria-pressed="store.pidEditMode"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="5" cy="12" r="3"/>
           <circle cx="19" cy="12" r="3"/>
           <line x1="8" y1="12" x2="16" y2="12"/>

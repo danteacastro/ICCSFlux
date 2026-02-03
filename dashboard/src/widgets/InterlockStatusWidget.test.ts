@@ -14,19 +14,29 @@
  * - Bypass buttons
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
+import type { InterlockStatus, Interlock } from '../types'
+
+interface MockInterlockState {
+  mockInterlockStatuses: Ref<Partial<InterlockStatus>[]>
+  mockInterlocks: Ref<Partial<Interlock>[]>
+  mockBypassInterlock: Mock
+}
+
+const getInterlockMockState = () =>
+  (globalThis as unknown as Record<string, MockInterlockState>).__mockInterlockState
 
 // Mock useSafety
 vi.mock('../composables/useSafety', () => {
   const { ref, computed } = require('vue')
 
-  const mockInterlockStatuses = ref<any[]>([])
-  const mockInterlocks = ref<any[]>([])
+  const mockInterlockStatuses = ref<Partial<InterlockStatus>[]>([])
+  const mockInterlocks = ref<Partial<Interlock>[]>([])
   const mockBypassInterlock = vi.fn()
 
-  ;(global as any).__mockInterlockState = {
+  ;(globalThis as unknown as Record<string, MockInterlockState>).__mockInterlockState = {
     mockInterlockStatuses,
     mockInterlocks,
     mockBypassInterlock
@@ -47,7 +57,7 @@ import InterlockStatusWidget from './InterlockStatusWidget.vue'
 describe('InterlockStatusWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockInterlockState
+    const state = getInterlockMockState()
     if (state) {
       state.mockInterlockStatuses.value = []
       state.mockInterlocks.value = []
@@ -114,7 +124,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('Summary Counts', () => {
     beforeEach(() => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: false },
         { id: '2', name: 'Interlock 2', satisfied: true, enabled: true, bypassed: false },
@@ -147,7 +157,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not show bypassed stat when count is 0', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: false }
       ]
@@ -173,7 +183,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('All Clear State', () => {
     it('should show all clear when no blocked or bypassed', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: false },
         { id: '2', name: 'Interlock 2', satisfied: true, enabled: true, bypassed: false }
@@ -184,7 +194,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should show "All Clear" text', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: false }
       ]
@@ -194,7 +204,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not show all clear when blocked', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: false, enabled: true, bypassed: false }
       ]
@@ -204,7 +214,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not show all clear when bypassed', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: true }
       ]
@@ -220,7 +230,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('Interlock List', () => {
     beforeEach(() => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Pressure OK', satisfied: true, enabled: true, bypassed: false },
         { id: '2', name: 'Temperature High', satisfied: false, enabled: true, bypassed: false },
@@ -294,7 +304,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('Has Blocked Class', () => {
     it('should have has-blocked class when blocked interlocks exist', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: false, enabled: true, bypassed: false }
       ]
@@ -304,7 +314,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not have has-blocked class when all satisfied', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Interlock 1', satisfied: true, enabled: true, bypassed: false }
       ]
@@ -320,7 +330,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('Compact Mode', () => {
     beforeEach(() => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'OK Interlock', satisfied: true, enabled: true, bypassed: false },
         { id: '2', name: 'Blocked One', satisfied: false, enabled: true, bypassed: false }
@@ -359,7 +369,7 @@ describe('InterlockStatusWidget', () => {
 
   describe('Bypass Buttons', () => {
     beforeEach(() => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Bypassable', satisfied: false, enabled: true, bypassed: false }
       ]
@@ -388,7 +398,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not show bypass button for satisfied interlock', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Satisfied', satisfied: true, enabled: true, bypassed: false }
       ]
@@ -403,7 +413,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should not show bypass button when bypassAllowed is false', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlocks.value = [
         { id: '1', bypassAllowed: false, bypassed: false }
       ]
@@ -415,7 +425,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should show X text when already bypassed', () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Bypassed', satisfied: false, enabled: true, bypassed: true }
       ]
@@ -430,7 +440,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should call bypassInterlock when bypass button clicked', async () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
 
       const wrapper = mount(InterlockStatusWidget, {
         props: { showBypassButtons: true }
@@ -442,7 +452,7 @@ describe('InterlockStatusWidget', () => {
     })
 
     it('should call bypassInterlock with false when removing bypass', async () => {
-      const state = (global as any).__mockInterlockState
+      const state = getInterlockMockState()
       state.mockInterlockStatuses.value = [
         { id: '1', name: 'Bypassed', satisfied: false, enabled: true, bypassed: true }
       ]

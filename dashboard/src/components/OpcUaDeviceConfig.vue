@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import type { DeviceCommandResult } from '../types'
 
 const mqtt = useMqtt()
 
@@ -89,10 +90,11 @@ function subscribeToStatus() {
         const existingIdx = devices.value.findIndex(d => d.name === name)
         if (existingIdx < 0) {
           // Add device from status
+          const s = status as Record<string, unknown>
           devices.value.push({
             name,
             enabled: true,
-            endpoint_url: (status as any).endpoint_url || '',
+            endpoint_url: (s.endpoint_url as string) || '',
             security_policy: 'None',
             message_mode: 'None',
             username: '',
@@ -242,9 +244,9 @@ async function testConnection(deviceName: string) {
     }, 15000)
 
     if (result.success) {
-      showFeedback('success', (result as any).message || `Connection to ${deviceName} successful`)
+      showFeedback('success', (result as DeviceCommandResult).message || `Connection to ${deviceName} successful`)
     } else {
-      showFeedback('error', (result as any).message || result.error || `Connection to ${deviceName} failed`)
+      showFeedback('error', (result as DeviceCommandResult).message || result.error || `Connection to ${deviceName} failed`)
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Connection test timed out')
@@ -272,10 +274,11 @@ async function browseNode(nodeId: string) {
       node_id: nodeId
     }, 10000)
 
-    if (result.success && Array.isArray((result as any).nodes)) {
-      browseNodes.value = (result as any).nodes
+    const cmdResult = result as DeviceCommandResult
+    if (result.success && Array.isArray(cmdResult.nodes)) {
+      browseNodes.value = cmdResult.nodes
     } else {
-      showFeedback('error', (result as any).error || 'Browse failed')
+      showFeedback('error', cmdResult.error || 'Browse failed')
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Browse timed out')

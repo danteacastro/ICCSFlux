@@ -22,7 +22,9 @@ Usage:
 
 import argparse
 import cmd
+import configparser
 import json
+import logging
 import os
 import re
 import socket
@@ -44,6 +46,8 @@ except ImportError:
     print("Run: pip install paho-mqtt")
     sys.exit(1)
 
+
+logger = logging.getLogger(__name__)
 
 # ANSI colors for terminal output
 class Colors:
@@ -442,8 +446,10 @@ class DeviceMonitor:
                 if data.get('request_id') == request_id:
                     self.response_data[request_id] = data
                     event.set()
-            except:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse command response from {msg.topic}: {e}")
+            except Exception as e:
+                logger.error(f"Error processing command response from {msg.topic}: {e}")
 
         self.client.message_callback_add(response_topic, on_response)
         self.client.subscribe(response_topic, qos=1)
@@ -540,7 +546,8 @@ class HardwareScanner:
             local_ip = s.getsockname()[0]
             s.close()
             return local_ip
-        except:
+        except OSError as e:
+            logger.debug(f"Could not determine local subnet: {e}")
             return None
 
     def _probe_host(self, ip: str, timeout: float) -> Optional[Dict]:
@@ -601,7 +608,8 @@ class HardwareScanner:
                     timeout=timeout + 1
                 )
             return result.returncode == 0
-        except:
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug(f"Ping failed for {ip}: {e}")
             return False
 
     def _check_port(self, ip: str, port: int, timeout: float) -> bool:
@@ -612,7 +620,8 @@ class HardwareScanner:
             result = sock.connect_ex((ip, port))
             sock.close()
             return result == 0
-        except:
+        except OSError as e:
+            logger.debug(f"Port check failed for {ip}:{port}: {e}")
             return False
 
     def _is_ni_device(self, ip: str, timeout: float) -> bool:
@@ -625,7 +634,8 @@ class HardwareScanner:
             response = sock.recv(1024).decode('utf-8', errors='ignore')
             sock.close()
             return 'National Instruments' in response or 'NI-' in response or 'LabVIEW' in response
-        except:
+        except OSError as e:
+            logger.debug(f"NI device check failed for {ip}: {e}")
             return False
 
     def _get_ni_model(self, ip: str) -> str:
@@ -644,7 +654,8 @@ class HardwareScanner:
                 if match:
                     return match.group(0)
             return 'cRIO (unknown model)'
-        except:
+        except OSError as e:
+            logger.debug(f"Could not retrieve NI model from {ip}: {e}")
             return 'cRIO'
 
     def _is_cfp_device(self, ip: str, timeout: float) -> bool:
@@ -665,7 +676,8 @@ class HardwareScanner:
 
             # Check for NI vendor identification in response
             return b'National' in response or b'NI' in response
-        except:
+        except OSError as e:
+            logger.debug(f"cFP device check failed for {ip}: {e}")
             return False
 
     def scan_local_ni_hardware(self) -> List[Dict]:
@@ -737,7 +749,7 @@ class HardwareScanner:
                                 with winreg.OpenKey(key, device_name) as dev_key:
                                     try:
                                         product_type = winreg.QueryValueEx(dev_key, "ProductType")[0]
-                                    except:
+                                    except OSError:
                                         product_type = "Unknown"
 
                                     devices.append({
@@ -1493,8 +1505,8 @@ Type 'quit' or 'exit' to leave.
             try:
                 payload = json.loads(msg.payload.decode())
                 messages.append(f"[{ts}] {msg.topic}:\n{json.dumps(payload, indent=2)}")
-            except:
-                messages.append(f"[{ts}] {msg.topic}: {msg.payload.decode()}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                messages.append(f"[{ts}] {msg.topic}: {msg.payload.decode(errors='replace')}")
 
         # Temporarily add handler
         original_handler = self.monitor.client.on_message
@@ -1555,8 +1567,8 @@ def load_config() -> Dict[str, Any]:
                 data = json.load(f)
                 config['broker'] = data.get('mqtt_broker', config['broker'])
                 config['port'] = data.get('mqtt_port', config['port'])
-        except:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load config from {deploy_config}: {e}")
 
     # Try system.ini
     system_ini = script_dir.parent / 'config' / 'system.ini'
@@ -1570,8 +1582,8 @@ def load_config() -> Dict[str, Any]:
                 config['port'] = cp['mqtt'].getint('port', config['port'])
             if 'system' in cp:
                 config['base_topic'] = cp['system'].get('mqtt_base_topic', config['base_topic'])
-        except:
-            pass
+        except (configparser.Error, OSError) as e:
+            logger.warning(f"Failed to load config from {system_ini}: {e}")
 
     return config
 

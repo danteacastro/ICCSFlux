@@ -4,6 +4,7 @@ cRIO Node V2 - Script Execution Engine
 Runs user Python scripts in isolated threads with access to:
 - tags.*       Read channel values
 - outputs.*    Write output values
+- vars.*       Read/write shared variables (inter-script communication)
 - publish()    Publish computed values to dashboard
 - session.*    Read session state
 - wait_for()   Sleep respecting stop requests
@@ -12,6 +13,7 @@ Runs user Python scripts in isolated threads with access to:
 - persist()/restore()  State persistence across restarts
 """
 
+import ast
 import json
 import logging
 import math
@@ -25,6 +27,11 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger('cRIONode.Scripts')
+
+
+class SecurityError(Exception):
+    """Raised when a script attempts to use blocked/unsafe functionality."""
+    pass
 
 
 # =============================================================================
@@ -192,6 +199,98 @@ class StatePersistence:
             return self._state.get(script_id, {}).get(key, default)
 
 
+class SharedVariableStore:
+    """Thread-safe shared variable store for inter-script communication.
+
+    All scripts share a single instance. Variables are simple key-value pairs.
+    Optionally persists to disk and publishes changes via MQTT.
+    """
+
+    MAX_VARIABLES = 500
+
+    def __init__(self, persistence: StatePersistence,
+                 publish_fn: Optional[Callable] = None):
+        self._data: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+        self._persistence = persistence
+        self._publish_fn = publish_fn
+        self._dirty = False
+        self._load()
+
+    def _load(self):
+        with self._lock:
+            saved = self._persistence.restore('__shared_vars__', 'all', {})
+            if isinstance(saved, dict):
+                self._data = saved
+                if self._data:
+                    logger.info(f"Loaded {len(self._data)} shared variables from disk")
+
+    def _save(self):
+        self._persistence.persist('__shared_vars__', 'all', dict(self._data))
+        self._dirty = False
+
+    def _publish_change(self, name: str, value: Any):
+        if self._publish_fn:
+            try:
+                self._publish_fn({name: value})
+            except Exception as e:
+                logger.warning(f"Failed to publish var change {name}: {e}")
+
+    def get(self, name: str, default=None) -> Any:
+        with self._lock:
+            return self._data.get(name, default)
+
+    def set(self, name: str, value: Any, persist: bool = True) -> bool:
+        with self._lock:
+            if name not in self._data and len(self._data) >= self.MAX_VARIABLES:
+                logger.warning(f"Shared variable limit reached ({self.MAX_VARIABLES}), "
+                               f"cannot create '{name}'")
+                return False
+            self._data[name] = value
+            if persist:
+                self._save()
+            else:
+                self._dirty = True
+        self._publish_change(name, value)
+        return True
+
+    def reset(self, name: str) -> bool:
+        with self._lock:
+            if name not in self._data:
+                return False
+            old = self._data[name]
+            self._data[name] = '' if isinstance(old, str) else 0
+            self._save()
+            reset_value = self._data[name]
+        self._publish_change(name, reset_value)
+        return True
+
+    def delete(self, name: str) -> bool:
+        with self._lock:
+            if name not in self._data:
+                return False
+            del self._data[name]
+            self._save()
+        return True
+
+    def keys(self) -> list:
+        with self._lock:
+            return list(self._data.keys())
+
+    def has(self, name: str) -> bool:
+        with self._lock:
+            return name in self._data
+
+    def get_all(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._data)
+
+    def flush(self):
+        with self._lock:
+            if self._dirty:
+                self._save()
+
+
 # =============================================================================
 # SCRIPT API CLASSES
 # =============================================================================
@@ -257,6 +356,63 @@ class SessionAPI:
         return channel in state.get('locked_outputs', [])
 
 
+class VarsAPI:
+    """Shared variable API for inter-script communication.
+
+    Interface matches DAQ service VarsAPI for script portability:
+        vars.get('name')           # Get with default
+        vars.set('name', value)    # Set value
+        vars.reset('name')         # Reset to 0/empty
+        vars.keys()                # List all variable names
+        vars.MyVar                 # Attribute access (read)
+        vars['MyVar']              # Index access (read)
+        'MyVar' in vars            # Membership test
+
+    Example:
+        # Script A (producer)
+        vars.set('shared_temp', tags.TC001)
+
+        # Script B (consumer)
+        temp = vars.shared_temp
+    """
+
+    def __init__(self, store: SharedVariableStore):
+        object.__setattr__(self, '_store', store)
+
+    def __getattr__(self, name: str):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        value = self._store.get(name)
+        return 0.0 if value is None else value
+
+    def __getitem__(self, name: str):
+        value = self._store.get(name)
+        return 0.0 if value is None else value
+
+    def __contains__(self, name: str) -> bool:
+        return self._store.has(name)
+
+    def get(self, name: str, default=0.0):
+        if self._store.has(name):
+            return self._store.get(name)
+        return default
+
+    def set(self, name: str, value, persist: bool = True) -> bool:
+        return self._store.set(name, value, persist=persist)
+
+    def reset(self, name: str) -> bool:
+        return self._store.reset(name)
+
+    def keys(self) -> list:
+        return self._store.keys()
+
+    def delete(self, name: str) -> bool:
+        return self._store.delete(name)
+
+    def flush(self):
+        self._store.flush()
+
+
 # =============================================================================
 # SCRIPT ENGINE
 # =============================================================================
@@ -280,6 +436,10 @@ class ScriptEngine:
         self.scripts: Dict[str, Dict[str, Any]] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._persistence = StatePersistence()
+        self._shared_vars = SharedVariableStore(
+            persistence=self._persistence,
+            publish_fn=self._publish_vars
+        )
 
     # =========================================================================
     # MQTT COMMAND HANDLER
@@ -537,8 +697,14 @@ class ScriptEngine:
                 return False
             success = self._node.hardware.write_output(name, value)
             if success:
-                with self._node.values_lock:
-                    self._node.output_values[name] = value
+                # Use timeout on lock to avoid blocking safety-critical operations
+                if self._node.values_lock.acquire(timeout=0.5):
+                    try:
+                        self._node.output_values[name] = value
+                    finally:
+                        self._node.values_lock.release()
+                else:
+                    logger.warning(f"Script write_output: could not acquire values_lock for {name} (timeout)")
                 self._node._publish_single_channel(name, value, 'output')
             return success
 
@@ -564,6 +730,7 @@ class ScriptEngine:
             'outputs': OutputsAPI(write_output, is_output_locked),
             'publish': publish_value,
             'session': SessionAPI(get_session_state),
+            'vars': VarsAPI(self._shared_vars),
 
             # Control flow
             'next_scan': lambda: time.sleep(1.0 / scan_rate),
@@ -641,6 +808,56 @@ class ScriptEngine:
         try:
             # Strip 'await' keywords for sync execution
             code = code.replace('await ', '')
+
+            # AST-based sandbox validation
+            _blocked_dunder_attrs = frozenset({
+                '__import__', '__subclasses__', '__bases__', '__globals__',
+                '__code__', '__class__', '__builtins__',
+            })
+            _blocked_func_names = frozenset({
+                'getattr', 'setattr', 'delattr', 'eval', 'exec',
+                'compile', 'open', '__import__',
+            })
+            _blocked_module_names = frozenset({
+                'os', 'sys', 'subprocess', 'importlib',
+            })
+
+            class _ScriptValidator(ast.NodeVisitor):
+                def visit_Import(self, node):
+                    raise SecurityError(
+                        "Import statements are not allowed for safety reasons"
+                    )
+
+                def visit_ImportFrom(self, node):
+                    raise SecurityError(
+                        "Import statements are not allowed for safety reasons"
+                    )
+
+                def visit_Attribute(self, node):
+                    if node.attr in _blocked_dunder_attrs:
+                        raise SecurityError(
+                            f"Access to '{node.attr}' is not allowed for safety reasons"
+                        )
+                    self.generic_visit(node)
+
+                def visit_Call(self, node):
+                    if isinstance(node.func, ast.Name):
+                        if node.func.id in _blocked_func_names:
+                            raise SecurityError(
+                                f"Call to '{node.func.id}()' is not allowed for safety reasons"
+                            )
+                    self.generic_visit(node)
+
+                def visit_Name(self, node):
+                    if node.id in _blocked_module_names:
+                        raise SecurityError(
+                            f"Access to '{node.id}' module is not allowed for safety reasons"
+                        )
+                    self.generic_visit(node)
+
+            tree = ast.parse(code, mode='exec')
+            _ScriptValidator().visit(tree)
+
             exec(code, env, env)
             logger.info(f"Script completed: {script_id}")
             self._publish_output(script_id, "Script completed")
@@ -669,6 +886,10 @@ class ScriptEngine:
                 'code': script.get('code', ''),
             }
         self._node.mqtt.publish("script/status", status)
+
+    def _publish_vars(self, changed: Dict[str, Any]):
+        """Publish shared variable changes to dashboard via MQTT."""
+        self._node.mqtt.publish("script/values", changed)
 
     def _publish_output(self, script_id: str, message: str, is_error: bool = False):
         """Publish script console output."""

@@ -33,6 +33,10 @@ export type ChannelType =
   | 'modbus_register'
   | 'modbus_coil'
 
+  // Virtual/computed channels
+  | 'script'           // Script-computed virtual channel
+  | 'system'           // System status virtual channel
+
   // Legacy aliases for backwards compatibility
   | 'voltage'          // Maps to voltage_input
   | 'current'          // Maps to current_input
@@ -233,6 +237,43 @@ export interface ChannelConfig {
   // UI settings
   step?: number  // Step increment for setpoint widgets
   decimals?: number  // Number of decimal places for display
+  enabled?: boolean  // Channel enable/disable
+
+  // Device connection settings (stored per-channel by backend)
+  connection?: string             // 'tcp' | 'rtu' - connection type
+  ip_address?: string             // Device IP address
+  modbus_port?: number            // Modbus TCP port
+  serial?: string                 // Serial port path (for RTU)
+  modbus_baudrate?: number        // Serial baud rate
+  modbus_parity?: string          // Serial parity
+  modbus_stopbits?: number        // Serial stop bits
+  modbus_bytesize?: number        // Serial byte size
+  modbus_timeout?: number         // Communication timeout (seconds)
+  modbus_retries?: number         // Number of retries on failure
+
+  // CompactFieldPoint-specific
+  cfp_device?: string             // CFP device identifier
+  cfp_backplane_model?: string    // Backplane model (e.g., 'cFP-1808')
+  cfp_slot?: number               // Module slot number
+  cfp_module?: string             // Module type (e.g., 'cFP-AI-110')
+
+  // EtherNet/IP-specific
+  plc_type?: string               // PLC type (e.g., 'controllogix', 'micrologix')
+  slot?: number                   // PLC slot number
+
+  // OPC UA-specific
+  endpoint_url?: string           // OPC UA server endpoint URL
+
+  // Validation/alarm aliases (backend may use these names)
+  min_value?: number              // Alias for low_limit
+  max_value?: number              // Alias for high_limit
+  eu_min?: number                 // Engineering unit minimum
+  eu_max?: number                 // Engineering unit maximum
+  hi_alarm?: number               // Alias for hi_limit
+  hihi_alarm?: number             // Alias for hihi_limit
+  lo_alarm?: number               // Alias for lo_limit
+  lolo_alarm?: number             // Alias for lolo_limit
+  chassis?: string                // Chassis identifier for Modbus devices
 }
 
 export interface ChannelValue {
@@ -295,6 +336,13 @@ export interface SystemStatus {
   node_name?: string // Human-readable node name
   // Project mode (cdaq = PC is PLC, crio = cRIO is PLC)
   project_mode?: ProjectMode
+  // Watchdog output configuration
+  watchdog_output?: {
+    enabled: boolean
+    channel: string
+    frequency_hz?: number
+    duty_cycle?: number
+  }
   // Resource monitoring
   resource_monitoring?: boolean
   cpu_percent?: number
@@ -302,6 +350,16 @@ export interface SystemStatus {
   disk_percent?: number
   disk_used_gb?: number
   disk_total_gb?: number
+}
+
+// Result type for device command responses (test connection, tag browse, etc.)
+export interface DeviceCommandResult {
+  success: boolean
+  message?: string
+  error?: string
+  tags?: Array<{ name: string; type?: string; value?: unknown }>  // EtherNet/IP tag list
+  nodes?: Array<{ nodeId: string; displayName: string; nodeClass?: string }>  // OPC UA node list
+  plc_info?: Record<string, unknown>  // EtherNet/IP PLC info
 }
 
 // Recording configuration matching Python backend
@@ -1332,6 +1390,9 @@ export interface Interlock {
   // Demand tracking
   demandCount?: number
   lastDemandTime?: string
+  // Backend-evaluated status (runtime, not persisted)
+  _backendSatisfied?: boolean
+  _backendFailedConditions?: Array<{ condition: InterlockCondition; currentValue?: unknown; reason: string; delayRemaining?: number }>
 }
 
 export interface InterlockStatus {
@@ -1369,6 +1430,7 @@ export type InterlockEventType =
   | 'cleared'         // Interlock cleared (conditions restored)
   | 'demand'          // Interlock was demanded (conditions failed while controlling)
   | 'proof_test'      // Proof test performed
+  | 'removed'         // Interlock removed from configuration
 
 export interface InterlockHistoryEntry {
   id: string
@@ -1441,6 +1503,7 @@ export interface UserVariable {
   id: string
   name: string
   displayName: string
+  description?: string
   variableType: UserVariableType
   dataType?: UserVariableDataType  // 'number' (default) or 'string'
   value: number                    // Numeric value
@@ -1643,4 +1706,84 @@ export interface SOEQueryFilters {
   eventTypes?: SOEEventType[]
   channels?: string[]
   limit?: number
+}
+
+// ============================================================================
+// MQTT CALLBACK PAYLOAD TYPES (FE-H11)
+// Typed interfaces for useMqtt callback payloads
+// ============================================================================
+
+/** Payload passed to discovery callbacks from handleDiscoveryResult */
+export interface DiscoveryCallbackPayload {
+  success: boolean
+  total_channels: number
+  message?: string
+  simulation_mode?: boolean
+  chassis?: Array<{
+    name: string
+    product_type?: string
+    modules?: Array<Record<string, unknown>>
+  }>
+  crio_nodes?: Array<Record<string, unknown>>
+}
+
+/** Payload passed to config update callbacks */
+export interface ConfigUpdateCallbackPayload {
+  success?: boolean
+  message?: string
+  error?: string
+  node_id?: string
+  config_version?: string
+  configs?: Array<Record<string, unknown>>
+}
+
+/** Payload passed to recording callbacks */
+export interface RecordingCallbackPayload {
+  success: boolean
+  message: string
+  error?: string
+}
+
+/** Alarm event payload constructed in handleAlarm and passed to alarm callbacks */
+export interface AlarmCallbackPayload {
+  id: string
+  alarm_id: string
+  channel: string
+  name: string
+  severity: string
+  state: string
+  threshold_type?: string
+  threshold?: number
+  value: number
+  current_value?: number
+  triggered_at: string
+  acknowledged_at?: string
+  acknowledged_by?: string
+  cleared_at?: string
+  sequence_number: number
+  is_first_out: boolean
+  shelved_at?: string
+  shelved_by?: string
+  shelve_expires_at?: string
+  shelve_reason?: string
+  message: string
+  duration_seconds?: number
+}
+
+/** Payload passed to system update callbacks */
+export interface SystemUpdateCallbackPayload {
+  success: boolean
+  message?: string
+  error?: string
+  scan_rate_hz?: number
+  publish_rate_hz?: number
+}
+
+/** Payload passed to cRIO operation callbacks */
+export interface CrioCallbackPayload {
+  success: boolean
+  message?: string
+  error?: string
+  node_id?: string
+  operation?: string
 }

@@ -54,7 +54,7 @@ export function useWindowSync() {
         // Ignore our own messages
         if (message.source === windowId) return
 
-        console.log('[WINDOW SYNC] Received:', message.type)
+        console.debug('[WINDOW SYNC] Received:', message.type)
 
         // Set guard to prevent re-broadcasting
         isReceivingUpdate.value = true
@@ -82,7 +82,7 @@ export function useWindowSync() {
         }
       }
 
-      console.log('[WINDOW SYNC] Initialized with ID:', windowId)
+      console.debug('[WINDOW SYNC] Initialized with ID:', windowId)
 
       // Load saved window positions
       loadWindowPositions()
@@ -104,7 +104,7 @@ export function useWindowSync() {
     }
 
     channel.value.postMessage(message)
-    console.log('[WINDOW SYNC] Broadcast layout update')
+    console.debug('[WINDOW SYNC] Broadcast layout update')
   }
 
   // Broadcast edit mode changes
@@ -223,7 +223,7 @@ export function useWindowSync() {
     try {
       // Window Management API (Chrome 100+, Edge 100+)
       if ('getScreenDetails' in window) {
-        const screenDetails = await (window as any).getScreenDetails()
+        const screenDetails = await (window as unknown as { getScreenDetails: () => Promise<{ screens: Array<{ left: number; top: number; width: number; height: number }> }> }).getScreenDetails()
         const screens = screenDetails.screens
 
         // Find which screen contains the window center

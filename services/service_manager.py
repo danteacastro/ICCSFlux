@@ -550,8 +550,8 @@ max_connections -1
                 result = s.connect_ex(('localhost', 1883))
                 s.close()
                 print(f"    Port 1883: {'Open' if result == 0 else 'Closed'}")
-            except:
-                pass
+            except OSError as e:
+                print(f"    Port 1883: Check failed ({e})")
 
         # DAQ Service
         daq_status = self.get_service_status(self.config.daq_service_name)

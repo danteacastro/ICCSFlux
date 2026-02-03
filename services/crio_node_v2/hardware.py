@@ -12,6 +12,7 @@ Key design:
 """
 
 import logging
+import math
 import threading
 import time
 import re
@@ -19,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 from abc import ABC, abstractmethod
 
-from .channel_types import ChannelType, get_module_channel_type
+from .channel_types import ChannelType, get_module_channel_type, get_module_hardware_limits
 from .config import ChannelConfig, apply_scaling
 
 
@@ -41,6 +42,21 @@ def _get_physical_channel_index(physical_channel: str) -> int:
     return int(match.group(1)) if match else 0
 
 logger = logging.getLogger('cRIONode')
+
+# ---------------------------------------------------------------------------
+# Hardware constants (extracted from inline magic numbers)
+# ---------------------------------------------------------------------------
+SLOW_READ_INTERVAL_S = 1.0          # Min seconds between slow-task reads (TC modules)
+MIN_BUFFER_SAMPLES = 100            # Minimum DAQmx buffer size (samples)
+BUFFER_DURATION_S = 10              # Buffer duration for continuous acquisition (seconds)
+RESISTANCE_EXCITATION_A = 0.001     # Resistance channel excitation current (1 mA)
+DI_READ_TIMEOUT_S = 0.01           # Digital input on-demand read timeout (seconds)
+AI_TIMED_READ_TIMEOUT_S = 1.0      # Analog input timed/continuous read timeout (seconds)
+AI_ONDEMAND_READ_TIMEOUT_S = 1.0   # Analog input on-demand read timeout (seconds)
+AI_SLOW_READ_TIMEOUT_S = 2.0       # Analog input slow-device read timeout (TC, seconds)
+CTR_READ_TIMEOUT_S = 0.1           # Counter input read timeout (seconds)
+DEFAULT_MIN_PERIOD_S = 0.001       # Default min period for period counters (seconds)
+DEFAULT_MAX_PERIOD_S = 10.0        # Default max period for period counters (seconds)
 
 # Try to import NI-DAQmx, fall back to mock for testing
 try:
@@ -94,11 +110,20 @@ class HardwareInterface(ABC):
         """Set all outputs to their default/safe values."""
         pass
 
+    def read_output_from_hardware(self, channel: str) -> Optional[float]:
+        """Read back the actual physical value from an output channel.
+
+        Returns None if readback is not supported or fails.
+        Subclasses should override for hardware-specific implementation.
+        """
+        return None
+
 
 class MockHardware(HardwareInterface):
     """
     Mock hardware for testing without real NI-DAQmx.
     Simulates channel values and output writes.
+    Supports fault injection for testing error-handling paths.
     """
 
     def __init__(self, config: HardwareConfig):
@@ -106,6 +131,12 @@ class MockHardware(HardwareInterface):
         self._running = False
         self._values: Dict[str, float] = {}
         self._outputs: Dict[str, float] = {}
+
+        # Fault injection controls (test helpers)
+        self._simulate_read_error: bool = False       # read_all() raises on next call
+        self._simulate_write_error: bool = False      # write_output() returns False
+        self._simulate_nan_channels: set = set()      # channels that return NaN
+        self._simulate_start_failure: bool = False    # start() returns False
 
         # Initialize with default values
         for name, ch in config.channels.items():
@@ -115,6 +146,9 @@ class MockHardware(HardwareInterface):
                 self._outputs[name] = ch.default_value
 
     def start(self) -> bool:
+        if self._simulate_start_failure:
+            logger.warning("[MockHW] Simulated start failure")
+            return False
         logger.info("[MockHW] Starting mock hardware")
         self._running = True
         return True
@@ -128,13 +162,20 @@ class MockHardware(HardwareInterface):
         if not self._running:
             return {}
 
+        if self._simulate_read_error:
+            self._simulate_read_error = False  # One-shot
+            raise RuntimeError("[MockHW] Simulated read error")
+
         now = time.time()
         result = {}
 
         for name, ch in self.config.channels.items():
             if ChannelType.is_input(ch.channel_type):
+                # Fault injection: return NaN for specific channels
+                if name in self._simulate_nan_channels:
+                    result[name] = (float('nan'), now)
+                    continue
                 # Simulate slowly varying values
-                import math
                 base = math.sin(now * 0.1) * 5  # Oscillate between -5 and 5
                 internal_type = ChannelType.get_internal_type(ch.channel_type)
                 if internal_type == 'digital_input':
@@ -151,6 +192,10 @@ class MockHardware(HardwareInterface):
             logger.warning(f"[MockHW] Unknown output channel: {channel}")
             return False
 
+        if self._simulate_write_error:
+            logger.warning(f"[MockHW] Simulated write error on {channel}")
+            return False
+
         logger.debug(f"[MockHW] Write {channel} = {value}")
         self._outputs[channel] = value
         return True
@@ -160,6 +205,10 @@ class MockHardware(HardwareInterface):
             if ChannelType.is_output(ch.channel_type):
                 self._outputs[name] = ch.default_value
         logger.info("[MockHW] Outputs set to safe state")
+
+    def read_output_from_hardware(self, channel: str) -> Optional[float]:
+        """Mock: return stored output value (simulates hardware readback)."""
+        return self._outputs.get(channel)
 
     def set_input_value(self, channel: str, value: float):
         """Test helper: Set a specific input value."""
@@ -199,6 +248,10 @@ class NIDAQmxHardware(HardwareInterface):
 
         # Output state tracking
         self._output_values: Dict[str, float] = {}
+        self._output_lock = threading.Lock()
+
+        # Channels that failed during task creation
+        self._failed_channels: set = set()
 
         # Momentary pulse timers (for relay auto-revert)
         self._momentary_timers: Dict[str, threading.Timer] = {}
@@ -207,7 +260,7 @@ class NIDAQmxHardware(HardwareInterface):
         self._slow_tasks: set = set()  # Task keys that are slow (TC modules)
         self._cached_values: Dict[str, Tuple[float, float]] = {}  # channel -> (value, timestamp)
         self._last_slow_read: Dict[str, float] = {}  # task_key -> last read time
-        self._slow_read_interval: float = 1.0  # Min seconds between slow task reads
+        self._slow_read_interval: float = SLOW_READ_INTERVAL_S
 
         # Timed tasks (modules that require sample clock timing)
         self._timed_tasks: set = set()  # Task keys that use continuous acquisition
@@ -215,6 +268,10 @@ class NIDAQmxHardware(HardwareInterface):
         # Hardware-detected module types (module_name -> ChannelType)
         # This is the SINGLE SOURCE OF TRUTH for channel types
         self._detected_module_types: Dict[str, str] = {}
+
+        # Per-channel hardware limits cache (populated during module detection)
+        self._channel_hw_limits: Dict[str, Dict[str, float]] = {}
+
         self._detect_module_types()
 
     def _detect_module_types(self):
@@ -234,6 +291,14 @@ class NIDAQmxHardware(HardwareInterface):
                 # Use channel_types.py MODULE_TYPE_MAP to get correct type
                 detected_type = get_module_channel_type(product_type)
                 self._detected_module_types[module_name] = detected_type.value
+
+                # Cache hardware limits for output modules
+                hw_limits = get_module_hardware_limits(product_type)
+                if hw_limits:
+                    # Apply limits to all channels on this module
+                    for ch_name, ch_cfg in self.config.channels.items():
+                        if ch_cfg.physical_channel.startswith(module_name + '/'):
+                            self._channel_hw_limits[ch_name] = hw_limits
 
                 logger.info(f"[HW DETECT] {module_name}: {product_type} -> {detected_type.value}")
 
@@ -422,7 +487,14 @@ class NIDAQmxHardware(HardwareInterface):
                 # Use detected hardware type, not config type
                 if actual_type == 'thermocouple':
                     # Thermocouple channel - default to K type if not specified
+                    VALID_TC_TYPES = {'B', 'E', 'J', 'K', 'N', 'R', 'S', 'T'}
                     tc_type_str = ch.thermocouple_type or 'K'
+                    if tc_type_str.upper() not in VALID_TC_TYPES:
+                        logger.warning(
+                            f"Channel {ch.name}: invalid thermocouple type '{tc_type_str}' "
+                            f"(valid: {sorted(VALID_TC_TYPES)}), defaulting to K-type"
+                        )
+                        tc_type_str = 'K'
                     tc_type = getattr(nidaqmx.constants.ThermocoupleType,
                                       tc_type_str.upper(), nidaqmx.constants.ThermocoupleType.K)
                     logger.info(f"Creating TC channel: {ch.name} ({full_path}) type={tc_type_str}")
@@ -466,7 +538,7 @@ class NIDAQmxHardware(HardwareInterface):
                         full_path,
                         resistance_config=wiring,
                         current_excit_source=nidaqmx.constants.ExcitationSource.INTERNAL,
-                        current_excit_val=0.001,  # 1mA excitation
+                        current_excit_val=RESISTANCE_EXCITATION_A,
                         min_val=0.0,
                         max_val=ch.resistance_range
                     )
@@ -511,8 +583,8 @@ class NIDAQmxHardware(HardwareInterface):
                 # This module requires sample clock timing (continuous acquisition)
                 # Do NOT use this for TC or RTD modules!
                 logger.info(f"[TC_FIX] Task {task_key}: USING CONTINUOUS MODE (module_type={module_type})")
-                # Buffer for 10 seconds to handle MQTT/processing delays
-                buffer_size = max(100, int(self.config.scan_rate_hz * 10))
+                # Buffer for continuous acquisition to handle MQTT/processing delays
+                buffer_size = max(MIN_BUFFER_SAMPLES, int(self.config.scan_rate_hz * BUFFER_DURATION_S))
                 task.timing.cfg_samp_clk_timing(
                     rate=self.config.scan_rate_hz,
                     sample_mode=AcquisitionType.CONTINUOUS,
@@ -615,8 +687,8 @@ class NIDAQmxHardware(HardwareInterface):
                     edge=edge
                 )
             elif ch.counter_mode == 'period':
-                min_period = 1.0 / max_freq if max_freq > 0 else 0.001
-                max_period = 1.0 / min_freq if min_freq > 0 else 10.0
+                min_period = 1.0 / max_freq if max_freq > 0 else DEFAULT_MIN_PERIOD_S
+                max_period = 1.0 / min_freq if min_freq > 0 else DEFAULT_MAX_PERIOD_S
                 task.ci_channels.add_ci_period_chan(
                     full_path,
                     min_val=min_period,
@@ -629,7 +701,8 @@ class NIDAQmxHardware(HardwareInterface):
                        f"(mode={ch.counter_mode}, freq={min_freq}-{max_freq}Hz)")
 
         except Exception as e:
-            logger.error(f"Failed to create counter input task for {ch.name}: {e}")
+            logger.warning(f"Failed to create counter input task for {ch.name}: {e}")
+            self._failed_channels.add(ch.name)
 
     def _create_pulse_output_task(self, ch: ChannelConfig):
         """Create a pulse/counter output task for a single channel."""
@@ -663,7 +736,8 @@ class NIDAQmxHardware(HardwareInterface):
                        f"(freq={ch.pulse_frequency}Hz, duty={ch.pulse_duty_cycle}%, idle={ch.pulse_idle_state})")
 
         except Exception as e:
-            logger.error(f"Failed to create pulse output task for {ch.name}: {e}")
+            logger.warning(f"Failed to create pulse output task for {ch.name}: {e}")
+            self._failed_channels.add(ch.name)
 
     def _start_tasks(self):
         """Start all input tasks."""
@@ -694,7 +768,7 @@ class NIDAQmxHardware(HardwareInterface):
                     self._last_di_log = now
                     logger.info(f"[DI_READ] {task_key}: reading {len(self._di_channels.get(task_key, []))} channels...")
 
-                values = task.read(timeout=0.01)
+                values = task.read(timeout=DI_READ_TIMEOUT_S)
                 if not isinstance(values, list):
                     values = [values]
 
@@ -728,7 +802,7 @@ class NIDAQmxHardware(HardwareInterface):
                     if is_timed:
                         # Timed (continuous) task - read latest sample from buffer
                         # Returns [[v1], [v2], ...] for multi-channel with 1 sample
-                        raw_values = task.read(number_of_samples_per_channel=1, timeout=1.0)
+                        raw_values = task.read(number_of_samples_per_channel=1, timeout=AI_TIMED_READ_TIMEOUT_S)
                         # Flatten: [[v1], [v2], ...] -> [v1, v2, ...]
                         if isinstance(raw_values[0], list):
                             values = [v[0] for v in raw_values]
@@ -740,7 +814,7 @@ class NIDAQmxHardware(HardwareInterface):
                     else:
                         # On-demand read - returns single value or list of values
                         # TC modules should use this path with longer timeout
-                        values = task.read(timeout=2.0 if is_slow else 1.0)
+                        values = task.read(timeout=AI_SLOW_READ_TIMEOUT_S if is_slow else AI_ONDEMAND_READ_TIMEOUT_S)
                         if not isinstance(values, list):
                             values = [values]
                         if is_slow:
@@ -785,7 +859,7 @@ class NIDAQmxHardware(HardwareInterface):
         # Read counter inputs (on-demand, per-channel)
         for ch_name, task in self._ctr_in_tasks.items():
             try:
-                value = task.read(timeout=0.1)
+                value = task.read(timeout=CTR_READ_TIMEOUT_S)
                 ch_config = self.config.channels.get(ch_name)
                 # Period mode: convert period to frequency for display
                 if ch_config and ch_config.counter_mode == 'period' and value > 0:
@@ -796,6 +870,60 @@ class NIDAQmxHardware(HardwareInterface):
 
         return result
 
+    def _validate_output_value(self, channel: str, value: float, ch_config) -> tuple:
+        """Validate and clamp output value to safe range. Returns (valid, clamped_value, reason)."""
+        if not isinstance(value, (int, float)):
+            return False, value, f"Non-numeric value type: {type(value).__name__}"
+        if isinstance(value, float) and (value != value):  # NaN check
+            return False, value, "NaN value rejected"
+        if math.isinf(value):
+            return False, value, "Infinity value rejected"
+
+        if ch_config.channel_type in ('analog_output', 'voltage_output'):
+            max_v = ch_config.voltage_range
+            if value < -max_v or value > max_v:
+                logger.warning(f"Output {channel}: value {value} outside voltage range [-{max_v}, {max_v}], clamping")
+                value = max(-max_v, min(max_v, value))
+        elif ch_config.channel_type == 'current_output':
+            max_ma = ch_config.current_range_ma
+            if value < 0 or value > max_ma:
+                logger.warning(f"Output {channel}: value {value} outside current range [0, {max_ma}], clamping")
+                value = max(0.0, min(max_ma, value))
+        elif ch_config.channel_type in ('pulse_output', 'counter_output'):
+            max_freq = ch_config.counter_max_freq or 1000000.0
+            min_freq = ch_config.counter_min_freq or 0.0
+            if value < 0:
+                return False, value, f"Negative frequency rejected: {value}"
+            if value > 0 and (value < min_freq or value > max_freq):
+                logger.warning(f"Output {channel}: freq {value} outside range [{min_freq}, {max_freq}], clamping")
+                value = max(min_freq, min(max_freq, value))
+        elif ch_config.channel_type == 'digital_output':
+            pass  # Boolean coercion handled downstream
+
+        # Cross-check against absolute module hardware limits (cannot be overridden by config)
+        hw_limits = self._channel_hw_limits.get(channel)
+        if hw_limits:
+            if ch_config.channel_type in ('analog_output', 'voltage_output'):
+                hw_min = hw_limits.get('voltage_min', -10.0)
+                hw_max = hw_limits.get('voltage_max', 10.0)
+                if value < hw_min or value > hw_max:
+                    logger.error(
+                        f"Output {channel}: value {value} exceeds HARDWARE limit "
+                        f"[{hw_min}, {hw_max}], clamping"
+                    )
+                    value = max(hw_min, min(hw_max, value))
+            elif ch_config.channel_type == 'current_output':
+                hw_min = hw_limits.get('current_min_ma', 0.0)
+                hw_max = hw_limits.get('current_max_ma', 20.0)
+                if value < hw_min or value > hw_max:
+                    logger.error(
+                        f"Output {channel}: value {value} exceeds HARDWARE limit "
+                        f"[{hw_min}, {hw_max}], clamping"
+                    )
+                    value = max(hw_min, min(hw_max, value))
+
+        return True, value, ""
+
     def write_output(self, channel: str, value: float) -> bool:
         """Write to output channel."""
         if not self._running:
@@ -804,6 +932,12 @@ class NIDAQmxHardware(HardwareInterface):
         ch_config = self.config.channels.get(channel)
         if not ch_config:
             logger.warning(f"Unknown output channel: {channel}")
+            return False
+
+        # Validate and clamp value to safe hardware range
+        valid, value, reason = self._validate_output_value(channel, value, ch_config)
+        if not valid:
+            logger.error(f"Output {channel} rejected: {reason}")
             return False
 
         try:
@@ -816,7 +950,8 @@ class NIDAQmxHardware(HardwareInterface):
                         if ch_config.invert:
                             bool_value = not bool_value
                         task.write(bool_value)
-                        self._output_values[channel] = 1.0 if value else 0.0
+                        with self._output_lock:
+                            self._output_values[channel] = 1.0 if value else 0.0
 
                         # Momentary pulse: auto-revert after delay (relay feature)
                         if ch_config.momentary_pulse_ms > 0 and bool_value:
@@ -839,7 +974,8 @@ class NIDAQmxHardware(HardwareInterface):
                     if channel in channels:
                         task = self._ao_tasks[task_key]
                         task.write(float(value))
-                        self._output_values[channel] = value
+                        with self._output_lock:
+                            self._output_values[channel] = value
                         return True
 
             elif ch_config.channel_type in ('pulse_output', 'counter_output'):
@@ -851,12 +987,14 @@ class NIDAQmxHardware(HardwareInterface):
                         task.stop()
                         task.co_channels.all.co_pulse_freq = new_freq
                         task.start()
-                        self._output_values[channel] = new_freq
+                        with self._output_lock:
+                            self._output_values[channel] = new_freq
                         logger.debug(f"Pulse output {channel}: freq={new_freq}Hz")
                         return True
                     else:
                         task.stop()
-                        self._output_values[channel] = 0.0
+                        with self._output_lock:
+                            self._output_values[channel] = 0.0
                         logger.debug(f"Pulse output {channel}: stopped (freq=0)")
                         return True
 
@@ -880,7 +1018,8 @@ class NIDAQmxHardware(HardwareInterface):
                     if ch_config.invert:
                         bool_value = not bool_value
                     task.write(bool_value)
-                    self._output_values[channel] = default_val
+                    with self._output_lock:
+                        self._output_values[channel] = default_val
                     break
         except Exception as e:
             logger.error(f"Error reverting momentary output {channel}: {e}")
@@ -903,9 +1042,54 @@ class NIDAQmxHardware(HardwareInterface):
 
         logger.info("Outputs set to safe state")
 
+    def read_output(self, channel: str) -> Optional[float]:
+        """Read back the last written value for an output channel."""
+        with self._output_lock:
+            return self._output_values.get(channel)
+
     def get_output_values(self) -> Dict[str, float]:
         """Get current output values."""
-        return dict(self._output_values)
+        with self._output_lock:
+            return dict(self._output_values)
+
+    def read_output_values(self) -> Dict[str, float]:
+        """Return a copy of all output values under the lock (thread-safe)."""
+        with self._output_lock:
+            return dict(self._output_values)
+
+    def read_output_from_hardware(self, channel: str) -> Optional[float]:
+        """Read back actual physical value from an analog output via DAQmx.
+
+        Only works for analog outputs (AO). Digital outputs do not support
+        readback on most NI C-series modules.
+
+        Returns None if readback is not supported or fails.
+        """
+        ch_config = self.config.channels.get(channel)
+        if not ch_config:
+            return None
+
+        # Only AO channels support readback via DAQmx
+        if ch_config.channel_type not in ('analog_output', 'voltage_output', 'current_output'):
+            return None
+
+        for task_key, channels in self._ao_channels.items():
+            if channel in channels:
+                task = self._ao_tasks.get(task_key)
+                if not task:
+                    return None
+                try:
+                    idx = channels.index(channel)
+                    values = task.read()
+                    if isinstance(values, list):
+                        return values[idx] if idx < len(values) else None
+                    else:
+                        return values if idx == 0 else None
+                except Exception as e:
+                    logger.warning(f"Hardware readback failed for {channel}: {e}")
+                    return None
+
+        return None
 
 
 def create_hardware(config: HardwareConfig, use_mock: bool = False) -> HardwareInterface:

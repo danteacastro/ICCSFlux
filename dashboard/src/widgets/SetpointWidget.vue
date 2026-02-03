@@ -50,7 +50,7 @@ const blockStatus = computed(() => safety.isOutputBlocked(props.channel))
 const isBlocked = computed(() => blockStatus.value.blocked)
 
 const displayLabel = computed(() =>
-  props.label || props.channel
+  (props.label || props.channel || '').replace(/^py\./, '')
 )
 
 const unit = computed(() => {

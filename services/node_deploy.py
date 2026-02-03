@@ -188,8 +188,8 @@ class NodeDeployer:
             if result.returncode != 0:
                 error(f"Cannot ping {node.host}")
                 return False
-        except:
-            error(f"Ping failed for {node.host}")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            error(f"Ping failed for {node.host}: {e}")
             return False
 
         # Try SSH

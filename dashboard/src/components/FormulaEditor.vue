@@ -65,7 +65,7 @@ watch(() => props.modelValue, (block) => {
 
 // Build autocomplete suggestions
 const suggestionItems = computed(() => {
-  const items: monaco.languages.CompletionItem[] = []
+  const items: Omit<monaco.languages.CompletionItem, 'range'>[] = []
 
   // Channel names
   for (const ch of props.channelNames) {
@@ -75,7 +75,6 @@ const suggestionItems = computed(() => {
       insertText: ch,
       detail: 'Channel',
       documentation: 'Live channel value',
-      range: undefined as any
     })
   }
 
@@ -87,7 +86,6 @@ const suggestionItems = computed(() => {
       insertText: v,
       detail: 'User Variable',
       documentation: 'User-defined variable value',
-      range: undefined as any
     })
   }
 
@@ -130,7 +128,6 @@ const suggestionItems = computed(() => {
       insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
       detail: 'Math function',
       documentation: fn.doc,
-      range: undefined as any
     })
   }
 
@@ -142,7 +139,6 @@ const suggestionItems = computed(() => {
       kind: monaco.languages.CompletionItemKind.Keyword,
       insertText: kw,
       detail: 'Keyword',
-      range: undefined as any
     })
   }
 

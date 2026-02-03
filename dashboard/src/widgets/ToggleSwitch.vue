@@ -47,7 +47,7 @@ const isOn = computed(() => {
 const displayLabel = computed(() => {
   if (isOn.value && props.onLabel) return props.onLabel
   if (!isOn.value && props.offLabel) return props.offLabel
-  return props.label || channelConfig.value?.name || props.channel
+  return (props.label || channelConfig.value?.name || props.channel || '').replace(/^py\./, '')
 })
 
 // Custom colors from style prop

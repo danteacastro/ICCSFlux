@@ -13,9 +13,23 @@
  * - Compact mode
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
+import type { InterlockStatus } from '../types'
+
+interface MockLatchState {
+  mockIsAcquiring: Ref<boolean>
+  mockIsTripped: Ref<boolean>
+  mockLastTripReason: Ref<string>
+  mockHasFailedInterlocks: Ref<boolean>
+  mockFailedInterlocks: Ref<Partial<InterlockStatus>[]>
+  mockTripSystem: Mock
+  mockResetTrip: Mock
+}
+
+const getLatchMockState = () =>
+  (globalThis as unknown as Record<string, MockLatchState>).__mockLatchState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -23,7 +37,7 @@ vi.mock('../stores/dashboard', () => {
 
   const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockLatchState = {
+  ;(globalThis as unknown as Record<string, Partial<MockLatchState>>).__mockLatchState = {
     mockIsAcquiring
   }
 
@@ -41,19 +55,20 @@ vi.mock('../composables/useSafety', () => {
   const mockIsTripped = ref(false)
   const mockLastTripReason = ref('')
   const mockHasFailedInterlocks = ref(false)
-  const mockFailedInterlocks = ref<any[]>([])
+  const mockFailedInterlocks = ref<Partial<InterlockStatus>[]>([])
   const mockTripSystem = vi.fn()
   const mockResetTrip = vi.fn(() => true)
 
-  ;(global as any).__mockLatchState = {
-    ...(global as any).__mockLatchState,
+  const existing = (globalThis as unknown as Record<string, Partial<MockLatchState>>).__mockLatchState ?? {}
+  ;(globalThis as unknown as Record<string, MockLatchState>).__mockLatchState = {
+    ...existing,
     mockIsTripped,
     mockLastTripReason,
     mockHasFailedInterlocks,
     mockFailedInterlocks,
     mockTripSystem,
     mockResetTrip
-  }
+  } as MockLatchState
 
   return {
     useSafety: () => ({
@@ -83,7 +98,7 @@ describe('LatchSwitchWidget', () => {
     // Clear localStorage
     localStorage.clear()
 
-    const state = (global as any).__mockLatchState
+    const state = getLatchMockState()
     if (state) {
       state.mockIsAcquiring.value = true
       state.mockIsTripped.value = false
@@ -251,7 +266,7 @@ describe('LatchSwitchWidget', () => {
 
   describe('Tripped State', () => {
     beforeEach(() => {
-      const state = (global as any).__mockLatchState
+      const state = getLatchMockState()
       state.mockIsTripped.value = true
       state.mockLastTripReason.value = 'Pressure exceeded limit'
     })
@@ -299,7 +314,7 @@ describe('LatchSwitchWidget', () => {
     })
 
     it('should call resetTrip when clicked while tripped', async () => {
-      const state = (global as any).__mockLatchState
+      const state = getLatchMockState()
 
       const wrapper = mount(LatchSwitchWidget, {
         props: { widgetId: 'latch-1' }

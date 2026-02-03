@@ -128,6 +128,7 @@ class User:
     last_login: str = ""
     failed_attempts: int = 0
     locked_until: Optional[str] = None
+    must_change_password: bool = False
     custom_permissions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -238,37 +239,37 @@ class UserSessionManager:
             logger.error(f"Error saving users: {e}")
 
     def _ensure_default_users(self):
-        """Create default users if none exist"""
+        """Create default users if none exist.
+
+        Default accounts are created with random passwords and flagged
+        for mandatory password change on first login. The initial admin
+        password is logged once at startup for first-time setup.
+        """
         if not self.users:
-            # Create default admin
-            self.create_user(
-                username="admin",
-                password="iccsadmin1969",
-                role=UserRole.ADMIN,
-                display_name="Administrator"
+            # Generate random initial passwords
+            admin_pw = secrets.token_urlsafe(16)
+            default_accounts = [
+                ("admin", admin_pw, UserRole.ADMIN, "Administrator"),
+                ("supervisor", secrets.token_urlsafe(16), UserRole.SUPERVISOR, "Supervisor"),
+                ("operator", secrets.token_urlsafe(16), UserRole.OPERATOR, "Operator"),
+                ("guest", secrets.token_urlsafe(12), UserRole.GUEST, "Guest"),
+            ]
+            for username, password, role, display_name in default_accounts:
+                self.create_user(
+                    username=username,
+                    password=password,
+                    role=role,
+                    display_name=display_name
+                )
+                # Flag all default accounts for mandatory password change
+                if username in self.users:
+                    self.users[username].must_change_password = True
+
+            logger.warning(
+                f"Created default users with random passwords. "
+                f"Initial admin password: {admin_pw} — CHANGE IMMEDIATELY"
             )
-            # Create default supervisor
-            self.create_user(
-                username="supervisor",
-                password="supervisor",
-                role=UserRole.SUPERVISOR,
-                display_name="Supervisor"
-            )
-            # Create default operator
-            self.create_user(
-                username="operator",
-                password="operator",
-                role=UserRole.OPERATOR,
-                display_name="Operator"
-            )
-            # Create default guest
-            self.create_user(
-                username="guest",
-                password="guest",
-                role=UserRole.GUEST,
-                display_name="Guest"
-            )
-            logger.info("Created default users: admin, supervisor, operator, guest")
+            logger.info("All default accounts require password change on first login")
 
     def _hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""

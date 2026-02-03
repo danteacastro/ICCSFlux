@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import type { DeviceCommandResult } from '../types'
 import ModbusAddressChanger from './ModbusAddressChanger.vue'
 
 const mqtt = useMqtt()
@@ -82,8 +83,8 @@ function loadDevices() {
 
   // Scan channelConfigs for modbus devices based on module/chassis info
   for (const [_channelName, config] of Object.entries(channelConfigs)) {
-    const chassis = (config as any)?.chassis || ''
-    const conn = (config as any)?.connection?.toUpperCase() || ''
+    const chassis = config?.chassis || ''
+    const conn = config?.connection?.toUpperCase() || ''
     if (conn === 'TCP' || conn === 'RTU' || conn === 'MODBUS_TCP' || conn === 'MODBUS_RTU') {
       // Check if we already have this device
       if (!devices.value.some(d => d.name === chassis)) {
@@ -91,15 +92,15 @@ function loadDevices() {
           name: chassis || 'modbus_device',
           connection_type: conn.includes('RTU') ? 'rtu' : 'tcp',
           enabled: true,
-          ip_address: (config as any)?.ip_address || '',
-          port: (config as any)?.modbus_port || 502,
-          serial_port: (config as any)?.serial || '',
-          baudrate: (config as any)?.modbus_baudrate || 9600,
-          parity: (config as any)?.modbus_parity || 'E',
-          stopbits: (config as any)?.modbus_stopbits || 1,
-          bytesize: (config as any)?.modbus_bytesize || 8,
-          timeout: (config as any)?.modbus_timeout || 1.0,
-          retries: (config as any)?.modbus_retries || 3
+          ip_address: config?.ip_address || '',
+          port: config?.modbus_port || 502,
+          serial_port: config?.serial || '',
+          baudrate: config?.modbus_baudrate || 9600,
+          parity: config?.modbus_parity || 'E',
+          stopbits: config?.modbus_stopbits || 1,
+          bytesize: config?.modbus_bytesize || 8,
+          timeout: config?.modbus_timeout || 1.0,
+          retries: config?.modbus_retries || 3
         })
       }
     }
@@ -246,9 +247,9 @@ async function testConnection(deviceName: string) {
     const result = await mqtt.sendCommandWithAck('chassis/test', { name: deviceName }, 10000)
 
     if (result.success) {
-      showFeedback('success', (result as any).message || `Connection to ${deviceName} successful`)
+      showFeedback('success', (result as DeviceCommandResult).message || `Connection to ${deviceName} successful`)
     } else {
-      showFeedback('error', (result as any).message || result.error || `Connection to ${deviceName} failed`)
+      showFeedback('error', (result as DeviceCommandResult).message || result.error || `Connection to ${deviceName} failed`)
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Connection test timed out - check device settings')

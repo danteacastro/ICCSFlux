@@ -33,6 +33,9 @@ describe('useBackendScripts', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     backendScripts = useBackendScripts()
+    // Reset singleton state from previous tests
+    backendScripts.clearAllScripts()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
@@ -260,6 +263,8 @@ describe('useBackendScripts', () => {
 describe('Backend Scripts MQTT Integration', () => {
   it('should handle empty script status', () => {
     const backendScripts = useBackendScripts()
+    // Reset singleton state from previous test suites
+    backendScripts.clearAllScripts()
 
     // Scripts should be empty
     expect(backendScripts.scriptsList.value.length).toBe(0)

@@ -16,7 +16,9 @@ The main loop follows the pattern:
 
 import json
 import logging
+import os
 import queue
+import signal
 import threading
 import time
 import socket
@@ -35,6 +37,69 @@ from .hardware import HardwareInterface, HardwareConfig, create_hardware, DAQMX_
 from .config import ChannelConfig
 
 logger = logging.getLogger('cRIONode')
+
+
+class ScanTimingStats:
+    """Lightweight scan loop timing statistics.
+
+    Tracks min/max/mean cycle time, jitter (stddev), and overrun count
+    over a rolling window. Resets when acquisition stops.
+    """
+
+    def __init__(self, target_ms: float, window_size: int = 200):
+        self.target_ms = target_ms
+        self._window_size = window_size
+        self.reset()
+
+    def reset(self):
+        self._samples: list = []
+        self.overruns = 0
+        self.total_scans = 0
+
+    def record(self, dt_ms: float):
+        self.total_scans += 1
+        self._samples.append(dt_ms)
+        if len(self._samples) > self._window_size:
+            self._samples.pop(0)
+        if dt_ms > self.target_ms * 1.5:
+            self.overruns += 1
+
+    @property
+    def min_ms(self) -> float:
+        return min(self._samples) if self._samples else 0.0
+
+    @property
+    def max_ms(self) -> float:
+        return max(self._samples) if self._samples else 0.0
+
+    @property
+    def mean_ms(self) -> float:
+        return sum(self._samples) / len(self._samples) if self._samples else 0.0
+
+    @property
+    def jitter_ms(self) -> float:
+        if len(self._samples) < 2:
+            return 0.0
+        mean = self.mean_ms
+        variance = sum((s - mean) ** 2 for s in self._samples) / len(self._samples)
+        return variance ** 0.5
+
+    @property
+    def actual_rate_hz(self) -> float:
+        mean = self.mean_ms
+        return 1000.0 / mean if mean > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            'target_ms': round(self.target_ms, 2),
+            'actual_ms': round(self.mean_ms, 2),
+            'min_ms': round(self.min_ms, 2),
+            'max_ms': round(self.max_ms, 2),
+            'jitter_ms': round(self.jitter_ms, 3),
+            'actual_rate_hz': round(self.actual_rate_hz, 2),
+            'overruns': self.overruns,
+            'total_scans': self.total_scans,
+        }
 
 
 @dataclass
@@ -60,6 +125,10 @@ class NodeConfig:
     watchdog_output_rate_hz: float = 1.0
     watchdog_output_enabled: bool = False
 
+    # Communication watchdog - if no command/heartbeat received from PC
+    # within this timeout, transition to safe state. 0 = disabled.
+    comm_watchdog_timeout_s: float = 30.0
+
     channels: Dict[str, ChannelConfig] = field(default_factory=dict)
 
     @classmethod
@@ -69,11 +138,20 @@ class NodeConfig:
         for name, ch_data in data.get('channels', {}).items():
             channels[name] = ChannelConfig.from_dict(name, ch_data)
 
+        scan_rate = data.get('scan_rate_hz', 4.0)
+        publish_rate = data.get('publish_rate_hz', 4.0)
+        if scan_rate <= 0:
+            logger.warning(f"scan_rate_hz={scan_rate} is invalid (must be > 0), using default 4.0")
+            scan_rate = 4.0
+        if publish_rate <= 0:
+            logger.warning(f"publish_rate_hz={publish_rate} is invalid (must be > 0), using default 4.0")
+            publish_rate = 4.0
+
         return cls(
             node_id=data.get('node_id', 'crio-001'),
             device_name=data.get('device_name', 'cRIO1'),
-            scan_rate_hz=data.get('scan_rate_hz', 4.0),
-            publish_rate_hz=data.get('publish_rate_hz', 4.0),
+            scan_rate_hz=scan_rate,
+            publish_rate_hz=publish_rate,
             mqtt_broker=data.get('mqtt_broker', data.get('mqtt_host', 'localhost')),
             mqtt_port=data.get('mqtt_port', 1883),
             mqtt_username=data.get('mqtt_username'),
@@ -162,15 +240,23 @@ class CRIONodeV2:
         self._last_heartbeat_time = 0.0
         self._publish_interval = 1.0 / config.publish_rate_hz
         self._scan_interval = 1.0 / config.scan_rate_hz
+        self._scan_timing = ScanTimingStats(target_ms=self._scan_interval * 1000)
 
         logger.info(f"[CONFIG] scan_rate_hz={config.scan_rate_hz}, publish_rate_hz={config.publish_rate_hz}")
+
+        # Communication watchdog — track last message from PC
+        self._last_command_time = time.time()
+        self._comm_watchdog_tripped = False
 
         # Config version (for DAQ sync)
         self.config_version = 0
 
-        # Cached status data (modules/IP don't change at runtime)
+        # Cached status data (modules/IP/fingerprint don't change at runtime)
         self._cached_modules = None
         self._cached_ip = None
+        self._cached_serial_number = None
+        self._cached_chassis_type = None
+        self._cached_mac_address = None
         self.config_timestamp: Optional[str] = None
 
         # Safety manager (owns alarms)
@@ -233,8 +319,16 @@ class CRIONodeV2:
         """Stop the cRIO node service."""
         logger.info("Stopping cRIO Node V2...")
 
-        # Stop all running scripts
+        # Stop all running scripts (with timeout)
         self.script_engine.stop_all()
+        # Give scripts time to finish, but don't block forever
+        _script_deadline = time.time() + 5.0
+        while time.time() < _script_deadline and any(
+            self.script_engine._is_running(sid) for sid in self.script_engine.scripts
+        ):
+            time.sleep(0.1)
+        if any(self.script_engine._is_running(sid) for sid in self.script_engine.scripts):
+            logger.warning("Scripts did not stop within 5s timeout during shutdown")
 
         self._shutdown.set()
 
@@ -303,7 +397,11 @@ class CRIONodeV2:
                     self._check_safety()
                 t_safety_end = time.time()
 
-                # 4. WATCHDOG OUTPUT TOGGLE (if configured)
+                # 4. COMMUNICATION WATCHDOG (if configured)
+                if self.state.is_acquiring and self.config.comm_watchdog_timeout_s > 0:
+                    self._check_comm_watchdog()
+
+                # 5. WATCHDOG OUTPUT TOGGLE (if configured)
                 if self.state.is_acquiring:
                     self._toggle_watchdog_output()
 
@@ -320,17 +418,27 @@ class CRIONodeV2:
                     published = True
                 t_pub_end = time.time()
 
+                # Track scan timing statistics
+                if self.state.is_acquiring:
+                    loop_dt_ms = (t_pub_end - loop_start) * 1000
+                    self._scan_timing.record(loop_dt_ms)
+
                 _consecutive_errors = 0
 
             except Exception as e:
                 _consecutive_errors += 1
                 logger.error(f"[LOOP] Error in main loop: {e}", exc_info=(_consecutive_errors <= 3))
-                # Avoid spamming logs on repeated failures
+                # After 10 consecutive errors, stop acquisition permanently
+                # (do NOT reset counter — require operator intervention)
                 if _consecutive_errors >= 10:
-                    logger.critical(f"[LOOP] {_consecutive_errors} consecutive errors — stopping acquisition")
+                    logger.critical(
+                        f"[LOOP] {_consecutive_errors} consecutive errors — "
+                        f"stopping acquisition. Manual restart required."
+                    )
+                    self.hardware.set_safe_state()
                     self.state.to(State.IDLE)
                     self._publish_status()
-                    _consecutive_errors = 0
+                    break  # Exit main loop — require manual restart
                 # Set timing defaults so sleep still works after error
                 t_read_end = t_read_start = t_safety_end = t_pub_end = time.time()
                 published = False
@@ -347,15 +455,33 @@ class CRIONodeV2:
     # COMMAND PROCESSING
     # =========================================================================
 
+    _CRITICAL_COMMANDS = ('stop', 'acquire/stop', 'session/stop', 'safe_state', 'alarm')
+
+    def _is_critical_command(self, topic: str) -> bool:
+        """Check if command is safety-critical and must never be dropped."""
+        return any(cmd in topic for cmd in self._CRITICAL_COMMANDS)
+
     def _enqueue_command(self, topic: str, payload: Dict[str, Any]):
         """
         MQTT callback - enqueue command for processing.
         IMPORTANT: This runs in paho's thread - must be non-blocking!
+        Critical commands (stop, safety) are never dropped.
         """
+        self._last_command_time = time.time()
+        cmd = Command(topic=topic, payload=payload)
         try:
-            self.command_queue.put_nowait(Command(topic=topic, payload=payload))
+            self.command_queue.put_nowait(cmd)
         except queue.Full:
-            logger.error("Command queue full! Dropping message")
+            if self._is_critical_command(topic):
+                # For safety-critical commands, force space by draining a non-critical command
+                try:
+                    dropped = self.command_queue.get_nowait()
+                    logger.warning(f"Command queue full — dropped '{dropped.topic}' to make room for critical command '{topic}'")
+                    self.command_queue.put_nowait(cmd)
+                except queue.Empty:
+                    logger.critical(f"Command queue full and empty simultaneously — cannot enqueue critical command '{topic}'")
+            else:
+                logger.error(f"Command queue full! Dropping non-critical message: {topic}")
 
     def _process_commands(self):
         """Process all queued commands."""
@@ -367,10 +493,18 @@ class CRIONodeV2:
 
             self._handle_command(cmd.topic, cmd.payload)
 
+    # Commands whose payloads should be logged at INFO for production troubleshooting
+    _CRITICAL_COMMAND_PATTERNS = ('/output', '/stop', '/safety/', '/alarm/', '/alarms/')
+
     def _handle_command(self, topic: str, payload: Dict[str, Any]):
         """Route command to appropriate handler."""
         logger.info(f"[CMD] Received command: {topic}")
-        logger.debug(f"[CMD] Payload: {payload}")
+        # Log payloads at INFO for critical commands (output writes, safety, stop),
+        # DEBUG for routine commands (heartbeat, status, discovery)
+        if any(pattern in topic for pattern in self._CRITICAL_COMMAND_PATTERNS):
+            logger.info(f"[CMD] Payload: {payload}")
+        else:
+            logger.debug(f"[CMD] Payload: {payload}")
 
         # Extract command type from topic
         # Topics: {base}/nodes/{node_id}/{category}/{action}
@@ -507,7 +641,7 @@ class CRIONodeV2:
         if success:
             with self.values_lock:
                 self.output_values[channel] = value
-            logger.info(f"Output: {channel} = {value}")
+            logger.info(f"[AUDIT] Output write: {channel} = {value} (source=mqtt)")
 
         self._publish_command_ack(channel, success)
 
@@ -524,7 +658,7 @@ class CRIONodeV2:
             logger.warning("Alarm ack: missing channel")
             return
 
-        logger.info(f"Command: alarm/ack - {channel}")
+        logger.info(f"[AUDIT] Alarm ack: {channel} (source=mqtt)")
         success = self.acknowledge_alarm(channel)
 
         # Publish acknowledgment response
@@ -577,11 +711,10 @@ class CRIONodeV2:
         channels_changed = old_channels != new_channels
 
         # Clear existing channels and replace with new ones
-        self.config.channels.clear()
-
-        # CRITICAL: Also clear channel_values to remove stale channel names
-        # Otherwise old channels from startup config keep getting published
+        # CRITICAL: Hold values_lock while modifying channels to prevent
+        # main loop from iterating a partially-modified dict
         with self.values_lock:
+            self.config.channels.clear()
             self.channel_values.clear()
 
         for name, ch_data in channels_data.items():
@@ -746,6 +879,10 @@ class CRIONodeV2:
             with open(config_path, 'w') as f:
                 json.dump(config_data, f, indent=2)
 
+            # Restrict config file permissions to owner-only (contains credentials)
+            if os.name != 'nt':
+                os.chmod(config_path, 0o600)
+
             logger.info(f"[CONFIG_PERSIST] Saved {len(channels_dict)} channels to {config_path}")
 
         except Exception as e:
@@ -777,19 +914,46 @@ class CRIONodeV2:
             if not getattr(ch, 'alarm_enabled', False):
                 continue
 
-            config = AlarmConfig(
-                channel=name,
-                enabled=True,
-                hihi_limit=getattr(ch, 'hihi_limit', None),
-                hi_limit=getattr(ch, 'hi_limit', None),
-                lo_limit=getattr(ch, 'lo_limit', None),
-                lolo_limit=getattr(ch, 'lolo_limit', None),
-                deadband=getattr(ch, 'alarm_deadband', 0.0),
-                delay_seconds=getattr(ch, 'alarm_delay_sec', 0.0),
-                safety_action=getattr(ch, 'safety_action', None)
-            )
-            self.safety.configure(name, config)
-            logger.debug(f"Configured alarm for {name}")
+            hihi = getattr(ch, 'hihi_limit', None)
+            hi = getattr(ch, 'hi_limit', None)
+            lo = getattr(ch, 'lo_limit', None)
+            lolo = getattr(ch, 'lolo_limit', None)
+
+            # Validate alarm limit ordering
+            limits = [(v, label) for v, label in
+                      [(lolo, 'lolo'), (lo, 'lo'), (hi, 'hi'), (hihi, 'hihi')]
+                      if v is not None]
+            for i in range(1, len(limits)):
+                if limits[i][0] <= limits[i-1][0]:
+                    logger.error(
+                        f"Alarm config for {name}: {limits[i][1]}={limits[i][0]} must be > "
+                        f"{limits[i-1][1]}={limits[i-1][0]} — skipping alarm configuration"
+                    )
+                    break
+            else:
+                # All limits are in valid order (or only one limit set)
+                deadband = getattr(ch, 'alarm_deadband', 0.0)
+                delay = getattr(ch, 'alarm_delay_sec', 0.0)
+                if deadband < 0:
+                    logger.warning(f"Alarm config for {name}: negative deadband ({deadband}), using 0")
+                    deadband = 0.0
+                if delay < 0:
+                    logger.warning(f"Alarm config for {name}: negative delay ({delay}), using 0")
+                    delay = 0.0
+
+                config = AlarmConfig(
+                    channel=name,
+                    enabled=True,
+                    hihi_limit=hihi,
+                    hi_limit=hi,
+                    lo_limit=lo,
+                    lolo_limit=lolo,
+                    deadband=deadband,
+                    delay_seconds=delay,
+                    safety_action=getattr(ch, 'safety_action', None)
+                )
+                self.safety.configure(name, config)
+                logger.debug(f"Configured alarm for {name}")
 
     def _check_safety(self):
         """
@@ -833,6 +997,21 @@ class CRIONodeV2:
         if success:
             with self.values_lock:
                 self.output_values[channel] = value
+            # Verify the output was actually written — prefer hardware readback
+            readback = self.hardware.read_output_from_hardware(channel)
+            if readback is None:
+                readback = self.hardware.read_output(channel)
+            if readback is not None and abs(readback - value) > 0.01:
+                logger.critical(
+                    f"SAFETY ACTION VERIFICATION FAILED: {channel} requested={value} "
+                    f"readback={readback} — output may not be in safe state!"
+                )
+                success = False
+        else:
+            logger.critical(
+                f"SAFETY ACTION FAILED: could not write {value} to {channel} "
+                f"— output may not be in safe state!"
+            )
 
         # Publish safety action event
         self.mqtt.publish("safety/action", {
@@ -862,6 +1041,46 @@ class CRIONodeV2:
         return success
 
     # =========================================================================
+    # COMMUNICATION WATCHDOG
+    # =========================================================================
+
+    def _check_comm_watchdog(self):
+        """
+        Check if the PC/DAQ service has stopped communicating.
+        If no command received within timeout, transition to IDLE (safe state).
+        """
+        elapsed = time.time() - self._last_command_time
+        timeout = self.config.comm_watchdog_timeout_s
+
+        if elapsed > timeout and not self._comm_watchdog_tripped:
+            self._comm_watchdog_tripped = True
+            logger.critical(
+                f"COMMUNICATION WATCHDOG: No commands received for {elapsed:.1f}s "
+                f"(timeout={timeout}s) — transitioning to safe state"
+            )
+            # Stop watchdog output so external relay trips
+            self._stop_watchdog_output()
+            # Force safe state on all outputs
+            self.hardware.set_safe_state()
+            # Transition to IDLE
+            self.state.to(State.IDLE)
+            self._publish_status()
+            self.mqtt.publish("safety/comm_watchdog", {
+                'tripped': True,
+                'elapsed_s': elapsed,
+                'timeout_s': timeout,
+                'timestamp': datetime.now().isoformat()
+            })
+        elif elapsed <= timeout and self._comm_watchdog_tripped:
+            # Communication restored
+            self._comm_watchdog_tripped = False
+            logger.info("Communication watchdog: contact restored")
+            self.mqtt.publish("safety/comm_watchdog", {
+                'tripped': False,
+                'timestamp': datetime.now().isoformat()
+            })
+
+    # =========================================================================
     # WATCHDOG OUTPUT
     # =========================================================================
 
@@ -872,13 +1091,15 @@ class CRIONodeV2:
 
         now = time.time()
         toggle_interval = 0.5 / self.config.watchdog_output_rate_hz  # half-period
-        if now - self._watchdog_output_last_toggle < toggle_interval:
-            return
 
-        self._watchdog_output_state = not self._watchdog_output_state
+        with self.values_lock:
+            if now - self._watchdog_output_last_toggle < toggle_interval:
+                return
+            self._watchdog_output_state = not self._watchdog_output_state
+            self._watchdog_output_last_toggle = now
+
         value = 1.0 if self._watchdog_output_state else 0.0
         self.hardware.write_output(self.config.watchdog_output_channel, value)
-        self._watchdog_output_last_toggle = now
 
     def _stop_watchdog_output(self):
         """Force watchdog output LOW (external relay will detect loss of pulse)."""
@@ -891,16 +1112,35 @@ class CRIONodeV2:
     # MQTT PUBLISHING
     # =========================================================================
 
+    # Stale value threshold — if a channel hasn't updated in this many seconds,
+    # mark quality as 'stale' so operators know the reading may be unreliable
+    STALE_VALUE_THRESHOLD_S = 10.0
+
     def _publish_values(self):
-        """Publish all channel values as a batch."""
+        """Publish all channel values as a batch, with stale detection."""
+        now = time.time()
         with self.values_lock:
-            batch = dict(self.channel_values)
+            batch = {}
+            for ch, data in self.channel_values.items():
+                entry = dict(data)
+                # Check staleness based on timestamp
+                ts = entry.get('timestamp', 0)
+                if isinstance(ts, (int, float)) and (now - ts) > self.STALE_VALUE_THRESHOLD_S:
+                    entry['quality'] = 'stale'
+                    if not getattr(self, '_stale_warned', set()):
+                        self._stale_warned = set()
+                    if ch not in self._stale_warned:
+                        logger.warning(f"Channel {ch} value is stale ({now - ts:.1f}s old)")
+                        self._stale_warned.add(ch)
+                elif ch in getattr(self, '_stale_warned', set()):
+                    self._stale_warned.discard(ch)
+                batch[ch] = entry
 
             # Include output values
             for ch, val in self.output_values.items():
                 batch[ch] = {
                     'value': val,
-                    'timestamp': time.time(),
+                    'timestamp': now,
                     'quality': 'good',
                     'type': 'output'
                 }
@@ -918,11 +1158,14 @@ class CRIONodeV2:
 
     def _publish_status(self):
         """Publish system status."""
-        # Cache modules and IP - they don't change at runtime
+        # Cache modules, IP, and hardware fingerprint - they don't change at runtime
         if self._cached_modules is None:
             self._cached_modules = self._get_modules()
         if self._cached_ip is None:
             self._cached_ip = self._get_local_ip()
+        if self._cached_serial_number is None:
+            self._cached_serial_number, self._cached_chassis_type, self._cached_mac_address = \
+                self._get_hardware_fingerprint()
 
         status = {
             'status': 'online',
@@ -933,10 +1176,14 @@ class CRIONodeV2:
             'channels': len(self.config.channels),
             'timestamp': datetime.now().isoformat(),
             'ip_address': self._cached_ip,
+            'serial_number': self._cached_serial_number,
+            'product_type': self._cached_chassis_type,
+            'mac_address': self._cached_mac_address,
             'modules': self._cached_modules,
             'module_count': len(self._cached_modules),
             'config_version': self.config_version,
-            'config_timestamp': self.config_timestamp
+            'config_timestamp': self.config_timestamp,
+            'scan_timing': self._scan_timing.to_dict(),
         }
 
         self.mqtt.publish("status/system", status, retain=True)
@@ -1014,6 +1261,7 @@ class CRIONodeV2:
     def _on_enter_acquiring(self, old_state, new_state, payload):
         """Called when entering ACQUIRING state."""
         logger.info("Starting hardware acquisition")
+        self._scan_timing.reset()
         self.hardware.start()
         # Auto-start acquisition-mode scripts
         self.script_engine.auto_start('acquisition')
@@ -1060,16 +1308,54 @@ class CRIONodeV2:
     def _get_local_ip(self) -> str:
         """Get local IP address by connecting to the MQTT broker."""
         try:
-            # Use the MQTT broker address to determine which interface reaches it
             broker = self.config.mqtt_broker
             port = self.config.mqtt_port
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((broker, port))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((broker, port))
+                return s.getsockname()[0]
         except Exception:
             return "127.0.0.1"
+
+    def _get_hardware_fingerprint(self) -> tuple:
+        """Get chassis serial number, product type, and MAC address.
+
+        These are hardware identifiers that persist across redeployments,
+        allowing the DAQ service to verify it's the same physical device.
+
+        Returns:
+            (serial_number: str, chassis_type: str, mac_address: str)
+        """
+        serial = ''
+        chassis = 'cRIO'
+        mac = ''
+
+        # Get chassis serial number and product type from NI-DAQmx
+        if DAQMX_AVAILABLE:
+            try:
+                import nidaqmx.system
+                system = nidaqmx.system.System.local()
+                for device in system.devices:
+                    product_type = getattr(device, 'product_type', '')
+                    if 'cRIO' in product_type or 'cDAQ' in product_type:
+                        serial = str(getattr(device, 'serial_number', ''))
+                        chassis = product_type
+                        break
+            except Exception as e:
+                logger.debug(f"Could not read chassis serial: {e}")
+
+        # Get MAC address from primary network interface
+        try:
+            import uuid
+            mac_int = uuid.getnode()
+            # uuid.getnode() returns a random value if it can't find a MAC;
+            # bit 0 of byte 0 is set for random MACs (multicast bit)
+            if not (mac_int >> 40) & 1:
+                mac = ':'.join(f'{(mac_int >> (8 * i)) & 0xff:02x}'
+                               for i in range(5, -1, -1))
+        except Exception as e:
+            logger.debug(f"Could not read MAC address: {e}")
+
+        return serial, chassis, mac
 
     def _get_modules(self) -> List[Dict[str, Any]]:
         """Enumerate hardware modules on the cRIO with channel information."""
@@ -1243,6 +1529,75 @@ class CRIONodeV2:
 
 
 # =============================================================================
+# CONFIG VALIDATION
+# =============================================================================
+
+def _validate_config(config_data: dict):
+    """Validate config data has required fields with correct types.
+
+    Logs warnings for non-critical missing fields (defaults will be used).
+    Logs errors for critical missing/invalid fields but does not crash.
+    """
+    # Required fields - log errors if missing
+    required_fields = {
+        'mqtt_broker': str,
+        'node_id': str,
+    }
+
+    for field_name, expected_type in required_fields.items():
+        if field_name not in config_data:
+            logger.error(f"Config missing required field '{field_name}' - will use default value")
+        elif not isinstance(config_data[field_name], expected_type):
+            logger.error(
+                f"Config field '{field_name}' has wrong type: "
+                f"expected {expected_type.__name__}, got {type(config_data[field_name]).__name__}"
+            )
+
+    # Optional fields with expected types - log warnings if wrong type
+    optional_fields = {
+        'mqtt_port': int,
+        'scan_rate_hz': (int, float),
+        'publish_rate_hz': (int, float),
+        'heartbeat_interval_s': (int, float),
+        'use_mock_hardware': bool,
+        'mqtt_base_topic': str,
+        'device_name': str,
+    }
+
+    for field_name, expected_type in optional_fields.items():
+        if field_name in config_data and not isinstance(config_data[field_name], expected_type):
+            logger.warning(
+                f"Config field '{field_name}' has wrong type: "
+                f"expected {expected_type if isinstance(expected_type, str) else '/'.join(t.__name__ for t in expected_type) if isinstance(expected_type, tuple) else expected_type.__name__}, "
+                f"got {type(config_data[field_name]).__name__} - will attempt to use anyway"
+            )
+
+    # Validate channels structure if present
+    if 'channels' in config_data:
+        if not isinstance(config_data['channels'], dict):
+            logger.error(f"Config field 'channels' must be a dict, got {type(config_data['channels']).__name__}")
+        else:
+            for ch_name, ch_data in config_data['channels'].items():
+                if not isinstance(ch_data, dict):
+                    logger.error(f"Channel '{ch_name}' config must be a dict, got {type(ch_data).__name__}")
+                elif 'physical_channel' not in ch_data and 'channel_type' not in ch_data:
+                    logger.warning(f"Channel '{ch_name}' has no 'physical_channel' or 'channel_type' defined")
+
+    # Validate numeric ranges
+    if 'mqtt_port' in config_data and isinstance(config_data['mqtt_port'], int):
+        if not (1 <= config_data['mqtt_port'] <= 65535):
+            logger.error(f"Config field 'mqtt_port' out of range: {config_data['mqtt_port']} (must be 1-65535)")
+
+    if 'scan_rate_hz' in config_data and isinstance(config_data['scan_rate_hz'], (int, float)):
+        if config_data['scan_rate_hz'] <= 0:
+            logger.error(f"Config field 'scan_rate_hz' must be positive, got {config_data['scan_rate_hz']}")
+
+    if 'publish_rate_hz' in config_data and isinstance(config_data['publish_rate_hz'], (int, float)):
+        if config_data['publish_rate_hz'] <= 0:
+            logger.error(f"Config field 'publish_rate_hz' must be positive, got {config_data['publish_rate_hz']}")
+
+
+# =============================================================================
 # ENTRY POINT
 # =============================================================================
 
@@ -1268,6 +1623,10 @@ def main():
     if args.config:
         with open(args.config) as f:
             config_data = json.load(f)
+
+        # Validate required fields and types
+        _validate_config(config_data)
+
         config = NodeConfig.from_dict(config_data)
     else:
         config = NodeConfig(
@@ -1283,6 +1642,14 @@ def main():
 
     # Run service
     node = CRIONodeV2(config)
+
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down...")
+        node.stop()
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     node.run()
 
 

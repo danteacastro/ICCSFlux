@@ -9,9 +9,11 @@ import type {
   SetOutputStep,
   SetVariableStep,
   LoopStep,
+  EndLoopStep,
   IfStep,
   ElseStep,
   EndIfStep,
+  MessageStep,
   RecordingStep,
   SafetyCheckStep,
   CallSequenceStep,
@@ -21,7 +23,13 @@ import type {
   RateOfChangeTransformation,
   UnitConversionTransformation,
   PolynomialTransformation,
+  DeadbandTransformation,
+  ClampTransformation,
   AutomationTrigger,
+  ValueReachedTrigger,
+  ScheduledTrigger,
+  StateChangeTrigger,
+  SequenceEventTrigger,
   UnitConversionType,
   FunctionBlock,
   Schedule,
@@ -131,7 +139,7 @@ export function useScripts() {
   function sendOutput(channel: string, value: number | boolean) {
     if (mqttSetOutput) {
       mqttSetOutput(channel, value)
-      console.log(`MQTT: Set ${channel} = ${value}`)
+      console.debug(`MQTT: Set ${channel} = ${value}`)
     } else {
       console.warn(`MQTT not connected: Would set ${channel} = ${value}`)
     }
@@ -316,9 +324,31 @@ export function useScripts() {
   // FORMULA EVALUATION
   // ========================================================================
 
+  // Block dangerous patterns in formulas before they reach new Function()
+  const BLOCKED_FORMULA_PATTERNS = [
+    /\bimport\b/i, /\brequire\b/i, /\beval\b/i, /\bFunction\b/,
+    /\bfetch\b/i, /\bXMLHttpRequest\b/i, /\bdocument\b/i, /\bwindow\b/i,
+    /\bprocess\b/i, /\bglobal\b/i, /\bconstructor\b/i,
+    /\b__proto__\b/, /\bprototype\b/,
+  ]
+
+  function validateFormulaSafety(formula: string): string | null {
+    for (const pattern of BLOCKED_FORMULA_PATTERNS) {
+      if (pattern.test(formula)) {
+        return `Formula contains blocked pattern: ${pattern.source}`
+      }
+    }
+    return null
+  }
+
   function evaluateFormula(formula: string): { value: number | null; error: string | null } {
     if (!formula || formula.trim() === '') {
       return { value: null, error: 'Empty formula' }
+    }
+
+    const safetyError = validateFormulaSafety(formula)
+    if (safetyError) {
+      return { value: null, error: safetyError }
     }
 
     try {
@@ -642,7 +672,7 @@ export function useScripts() {
       if (!trigger.enabled) return
       if (trigger.trigger?.type !== 'sequenceEvent') return
 
-      const t = trigger.trigger as any
+      const t = trigger.trigger as SequenceEventTrigger
       if (t.event !== event) return
       if (t.sequenceId && t.sequenceId !== seq.id) return
 
@@ -714,10 +744,10 @@ export function useScripts() {
           executeLoopStep(seq, step as LoopStep)
           break
         case 'endLoop':
-          executeEndLoopStep(seq, step as any)
+          executeEndLoopStep(seq, step as EndLoopStep)
           break
         case 'message':
-          const msgStep = step as any
+          const msgStep = step as MessageStep
           addNotification(msgStep.severity || 'info', 'Sequence Message', msgStep.message || '')
           seq.currentStepIndex++
           emitSequenceEvent('stepCompleted', seq)
@@ -944,6 +974,11 @@ export function useScripts() {
   function evaluateFormulaWithSequenceVars(formula: string, seq: Sequence): { value: number | null; error: string | null } {
     if (!formula || formula.trim() === '') {
       return { value: null, error: 'Empty formula' }
+    }
+
+    const safetyError = validateFormulaSafety(formula)
+    if (safetyError) {
+      return { value: null, error: safetyError }
     }
 
     try {
@@ -1442,7 +1477,7 @@ export function useScripts() {
             playAlarmSound()
             break
           case 'log':
-            console.log(`[ALARM LOG] ${new Date().toISOString()} - ${alarm.name}: ${alarm.description}`)
+            console.debug(`[ALARM LOG] ${new Date().toISOString()} - ${alarm.name}: ${alarm.description}`)
             break
         }
       } catch (e) {
@@ -1454,7 +1489,7 @@ export function useScripts() {
   function playAlarmSound() {
     try {
       // Create a simple beep using Web Audio API
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const audioContext = new (window.AudioContext || (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)!()
       const oscillator = audioContext.createOscillator()
       const gainNode = audioContext.createGain()
 
@@ -1537,7 +1572,7 @@ export function useScripts() {
             result = calculatePolynomial(transform as PolynomialTransformation, inputValue)
             break
           case 'deadband':
-            const db = transform as any
+            const db = transform as DeadbandTransformation
             if (transform.lastValue === null || Math.abs(inputValue - transform.lastValue) >= (db.deadband || 1)) {
               result = inputValue
             } else {
@@ -1545,7 +1580,7 @@ export function useScripts() {
             }
             break
           case 'clamp':
-            const cl = transform as any
+            const cl = transform as ClampTransformation
             result = Math.max(cl.minValue || 0, Math.min(cl.maxValue || 100, inputValue))
             break
           default:
@@ -2013,7 +2048,7 @@ export function useScripts() {
 
     saveDrawPatterns()
     addNotification('info', 'Draw Pattern Started', `Started "${pattern.name}"`)
-    console.log('Draw pattern started:', pattern.name)
+    console.debug('Draw pattern started:', pattern.name)
   }
 
   function pauseDrawPattern(patternId: string) {
@@ -2029,7 +2064,7 @@ export function useScripts() {
     pattern.state = 'paused'
     pattern.pausedTime = Date.now()
     saveDrawPatterns()
-    console.log('Draw pattern paused')
+    console.debug('Draw pattern paused')
   }
 
   function resumeDrawPattern(patternId: string) {
@@ -2047,7 +2082,7 @@ export function useScripts() {
     }
 
     saveDrawPatterns()
-    console.log('Draw pattern resumed')
+    console.debug('Draw pattern resumed')
   }
 
   function stopDrawPattern(patternId: string) {
@@ -2096,7 +2131,7 @@ export function useScripts() {
 
     saveDrawPatterns()
     addNotification('info', 'Draw Pattern Stopped', `Stopped "${pattern.name}"`)
-    console.log('Draw pattern stopped')
+    console.debug('Draw pattern stopped')
   }
 
   function skipCurrentDraw(patternId: string) {
@@ -2166,7 +2201,7 @@ export function useScripts() {
     draw.startTime = Date.now()
 
     sendOutput(draw.valve, true)
-    console.log(`Opened draw #${draw.drawNumber}: ${draw.valve} (target: ${draw.volumeTarget} ${draw.volumeUnit})`)
+    console.debug(`Opened draw #${draw.drawNumber}: ${draw.valve} (target: ${draw.volumeTarget} ${draw.volumeUnit})`)
   }
 
   function closeDraw(pattern: DrawPattern, draw: Draw, reason: 'volume' | 'timeout') {
@@ -2178,7 +2213,7 @@ export function useScripts() {
     // Update total volume
     pattern.totalVolumeDispensed += draw.volumeDispensed
 
-    console.log(`Closed draw #${draw.drawNumber}: ${draw.valve} (dispensed: ${draw.volumeDispensed.toFixed(2)} ${draw.volumeUnit}, reason: ${reason})`)
+    console.debug(`Closed draw #${draw.drawNumber}: ${draw.valve} (dispensed: ${draw.volumeDispensed.toFixed(2)} ${draw.volumeUnit}, reason: ${reason})`)
 
     // Delay before next draw
     if (pattern.delayBetweenDraws > 0) {
@@ -2217,7 +2252,7 @@ export function useScripts() {
 
       // Open valve
       sendOutput(valve, true)
-      console.log(`Single draw started: ${valve} (target: ${volumeTarget} ${volumeUnit})`)
+      console.debug(`Single draw started: ${valve} (target: ${volumeTarget} ${volumeUnit})`)
 
       const tickInterval = window.setInterval(() => {
         elapsedTime++
@@ -2232,12 +2267,12 @@ export function useScripts() {
         if (volumeDispensed >= volumeTarget) {
           clearInterval(tickInterval)
           sendOutput(valve, false)
-          console.log(`Single draw completed by volume: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
+          console.debug(`Single draw completed by volume: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
           resolve({ success: true, volumeDispensed, completedBy: 'volume' })
         } else if (elapsedTime >= maxDuration) {
           clearInterval(tickInterval)
           sendOutput(valve, false)
-          console.log(`Single draw completed by timeout: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
+          console.debug(`Single draw completed by timeout: ${volumeDispensed.toFixed(2)} ${volumeUnit}`)
           resolve({ success: true, volumeDispensed, completedBy: 'timeout' })
         }
       }, 1000)
@@ -2349,7 +2384,7 @@ export function useScripts() {
   }
 
   function evaluateValueReachedTrigger(trigger: AutomationTrigger): boolean {
-    const t = trigger.trigger as any
+    const t = trigger.trigger as ValueReachedTrigger
     if (!t?.channel) return false
 
     const value = store.values[t.channel]?.value
@@ -2367,7 +2402,7 @@ export function useScripts() {
   }
 
   function evaluateScheduledTrigger(trigger: AutomationTrigger): boolean {
-    const t = trigger.trigger as any
+    const t = trigger.trigger as ScheduledTrigger
     if (!t?.schedule) return false
 
     const now = new Date()
@@ -2396,7 +2431,7 @@ export function useScripts() {
   }
 
   function evaluateStateChangeTrigger(trigger: AutomationTrigger): boolean {
-    const t = trigger.trigger as any
+    const t = trigger.trigger as StateChangeTrigger
     if (!t?.stateType) return false
 
     const status = store.status
@@ -2658,6 +2693,11 @@ export function useScripts() {
   }
 
   function evaluateBlockFormula(block: FunctionBlock, formula: string): { value: number | null; error: string | null } {
+    const safetyError = validateFormulaSafety(formula)
+    if (safetyError) {
+      return { value: null, error: safetyError }
+    }
+
     try {
       // Build context with input values
       const inputs: Record<string, number> = {}

@@ -26,6 +26,10 @@ from user_session import UserSessionManager, UserRole, Permission
 from audit_trail import AuditTrail, AuditEventType
 from archive_manager import ArchiveManager
 
+# Test credentials - NOT for production use
+TEST_ADMIN_USERNAME = "admin"
+TEST_ADMIN_PASSWORD = "admin"  # Default password from UserSessionManager
+
 
 @pytest.fixture
 def temp_dir():
@@ -183,7 +187,7 @@ class TestPermissionChecks:
 
     def test_admin_can_manage_users(self, session_manager):
         """Admin should have MANAGE_USERS permission"""
-        session = session_manager.authenticate("admin", "admin")
+        session = session_manager.authenticate(TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
 
         assert session_manager.has_permission(
             session.session_id,

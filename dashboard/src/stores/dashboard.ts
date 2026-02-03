@@ -59,10 +59,24 @@ export interface RecordingConfig {
   scheduleEnd: string
   scheduleDays: string[]
 
+  // CSV file recording toggle
+  csvEnabled: boolean
+
   // ALCOA+ Data Integrity Settings
   appendOnly: boolean           // Make files read-only after recording stops
   verifyOnClose: boolean        // Create SHA-256 integrity files
   includeAuditMetadata: boolean // Include operator, timestamps, session info
+
+  // PostgreSQL Database Storage (optional, alongside file recording)
+  dbEnabled: boolean
+  dbHost: string
+  dbPort: number
+  dbName: string
+  dbUser: string
+  dbPassword: string
+  dbTable: string
+  dbBatchSize: number
+  dbTimescale: boolean  // Enable TimescaleDB hypertable
 }
 
 const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
@@ -101,10 +115,24 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   scheduleEnd: '17:00',
   scheduleDays: ['mon', 'tue', 'wed', 'thu', 'fri'],
 
+  // CSV file recording (enabled by default for new projects)
+  csvEnabled: true,
+
   // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11 compliance)
   appendOnly: false,           // Off by default for development flexibility
   verifyOnClose: true,         // On by default - creates integrity checksums
-  includeAuditMetadata: true   // On by default - includes operator attribution
+  includeAuditMetadata: true,  // On by default - includes operator attribution
+
+  // PostgreSQL Database Storage (disabled by default)
+  dbEnabled: false,
+  dbHost: 'localhost',
+  dbPort: 5432,
+  dbName: 'iccsflux',
+  dbUser: 'iccsflux',
+  dbPassword: '',
+  dbTable: 'recording_data',
+  dbBatchSize: 50,
+  dbTimescale: false
 }
 
 export const useDashboardStore = defineStore('dashboard', () => {
@@ -400,7 +428,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
           unit: '',
           group: 'Scripts',
           enabled: true
-        } as any
+        }
       }
     })
   }
@@ -2349,22 +2377,19 @@ export const useDashboardStore = defineStore('dashboard', () => {
       name,
       description,
       category,
-      symbols: selectedSymbols.map(s => ({
-        ...s,
-        id: undefined as any,  // Will be regenerated on instantiation
-        offsetX: s.x - minX,
-        offsetY: s.y - minY
+      symbols: selectedSymbols.map(({ id: _id, ...rest }) => ({
+        ...rest,
+        offsetX: rest.x - minX,
+        offsetY: rest.y - minY
       })),
-      pipes: selectedPipes.map(p => ({
-        ...p,
-        id: undefined as any,
-        offsetPoints: p.points.map(pt => ({ x: pt.x - minX, y: pt.y - minY }))
+      pipes: selectedPipes.map(({ id: _id, ...rest }) => ({
+        ...rest,
+        offsetPoints: rest.points.map(pt => ({ x: pt.x - minX, y: pt.y - minY }))
       })),
-      textAnnotations: selectedTextAnnotations.map(t => ({
-        ...t,
-        id: undefined as any,
-        offsetX: t.x - minX,
-        offsetY: t.y - minY
+      textAnnotations: selectedTextAnnotations.map(({ id: _id, ...rest }) => ({
+        ...rest,
+        offsetX: rest.x - minX,
+        offsetY: rest.y - minY
       })),
       createdAt: new Date().toISOString()
     }
@@ -2388,14 +2413,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Create new symbols
     for (const symbolDef of template.symbols) {
       const newId = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const { offsetX, offsetY, ...symbolProps } = symbolDef
       const newSymbol: PidSymbol = {
-        ...symbolDef,
+        ...symbolProps,
         id: newId,
-        x: x + symbolDef.offsetX,
-        y: y + symbolDef.offsetY
+        x: x + offsetX,
+        y: y + offsetY
       }
-      delete (newSymbol as any).offsetX
-      delete (newSymbol as any).offsetY
 
       pidLayer.value = {
         ...pidLayer.value,
@@ -2407,12 +2431,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Create new pipes
     for (const pipeDef of template.pipes) {
       const newId = `pid-pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const { offsetPoints, ...pipeProps } = pipeDef
       const newPipe: PidPipe = {
-        ...pipeDef,
+        ...pipeProps,
         id: newId,
-        points: pipeDef.offsetPoints.map(pt => ({ x: x + pt.x, y: y + pt.y }))
+        points: offsetPoints.map(pt => ({ x: x + pt.x, y: y + pt.y }))
       }
-      delete (newPipe as any).offsetPoints
 
       pidLayer.value = {
         ...pidLayer.value,
@@ -2424,14 +2448,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Create new text annotations
     for (const textDef of template.textAnnotations) {
       const newId = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const { offsetX, offsetY, ...textProps } = textDef
       const newText: PidTextAnnotation = {
-        ...textDef,
+        ...textProps,
         id: newId,
-        x: x + textDef.offsetX,
-        y: y + textDef.offsetY
+        x: x + offsetX,
+        y: y + offsetY
       }
-      delete (newText as any).offsetX
-      delete (newText as any).offsetY
 
       pidLayer.value = {
         ...pidLayer.value,
@@ -2546,15 +2569,15 @@ export const useDashboardStore = defineStore('dashboard', () => {
         // Migration: Remove boolean props that default to true when set to false
         // This fixes checkboxes that saved false instead of leaving undefined
         const migrateWidgets = (widgetList: WidgetConfig[]) => {
-          const propsToClean = [
+          const propsToClean: (keyof WidgetConfig)[] = [
             'showLabel', 'showUnit', 'showUnits', 'showValue',
             'showGrid', 'showLegend', 'yAxisAuto', 'showDate',
-            'showToggle', 'showControls', 'showAckButton'
+            'showAckButton'
           ]
           widgetList.forEach(w => {
             propsToClean.forEach(prop => {
-              if ((w as any)[prop] === false) {
-                delete (w as any)[prop]
+              if (w[prop] === false) {
+                delete w[prop]
               }
             })
           })

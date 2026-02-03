@@ -16,15 +16,23 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { SystemStatus } from '../types'
+
+interface MockRecordingState {
+  mockStatus: Ref<Partial<SystemStatus> | null | undefined>
+}
+
+const getRecordingMockState = () =>
+  (globalThis as unknown as Record<string, MockRecordingState>).__mockRecordingState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
   const { ref } = require('vue')
 
-  const mockStatus = ref<any>(null)
+  const mockStatus = ref<Partial<SystemStatus> | null>(null)
 
-  ;(global as any).__mockRecordingState = {
+  ;(globalThis as unknown as Record<string, MockRecordingState>).__mockRecordingState = {
     mockStatus
   }
 
@@ -41,7 +49,7 @@ import RecordingStatusWidget from './RecordingStatusWidget.vue'
 describe('RecordingStatusWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockRecordingState
+    const state = getRecordingMockState()
     if (state) {
       state.mockStatus.value = null
     }
@@ -104,7 +112,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Recording State', () => {
     beforeEach(() => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_duration: '00:05:30',
@@ -162,7 +170,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Duration Formatting', () => {
     it('should display duration from status', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_duration: '01:30:45',
@@ -176,7 +184,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should show 00:00:00 when duration not set', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -195,7 +203,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Filename Truncation', () => {
     it('should display short filename as-is', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'short.csv',
@@ -208,7 +216,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should truncate long filename with ellipsis prefix', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'very_long_recording_filename_that_exceeds_25_chars.csv',
@@ -223,7 +231,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should show -- when filename not set', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_samples: 100,
@@ -235,7 +243,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should have title attribute with full filename', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       const fullFilename = 'very_long_recording_filename_that_exceeds_25_chars.csv'
       state.mockStatus.value = {
         recording: true,
@@ -255,7 +263,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Sample Count Formatting', () => {
     it('should display raw number for small counts', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -269,7 +277,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should format thousands with K suffix', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -283,7 +291,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should format millions with M suffix', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -297,7 +305,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should show -- when samples not set', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -316,7 +324,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('File Size Formatting', () => {
     it('should display bytes for small sizes', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -330,7 +338,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should format kilobytes', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -344,7 +352,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should format megabytes', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -358,7 +366,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should format gigabytes', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -372,7 +380,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should show -- when bytes not set', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -391,7 +399,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Recording Mode', () => {
     it('should display manual mode', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -405,7 +413,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should display triggered mode', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -419,7 +427,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should default to manual mode when not set', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -438,7 +446,7 @@ describe('RecordingStatusWidget', () => {
 
   describe('Edge Cases', () => {
     it('should handle null status', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = null
 
       const wrapper = mount(RecordingStatusWidget)
@@ -446,7 +454,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should handle undefined status', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = undefined
 
       const wrapper = mount(RecordingStatusWidget)
@@ -454,7 +462,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should handle recording: false explicitly', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: false
       }
@@ -464,7 +472,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should handle zero samples (shows -- because 0 is falsy)', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',
@@ -479,7 +487,7 @@ describe('RecordingStatusWidget', () => {
     })
 
     it('should handle zero bytes (shows -- because 0 is falsy)', () => {
-      const state = (global as any).__mockRecordingState
+      const state = getRecordingMockState()
       state.mockStatus.value = {
         recording: true,
         recording_filename: 'test.csv',

@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { ref } from 'vue'
 
 // Mock dashboard store
-const mockStoreChannels: Record<string, any> = {}
+const mockStoreChannels: Record<string, Record<string, unknown>> = {}
 const mockGetLayout = vi.fn().mockReturnValue({
   pages: [{ id: 'default', name: 'Page 1', widgets: [], order: 0 }],
   currentPageId: 'default',
@@ -294,8 +294,7 @@ describe('useProjectManager', () => {
 
       // Mock window.location.reload
       const originalLocation = window.location
-      delete (window as any).location
-      window.location = { ...originalLocation, reload: vi.fn() } as any
+      Object.defineProperty(window, 'location', { value: { ...originalLocation, reload: vi.fn() }, writable: true, configurable: true })
 
       await projectManager.importProject(validProject)
 

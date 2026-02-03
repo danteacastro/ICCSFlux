@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import type { ChannelConfig, DeviceCommandResult } from '../types'
 
 const mqtt = useMqtt()
 
@@ -489,9 +490,9 @@ async function testConnection(deviceName: string) {
     const result = await mqtt.sendCommandWithAck('chassis/test', { name: deviceName }, 10000)
 
     if (result.success) {
-      showFeedback('success', (result as any).message || 'Connection successful')
+      showFeedback('success', (result as DeviceCommandResult).message || 'Connection successful')
     } else {
-      showFeedback('error', (result as any).message || result.error || 'Connection failed')
+      showFeedback('error', (result as DeviceCommandResult).message || result.error || 'Connection failed')
     }
   } catch (e: any) {
     showFeedback('error', e.message || 'Connection test timed out')
@@ -512,23 +513,23 @@ function loadDevices() {
   const foundDevices = new Map<string, CFPDevice>()
 
   for (const [_channelName, config] of Object.entries(channelConfigs)) {
-    const cfpDevice = (config as any)?.cfp_device
+    const cfpDevice = config?.cfp_device
     if (cfpDevice && !foundDevices.has(cfpDevice)) {
       // Reconstruct device from channel config
-      const backplaneModel = (config as any)?.cfp_backplane_model || 'cFP-1808'
+      const backplaneModel = config?.cfp_backplane_model || 'cFP-1808'
       const backplane = CFP_BACKPLANES[backplaneModel]
 
       foundDevices.set(cfpDevice, {
         name: cfpDevice,
         backplaneModel,
-        connectionType: ((config as any)?.connection?.toLowerCase() || 'tcp') as 'tcp' | 'rtu',
-        ipAddress: (config as any)?.ip_address || '',
-        port: (config as any)?.modbus_port || 502,
-        serialPort: (config as any)?.serial || '',
-        baudrate: (config as any)?.modbus_baudrate || 9600,
-        parity: (config as any)?.modbus_parity || 'E',
-        timeout: (config as any)?.modbus_timeout || 1.0,
-        slaveId: (config as any)?.modbus_slave_id || 1,
+        connectionType: (config?.connection?.toLowerCase() || 'tcp') as 'tcp' | 'rtu',
+        ipAddress: config?.ip_address || '',
+        port: config?.modbus_port || 502,
+        serialPort: config?.serial || '',
+        baudrate: config?.modbus_baudrate || 9600,
+        parity: config?.modbus_parity || 'E',
+        timeout: config?.modbus_timeout || 1.0,
+        slaveId: config?.modbus_slave_id || 1,
         enabled: true,
         slots: Array.from({ length: backplane?.slots || 8 }, (_, i) => ({
           slotNumber: i + 1,
@@ -540,8 +541,8 @@ function loadDevices() {
     }
 
     // Update slot info if we have it
-    const cfpSlot = (config as any)?.cfp_slot
-    const cfpModule = (config as any)?.cfp_module
+    const cfpSlot = config?.cfp_slot
+    const cfpModule = config?.cfp_module
     if (cfpDevice && cfpSlot && cfpModule) {
       const device = foundDevices.get(cfpDevice)
       if (device) {

@@ -54,7 +54,7 @@ from script_manager import ScriptManager, Script, ScriptRunMode, ScriptState
 from trigger_engine import TriggerEngine
 from watchdog_engine import WatchdogEngine
 from device_discovery import DeviceDiscovery
-from recording_manager import RecordingManager, RecordingConfig
+from recording_manager import RecordingManager, RecordingConfig, PostgreSQLWriter
 from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
 from user_variables import UserVariableManager
@@ -87,6 +87,95 @@ logging.basicConfig(
 logger = logging.getLogger('DAQService')
 
 
+class TokenBucketRateLimiter:
+    """Simple token bucket rate limiter for MQTT command topics.
+
+    Allows burst up to `capacity` tokens, refills at `rate` tokens/second.
+    Thread-safe via GIL (float operations are atomic in CPython).
+    """
+
+    def __init__(self, rate: float = 10.0, capacity: float = 20.0):
+        self.rate = rate
+        self.capacity = capacity
+        self._tokens = capacity
+        self._last_check = time.time()
+
+    def allow(self) -> bool:
+        """Check if a request should be allowed. Consumes one token."""
+        now = time.time()
+        elapsed = now - self._last_check
+        self._last_check = now
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
+class ScanTimingStats:
+    """Lightweight scan loop timing statistics.
+
+    Tracks min/max/mean cycle time, jitter (stddev), and overrun count
+    over a rolling window. Resets when acquisition stops.
+    """
+
+    def __init__(self, target_ms: float, window_size: int = 200):
+        self.target_ms = target_ms
+        self._window_size = window_size
+        self.reset()
+
+    def reset(self):
+        self._samples: list = []
+        self.overruns = 0
+        self.total_scans = 0
+
+    def record(self, dt_ms: float):
+        self.total_scans += 1
+        self._samples.append(dt_ms)
+        if len(self._samples) > self._window_size:
+            self._samples.pop(0)
+        if dt_ms > self.target_ms * 1.5:
+            self.overruns += 1
+
+    @property
+    def min_ms(self) -> float:
+        return min(self._samples) if self._samples else 0.0
+
+    @property
+    def max_ms(self) -> float:
+        return max(self._samples) if self._samples else 0.0
+
+    @property
+    def mean_ms(self) -> float:
+        return sum(self._samples) / len(self._samples) if self._samples else 0.0
+
+    @property
+    def jitter_ms(self) -> float:
+        if len(self._samples) < 2:
+            return 0.0
+        mean = self.mean_ms
+        variance = sum((s - mean) ** 2 for s in self._samples) / len(self._samples)
+        return variance ** 0.5
+
+    @property
+    def actual_rate_hz(self) -> float:
+        mean = self.mean_ms
+        return 1000.0 / mean if mean > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            'target_ms': round(self.target_ms, 2),
+            'actual_ms': round(self.mean_ms, 2),
+            'min_ms': round(self.min_ms, 2),
+            'max_ms': round(self.max_ms, 2),
+            'jitter_ms': round(self.jitter_ms, 3),
+            'actual_rate_hz': round(self.actual_rate_hz, 2),
+            'overruns': self.overruns,
+            'total_scans': self.total_scans,
+        }
+
+
 class DAQService:
     """Main DAQ Service class"""
 
@@ -113,6 +202,15 @@ class DAQService:
         # callbacks and bypass this queue. All other messages go through here.
         self._command_queue: queue.Queue = queue.Queue(maxsize=5000)
         self._command_thread: Optional[threading.Thread] = None
+
+        # Rate limiters for command topics (prevent message flood)
+        # Critical commands (acquire/stop/safe-state) bypass these via message_callback_add
+        self._rate_limiters: Dict[str, TokenBucketRateLimiter] = {
+            'output': TokenBucketRateLimiter(rate=50.0, capacity=100.0),
+            'script': TokenBucketRateLimiter(rate=5.0, capacity=10.0),
+            'config': TokenBucketRateLimiter(rate=2.0, capacity=5.0),
+        }
+        self._rate_limit_warn_times: Dict[str, float] = {}
 
         # Service start time for uptime tracking
         self._start_time: Optional[datetime] = None
@@ -167,6 +265,7 @@ class DAQService:
         # Loop timing for status display
         self.last_scan_dt_ms = 0.0
         self.last_publish_dt_ms = 0.0
+        self._scan_timing = ScanTimingStats(target_ms=0.0)  # Updated when config loaded
 
         # Scheduler for automated start/stop
         self.scheduler: Optional[SimpleScheduler] = None
@@ -2150,7 +2249,7 @@ Unit conversions:
             def get(self, name: str, default=0.0):
                 try:
                     return self._service.get_channel_value(name)
-                except:
+                except (KeyError, ValueError):
                     return default
 
             def __repr__(self):
@@ -2195,12 +2294,17 @@ Unit conversions:
                 return f'<SessionAPI: active={self.active}, recording={self.recording}>'
 
         namespace = {
+            # SECURITY: Restrict __builtins__ to prevent access to __import__,
+            # open(), exec(), eval(), compile() etc. via the default builtins module.
+            # Only explicitly listed functions are available in the console.
+            '__builtins__': {},
+
             # API
             'tags': TagsAPI(self),
             'outputs': OutputsAPI(self),
             'session': SessionAPI(self),
 
-            # Standard library
+            # Standard library (pre-imported — no __import__ available)
             'time': __import__('time'),
             'math': math,
             'datetime': datetime,
@@ -2215,15 +2319,14 @@ Unit conversions:
             'sqrt': math.sqrt, 'log': math.log, 'log10': math.log10,
             'pi': math.pi, 'e': math.e,
 
-            # Built-ins
+            # Built-ins (safe subset only — no getattr/setattr/type to prevent sandbox escape)
             'print': print,
             'len': len, 'range': range, 'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
             'str': str, 'int': int, 'float': float, 'bool': bool,
             'True': True, 'False': False, 'None': None,
             'sorted': sorted, 'enumerate': enumerate, 'zip': zip,
             'map': map, 'filter': filter, 'any': any, 'all': all,
-            'isinstance': isinstance, 'type': type, 'dir': dir, 'help': help,
-            'getattr': getattr, 'setattr': setattr, 'hasattr': hasattr,
+            'isinstance': isinstance,
         }
 
         # Try to add numpy and scipy if available
@@ -3034,12 +3137,31 @@ Unit conversions:
         self.mqtt_client.message_callback_add(
             f"{base}/system/safe-state", self._on_critical_safe_state)
 
-        # MQTT Authentication (if configured)
+        # MQTT Authentication — check env vars, config, then auto-generated credential file
         mqtt_user = os.environ.get('MQTT_USERNAME', getattr(self.config.system, 'mqtt_username', None))
         mqtt_pass = os.environ.get('MQTT_PASSWORD', getattr(self.config.system, 'mqtt_password', None))
+        if not mqtt_user or not mqtt_pass:
+            # Fallback: read from auto-generated credential file (zero-config)
+            cred_file = os.path.join('config', 'mqtt_credentials.json')
+            if os.path.exists(cred_file):
+                try:
+                    import json as _json
+                    with open(cred_file) as _f:
+                        _creds = _json.load(_f)
+                    mqtt_user = _creds.get('backend', {}).get('username')
+                    mqtt_pass = _creds.get('backend', {}).get('password')
+                except Exception as e:
+                    logger.warning(f"Could not read MQTT credentials from {cred_file}: {e}")
         if mqtt_user and mqtt_pass:
             self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
             logger.info(f"MQTT authentication enabled for user: {mqtt_user}")
+
+        # Optional TLS for broker connection (e.g., when connecting to remote broker)
+        tls_ca = os.environ.get('MQTT_TLS_CA')
+        if tls_ca and os.path.exists(tls_ca):
+            import ssl
+            self.mqtt_client.tls_set(ca_certs=tls_ca)
+            logger.info(f"MQTT TLS enabled with CA: {tls_ca}")
 
         try:
             self.mqtt_client.connect(
@@ -3132,6 +3254,7 @@ Unit conversions:
             client.subscribe(f"{base}/recording/read")
             client.subscribe(f"{base}/recording/read-range")
             client.subscribe(f"{base}/recording/file-info")
+            client.subscribe(f"{base}/recording/db-test")
 
             # Subscribe to Azure IoT Hub topics
             client.subscribe(f"{base}/azure/config")
@@ -3313,6 +3436,9 @@ Unit conversions:
     # or crashed by failures in the main message handler.
     # =========================================================================
 
+    # Maximum accepted MQTT payload size (256 KB)
+    MAX_PAYLOAD_SIZE = 262144
+
     def _parse_critical_payload(self, msg):
         """Parse payload for critical command callbacks.
         Returns (payload, request_id) or (None, None) if the message should
@@ -3320,6 +3446,9 @@ Unit conversions:
         """
         if not msg.payload:
             return None, None  # Empty payload (b'') = retained message clear, ignore
+        if len(msg.payload) > self.MAX_PAYLOAD_SIZE:
+            logger.warning(f"[MQTT] Oversized critical payload on {msg.topic}: {len(msg.payload)} bytes, dropping")
+            return None, None
         try:
             payload = json.loads(msg.payload.decode())
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -3421,6 +3550,22 @@ Unit conversions:
         by per-topic callbacks registered via message_callback_add() and never
         reach this handler.
         """
+        if msg.payload and len(msg.payload) > self.MAX_PAYLOAD_SIZE:
+            logger.warning(f"[MQTT] Oversized payload on {msg.topic}: {len(msg.payload)} bytes, dropping")
+            return
+
+        # Rate limit check for command topics
+        for prefix, limiter in self._rate_limiters.items():
+            if f'/{prefix}/' in msg.topic or msg.topic.endswith(f'/{prefix}'):
+                if not limiter.allow():
+                    now = time.time()
+                    last_warn = self._rate_limit_warn_times.get(prefix, 0)
+                    if now - last_warn > 5.0:
+                        logger.warning(f"[RATE LIMIT] {prefix} commands rate-limited (>{limiter.rate}/s)")
+                        self._rate_limit_warn_times[prefix] = now
+                    return
+                break
+
         try:
             self._command_queue.put_nowait((msg.topic, msg.payload))
         except queue.Full:
@@ -3702,6 +3847,8 @@ Unit conversions:
             self._handle_recording_read_range(payload)
         elif topic == f"{base}/recording/file-info":
             self._handle_recording_file_info(payload)
+        elif topic == f"{base}/recording/db-test":
+            self._handle_recording_db_test(payload)
 
         # === AZURE IOT HUB ===
         elif topic == f"{base}/azure/config":
@@ -4326,6 +4473,10 @@ Unit conversions:
             self._publish_channel_config()
             logger.info(f"[TIMING] Channel config publish: {(time.time()-_start_time)*1000:.1f}ms")
 
+            # Reset scan timing stats for fresh metrics
+            self._scan_timing.target_ms = (1000.0 / self.config.system.scan_rate_hz)
+            self._scan_timing.reset()
+
             # STATE TRANSITION: initializing → running
             self._state_machine.to(DAQState.RUNNING)
             logger.info(f"[STATE] Acquisition started successfully (state={self._state_machine.state.name})")
@@ -4646,6 +4797,21 @@ Unit conversions:
         # Payload should be { "values": { "script_name": value, ... } }
         values = payload.get('values', payload)
         self.recording_manager.update_script_values(values)
+
+    def _handle_recording_db_test(self, payload: Any):
+        """Test PostgreSQL database connection"""
+        if not isinstance(payload, dict):
+            self._publish_recording_response(False, "Invalid payload")
+            return
+
+        success, message = PostgreSQLWriter.test_connection(
+            host=payload.get('host', 'localhost'),
+            port=payload.get('port', 5432),
+            dbname=payload.get('dbname', 'iccsflux'),
+            user=payload.get('user', 'iccsflux'),
+            password=payload.get('password', ''),
+        )
+        self._publish_recording_response(success, message)
 
     def _publish_recording_response(self, success: bool, message: str):
         """Publish recording operation response"""
@@ -5006,6 +5172,7 @@ Unit conversions:
             "publish_rate_hz": self.config.system.publish_rate_hz,
             "dt_scan_ms": round(self.last_scan_dt_ms, 2),
             "dt_publish_ms": round(self.last_publish_dt_ms, 2),
+            "scan_timing": self._scan_timing.to_dict(),
             "channel_count": len(self.config.channels),
             "config_path": self.config_path,
             # Sequence status
@@ -5051,6 +5218,38 @@ Unit conversions:
             retain=True,
             qos=1  # At least once delivery for status
         )
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get current system metrics for health/metrics endpoints.
+
+        Returns a dict suitable for JSON serialization.
+        This can be passed as a metrics_provider to DashboardServer.
+        """
+        uptime_seconds = 0.0
+        if self._start_time:
+            uptime_seconds = (datetime.now() - self._start_time).total_seconds()
+
+        metrics = {
+            'uptime_seconds': round(uptime_seconds, 1),
+            'acquiring': self.acquiring,
+            'acquisition_state': self.acquisition_state,
+            'recording': self.recording,
+            'channel_count': len(self.config.channels) if self.config else 0,
+            'scan_rate_hz': self.config.system.scan_rate_hz if self.config else 0,
+            'publish_rate_hz': self.config.system.publish_rate_hz if self.config else 0,
+            'dt_scan_ms': round(self.last_scan_dt_ms, 2),
+            'dt_publish_ms': round(self.last_publish_dt_ms, 2),
+            'scan_timing': self._scan_timing.to_dict(),
+            'command_queue_size': self._command_queue.qsize(),
+            'command_queue_capacity': self._command_queue.maxsize,
+        }
+
+        if self._resource_monitor_enabled:
+            metrics['cpu_percent'] = round(self._cpu_percent, 1)
+            metrics['memory_mb'] = round(self._memory_mb, 1)
+            metrics['disk_percent'] = round(self._disk_percent, 1)
+
+        return metrics
 
     def _publish_alarms_cleared(self, reason: str = "project_change"):
         """Publish alarm cleared message to signal frontend to clear stale alarm data.
@@ -5934,6 +6133,7 @@ Unit conversions:
                 if new_scan_rate < 0.1:
                     new_scan_rate = 0.1  # Minimum 0.1 Hz
                 self.config.system.scan_rate_hz = new_scan_rate
+                self._scan_timing.target_ms = 1000.0 / new_scan_rate
                 logger.info(f"Scan rate updated: {old_scan_rate} Hz -> {new_scan_rate} Hz")
 
             # Update publish rate if provided
@@ -8367,10 +8567,14 @@ Unit conversions:
             'timestamp': datetime.now().isoformat()
         }
 
-        # Generate config version hash for tracking
-        import hashlib
-        channels_str = json.dumps(config_data.get('channels', []), sort_keys=True)
-        config_hash = hashlib.md5(channels_str.encode()).hexdigest()[:8]
+        # Use dashboard-provided config_version if available (allows dashboard
+        # to track sync by comparing its own hash against cRIO's reported version).
+        # Fall back to server-side MD5 hash for backwards compatibility.
+        config_hash = payload.get('config_version')
+        if not config_hash:
+            import hashlib
+            channels_str = json.dumps(config_data.get('channels', []), sort_keys=True)
+            config_hash = hashlib.md5(channels_str.encode()).hexdigest()[:8]
         config_data['config_version'] = config_hash
 
         # Track this push for ACK/retry logic
@@ -10203,6 +10407,8 @@ Unit conversions:
             # Note: opto22 nodes are included in device_discovery.scan() results
             if mode in ('cdaq', 'opto22', 'all'):
                 result = self.device_discovery.scan()
+                if not result.success:
+                    logger.warning(f"Hardware discovery failed: {result.message}")
                 logger.info(f"Local hardware scan complete: {result.message}")
             elif mode == 'crio':
                 # For crio-only mode, create empty result (will be populated after cRIO ping)
@@ -10239,6 +10445,8 @@ Unit conversions:
             should_rescan = crio_found or crio_count_now > crio_count_before or (mode == 'crio' and crio_count_now > 0)
             if mode in ('crio', 'all') and should_rescan:
                 result = self.device_discovery.scan()
+                if not result.success:
+                    logger.warning(f"Re-scan hardware discovery failed: {result.message}")
                 logger.info(f"Re-scanned with cRIO nodes: {result.message}")
 
             # Filter result based on mode
@@ -11249,39 +11457,69 @@ Unit conversions:
         """Background thread that drains the publish queue.
 
         Runs until the service stops. Publishes messages with timeout to prevent
-        blocking indefinitely on broker issues.
+        blocking indefinitely on broker issues. Failed publishes are re-queued
+        with a max retry count to prevent infinite loops.
         """
+        MAX_RETRIES = 3
+        RETRY_BACKOFF_S = 0.5
+
         while self.running:
             try:
                 # Wait for message with timeout (allows clean shutdown)
-                topic, payload, qos, retain = self._publish_queue.get(timeout=1.0)
-
-                # Publish with client (paho-mqtt handles reconnection)
-                if self.mqtt_client and self.mqtt_client.is_connected():
-                    self.mqtt_client.publish(topic, payload, qos=qos, retain=retain)
+                item = self._publish_queue.get(timeout=1.0)
+                # Items are (topic, payload, qos, retain) or (topic, payload, qos, retain, retry_count)
+                if len(item) == 5:
+                    topic, payload, qos, retain, retry_count = item
                 else:
-                    # Client not connected - message is lost
-                    # Could buffer for retry, but keeping simple for now
-                    pass
+                    topic, payload, qos, retain = item
+                    retry_count = 0
+
+                try:
+                    # Publish with client (paho-mqtt handles reconnection)
+                    if self.mqtt_client and self.mqtt_client.is_connected():
+                        self.mqtt_client.publish(topic, payload, qos=qos, retain=retain)
+                    else:
+                        # Client not connected - re-queue for retry
+                        if retry_count < MAX_RETRIES:
+                            logger.warning(f"MQTT not connected, re-queuing message to {topic} (retry {retry_count + 1}/{MAX_RETRIES})")
+                            time.sleep(RETRY_BACKOFF_S * (retry_count + 1))
+                            try:
+                                self._publish_queue.put_nowait((topic, payload, qos, retain, retry_count + 1))
+                            except queue.Full:
+                                logger.error(f"MQTT publish queue full, dropping retry message to {topic}")
+                        else:
+                            logger.error(f"MQTT message to {topic} dropped after {MAX_RETRIES} retries (client not connected)")
+                except Exception as e:
+                    # Publish call itself failed - re-queue with backoff
+                    if retry_count < MAX_RETRIES:
+                        logger.warning(f"MQTT publish failed for {topic}, re-queuing (retry {retry_count + 1}/{MAX_RETRIES}): {e}", exc_info=True)
+                        time.sleep(RETRY_BACKOFF_S * (retry_count + 1))
+                        try:
+                            self._publish_queue.put_nowait((topic, payload, qos, retain, retry_count + 1))
+                        except queue.Full:
+                            logger.error(f"MQTT publish queue full, dropping retry message to {topic}")
+                    else:
+                        logger.error(f"MQTT message to {topic} dropped after {MAX_RETRIES} retries: {e}", exc_info=True)
 
                 self._publish_queue.task_done()
             except queue.Empty:
                 # No messages - continue loop
                 continue
             except Exception as e:
-                logger.debug(f"Publish queue error: {e}")
+                logger.error(f"Publish queue error: {e}", exc_info=True)
 
         # Drain remaining messages on shutdown
         while not self._publish_queue.empty():
             try:
-                topic, payload, qos, retain = self._publish_queue.get_nowait()
+                item = self._publish_queue.get_nowait()
+                topic, payload, qos, retain = item[0], item[1], item[2], item[3]
                 if self.mqtt_client and self.mqtt_client.is_connected():
                     self.mqtt_client.publish(topic, payload, qos=qos, retain=retain)
                 self._publish_queue.task_done()
             except queue.Empty:
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to drain publish queue message: {e}")
 
         logger.info("MQTT publish queue thread stopped")
 
@@ -12286,12 +12524,19 @@ Unit conversions:
         logger.info(f"SAFETY ACK: {action_name} - {'SUCCESS' if success else 'FAILED'}: {message}")
 
     def _scan_loop(self):
-        """Main scan loop - reads all inputs at scan rate"""
+        """Main scan loop - reads all inputs at scan rate.
+
+        Uses epoch-anchored timing to prevent cumulative drift.
+        Each scan targets an absolute time rather than sleeping relative
+        to the end of the previous scan.
+        """
         logger.info(f"Starting scan loop at {self.config.system.scan_rate_hz} Hz")
+        next_scan_time = time.time()
 
         while self.running:
             # Calculate interval dynamically to pick up runtime rate changes
             scan_interval = 1.0 / self.config.system.scan_rate_hz
+            next_scan_time += scan_interval
             start_time = time.time()
             # SOE: Capture high-precision acquisition timestamp (microseconds since epoch)
             acquisition_ts_us = time.time_ns() // 1000
@@ -12420,9 +12665,13 @@ Unit conversions:
             # Track loop timing
             elapsed = time.time() - start_time
             self.last_scan_dt_ms = elapsed * 1000
+            self._scan_timing.record(self.last_scan_dt_ms)
 
-            # Sleep for remainder of scan interval
-            sleep_time = max(0, scan_interval - elapsed)
+            # Sleep until next epoch-anchored target (prevents cumulative drift)
+            sleep_time = max(0, next_scan_time - time.time())
+            # If we fell behind by more than one interval, reset to prevent burst catch-up
+            if time.time() - next_scan_time > scan_interval:
+                next_scan_time = time.time()
             time.sleep(sleep_time)
 
     def _publish_loop(self):

@@ -254,7 +254,7 @@ export function useBackendScripts() {
             // Auto-restart after a brief delay
             setTimeout(() => {
               if (scripts.value[scriptData.id]?.state === 'error') {
-                console.log(`[BackendScripts] Auto-restarting timed out script: ${scriptData.name}`)
+                console.debug(`[BackendScripts] Auto-restarting timed out script: ${scriptData.name}`)
                 scriptsComposable.addNotification('info', `Auto-Restart: ${scriptData.name}`, 'Restarting script after timeout')
                 startScript(scriptData.id)
               }

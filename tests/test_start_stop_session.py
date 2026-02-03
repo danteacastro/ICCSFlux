@@ -50,6 +50,10 @@ NODE_BASE = f"{SYSTEM_PREFIX}/nodes/node-001"
 DO_CHANNEL = "tag_72"       # Digital output (NI 9472)
 VO_CHANNEL = "tag_48"       # Voltage output (NI 9264)
 
+# Test credentials - NOT for production use
+TEST_USERNAME = "admin"
+TEST_PASSWORD = "admin"  # Default password from UserSessionManager fixture
+
 
 class LiveTestClient:
     """MQTT test client using correct node-prefixed topics."""
@@ -115,7 +119,7 @@ class LiveTestClient:
             print(f"Connect error: {e}")
             return False
 
-    def login(self, username="admin", password="admin", timeout=5.0) -> bool:
+    def login(self, username=TEST_USERNAME, password=TEST_PASSWORD, timeout=5.0) -> bool:
         """Authenticate with the DAQ service via MQTT."""
         self.publish(f"{NODE_BASE}/auth/login", {
             "username": username,
@@ -523,7 +527,7 @@ def run_all_tests():
     # Always authenticate explicitly - retained auth/status messages don't
     # guarantee the DAQ service has an active session (e.g., after restart).
     print("Authenticating as admin...")
-    if client.login("admin", "admin"):
+    if client.login(TEST_USERNAME, TEST_PASSWORD):
         print("Authenticated OK")
     else:
         print("WARNING: Authentication may have failed - commands may be rejected")

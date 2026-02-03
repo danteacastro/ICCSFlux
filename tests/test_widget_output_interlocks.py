@@ -56,6 +56,10 @@ VO_CHANNEL = "tag_48"       # Voltage output (NI 9264, Mod2)
 CO_CHANNEL = "tag_88"       # Current output (NI 9266, Mod6)
 DI_CHANNEL = "tag_0"        # Digital input (NI 9425, Mod3) - for interlock trigger
 
+# Test credentials - NOT for production use
+TEST_USERNAME = "admin"
+TEST_PASSWORD = "admin"  # Default password from UserSessionManager fixture
+
 
 class WidgetTestClient:
     """MQTT client that simulates dashboard widget behavior."""
@@ -141,7 +145,7 @@ class WidgetTestClient:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def login(self, username="admin", password="admin", timeout=5.0) -> bool:
+    def login(self, username=TEST_USERNAME, password=TEST_PASSWORD, timeout=5.0) -> bool:
         """Authenticate with DAQ service."""
         self.publish(f"{NODE_BASE}/auth/login", {
             "username": username,

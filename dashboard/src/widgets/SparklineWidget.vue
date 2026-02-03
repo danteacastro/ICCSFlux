@@ -49,7 +49,7 @@ const maxValue = computed(() => {
 })
 
 const displayLabel = computed(() =>
-  props.label || props.channel
+  (props.label || props.channel || '').replace(/^py\./, '')
 )
 
 const unit = computed(() => formatUnit(channelConfig.value?.unit))

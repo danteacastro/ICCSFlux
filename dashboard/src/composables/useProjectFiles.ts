@@ -109,6 +109,10 @@ export interface ProjectData {
   config?: string  // Legacy: external .ini file reference (optional for merged configs)
   created: string
   modified: string
+  // Service config (heartbeat, timeouts) from backend
+  service?: Record<string, unknown>
+  // Top-level schedules (DHW draw schedules) - separate from scripts.schedules
+  schedules?: unknown[]
   // Embedded system config (v2.0+)
   system?: ProjectSystemConfig
   // Embedded channel definitions (v2.0+)
@@ -170,7 +174,7 @@ const initialized = ref(false)
 // Auto-save state
 const isDirty = ref(false)
 const lastSaveTime = ref<number>(0)
-const autoSaveEnabled = ref(true)
+const autoSaveEnabled = ref(false)
 const AUTO_SAVE_DEBOUNCE_MS = 3000  // 3 seconds debounce
 let autoSaveTimeout: ReturnType<typeof setTimeout> | null = null
 // Guard to ignore changes immediately after project load (prevents save-on-load loop)
@@ -213,7 +217,7 @@ export function useProjectFiles() {
     })
 
     mqtt.subscribe(`${nodePrefix}/project/loaded`, async (payload: any) => {
-      console.log('[PROJECT LOADING] Received project/loaded message:', {
+      console.debug('[PROJECT LOADING] Received project/loaded message:', {
         success: payload.success,
         hasProject: !!payload.project,
         filename: payload.filename
@@ -225,9 +229,9 @@ export function useProjectFiles() {
 
         try {
           // Apply project data to frontend
-          console.log('[PROJECT LOADING] Calling applyProjectData...')
+          console.debug('[PROJECT LOADING] Calling applyProjectData...')
           await applyProjectData(payload.project)
-          console.log('[PROJECT LOADING] ✅ Project applied successfully')
+          console.debug('[PROJECT LOADING] ✅ Project applied successfully')
 
           // Notify callbacks
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
@@ -254,7 +258,7 @@ export function useProjectFiles() {
     })
 
     mqtt.subscribe(`${nodePrefix}/project/current`, async (payload: any) => {
-      console.log('[PROJECT LOADING] Received project/current message:', {
+      console.debug('[PROJECT LOADING] Received project/current message:', {
         hasProject: !!payload.project,
         filename: payload.filename
       })
@@ -265,16 +269,16 @@ export function useProjectFiles() {
       // Apply project data if present (same as project/loaded)
       if (payload.project) {
         try {
-          console.log('[PROJECT LOADING] Applying current project data...')
+          console.debug('[PROJECT LOADING] Applying current project data...')
           await applyProjectData(payload.project)
-          console.log('[PROJECT LOADING] ✅ Current project applied successfully')
+          console.debug('[PROJECT LOADING] ✅ Current project applied successfully')
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
         } catch (err) {
           console.error('[PROJECT LOADING] ❌ Error applying current project:', err)
           error.value = `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`
         }
       } else {
-        console.log('[PROJECT LOADING] No current project to apply')
+        console.debug('[PROJECT LOADING] No current project to apply')
       }
     })
 
@@ -284,7 +288,7 @@ export function useProjectFiles() {
 
     // Subscribe to autosave status (crash recovery)
     mqtt.subscribe(`${nodePrefix}/project/autosave/status`, (payload: any) => {
-      console.log('[AUTOSAVE] Received autosave status:', payload)
+      console.debug('[AUTOSAVE] Received autosave status:', payload)
       backendAutosaveStatus.value = {
         exists: payload.exists,
         timestamp: payload.timestamp,
@@ -337,7 +341,7 @@ export function useProjectFiles() {
       error.value = null
 
       const projectData = collectCurrentState()
-      projectData.name = name || filename.replace('.json', '')
+      projectData.name = name || currentProjectData.value?.name || filename.replace('.json', '')
 
       const timeout = setTimeout(() => {
         isLoading.value = false
@@ -395,7 +399,7 @@ export function useProjectFiles() {
     projectData.name = currentProjectData.value?.name || 'Unsaved Project'
 
     mqtt.sendLocalCommand('project/autosave', { data: projectData })
-    console.log('[AUTOSAVE] Sent state to backend for crash recovery')
+    console.debug('[AUTOSAVE] Sent state to backend for crash recovery')
   }
 
   // Start periodic backend autosave
@@ -408,7 +412,7 @@ export function useProjectFiles() {
       }
     }, BACKEND_AUTOSAVE_INTERVAL_MS)
 
-    console.log('[AUTOSAVE] Backend autosave started (every 30s when dirty)')
+    console.debug('[AUTOSAVE] Backend autosave started (every 30s when dirty)')
   }
 
   // Stop periodic backend autosave
@@ -458,7 +462,7 @@ export function useProjectFiles() {
           // Clear the autosave after successful recovery
           discardBackendAutosave()
 
-          console.log('[AUTOSAVE] Successfully recovered from autosave')
+          console.debug('[AUTOSAVE] Successfully recovered from autosave')
         }
 
         isLoading.value = false
@@ -567,9 +571,9 @@ export function useProjectFiles() {
     // Preserve system, service, and schedules sections from loaded project
     // These contain hardware config (scan_rate, mqtt settings) that shouldn't be lost
     const system = currentProjectData.value?.system
-    const service = (currentProjectData.value as any)?.service
+    const service = currentProjectData.value?.service
     // Top-level schedules array (DHW draw schedules) - separate from scripts.schedules
-    const topLevelSchedules = (currentProjectData.value as any)?.schedules
+    const topLevelSchedules = currentProjectData.value?.schedules
 
     return {
       // Preserve system config (mqtt, scan_rate, etc.) from loaded project
@@ -643,40 +647,40 @@ export function useProjectFiles() {
 
   // Apply loaded project data to frontend
   async function applyProjectData(data: ProjectData) {
-    console.log('[PROJECT LOADING] Starting to apply project data...')
-    console.log('[PROJECT LOADING] Project name:', data.name)
-    console.log('[PROJECT LOADING] Project version:', data.version)
-    console.log('[PROJECT LOADING] Project config:', data.config)
-    console.log('[PROJECT LOADING] Has embedded channels:', !!data.channels)
+    console.debug('[PROJECT LOADING] Starting to apply project data...')
+    console.debug('[PROJECT LOADING] Project name:', data.name)
+    console.debug('[PROJECT LOADING] Project version:', data.version)
+    console.debug('[PROJECT LOADING] Project config:', data.config)
+    console.debug('[PROJECT LOADING] Has embedded channels:', !!data.channels)
 
     // CRITICAL: Clear all safety state FIRST to prevent ghost alarms from previous project
-    console.log('[PROJECT LOADING] Clearing old safety state before loading new project...')
+    console.debug('[PROJECT LOADING] Clearing old safety state before loading new project...')
     safety.clearAllSafetyState('project_loading')
 
     // CRITICAL: Set all outputs to safe state before loading new configuration
     // This ensures outputs are safe regardless of what the new project configures
-    console.log('[PROJECT LOADING] Setting all outputs to SAFE STATE...')
+    console.debug('[PROJECT LOADING] Setting all outputs to SAFE STATE...')
     mqtt.setAllOutputsSafe('project_load')
     // Brief delay to allow safe state commands to propagate
     await new Promise(resolve => setTimeout(resolve, 300))
 
     // Apply embedded channels if present (v2.0+ merged config format)
     if (data.channels && Object.keys(data.channels).length > 0) {
-      console.log('[PROJECT LOADING] Applying embedded channels...')
+      console.debug('[PROJECT LOADING] Applying embedded channels...')
       const channelConfigs: Record<string, ChannelConfig> = {}
 
       for (const [name, pch] of Object.entries(data.channels)) {
         channelConfigs[name] = convertProjectChannel(name, pch)
       }
 
-      console.log('[PROJECT LOADING] Converted channels:', Object.keys(channelConfigs).length)
+      console.debug('[PROJECT LOADING] Converted channels:', Object.keys(channelConfigs).length)
       store.setChannels(channelConfigs)
-      console.log('[PROJECT LOADING] ✅ Channels applied to store')
+      console.debug('[PROJECT LOADING] ✅ Channels applied to store')
 
       // CRITICAL: Stop acquisition before sending channels (backend rejects bulk-create while acquiring)
       const wasAcquiring = store.isAcquiring
       if (wasAcquiring) {
-        console.log('[PROJECT LOADING] Stopping acquisition to apply new channels...')
+        console.debug('[PROJECT LOADING] Stopping acquisition to apply new channels...')
         mqtt.stopAcquisition()
         // Wait for acquisition to stop before sending channels
         await new Promise(resolve => setTimeout(resolve, 500))
@@ -690,12 +694,12 @@ export function useProjectFiles() {
 
       if (backendChannelCount === 0 || backendChannelCount !== projectChannelCount) {
         // Backend doesn't have channels or count mismatch - need to sync
-        console.log('[PROJECT LOADING] Sending channels to backend via bulk-create...')
+        console.debug('[PROJECT LOADING] Sending channels to backend via bulk-create...')
         const channelArray = Object.values(channelConfigs)
         mqtt.bulkCreateChannels(channelArray)
-        console.log('[PROJECT LOADING] ✅ Channels sent to backend:', channelArray.length, 'channels')
+        console.debug('[PROJECT LOADING] ✅ Channels sent to backend:', channelArray.length, 'channels')
       } else {
-        console.log('[PROJECT LOADING] ⏭️  Skipping bulk-create - backend already has', backendChannelCount, 'channels')
+        console.debug('[PROJECT LOADING] ⏭️  Skipping bulk-create - backend already has', backendChannelCount, 'channels')
       }
 
       // Wait for backend to process channels before restarting acquisition
@@ -703,15 +707,15 @@ export function useProjectFiles() {
 
       // Restart acquisition if it was running
       if (wasAcquiring) {
-        console.log('[PROJECT LOADING] Restarting acquisition with new channels...')
+        console.debug('[PROJECT LOADING] Restarting acquisition with new channels...')
         mqtt.startAcquisition()
       }
     }
 
     // Apply layout (supports both legacy single-page and multi-page)
     if (data.layout) {
-      console.log('[PROJECT LOADING] Applying layout...')
-      console.log('[PROJECT LOADING] Layout structure:', {
+      console.debug('[PROJECT LOADING] Applying layout...')
+      console.debug('[PROJECT LOADING] Layout structure:', {
         hasLegacyWidgets: !!data.layout.widgets && data.layout.widgets.length > 0,
         legacyWidgetCount: data.layout.widgets?.length || 0,
         hasPages: !!data.layout.pages && data.layout.pages.length > 0,
@@ -724,7 +728,7 @@ export function useProjectFiles() {
       // Log detailed page info
       if (data.layout.pages && data.layout.pages.length > 0) {
         data.layout.pages.forEach((page: any, idx: number) => {
-          console.log(`[PROJECT LOADING] Page ${idx}: ${page.name} (id: ${page.id}, widgets: ${page.widgets?.length || 0})`)
+          console.debug(`[PROJECT LOADING] Page ${idx}: ${page.name} (id: ${page.id}, widgets: ${page.widgets?.length || 0})`)
         })
       }
 
@@ -737,13 +741,13 @@ export function useProjectFiles() {
           gridColumns: data.layout.gridColumns || 12,
           rowHeight: data.layout.rowHeight || 80
         })
-        console.log('[PROJECT LOADING] ✅ Layout applied successfully')
+        console.debug('[PROJECT LOADING] ✅ Layout applied successfully')
 
         // CRITICAL: Save layout to localStorage to prevent old cached layout from loading on next boot
         // Without this, localStorage has stale layout data that overwrites the project layout
-        console.log('[PROJECT LOADING] Saving layout to localStorage to prevent cache issues...')
+        console.debug('[PROJECT LOADING] Saving layout to localStorage to prevent cache issues...')
         store.saveLayoutToStorage()
-        console.log('[PROJECT LOADING] ✅ Layout saved to localStorage')
+        console.debug('[PROJECT LOADING] ✅ Layout saved to localStorage')
       } catch (error) {
         console.error('[PROJECT LOADING] ❌ Error applying layout:', error)
         throw error
@@ -776,18 +780,18 @@ export function useProjectFiles() {
         // Use debouncing to prevent duplicate loading when both project/loaded and project/current fire
         if (scriptLoadingTimeout) {
           clearTimeout(scriptLoadingTimeout)
-          console.log('[PROJECT LOADING] Debouncing script load - clearing previous timeout')
+          console.debug('[PROJECT LOADING] Debouncing script load - clearing previous timeout')
         }
 
         const backendScripts = useBackendScripts()
 
         // Clear existing scripts first to prevent duplicates
-        console.log('[PROJECT LOADING] Clearing existing backend scripts...')
+        console.debug('[PROJECT LOADING] Clearing existing backend scripts...')
         backendScripts.clearAllScripts()
 
         // Debounced script loading - only the last call within 200ms will execute
         scriptLoadingTimeout = setTimeout(() => {
-          console.log('[PROJECT LOADING] Sending', pythonScripts.length, 'scripts to backend...')
+          console.debug('[PROJECT LOADING] Sending', pythonScripts.length, 'scripts to backend...')
           for (const script of pythonScripts) {
             backendScripts.addScript({
               id: script.id,  // Preserve original ID to prevent duplicates
@@ -797,7 +801,7 @@ export function useProjectFiles() {
               runMode: script.runMode || script.run_mode || 'manual',
               enabled: script.enabled !== false
             })
-            console.log('[PROJECT LOADING] Added script to backend:', script.name, 'with ID:', script.id)
+            console.debug('[PROJECT LOADING] Added script to backend:', script.name, 'with ID:', script.id)
           }
           scriptLoadingTimeout = null
         }, 200)
@@ -883,7 +887,7 @@ export function useProjectFiles() {
     ignoreNextChange = true
     setTimeout(() => {
       ignoreNextChange = false
-      console.log('[AUTO-SAVE] Now tracking changes for auto-save')
+      console.debug('[AUTO-SAVE] Now tracking changes for auto-save')
     }, IGNORE_CHANGES_AFTER_LOAD_MS)
   }
 
@@ -913,11 +917,11 @@ export function useProjectFiles() {
 
   // Create new project (clear current state)
   async function newProject() {
-    console.log('[PROJECT] Starting fresh - clearing all state...')
+    console.debug('[PROJECT] Starting fresh - clearing all state...')
 
     // Stop acquisition if running (backend needs to be stopped before clearing channels)
     if (store.isAcquiring) {
-      console.log('[PROJECT] Stopping acquisition...')
+      console.debug('[PROJECT] Stopping acquisition...')
       mqtt.stopAcquisition()
       await new Promise(resolve => setTimeout(resolve, 500))
     }
@@ -926,22 +930,22 @@ export function useProjectFiles() {
     currentProjectData.value = null
 
     // Clear ALL pages and widgets (not just current page)
-    console.log('[PROJECT] Clearing pages and widgets...')
+    console.debug('[PROJECT] Clearing pages and widgets...')
     store.pages.forEach(page => page.widgets = [])
 
     // Clear channels from frontend (this triggers alarm clearing via useSafety watcher)
-    console.log('[PROJECT] Clearing channels...')
+    console.debug('[PROJECT] Clearing channels...')
     store.setChannels({})
 
     // Clear ALL safety state (alarms, history, configs, interlocks, safety actions)
     // This ensures no ghost values persist in the safety system
-    console.log('[PROJECT] Clearing all safety state...')
+    console.debug('[PROJECT] Clearing all safety state...')
     safety.clearAllSafetyState('new_project')
 
     // Clear layout from localStorage to prevent stale data
     const layoutKey = `nisystem-layout-${store.systemId}`
     localStorage.removeItem(layoutKey)
-    console.log('[PROJECT] Cleared layout from localStorage')
+    console.debug('[PROJECT] Cleared layout from localStorage')
 
     // Clear localStorage items - core scripts
     localStorage.removeItem('nisystem-scripts')
@@ -978,14 +982,14 @@ export function useProjectFiles() {
     localStorage.removeItem('nisystem_experiments')
 
     // Ensure we have at least one empty page
-    console.log('[PROJECT] Ensuring default page...')
+    console.debug('[PROJECT] Ensuring default page...')
     store.ensureDefaultPage()
 
     // Clear all channel values to show "--" in widgets
-    console.log('[PROJECT] Clearing channel values...')
+    console.debug('[PROJECT] Clearing channel values...')
     store.clearValues()
 
-    console.log('[PROJECT] ✅ Clean slate ready - all state cleared')
+    console.debug('[PROJECT] ✅ Clean slate ready - all state cleared')
   }
 
   // ============================================================================
@@ -998,7 +1002,7 @@ export function useProjectFiles() {
 
     // Ignore changes immediately after project load to prevent save-on-load loop
     if (ignoreNextChange) {
-      console.log('[AUTO-SAVE] Ignoring change (project just loaded)')
+      console.debug('[AUTO-SAVE] Ignoring change (project just loaded)')
       return
     }
 
@@ -1019,12 +1023,12 @@ export function useProjectFiles() {
     autoSaveTimeout = setTimeout(async () => {
       if (!currentProject.value || !isDirty.value) return
 
-      console.log('[AUTO-SAVE] Saving project...', currentProject.value)
+      console.debug('[AUTO-SAVE] Saving project...', currentProject.value)
       const success = await saveProject(currentProject.value)
       if (success) {
         isDirty.value = false
         lastSaveTime.value = Date.now()
-        console.log('[AUTO-SAVE] ✅ Project saved successfully')
+        console.debug('[AUTO-SAVE] ✅ Project saved successfully')
       } else {
         console.error('[AUTO-SAVE] ❌ Failed to save project')
       }
@@ -1034,7 +1038,7 @@ export function useProjectFiles() {
   // Force an immediate save (bypass debounce)
   async function saveNow(): Promise<boolean> {
     if (!currentProject.value) {
-      console.log('[AUTO-SAVE] No project loaded, cannot save')
+      console.debug('[AUTO-SAVE] No project loaded, cannot save')
       return false
     }
 
@@ -1044,12 +1048,12 @@ export function useProjectFiles() {
       autoSaveTimeout = null
     }
 
-    console.log('[AUTO-SAVE] Force saving project...', currentProject.value)
+    console.debug('[AUTO-SAVE] Force saving project...', currentProject.value)
     const success = await saveProject(currentProject.value)
     if (success) {
       isDirty.value = false
       lastSaveTime.value = Date.now()
-      console.log('[AUTO-SAVE] ✅ Project saved')
+      console.debug('[AUTO-SAVE] ✅ Project saved')
     }
     return success
   }

@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useDashboardStore } from './dashboard'
-import type { ChannelConfig, WidgetConfig, LayoutConfig } from '../types'
+import type { ChannelConfig, WidgetConfig, LayoutConfig, SystemStatus } from '../types'
 
 // =============================================================================
 // TEST SETUP
@@ -696,7 +696,7 @@ describe('Dashboard Store', () => {
         acquiring: true,
         recording: false,
         scheduler_enabled: true
-      } as any)
+      } as Partial<SystemStatus> as SystemStatus)
 
       expect(store.isConnected).toBe(true)
       expect(store.isAcquiring).toBe(true)
@@ -707,7 +707,7 @@ describe('Dashboard Store', () => {
     it('should detect offline status', () => {
       const store = useDashboardStore()
 
-      store.setStatus({ status: 'offline' } as any)
+      store.setStatus({ status: 'offline' } as Partial<SystemStatus> as SystemStatus)
 
       expect(store.isConnected).toBe(false)
     })
@@ -910,8 +910,9 @@ describe('Dashboard Store', () => {
 
       // The inferWidgetType function is internal, but we can verify
       // widget defaults exist for all types
-      const numericDefaults = (store as any).getWidgetDefaults?.('numeric')
-      const ledDefaults = (store as any).getWidgetDefaults?.('led')
+      const storeRecord = store as unknown as Record<string, ((type: string) => Partial<WidgetConfig>) | undefined>
+      const numericDefaults = storeRecord.getWidgetDefaults?.('numeric')
+      const ledDefaults = storeRecord.getWidgetDefaults?.('led')
 
       // If getWidgetDefaults is exposed, check it
       if (numericDefaults) {

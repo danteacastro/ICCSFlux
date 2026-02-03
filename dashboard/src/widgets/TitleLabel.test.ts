@@ -11,9 +11,18 @@
  * - Settings button visibility
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+
+interface MockTitleState {
+  mockEditMode: Ref<boolean>
+  mockUpdateWidget: Mock
+  mockUpdateWidgetStyle: Mock
+}
+
+const getTitleMockState = () =>
+  (globalThis as unknown as Record<string, MockTitleState>).__mockTitleState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -23,7 +32,7 @@ vi.mock('../stores/dashboard', () => {
   const mockUpdateWidget = vi.fn()
   const mockUpdateWidgetStyle = vi.fn()
 
-  ;(global as any).__mockTitleState = {
+  ;(globalThis as unknown as Record<string, MockTitleState>).__mockTitleState = {
     mockEditMode,
     mockUpdateWidget,
     mockUpdateWidgetStyle
@@ -53,7 +62,7 @@ import TitleLabel from './TitleLabel.vue'
 describe('TitleLabel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockTitleState
+    const state = getTitleMockState()
     if (state) {
       state.mockEditMode.value = false
     }
@@ -271,7 +280,7 @@ describe('TitleLabel', () => {
     })
 
     it('should show settings button in edit mode', () => {
-      const state = (global as any).__mockTitleState
+      const state = getTitleMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(TitleLabel, {
@@ -284,7 +293,7 @@ describe('TitleLabel', () => {
     })
 
     it('should show input on double click in edit mode', async () => {
-      const state = (global as any).__mockTitleState
+      const state = getTitleMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(TitleLabel, {
@@ -315,7 +324,7 @@ describe('TitleLabel', () => {
     })
 
     it('should call updateWidget on blur', async () => {
-      const state = (global as any).__mockTitleState
+      const state = getTitleMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(TitleLabel, {
@@ -339,7 +348,7 @@ describe('TitleLabel', () => {
     })
 
     it('should save on Enter key', async () => {
-      const state = (global as any).__mockTitleState
+      const state = getTitleMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(TitleLabel, {
@@ -359,7 +368,7 @@ describe('TitleLabel', () => {
     })
 
     it('should cancel on Escape key', async () => {
-      const state = (global as any).__mockTitleState
+      const state = getTitleMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(TitleLabel, {

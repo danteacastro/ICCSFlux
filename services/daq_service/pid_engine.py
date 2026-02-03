@@ -231,11 +231,30 @@ class PIDEngine:
     # Loop Management
     # =========================================================================
 
+    def _validate_loop_config(self, loop: PIDLoop) -> Optional[str]:
+        """Validate PID loop configuration. Returns error message or None if valid."""
+        if loop.output_min >= loop.output_max:
+            return f"output_min ({loop.output_min}) must be less than output_max ({loop.output_max})"
+        if loop.setpoint_min >= loop.setpoint_max:
+            return f"setpoint_min ({loop.setpoint_min}) must be less than setpoint_max ({loop.setpoint_max})"
+        if loop.kp < 0 or loop.ki < 0 or loop.kd < 0:
+            return f"PID gains must be non-negative (kp={loop.kp}, ki={loop.ki}, kd={loop.kd})"
+        if loop.output_rate_limit < 0:
+            return f"output_rate_limit must be non-negative ({loop.output_rate_limit})"
+        if loop.deadband < 0:
+            return f"deadband must be non-negative ({loop.deadband})"
+        return None
+
     def add_loop(self, loop: PIDLoop) -> bool:
         """Add a new PID loop"""
         with self._lock:
             if loop.id in self.loops:
                 logger.warning(f"PID loop '{loop.id}' already exists")
+                return False
+
+            error = self._validate_loop_config(loop)
+            if error:
+                logger.error(f"PID loop '{loop.id}' invalid config: {error}")
                 return False
 
             self.loops[loop.id] = loop

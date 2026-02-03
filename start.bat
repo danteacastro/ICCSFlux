@@ -4,7 +4,12 @@ REM NISystem Simple Startup - Each service in its own visible window
 REM Re-running this script will kill previous windows and start fresh
 REM ============================================================================
 
-cd /d "C:\Users\User\Documents\Projects\NISystem"
+REM Use the batch file's own directory as project root (portable)
+set "NISYSTEM_ROOT=%~dp0"
+REM Remove trailing backslash
+if "%NISYSTEM_ROOT:~-1%"=="\" set "NISYSTEM_ROOT=%NISYSTEM_ROOT:~0,-1%"
+
+cd /d "%NISYSTEM_ROOT%"
 
 echo.
 echo ================================================================================
@@ -13,7 +18,7 @@ echo ===========================================================================
 echo.
 
 REM Check prerequisites
-if not exist "venv\Scripts\python.exe" (
+if not exist "%NISYSTEM_ROOT%\venv\Scripts\python.exe" (
     echo ERROR: Python virtual environment not found!
     pause
     exit /b 1
@@ -22,7 +27,7 @@ if not exist "venv\Scripts\python.exe" (
 REM ============================================================================
 REM Kill previous NISystem processes and windows (allows clean restart)
 REM ============================================================================
-echo [1/5] Cleaning up previous NISystem processes...
+echo [1/6] Cleaning up previous NISystem processes...
 
 REM Stop Mosquitto Windows Service if running
 net stop mosquitto >nul 2>&1
@@ -31,8 +36,8 @@ REM Kill processes by executable name (most reliable)
 taskkill /F /IM mosquitto.exe >nul 2>&1
 
 REM Kill Python processes running our services using psutil
-venv\Scripts\python.exe -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'daq_service' in ' '.join(p.cmdline()).lower()]" 2>nul
-venv\Scripts\python.exe -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'watchdog.py' in ' '.join(p.cmdline()).lower()]" 2>nul
+"%NISYSTEM_ROOT%\venv\Scripts\python.exe" -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'daq_service' in ' '.join(p.cmdline()).lower()]" 2>nul
+"%NISYSTEM_ROOT%\venv\Scripts\python.exe" -c "import psutil; [p.kill() for p in psutil.process_iter(['cmdline']) if p.cmdline() and 'watchdog.py' in ' '.join(p.cmdline()).lower()]" 2>nul
 
 REM Kill any process on port 5173 (Vite frontend)
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5173 ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
@@ -51,34 +56,52 @@ echo   Done.
 echo.
 
 REM ============================================================================
+REM Auto-generate MQTT credentials (first-run only, idempotent)
+REM ============================================================================
+echo [2/6] Checking MQTT credentials...
+"%NISYSTEM_ROOT%\venv\Scripts\python.exe" "%NISYSTEM_ROOT%\scripts\mqtt_credentials.py"
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: Failed to generate MQTT credentials!
+    pause
+    exit /b 1
+)
+
+REM Load MQTT credentials for DAQ service environment
+for /f "tokens=1,2 delims=:" %%a in ('"%NISYSTEM_ROOT%\venv\Scripts\python.exe" -c "import json; d=json.load(open(r'%NISYSTEM_ROOT%\config\mqtt_credentials.json')); print(d['backend']['username']+':'+d['backend']['password'])"') do (
+    set "MQTT_USERNAME=%%a"
+    set "MQTT_PASSWORD=%%b"
+)
+echo.
+
+REM ============================================================================
 REM Start MQTT Broker (Mosquitto)
 REM ============================================================================
-echo [2/5] Starting MQTT Broker...
-start "MQTT Broker" cmd /k "cd /d C:\Users\User\Documents\Projects\NISystem && echo === MQTT BROKER === && echo. && "C:\Program Files\mosquitto\mosquitto.exe" -v -c config\mosquitto.conf"
+echo [3/6] Starting MQTT Broker...
+start "MQTT Broker" cmd /k "cd /d "%NISYSTEM_ROOT%" && echo === MQTT BROKER === && echo. && "C:\Program Files\mosquitto\mosquitto.exe" -v -c config\mosquitto.conf"
 timeout /t 2 /nobreak >nul
 echo.
 
 REM ============================================================================
-REM Start DAQ Service
+REM Start DAQ Service (with MQTT credentials in environment)
 REM ============================================================================
-echo [3/5] Starting DAQ Service...
-start "DAQ Service" cmd /k "cd /d C:\Users\User\Documents\Projects\NISystem && echo === DAQ SERVICE === && echo. && venv\Scripts\python.exe services\daq_service\daq_service.py -c config\system.ini"
+echo [4/6] Starting DAQ Service...
+start "DAQ Service" cmd /k "cd /d "%NISYSTEM_ROOT%" && set "MQTT_USERNAME=%MQTT_USERNAME%" && set "MQTT_PASSWORD=%MQTT_PASSWORD%" && echo === DAQ SERVICE === && echo. && venv\Scripts\python.exe services\daq_service\daq_service.py -c config\system.ini"
 timeout /t 3 /nobreak >nul
 echo.
 
 REM ============================================================================
 REM Start Watchdog
 REM ============================================================================
-echo [4/5] Starting Watchdog...
-start "Watchdog" cmd /k "cd /d C:\Users\User\Documents\Projects\NISystem && echo === WATCHDOG === && echo. && venv\Scripts\python.exe services\daq_service\watchdog.py -c config\system.ini"
+echo [5/6] Starting Watchdog...
+start "Watchdog" cmd /k "cd /d "%NISYSTEM_ROOT%" && echo === WATCHDOG === && echo. && venv\Scripts\python.exe services\daq_service\watchdog.py -c config\system.ini"
 timeout /t 1 /nobreak >nul
 echo.
 
 REM ============================================================================
 REM Start Frontend (Vite)
 REM ============================================================================
-echo [5/5] Starting Frontend...
-start "Frontend (Vite)" cmd /k "cd /d C:\Users\User\Documents\Projects\NISystem\dashboard && echo === FRONTEND (VITE) === && echo. && npm run dev"
+echo [6/6] Starting Frontend...
+start "Frontend (Vite)" cmd /k "cd /d "%NISYSTEM_ROOT%\dashboard" && echo === FRONTEND (VITE) === && echo. && npm run dev"
 echo.
 
 REM ============================================================================
@@ -101,4 +124,7 @@ start http://localhost:5173
 
 echo.
 echo   Re-run this script to restart all services with fresh windows.
+echo.
+echo   TIP: For unattended operation, use: python scripts/supervisor.py
+echo   The supervisor auto-restarts crashed services with exponential backoff.
 echo.

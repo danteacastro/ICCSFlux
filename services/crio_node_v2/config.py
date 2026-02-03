@@ -91,6 +91,63 @@ class ChannelConfig:
     source_type: str = 'local'  # local, crio, opto22
     source_node_id: Optional[str] = None
 
+    def __post_init__(self):
+        """Validate and clamp fields to safe ranges."""
+        # Validate momentary_pulse_ms: 0..3600000 (max 1 hour)
+        if self.momentary_pulse_ms < 0:
+            logger.warning(
+                f"Channel {self.name}: momentary_pulse_ms={self.momentary_pulse_ms} "
+                f"is negative, clamping to 0"
+            )
+            self.momentary_pulse_ms = 0
+        elif self.momentary_pulse_ms > 3600000:
+            logger.warning(
+                f"Channel {self.name}: momentary_pulse_ms={self.momentary_pulse_ms} "
+                f"exceeds max (3600000), clamping to 3600000"
+            )
+            self.momentary_pulse_ms = 3600000
+
+        # Validate pulse_duty_cycle: 0..100
+        if self.pulse_duty_cycle < 0:
+            logger.warning(
+                f"Channel {self.name}: pulse_duty_cycle={self.pulse_duty_cycle} "
+                f"is negative, clamping to 0"
+            )
+            self.pulse_duty_cycle = 0.0
+        elif self.pulse_duty_cycle > 100:
+            logger.warning(
+                f"Channel {self.name}: pulse_duty_cycle={self.pulse_duty_cycle} "
+                f"exceeds 100%, clamping to 100"
+            )
+            self.pulse_duty_cycle = 100.0
+
+        # Validate alarm limit ordering: lolo < lo < hi < hihi
+        if self.alarm_enabled:
+            limits = [(v, label) for v, label in
+                      [(self.lolo_limit, 'lolo'), (self.lo_limit, 'lo'),
+                       (self.hi_limit, 'hi'), (self.hihi_limit, 'hihi')]
+                      if v is not None]
+            for i in range(1, len(limits)):
+                if limits[i][0] <= limits[i-1][0]:
+                    logger.error(
+                        f"Channel {self.name}: alarm limit {limits[i][1]}={limits[i][0]} "
+                        f"must be > {limits[i-1][1]}={limits[i-1][0]} — disabling alarms"
+                    )
+                    self.alarm_enabled = False
+                    break
+
+            if self.alarm_deadband < 0:
+                logger.warning(f"Channel {self.name}: alarm_deadband={self.alarm_deadband} is negative, using 0")
+                self.alarm_deadband = 0.0
+            if self.alarm_delay_sec < 0:
+                logger.warning(f"Channel {self.name}: alarm_delay_sec={self.alarm_delay_sec} is negative, using 0")
+                self.alarm_delay_sec = 0.0
+
+        # Validate scaling configuration for inversions
+        scaling_warnings = validate_scaling(self)
+        for w in scaling_warnings:
+            logger.warning(w)
+
     @staticmethod
     def apply_scaling(raw_value: float, ch_config: 'ChannelConfig') -> float:
         """
@@ -153,7 +210,7 @@ class ChannelConfig:
         # Infer thermocouple type if channel is thermocouple but type not specified
         if ChannelType.needs_thermocouple_type(channel_type) and not tc_type:
             tc_type = 'K'  # Default to K-type (most common)
-            logger.debug(f"Channel {name}: defaulting thermocouple_type to 'K'")
+            logger.warning(f"Channel {name}: defaulting thermocouple_type to 'K' - verify correct TC type to avoid temperature errors")
 
         return cls(
             name=name,
@@ -375,6 +432,59 @@ def load_config(path: Optional[str] = None, **overrides) -> NodeConfig:
 def apply_scaling(ch_config, raw_value: float) -> float:
     """Module-level convenience wrapper for ChannelConfig.apply_scaling."""
     return ChannelConfig.apply_scaling(raw_value, ch_config)
+
+
+def validate_scaling(ch_config: 'ChannelConfig') -> List[str]:
+    """Validate scaling configuration and return list of warnings.
+
+    Detects conditions where scaling inverts signal direction, which can
+    confuse safety limits (e.g., a high raw value producing a low engineering
+    value would trigger a LO alarm instead of HI).
+
+    Returns list of warning strings. Empty list means no issues.
+    """
+    warnings = []
+
+    # Check linear scaling inversion
+    if ch_config.scale_slope < 0:
+        warnings.append(
+            f"Channel {ch_config.name}: negative scale_slope ({ch_config.scale_slope}) "
+            f"inverts signal direction. Verify safety limits account for inversion."
+        )
+    if ch_config.scale_slope == 0 and ch_config.scale_type == 'linear':
+        warnings.append(
+            f"Channel {ch_config.name}: scale_slope is 0 — all values will "
+            f"map to {ch_config.scale_offset}. Check if this is intentional."
+        )
+
+    # Check map scaling inversion
+    if (ch_config.scale_type == 'map' and
+            ch_config.pre_scaled_min is not None and
+            ch_config.pre_scaled_max is not None and
+            ch_config.scaled_min is not None and
+            ch_config.scaled_max is not None):
+        raw_inverted = ch_config.pre_scaled_min > ch_config.pre_scaled_max
+        eng_inverted = ch_config.scaled_min > ch_config.scaled_max
+        if raw_inverted or eng_inverted:
+            warnings.append(
+                f"Channel {ch_config.name}: map scaling has inverted range "
+                f"(raw: {ch_config.pre_scaled_min}->{ch_config.pre_scaled_max}, "
+                f"eng: {ch_config.scaled_min}->{ch_config.scaled_max}). "
+                f"Verify safety limits account for inversion."
+            )
+
+    # Check 4-20mA scaling inversion
+    if (ch_config.four_twenty_scaling and
+            ch_config.eng_units_min is not None and
+            ch_config.eng_units_max is not None):
+        if ch_config.eng_units_min > ch_config.eng_units_max:
+            warnings.append(
+                f"Channel {ch_config.name}: 4-20mA scaling is inverted "
+                f"(min={ch_config.eng_units_min} > max={ch_config.eng_units_max}). "
+                f"Verify safety limits account for inversion."
+            )
+
+    return warnings
 
 
 def find_config_file() -> Optional[str]:

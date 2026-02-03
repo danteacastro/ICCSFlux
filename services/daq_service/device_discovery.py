@@ -215,10 +215,11 @@ class CRIONode:
     node_id: str                 # e.g., "crio-001"
     ip_address: str              # e.g., "192.168.1.50"
     product_type: str            # e.g., "cRIO-9056"
-    serial_number: str
+    serial_number: str           # NI-DAQmx chassis serial number
     status: str                  # "online", "offline", "unknown"
     last_seen: str               # ISO timestamp
     channels: int = 0            # Number of configured channels
+    mac_address: str = ''        # Hardware MAC address for device identity
     modules: List[Module] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
@@ -351,9 +352,12 @@ class DeviceDiscovery:
                 status=status_data.get('status', 'online'),
                 last_seen=datetime.utcnow().isoformat(),
                 channels=status_data.get('channels', 0),
+                mac_address=status_data.get('mac_address', ''),
                 modules=modules
             )
-            logger.info(f"Registered cRIO node: {node_id} ({status_data.get('status', 'online')})")
+            serial_info = f", serial={status_data.get('serial_number', '')}" if status_data.get('serial_number') else ""
+            mac_info = f", mac={status_data.get('mac_address', '')}" if status_data.get('mac_address') else ""
+            logger.info(f"Registered cRIO node: {node_id} ({status_data.get('status', 'online')}{serial_info}{mac_info})")
 
     def unregister_crio_node(self, node_id: str):
         """Remove a cRIO node from tracking"""
@@ -396,6 +400,7 @@ class DeviceDiscovery:
                     status=heartbeat_data.get('status', 'online'),
                     last_seen=datetime.utcnow().isoformat(),
                     channels=heartbeat_data.get('channels', 0),
+                    mac_address=heartbeat_data.get('mac_address', ''),
                     modules=[]  # Will be populated when full status arrives
                 )
                 logger.info(f"Registered cRIO node: {node_id} ({heartbeat_data.get('status', 'online')})")
@@ -536,7 +541,7 @@ class DeviceDiscovery:
             try:
                 result = self._scan_real_hardware(timestamp)
             except Exception as e:
-                logger.error(f"Hardware scan failed: {e}")
+                logger.error(f"Hardware scan failed: {e}", exc_info=True)
                 result = DiscoveryResult(
                     success=False,
                     message=f"Scan failed: {str(e)}",
@@ -1088,10 +1093,14 @@ if __name__ == "__main__":
     result = discovery.scan()
 
     print(f"\n{'='*60}")
+    print(f"Discovery Success: {result.success}")
     print(f"Discovery Result: {result.message}")
     print(f"Simulation Mode: {result.simulation_mode}")
     print(f"Total Channels: {result.total_channels}")
     print(f"{'='*60}\n")
+
+    if not result.success:
+        print("WARNING: Discovery failed - data below may be incomplete or empty")
 
     for chassis in result.chassis:
         print(f"Chassis: {chassis.name} ({chassis.product_type})")

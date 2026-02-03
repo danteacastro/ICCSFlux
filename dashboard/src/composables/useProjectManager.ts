@@ -192,9 +192,9 @@ export function useProjectManager() {
     // These contain hardware config (scan_rate, mqtt settings) that shouldn't be lost
     const currentProject = projectFiles.currentProjectData.value
     const system = currentProject?.system
-    const service = (currentProject as any)?.service
+    const service = currentProject?.service
     // Top-level schedules array (DHW draw schedules) - separate from scripts.schedules
-    const topLevelSchedules = (currentProject as any)?.schedules
+    const topLevelSchedules = currentProject?.schedules
 
     return {
       // Preserve system config (mqtt, scan_rate, etc.) from loaded project
@@ -450,7 +450,7 @@ export function useProjectManager() {
     try {
       // CRITICAL: Set all outputs to safe state before importing new project
       if (mqtt.connected.value) {
-        console.log('[PROJECT IMPORT] Setting all outputs to SAFE STATE before import...')
+        console.debug('[PROJECT IMPORT] Setting all outputs to SAFE STATE before import...')
         mqtt.setAllOutputsSafe('project_import')
         // Brief delay to allow safe state commands to propagate
         await new Promise(resolve => setTimeout(resolve, 300))
@@ -502,6 +502,52 @@ export function useProjectManager() {
         try {
           const content = e.target?.result as string
           const data = JSON.parse(content)
+
+          // FE-H10: Basic structure validation of parsed project data
+          if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            resolve({ success: false, message: 'Project file must contain a JSON object' })
+            return
+          }
+
+          if (data.type !== 'nisystem-project') {
+            resolve({ success: false, message: `Invalid project type: expected "nisystem-project", got "${data.type || 'undefined'}"` })
+            return
+          }
+
+          if (!data.name || typeof data.name !== 'string') {
+            console.warn('[PROJECT IMPORT] Project file missing or invalid "name" field, using fallback')
+            data.name = data.name || 'Unnamed Project'
+          }
+
+          if (!data.version) {
+            console.warn('[PROJECT IMPORT] Project file missing "version" field')
+          }
+
+          // Validate channels if present (should be an object, not array or primitive)
+          if (data.channels !== undefined && (typeof data.channels !== 'object' || Array.isArray(data.channels))) {
+            console.warn('[PROJECT IMPORT] "channels" field has unexpected type (expected object), got:', typeof data.channels)
+          }
+
+          // Validate layout structure if present
+          if (data.layout !== undefined && typeof data.layout !== 'object') {
+            console.warn('[PROJECT IMPORT] "layout" field has unexpected type (expected object), got:', typeof data.layout)
+          }
+
+          // Validate safety structure if present
+          if (data.safety !== undefined && typeof data.safety !== 'object') {
+            console.warn('[PROJECT IMPORT] "safety" field has unexpected type (expected object), got:', typeof data.safety)
+          }
+
+          // Validate scripts structure if present
+          if (data.scripts !== undefined && typeof data.scripts !== 'object') {
+            console.warn('[PROJECT IMPORT] "scripts" field has unexpected type (expected object), got:', typeof data.scripts)
+          }
+
+          // Validate legacy backend structure if present
+          if (data.backend !== undefined && typeof data.backend !== 'object') {
+            console.warn('[PROJECT IMPORT] "backend" field has unexpected type (expected object), got:', typeof data.backend)
+          }
+
           const result = await importProject(data)
           resolve(result)
         } catch (error: any) {

@@ -12,9 +12,32 @@ import type {
   SequenceStep,
   SequenceStepType,
   SetVariableStep,
+  RampStep,
+  SoakStep,
+  WaitStep,
+  SetOutputStep,
+  LoopStep,
+  EndLoopStep,
+  MessageStep,
+  IfStep,
+  ElseStep,
+  EndIfStep,
+  RecordingStep,
+  SafetyCheckStep,
+  CallSequenceStep,
   Alarm,
   Transformation,
+  RollingTransformation,
+  RateOfChangeTransformation,
+  UnitConversionTransformation,
+  PolynomialTransformation,
+  DeadbandTransformation,
+  ClampTransformation,
+  Trigger,
+  ValueReachedTrigger,
   AutomationTrigger,
+  Schedule,
+  ScheduleAction,
   ScriptsSubTabExtended,
   ScriptTemplate,
   FunctionBlock,
@@ -129,13 +152,13 @@ const scheduleForm = ref({
   daysOfWeek: [] as number[],
   dayOfMonth: 1,
   date: '',
-  startActions: [] as any[],
-  endActions: [] as any[]
+  startActions: [] as ScheduleAction[],
+  endActions: [] as ScheduleAction[]
 })
 
 const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-function openScheduleEditor(schedule?: any) {
+function openScheduleEditor(schedule?: Schedule) {
   if (schedule) {
     selectedSchedule.value = schedule.id
     scheduleForm.value = {
@@ -193,7 +216,7 @@ function saveSchedule() {
   if (selectedSchedule.value) {
     scripts.updateSchedule(selectedSchedule.value, data)
   } else {
-    scripts.addSchedule(data as any)
+    scripts.addSchedule(data as Omit<Schedule, 'id' | 'lastRun' | 'nextRun' | 'isRunning'>)
   }
   closeScheduleEditor()
 }
@@ -270,7 +293,7 @@ const triggerForm = ref<Partial<AutomationTrigger>>({
     operator: '>',
     value: 0,
     hysteresis: 0
-  } as any,
+  } as Partial<ValueReachedTrigger>,
   actions: []
 })
 
@@ -423,7 +446,7 @@ function saveDrawPattern() {
   if (editingDrawPatternId.value) {
     scripts.updateDrawPattern(editingDrawPatternId.value, drawPatternForm.value)
   } else {
-    const id = scripts.addDrawPattern(drawPatternForm.value as any)
+    const id = scripts.addDrawPattern(drawPatternForm.value as Omit<DrawPattern, 'id' | 'state' | 'currentDrawIndex' | 'cycleCount' | 'totalVolumeDispensed'>)
     selectedDrawPatternId.value = id
   }
   closeDrawPatternEditor()
@@ -484,7 +507,7 @@ function saveDraw() {
       scripts.updateDraw(pattern.id, draw.id, drawForm.value)
     }
   } else {
-    scripts.addDraw(pattern.id, drawForm.value as any)
+    scripts.addDraw(pattern.id, drawForm.value as Omit<Draw, 'id' | 'drawNumber' | 'state' | 'volumeDispensed' | 'elapsedTime'>)
   }
   closeDrawEditor()
 }
@@ -659,7 +682,7 @@ function saveSequence() {
   if (selectedSequence.value) {
     scripts.updateSequence(selectedSequence.value, sequenceForm.value)
   } else {
-    scripts.addSequence(sequenceForm.value as any)
+    scripts.addSequence(sequenceForm.value as Omit<Sequence, 'id' | 'state' | 'currentStepIndex' | 'currentLoopIterations' | 'currentIfResults' | 'variables' | 'createdAt' | 'modifiedAt'>)
   }
   showSequenceEditor.value = false
 }
@@ -757,12 +780,12 @@ function formatTimestamp(ts: number): string {
 }
 
 function addStep(type: SequenceStepType) {
-  const step: SequenceStep = {
+  const step = {
     id: `step-${Date.now()}`,
     type,
     enabled: true,
     label: ''
-  } as any
+  } as SequenceStep
 
   // Set defaults based on type
   switch (type) {
@@ -945,21 +968,20 @@ function getStepDescription(step: SequenceStep): string {
     case 'message':
       return `Message: ${step.message || '(empty)'}`
     case 'if':
-      return `If: ${(step as any).condition || '(no condition)'}`
+      return `If: ${step.condition || '(no condition)'}`
     case 'else':
       return `Else`
     case 'endIf':
       return `End If`
     case 'recording':
-      return `${(step as any).action === 'start' ? 'Start' : 'Stop'} Recording`
+      return `${step.action === 'start' ? 'Start' : 'Stop'} Recording`
     case 'safetyCheck':
-      return `Safety: ${(step as any).condition || '(no condition)'}`
+      return `Safety: ${step.condition || '(no condition)'}`
     case 'callSequence':
-      const callStep = step as any
-      const targetSeq = scripts.sequences.value.find(s => s.id === callStep.sequenceId)
+      const targetSeq = scripts.sequences.value.find(s => s.id === step.sequenceId)
       return `Call: ${targetSeq?.name || '(select sequence)'}`
     default:
-      return (step as any).type || 'Unknown'
+      return step.type || 'Unknown'
   }
 }
 
@@ -993,7 +1015,7 @@ function saveAlarm() {
   if (selectedAlarm.value) {
     scripts.updateAlarm(selectedAlarm.value, alarmForm.value)
   } else {
-    scripts.addAlarm(alarmForm.value as any)
+    scripts.addAlarm(alarmForm.value as Omit<Alarm, 'id' | 'state' | 'triggerCount'>)
   }
   showAlarmEditor.value = false
 }
@@ -1082,45 +1104,57 @@ function saveTransform() {
     case 'rollingAverage':
     case 'rollingMin':
     case 'rollingMax':
-    case 'rollingStdDev':
+    case 'rollingStdDev': {
+      const rolling = transformForm.value as Partial<RollingTransformation>
       Object.assign(baseTransform, {
-        windowSize: (transformForm.value as any).windowSize || 10,
+        windowSize: rolling.windowSize || 10,
         windowType: 'samples'
       })
       break
-    case 'rateOfChange':
+    }
+    case 'rateOfChange': {
+      const roc = transformForm.value as Partial<RateOfChangeTransformation>
       Object.assign(baseTransform, {
-        timeWindowMs: (transformForm.value as any).timeWindowMs || 1000,
-        rateUnit: (transformForm.value as any).rateUnit || '/min'
+        timeWindowMs: roc.timeWindowMs || 1000,
+        rateUnit: roc.rateUnit || '/min'
       })
       break
-    case 'unitConversion':
+    }
+    case 'unitConversion': {
+      const uc = transformForm.value as Partial<UnitConversionTransformation>
       Object.assign(baseTransform, {
-        conversionType: (transformForm.value as any).conversionType || 'celsius_to_fahrenheit'
+        conversionType: uc.conversionType || 'celsius_to_fahrenheit'
       })
       break
-    case 'polynomial':
+    }
+    case 'polynomial': {
+      const poly = transformForm.value as Partial<PolynomialTransformation>
       Object.assign(baseTransform, {
-        coefficients: (transformForm.value as any).coefficients || [0, 1]
+        coefficients: poly.coefficients || [0, 1]
       })
       break
-    case 'deadband':
+    }
+    case 'deadband': {
+      const db = transformForm.value as Partial<DeadbandTransformation>
       Object.assign(baseTransform, {
-        deadband: (transformForm.value as any).deadband || 1
+        deadband: db.deadband || 1
       })
       break
-    case 'clamp':
+    }
+    case 'clamp': {
+      const clamp = transformForm.value as Partial<ClampTransformation>
       Object.assign(baseTransform, {
-        minValue: (transformForm.value as any).minValue || 0,
-        maxValue: (transformForm.value as any).maxValue || 100
+        minValue: clamp.minValue || 0,
+        maxValue: clamp.maxValue || 100
       })
       break
+    }
   }
 
   if (selectedTransform.value) {
-    scripts.updateTransformation(selectedTransform.value, baseTransform as any)
+    scripts.updateTransformation(selectedTransform.value, baseTransform as Partial<Transformation>)
   } else {
-    scripts.addTransformation(baseTransform as any)
+    scripts.addTransformation(baseTransform as Omit<Transformation, 'id' | 'lastValue' | 'lastError'>)
   }
   showTransformEditor.value = false
 }
@@ -1152,7 +1186,7 @@ function createTrigger() {
       operator: '>',
       value: 0,
       hysteresis: 0
-    } as any,
+    } as Partial<ValueReachedTrigger>,
     actions: []
   }
   selectedTrigger.value = null
@@ -1169,7 +1203,7 @@ function saveTrigger() {
   if (selectedTrigger.value) {
     scripts.updateTrigger(selectedTrigger.value, triggerForm.value)
   } else {
-    scripts.addTrigger(triggerForm.value as any)
+    scripts.addTrigger(triggerForm.value as Omit<AutomationTrigger, 'id'>)
   }
   showTriggerEditor.value = false
 }
@@ -2172,14 +2206,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'ramp'">
               <div class="form-group">
                 <label>Target Channel (Setpoint)</label>
-                <select v-model="(stepForm as any).targetChannel">
+                <select v-model="(stepForm as Partial<RampStep>).targetChannel">
                   <option value="">Select output...</option>
                   <option v-for="ch in outputChannels" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
                 </select>
               </div>
               <div class="form-group">
                 <label>Monitor Channel</label>
-                <select v-model="(stepForm as any).monitorChannel">
+                <select v-model="(stepForm as Partial<RampStep>).monitorChannel">
                   <option value="">Select input...</option>
                   <option v-for="ch in inputChannels" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
                 </select>
@@ -2187,20 +2221,20 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               <div class="form-row">
                 <div class="form-group">
                   <label>Target Value</label>
-                  <input type="number" v-model.number="(stepForm as any).targetValue" />
+                  <input type="number" v-model.number="(stepForm as Partial<RampStep>).targetValue" />
                 </div>
                 <div class="form-group">
                   <label>Ramp Rate</label>
-                  <input type="number" v-model.number="(stepForm as any).rampRate" />
+                  <input type="number" v-model.number="(stepForm as Partial<RampStep>).rampRate" />
                 </div>
                 <div class="form-group">
                   <label>Rate Unit</label>
-                  <input type="text" v-model="(stepForm as any).rampRateUnit" placeholder="°C/min" />
+                  <input type="text" v-model="(stepForm as Partial<RampStep>).rampRateUnit" placeholder="°C/min" />
                 </div>
               </div>
               <div class="form-group">
                 <label>Tolerance</label>
-                <input type="number" v-model.number="(stepForm as any).tolerance" />
+                <input type="number" v-model.number="(stepForm as Partial<RampStep>).tolerance" />
               </div>
             </template>
 
@@ -2208,11 +2242,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'soak'">
               <div class="form-group">
                 <label>Duration (seconds)</label>
-                <input type="number" v-model.number="(stepForm as any).duration" min="1" />
+                <input type="number" v-model.number="(stepForm as Partial<SoakStep>).duration" min="1" />
               </div>
               <div class="form-group">
                 <label>Monitor Channel (optional)</label>
-                <select v-model="(stepForm as any).monitorChannel">
+                <select v-model="(stepForm as Partial<SoakStep>).monitorChannel">
                   <option value="">None</option>
                   <option v-for="ch in inputChannels" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
                 </select>
@@ -2223,16 +2257,16 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'wait'">
               <div class="form-group">
                 <label>Condition (formula returning true/false)</label>
-                <input type="text" v-model="(stepForm as any).condition" placeholder="TC_Zone1 > 450" />
+                <input type="text" v-model="(stepForm as Partial<WaitStep>).condition" placeholder="TC_Zone1 > 450" />
               </div>
               <div class="form-row">
                 <div class="form-group">
                   <label>Timeout (seconds, 0=infinite)</label>
-                  <input type="number" v-model.number="(stepForm as any).timeout" min="0" />
+                  <input type="number" v-model.number="(stepForm as Partial<WaitStep>).timeout" min="0" />
                 </div>
                 <div class="form-group">
                   <label>Timeout Action</label>
-                  <select v-model="(stepForm as any).timeoutAction">
+                  <select v-model="(stepForm as Partial<WaitStep>).timeoutAction">
                     <option value="abort">Abort Sequence</option>
                     <option value="continue">Continue</option>
                     <option value="alarm">Alarm & Continue</option>
@@ -2242,19 +2276,19 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 </div>
               </div>
               <!-- Retry options (shown when retry selected) -->
-              <div v-if="(stepForm as any).timeoutAction === 'retry'" class="retry-options">
+              <div v-if="(stepForm as Partial<WaitStep>).timeoutAction === 'retry'" class="retry-options">
                 <div class="form-row">
                   <div class="form-group">
                     <label>Retry Count</label>
-                    <input type="number" v-model.number="(stepForm as any).retryCount" min="1" max="10" placeholder="3" />
+                    <input type="number" v-model.number="(stepForm as Partial<WaitStep>).retryCount" min="1" max="10" placeholder="3" />
                   </div>
                   <div class="form-group">
                     <label>Retry Delay (ms)</label>
-                    <input type="number" v-model.number="(stepForm as any).retryDelayMs" min="100" step="100" placeholder="1000" />
+                    <input type="number" v-model.number="(stepForm as Partial<WaitStep>).retryDelayMs" min="100" step="100" placeholder="1000" />
                   </div>
                   <div class="form-group">
                     <label>On Final Failure</label>
-                    <select v-model="(stepForm as any).onFinalFailure">
+                    <select v-model="(stepForm as Partial<WaitStep>).onFinalFailure">
                       <option value="abort">Abort Sequence</option>
                       <option value="continue">Continue</option>
                       <option value="alarm">Alarm & Continue</option>
@@ -2264,7 +2298,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="form-group">
                 <label>Notes (optional)</label>
-                <textarea v-model="(stepForm as any).notes" placeholder="Documentation for this step..." rows="2"></textarea>
+                <textarea v-model="(stepForm as Partial<WaitStep>).notes" placeholder="Documentation for this step..." rows="2"></textarea>
               </div>
             </template>
 
@@ -2272,14 +2306,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'setOutput'">
               <div class="form-group">
                 <label>Output Channel</label>
-                <select v-model="(stepForm as any).channel">
+                <select v-model="(stepForm as Partial<SetOutputStep>).channel">
                   <option value="">Select output...</option>
                   <option v-for="ch in outputChannels" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
                 </select>
               </div>
               <div class="form-group">
                 <label>Value</label>
-                <input type="number" v-model.number="(stepForm as any).value" />
+                <input type="number" v-model.number="(stepForm as Partial<SetOutputStep>).value" />
               </div>
             </template>
 
@@ -2287,7 +2321,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'loop'">
               <div class="form-group">
                 <label>Iterations (0 = infinite)</label>
-                <input type="number" v-model.number="(stepForm as any).iterations" min="0" />
+                <input type="number" v-model.number="(stepForm as Partial<LoopStep>).iterations" min="0" />
               </div>
             </template>
 
@@ -2295,14 +2329,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'endLoop'">
               <div class="form-group">
                 <label>Loop ID</label>
-                <select v-model="(stepForm as any).loopId">
+                <select v-model="(stepForm as Partial<EndLoopStep>).loopId">
                   <option value="">Select loop...</option>
                   <option
                     v-for="step in sequenceForm.steps?.filter(s => s.type === 'loop')"
-                    :key="(step as any).loopId"
-                    :value="(step as any).loopId"
+                    :key="(step as LoopStep).loopId"
+                    :value="(step as LoopStep).loopId"
                   >
-                    {{ step.label || (step as any).loopId }}
+                    {{ step.label || (step as LoopStep).loopId }}
                   </option>
                 </select>
               </div>
@@ -2312,12 +2346,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'message'">
               <div class="form-group">
                 <label>Message</label>
-                <input type="text" v-model="(stepForm as any).message" />
+                <input type="text" v-model="(stepForm as Partial<MessageStep>).message" />
               </div>
               <div class="form-row">
                 <div class="form-group">
                   <label>Severity</label>
-                  <select v-model="(stepForm as any).severity">
+                  <select v-model="(stepForm as Partial<MessageStep>).severity">
                     <option value="info">Info</option>
                     <option value="warning">Warning</option>
                     <option value="error">Error</option>
@@ -2325,7 +2359,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 </div>
                 <div class="form-group">
                   <label>Pause Execution</label>
-                  <input type="checkbox" v-model="(stepForm as any).pauseExecution" />
+                  <input type="checkbox" v-model="(stepForm as Partial<MessageStep>).pauseExecution" />
                 </div>
               </div>
             </template>
@@ -2336,7 +2370,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <label>Variable Name</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).variableName"
+                  v-model="(stepForm as Partial<SetVariableStep>).variableName"
                   placeholder="myVariable"
                   pattern="[a-zA-Z_][a-zA-Z0-9_]*"
                 />
@@ -2344,19 +2378,19 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="form-group">
                 <label>
-                  <input type="checkbox" v-model="(stepForm as any).isFormula" />
+                  <input type="checkbox" v-model="(stepForm as Partial<SetVariableStep>).isFormula" />
                   Use Formula
                 </label>
               </div>
-              <div class="form-group" v-if="!(stepForm as any).isFormula">
+              <div class="form-group" v-if="!(stepForm as Partial<SetVariableStep>).isFormula">
                 <label>Value (constant)</label>
-                <input type="number" v-model.number="(stepForm as any).value" step="any" />
+                <input type="number" v-model.number="(stepForm as Partial<SetVariableStep>).value" step="any" />
               </div>
               <div class="form-group" v-else>
                 <label>Formula</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).value"
+                  v-model="(stepForm as Partial<SetVariableStep>).value"
                   placeholder="Flow_Meter_1 * 0.5 + 10"
                 />
                 <small class="hint">
@@ -2366,8 +2400,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="info-box">
                 <strong>Tip:</strong> Variables can be used in Wait conditions and other formulas
-                as <code>seq.{{ (stepForm as any).variableName || 'varName' }}</code> or directly
-                as <code>{{ (stepForm as any).variableName || 'varName' }}</code>
+                as <code>seq.{{ (stepForm as Partial<SetVariableStep>).variableName || 'varName' }}</code> or directly
+                as <code>{{ (stepForm as Partial<SetVariableStep>).variableName || 'varName' }}</code>
               </div>
             </template>
 
@@ -2377,7 +2411,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <label>Condition (formula returning true/false)</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).condition"
+                  v-model="(stepForm as Partial<IfStep>).condition"
                   placeholder="Temperature > 100 || Pressure < 50"
                 />
                 <small class="hint">
@@ -2394,14 +2428,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'else'">
               <div class="form-group">
                 <label>Match If Block</label>
-                <select v-model="(stepForm as any).ifId">
+                <select v-model="(stepForm as Partial<ElseStep>).ifId">
                   <option value="">Select If block...</option>
                   <option
                     v-for="step in sequenceForm.steps?.filter(s => s.type === 'if')"
-                    :key="(step as any).ifId"
-                    :value="(step as any).ifId"
+                    :key="(step as IfStep).ifId"
+                    :value="(step as IfStep).ifId"
                   >
-                    {{ step.label || `If: ${(step as any).condition?.substring(0, 30)}...` }}
+                    {{ step.label || `If: ${(step as IfStep).condition?.substring(0, 30)}...` }}
                   </option>
                 </select>
               </div>
@@ -2411,14 +2445,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'endIf'">
               <div class="form-group">
                 <label>Match If Block</label>
-                <select v-model="(stepForm as any).ifId">
+                <select v-model="(stepForm as Partial<EndIfStep>).ifId">
                   <option value="">Select If block...</option>
                   <option
                     v-for="step in sequenceForm.steps?.filter(s => s.type === 'if')"
-                    :key="(step as any).ifId"
-                    :value="(step as any).ifId"
+                    :key="(step as IfStep).ifId"
+                    :value="(step as IfStep).ifId"
                   >
-                    {{ step.label || `If: ${(step as any).condition?.substring(0, 30)}...` }}
+                    {{ step.label || `If: ${(step as IfStep).condition?.substring(0, 30)}...` }}
                   </option>
                 </select>
               </div>
@@ -2428,16 +2462,16 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'recording'">
               <div class="form-group">
                 <label>Action</label>
-                <select v-model="(stepForm as any).action">
+                <select v-model="(stepForm as Partial<RecordingStep>).action">
                   <option value="start">Start Recording</option>
                   <option value="stop">Stop Recording</option>
                 </select>
               </div>
-              <div class="form-group" v-if="(stepForm as any).action === 'start'">
+              <div class="form-group" v-if="(stepForm as Partial<RecordingStep>).action === 'start'">
                 <label>Filename (optional)</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).filename"
+                  v-model="(stepForm as Partial<RecordingStep>).filename"
                   placeholder="Leave blank for auto-generated name"
                 />
               </div>
@@ -2449,7 +2483,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <label>Safety Condition (must be true to proceed)</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).condition"
+                  v-model="(stepForm as Partial<SafetyCheckStep>).condition"
                   placeholder="ch.Pressure < 100 && ch.E_Stop == 1"
                 />
                 <small class="hint">
@@ -2458,7 +2492,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="form-group">
                 <label>Fail Action</label>
-                <select v-model="(stepForm as any).failAction">
+                <select v-model="(stepForm as Partial<SafetyCheckStep>).failAction">
                   <option value="abort">Abort Sequence</option>
                   <option value="pause">Pause Sequence</option>
                   <option value="alarm">Alarm & Continue</option>
@@ -2468,7 +2502,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <label>Failure Message</label>
                 <input
                   type="text"
-                  v-model="(stepForm as any).failMessage"
+                  v-model="(stepForm as Partial<SafetyCheckStep>).failMessage"
                   placeholder="Safety interlock not satisfied"
                 />
               </div>
@@ -2478,7 +2512,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="stepForm.type === 'callSequence'">
               <div class="form-group">
                 <label>Sequence to Call</label>
-                <select v-model="(stepForm as any).sequenceId">
+                <select v-model="(stepForm as Partial<CallSequenceStep>).sequenceId">
                   <option value="">Select sequence...</option>
                   <option
                     v-for="seq in scripts.sequences.value.filter(s => s.id !== selectedSequence)"
@@ -2491,7 +2525,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="form-group">
                 <label>
-                  <input type="checkbox" v-model="(stepForm as any).waitForCompletion" />
+                  <input type="checkbox" v-model="(stepForm as Partial<CallSequenceStep>).waitForCompletion" />
                   Wait for completion
                 </label>
                 <small class="hint">
@@ -3342,7 +3376,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="['rollingAverage', 'rollingMin', 'rollingMax', 'rollingStdDev'].includes(transformForm.type!)">
               <div class="form-group">
                 <label>Window Size (samples)</label>
-                <input type="number" v-model.number="(transformForm as any).windowSize" min="2" />
+                <input type="number" v-model.number="(transformForm as Partial<RollingTransformation>).windowSize" min="2" />
               </div>
             </template>
 
@@ -3350,11 +3384,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="transformForm.type === 'rateOfChange'">
               <div class="form-group">
                 <label>Time Window (ms)</label>
-                <input type="number" v-model.number="(transformForm as any).timeWindowMs" min="100" />
+                <input type="number" v-model.number="(transformForm as Partial<RateOfChangeTransformation>).timeWindowMs" min="100" />
               </div>
               <div class="form-group">
                 <label>Rate Unit</label>
-                <input type="text" v-model="(transformForm as any).rateUnit" placeholder="°C/min" />
+                <input type="text" v-model="(transformForm as Partial<RateOfChangeTransformation>).rateUnit" placeholder="°C/min" />
               </div>
             </template>
 
@@ -3362,7 +3396,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="transformForm.type === 'unitConversion'">
               <div class="form-group">
                 <label>Conversion Type</label>
-                <select v-model="(transformForm as any).conversionType">
+                <select v-model="(transformForm as Partial<UnitConversionTransformation>).conversionType">
                   <option value="celsius_to_fahrenheit">°C to °F</option>
                   <option value="fahrenheit_to_celsius">°F to °C</option>
                   <option value="psi_to_bar">PSI to Bar</option>
@@ -3372,15 +3406,15 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                   <option value="custom">Custom</option>
                 </select>
               </div>
-              <template v-if="(transformForm as any).conversionType === 'custom'">
+              <template v-if="(transformForm as Partial<UnitConversionTransformation>).conversionType === 'custom'">
                 <div class="form-row">
                   <div class="form-group">
                     <label>Multiplier</label>
-                    <input type="number" v-model.number="(transformForm as any).multiplier" step="0.001" />
+                    <input type="number" v-model.number="(transformForm as Partial<UnitConversionTransformation>).multiplier" step="0.001" />
                   </div>
                   <div class="form-group">
                     <label>Offset</label>
-                    <input type="number" v-model.number="(transformForm as any).offset" step="0.001" />
+                    <input type="number" v-model.number="(transformForm as Partial<UnitConversionTransformation>).offset" step="0.001" />
                   </div>
                 </div>
               </template>
@@ -3392,8 +3426,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 <label>Coefficients (c0 + c1*x + c2*x² + ...)</label>
                 <input
                   type="text"
-                  :value="((transformForm as any).coefficients || []).join(', ')"
-                  @input="(transformForm as any).coefficients = ($event.target as HTMLInputElement).value.split(',').map(s => parseFloat(s.trim()) || 0)"
+                  :value="((transformForm as Partial<PolynomialTransformation>).coefficients || []).join(', ')"
+                  @input="(transformForm as Partial<PolynomialTransformation>).coefficients = ($event.target as HTMLInputElement).value.split(',').map(s => parseFloat(s.trim()) || 0)"
                   placeholder="0, 1, 0.5"
                 />
               </div>
@@ -3403,7 +3437,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             <template v-if="transformForm.type === 'deadband'">
               <div class="form-group">
                 <label>Deadband Value</label>
-                <input type="number" v-model.number="(transformForm as any).deadband" step="0.1" />
+                <input type="number" v-model.number="(transformForm as Partial<DeadbandTransformation>).deadband" step="0.1" />
               </div>
             </template>
 
@@ -3412,11 +3446,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               <div class="form-row">
                 <div class="form-group">
                   <label>Min Value</label>
-                  <input type="number" v-model.number="(transformForm as any).minValue" />
+                  <input type="number" v-model.number="(transformForm as Partial<ClampTransformation>).minValue" />
                 </div>
                 <div class="form-group">
                   <label>Max Value</label>
-                  <input type="number" v-model.number="(transformForm as any).maxValue" />
+                  <input type="number" v-model.number="(transformForm as Partial<ClampTransformation>).maxValue" />
                 </div>
               </div>
             </template>
@@ -3503,7 +3537,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
             <div class="form-group">
               <label>Trigger Type</label>
-              <select v-model="(triggerForm.trigger as any).type">
+              <select v-model="(triggerForm.trigger as Trigger).type">
                 <option value="valueReached">Value Reached</option>
                 <option value="scheduled">Scheduled</option>
                 <option value="stateChange">State Change</option>
@@ -3512,18 +3546,18 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             </div>
 
             <!-- Value Reached Trigger -->
-            <template v-if="(triggerForm.trigger as any)?.type === 'valueReached'">
+            <template v-if="(triggerForm.trigger as Trigger)?.type === 'valueReached'">
               <div class="form-row">
                 <div class="form-group">
                   <label>Channel</label>
-                  <select v-model="(triggerForm.trigger as any).channel">
+                  <select v-model="(triggerForm.trigger as ValueReachedTrigger).channel">
                     <option value="">Select channel...</option>
                     <option v-for="ch in channelVariables" :key="ch.name" :value="ch.name">{{ ch.displayName }}</option>
                   </select>
                 </div>
                 <div class="form-group">
                   <label>Operator</label>
-                  <select v-model="(triggerForm.trigger as any).operator">
+                  <select v-model="(triggerForm.trigger as ValueReachedTrigger).operator">
                     <option value=">">></option>
                     <option value="<"><</option>
                     <option value=">=">>=</option>
@@ -3534,7 +3568,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 </div>
                 <div class="form-group">
                   <label>Value</label>
-                  <input type="number" v-model.number="(triggerForm.trigger as any).value" />
+                  <input type="number" v-model.number="(triggerForm.trigger as ValueReachedTrigger).value" />
                 </div>
               </div>
             </template>

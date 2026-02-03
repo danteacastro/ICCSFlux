@@ -16,7 +16,29 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockSetpointState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsConnected: Ref<boolean>
+  mockIsAcquiring: Ref<boolean>
+}
+
+interface BlockedInfo {
+  blocked: boolean
+  blockedBy: Array<{ name: string, failedConditions: Array<{ condition: any, reason: string }> }>
+}
+
+interface MockSetpointSafety {
+  mockBlockedChannels: Ref<Record<string, BlockedInfo>>
+}
+
+const getSetpointMockState = () =>
+  (globalThis as unknown as Record<string, MockSetpointState>).__mockSetpointState
+const getSetpointSafetyState = () =>
+  (globalThis as unknown as Record<string, MockSetpointSafety>).__mockSetpointSafety
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -64,18 +86,21 @@ vi.mock('../stores/dashboard', () => {
   })
 
   const mockIsConnected = ref(true)
+  const mockIsAcquiring = ref(true)
 
-  ;(global as any).__mockSetpointState = {
+  ;(globalThis as unknown as Record<string, MockSetpointState>).__mockSetpointState = {
     mockChannels,
     mockValues,
-    mockIsConnected
+    mockIsConnected,
+    mockIsAcquiring
   }
 
   return {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
-      get isConnected() { return mockIsConnected.value }
+      get isConnected() { return mockIsConnected.value },
+      get isAcquiring() { return mockIsAcquiring.value }
     })
   }
 })
@@ -98,7 +123,7 @@ vi.mock('../composables/useSafety', () => {
     'AO_002': { blocked: false, blockedBy: [] }
   })
 
-  ;(global as any).__mockSetpointSafety = { mockBlockedChannels }
+  ;(globalThis as unknown as Record<string, MockSetpointSafety>).__mockSetpointSafety = { mockBlockedChannels }
 
   return {
     useSafety: () => ({
@@ -113,11 +138,12 @@ import SetpointWidget from './SetpointWidget.vue'
 describe('SetpointWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockSetpointState
-    const safetyState = (global as any).__mockSetpointSafety
+    const state = getSetpointMockState()
+    const safetyState = getSetpointSafetyState()
 
     if (state) {
       state.mockIsConnected.value = true
+      state.mockIsAcquiring.value = true
       state.mockValues.value = {
         'AO_001': { value: 5.0, timestamp: Date.now() },
         'AO_002': { value: 50, timestamp: Date.now() },
@@ -323,7 +349,7 @@ describe('SetpointWidget', () => {
     })
 
     it('should display -- when no value', () => {
-      const state = (global as any).__mockSetpointState
+      const state = getSetpointMockState()
       state.mockValues.value = {}
 
       const wrapper = mount(SetpointWidget, {
@@ -424,7 +450,7 @@ describe('SetpointWidget', () => {
 
   describe('Disabled States', () => {
     it('should be disabled when not connected', () => {
-      const state = (global as any).__mockSetpointState
+      const state = getSetpointMockState()
       state.mockIsConnected.value = false
 
       const wrapper = mount(SetpointWidget, {
@@ -434,7 +460,7 @@ describe('SetpointWidget', () => {
     })
 
     it('should disable buttons when not connected', () => {
-      const state = (global as any).__mockSetpointState
+      const state = getSetpointMockState()
       state.mockIsConnected.value = false
 
       const wrapper = mount(SetpointWidget, {
@@ -460,9 +486,9 @@ describe('SetpointWidget', () => {
 
   describe('Blocked State', () => {
     it('should show blocked class when blocked by interlock', () => {
-      const safetyState = (global as any).__mockSetpointSafety
+      const safetyState = getSetpointSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'AO_001': { blocked: true, blockedBy: [{ name: 'High Temp' }] }
+        'AO_001': { blocked: true, blockedBy: [{ name: 'High Temp', failedConditions: [{ condition: {}, reason: 'Temperature exceeded limit' }] }] }
       }
 
       const wrapper = mount(SetpointWidget, {
@@ -472,16 +498,15 @@ describe('SetpointWidget', () => {
     })
 
     it('should show blocked indicator when blocked', () => {
-      const safetyState = (global as any).__mockSetpointSafety
+      const safetyState = getSetpointSafetyState()
       safetyState.mockBlockedChannels.value = {
-        'AO_001': { blocked: true, blockedBy: [{ name: 'Interlock 1' }] }
+        'AO_001': { blocked: true, blockedBy: [{ name: 'Interlock 1', failedConditions: [{ condition: {}, reason: 'Condition not met' }] }] }
       }
 
       const wrapper = mount(SetpointWidget, {
         props: { widgetId: 'sp-1', channel: 'AO_001' }
       })
-      expect(wrapper.find('.blocked-indicator').exists()).toBe(true)
-      expect(wrapper.find('.blocked-indicator').text()).toBe('BLOCKED')
+      expect(wrapper.find('.interlock-overlay').exists()).toBe(true)
     })
   })
 
@@ -536,7 +561,7 @@ describe('SetpointWidget', () => {
     })
 
     it('should not show input when disabled', async () => {
-      const state = (global as any).__mockSetpointState
+      const state = getSetpointMockState()
       state.mockIsConnected.value = false
 
       const wrapper = mount(SetpointWidget, {

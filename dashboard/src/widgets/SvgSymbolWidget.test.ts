@@ -13,7 +13,19 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockSymbolState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+  mockEditMode: Ref<boolean>
+  mockPipeDrawingMode: Ref<boolean>
+}
+
+const getSymbolMockState = () =>
+  (globalThis as unknown as Record<string, MockSymbolState>).__mockSymbolState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -35,7 +47,7 @@ vi.mock('../stores/dashboard', () => {
   const mockEditMode = ref(false)
   const mockPipeDrawingMode = ref(false)
 
-  ;(global as any).__mockSymbolState = {
+  ;(globalThis as unknown as Record<string, MockSymbolState>).__mockSymbolState = {
     mockChannels,
     mockValues,
     mockIsAcquiring,
@@ -79,7 +91,7 @@ import SvgSymbolWidget from './SvgSymbolWidget.vue'
 describe('SvgSymbolWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockSymbolState
+    const state = getSymbolMockState()
 
     if (state) {
       state.mockIsAcquiring.value = true
@@ -174,7 +186,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should display OFF for digital output with value 0', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 0, timestamp: Date.now() }
       }
@@ -200,7 +212,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should display -- when stale', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now() - 10000 }
       }
@@ -342,7 +354,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should have normal class when digital output is off', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'pump1': { value: 0, timestamp: Date.now() }
       }
@@ -354,7 +366,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should have stale class when data is stale', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now() - 10000 }
       }
@@ -366,7 +378,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should have alarm class when in alarm', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now(), alarm: true }
       }
@@ -378,7 +390,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should have warning class when in warning', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now(), warning: true }
       }
@@ -404,7 +416,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should use blue color for normal state', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'pump1': { value: 0, timestamp: Date.now() }
       }
@@ -417,7 +429,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should use red color for alarm', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now(), alarm: true }
       }
@@ -430,7 +442,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should use yellow color for warning', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockValues.value = {
         'valve1': { value: 1, timestamp: Date.now(), warning: true }
       }
@@ -464,7 +476,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should not show ports when in edit mode but not pipe drawing', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(SvgSymbolWidget, {
@@ -474,7 +486,7 @@ describe('SvgSymbolWidget', () => {
     })
 
     it('should show ports when in edit mode and pipe drawing mode', () => {
-      const state = (global as any).__mockSymbolState
+      const state = getSymbolMockState()
       state.mockEditMode.value = true
       state.mockPipeDrawingMode.value = true
 

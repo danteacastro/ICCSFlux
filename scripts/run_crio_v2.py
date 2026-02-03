@@ -13,6 +13,8 @@ Options:
     --broker HOST    MQTT broker hostname (default: from config or 192.168.1.100)
     --port PORT      MQTT broker port (default: 1883)
     --node-id ID     Node ID (default: crio-001)
+    --mqtt-user USER MQTT username for broker authentication
+    --mqtt-pass PASS MQTT password for broker authentication
     --mock           Use mock hardware (for testing without NI-DAQmx)
     --daemon         Run as daemon (detach from terminal)
     --log-level LVL  Logging level (DEBUG, INFO, WARNING, ERROR)
@@ -124,17 +126,38 @@ def ensure_log_directory(log_file: str) -> bool:
         return False
 
 
+CRED_FILE = '/home/admin/nisystem/mqtt_creds.json'
+
+
+def load_credential_file():
+    """Load persistent credentials + identity from deploy-time credential file.
+
+    Returns dict with keys: mqtt_user, mqtt_pass, broker, node_id (all optional).
+    Returns empty dict if file missing or unreadable.
+    """
+    try:
+        with open(CRED_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+        return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description='cRIO Node V2 Service')
     parser.add_argument('--config', '-c', help='Configuration file (JSON)')
     parser.add_argument('--broker', help='MQTT broker host')
     parser.add_argument('--port', type=int, help='MQTT broker port')
     parser.add_argument('--node-id', help='Node ID')
+    parser.add_argument('--mqtt-user', help='MQTT username for broker authentication')
+    parser.add_argument('--mqtt-pass', help='MQTT password for broker authentication')
     parser.add_argument('--mock', action='store_true', help='Use mock hardware')
     parser.add_argument('--daemon', '-d', action='store_true', help='Run as daemon')
     parser.add_argument('--log-level', default='INFO', help='Logging level')
     parser.add_argument('--log-file', help='Log file path')
     args = parser.parse_args()
+
+    # Load persistent credential file as fallback for CLI args
+    creds = load_credential_file()
 
     # Determine log file early
     log_file = args.log_file
@@ -169,19 +192,33 @@ def main():
         logger.info("No config file found, using defaults")
         config = NodeConfig()
 
-    # Apply command-line overrides
+    # Apply command-line overrides (CLI args take priority over credential file)
     if args.broker:
         config.mqtt_broker = args.broker
+    elif creds.get('broker'):
+        config.mqtt_broker = creds['broker']
     if args.port:
         config.mqtt_port = args.port
     if args.node_id:
         config.node_id = args.node_id
+    elif creds.get('node_id'):
+        config.node_id = creds['node_id']
+    if args.mqtt_user:
+        config.mqtt_username = args.mqtt_user
+    elif creds.get('mqtt_user'):
+        config.mqtt_username = creds['mqtt_user']
+    if args.mqtt_pass:
+        config.mqtt_password = args.mqtt_pass
+    elif creds.get('mqtt_pass'):
+        config.mqtt_password = creds['mqtt_pass']
     if args.mock:
         config.use_mock_hardware = True
 
     # Log configuration
+    cred_source = "CLI args" if args.mqtt_user else ("credential file" if creds.get('mqtt_user') else "none")
     logger.info(f"Node ID: {config.node_id}")
     logger.info(f"MQTT Broker: {config.mqtt_broker}:{config.mqtt_port}")
+    logger.info(f"MQTT Auth: {'yes' if config.mqtt_username else 'anonymous'} (source: {cred_source})")
     logger.info(f"Scan Rate: {config.scan_rate_hz} Hz")
     logger.info(f"Publish Rate: {config.publish_rate_hz} Hz")
     logger.info(f"Channels: {len(config.channels)}")

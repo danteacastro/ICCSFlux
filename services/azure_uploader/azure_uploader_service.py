@@ -58,9 +58,12 @@ class AzureUploaderService:
     recording with Azure enabled, it sends a 'start' command with config.
     """
 
-    def __init__(self, mqtt_host: str = 'localhost', mqtt_port: int = 1883):
+    def __init__(self, mqtt_host: str = 'localhost', mqtt_port: int = 1883,
+                 mqtt_username: str = None, mqtt_password: str = None):
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
+        self.mqtt_username = mqtt_username
+        self.mqtt_password = mqtt_password
 
         # MQTT topics
         self.command_topic = 'nisystem/azure/command'
@@ -113,11 +116,30 @@ class AzureUploaderService:
         logger.info(f"  Command topic: {self.command_topic}")
 
         try:
+            # Resolve MQTT credentials (CLI args > env vars > credential file)
+            mqtt_user = self.mqtt_username or os.environ.get('MQTT_USERNAME')
+            mqtt_pass = self.mqtt_password or os.environ.get('MQTT_PASSWORD')
+            if not mqtt_user or not mqtt_pass:
+                cred_file = os.path.join('config', 'mqtt_credentials.json')
+                if os.path.exists(cred_file):
+                    try:
+                        with open(cred_file) as _f:
+                            _creds = json.load(_f)
+                        mqtt_user = _creds.get('backend', {}).get('username')
+                        mqtt_pass = _creds.get('backend', {}).get('password')
+                        logger.info("Loaded MQTT credentials from credential file")
+                    except Exception as e:
+                        logger.warning(f"Could not read MQTT credentials from {cred_file}: {e}")
+
             # Connect to MQTT broker
             self.mqtt_client = mqtt.Client(client_id=f"azure_uploader_{os.getpid()}")
             self.mqtt_client.on_connect = self._on_mqtt_connect
             self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
             self.mqtt_client.on_message = self._on_mqtt_message
+
+            if mqtt_user and mqtt_pass:
+                self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
+                logger.info(f"MQTT authentication: user={mqtt_user}")
 
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
             self.mqtt_client.loop_start()
@@ -284,8 +306,8 @@ class AzureUploaderService:
             if self.azure_client:
                 try:
                     self.azure_client.disconnect()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Error disconnecting Azure client during error recovery: {e}")
                 self.azure_client = None
 
     def _stop_streaming(self) -> None:
@@ -400,8 +422,11 @@ class AzureUploaderService:
         if batch:
             try:
                 self._send_batch(batch)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to send final batch ({len(batch)} samples) during shutdown: {e}")
+                with self._stats_lock:
+                    self._stats['messages_failed'] += 1
+                    self._stats['last_error'] = f"Final batch lost: {e}"
 
     def _send_batch(self, batch: List[Dict]) -> bool:
         """Send a batch of data points to Azure IoT Hub."""
@@ -458,7 +483,10 @@ class AzureUploaderService:
                 self._stats['azure_connected'] = True
             logger.info("Reconnected to Azure IoT Hub")
             return True
-        except:
+        except Exception as e:
+            logger.warning(f"Azure reconnection failed: {e}")
+            with self._stats_lock:
+                self._stats['last_error'] = f"Reconnect failed: {e}"
             return False
 
     def _get_device_id(self) -> str:
@@ -466,7 +494,8 @@ class AzureUploaderService:
         try:
             parts = dict(p.split('=', 1) for p in self.connection_string.split(';') if '=' in p)
             return parts.get('DeviceId', 'unknown')
-        except:
+        except (ValueError, AttributeError) as e:
+            logger.debug(f"Could not parse device ID from connection string: {e}")
             return 'unknown'
 
     def _update_state(self, state: str, error: str = None) -> None:
@@ -524,13 +553,20 @@ def main():
     parser = argparse.ArgumentParser(description='Azure IoT Hub Uploader Service')
     parser.add_argument('--host', default='localhost', help='MQTT broker host')
     parser.add_argument('--port', type=int, default=1883, help='MQTT broker port')
+    parser.add_argument('--mqtt-user', default=None, help='MQTT username')
+    parser.add_argument('--mqtt-pass', default=None, help='MQTT password')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    service = AzureUploaderService(mqtt_host=args.host, mqtt_port=args.port)
+    service = AzureUploaderService(
+        mqtt_host=args.host,
+        mqtt_port=args.port,
+        mqtt_username=args.mqtt_user,
+        mqtt_password=args.mqtt_pass,
+    )
     service.run_forever()
 
 

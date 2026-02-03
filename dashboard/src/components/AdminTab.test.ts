@@ -82,8 +82,15 @@ vi.mock('../composables/useAuth', () => {
     permissions: ['VIEW_DATA', 'MANAGE_USERS', 'VIEW_AUDIT']
   })
 
+  interface MockAuthState {
+    mockCurrentUser: ReturnType<typeof ref>
+    mockUsers: ReturnType<typeof ref>
+    mockAuditEvents: ReturnType<typeof ref>
+    mockArchives: ReturnType<typeof ref>
+  }
+
   // Store refs globally so tests can access them
-  ;(global as any).__mockAuthState = {
+  ;(globalThis as unknown as Record<string, MockAuthState>).__mockAuthState = {
     mockCurrentUser,
     mockUsers,
     mockAuditEvents,
@@ -119,7 +126,7 @@ import AdminTab from './AdminTab.vue'
 
 // Helper to access mock state
 function getMockState() {
-  return (global as any).__mockAuthState
+  return (globalThis as unknown as Record<string, { mockCurrentUser: { value: Record<string, unknown> }; mockUsers: { value: unknown[] }; mockAuditEvents: { value: unknown[] }; mockArchives: { value: unknown[] } }>).__mockAuthState
 }
 
 describe('AdminTab', () => {

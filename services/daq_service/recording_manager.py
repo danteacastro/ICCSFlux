@@ -97,6 +97,17 @@ class RecordingConfig:
     selected_channels: List[str] = field(default_factory=list)  # Empty = all channels
     include_scripts: bool = True  # Include calculated params and transforms
 
+    # PostgreSQL database storage (optional, alongside file recording)
+    db_enabled: bool = False
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_name: str = "iccsflux"
+    db_user: str = "iccsflux"
+    db_password: str = ""
+    db_table: str = "recording_data"
+    db_batch_size: int = 50  # Rows to batch before INSERT
+    db_timescale: bool = False  # Convert table to TimescaleDB hypertable
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -111,6 +122,194 @@ class RecordingConfig:
         if self.sample_interval_unit == "milliseconds":
             interval_s = self.sample_interval / 1000.0
         return (1.0 / interval_s) / self.decimation if interval_s > 0 else 0
+
+
+class PostgreSQLWriter:
+    """
+    Optional PostgreSQL data writer for recording manager.
+    Stores time-series data in a JSONB-based schema for flexibility.
+    psycopg2-binary is a pip-only dependency (no PostgreSQL install needed).
+    """
+
+    def __init__(self, config: 'RecordingConfig'):
+        self._config = config
+        self._conn = None
+        self._batch: List[tuple] = []
+        self._session_id: Optional[str] = None
+        self._rows_written = 0
+        self._available = False
+
+        try:
+            import psycopg2
+            self._psycopg2 = psycopg2
+            self._available = True
+        except ImportError:
+            logger.warning("psycopg2-binary not installed - PostgreSQL storage unavailable")
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def connect(self, session_id: str) -> bool:
+        """Connect to PostgreSQL and ensure table exists."""
+        if not self._available:
+            return False
+
+        self._session_id = session_id
+        self._rows_written = 0
+
+        try:
+            self._conn = self._psycopg2.connect(
+                host=self._config.db_host,
+                port=self._config.db_port,
+                dbname=self._config.db_name,
+                user=self._config.db_user,
+                password=self._config.db_password,
+                connect_timeout=5,
+            )
+            self._conn.autocommit = False
+            self._ensure_table()
+            logger.info(f"PostgreSQL connected: {self._config.db_host}:{self._config.db_port}/{self._config.db_name}")
+            return True
+        except Exception as e:
+            logger.error(f"PostgreSQL connection failed: {e}")
+            self._conn = None
+            return False
+
+    def _ensure_table(self):
+        """Create recording table if it doesn't exist.
+        Schema is TimescaleDB-compatible: no BIGSERIAL PK (hypertable requires
+        the time column in any unique constraint). Uses ts as the natural ordering.
+        """
+        table = self._safe_table_name()
+        with self._conn.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table} (
+                    ts TIMESTAMPTZ NOT NULL,
+                    session_id TEXT,
+                    channel_values JSONB NOT NULL
+                );
+            """)
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{table}_ts ON {table} (ts DESC);
+            """)
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{table}_session ON {table} (session_id, ts DESC);
+            """)
+
+            # Convert to TimescaleDB hypertable if requested and extension is available
+            if self._config.db_timescale:
+                try:
+                    # Check if TimescaleDB extension exists
+                    cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")
+                    if cur.fetchone():
+                        # Check if already a hypertable
+                        cur.execute(
+                            "SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = %s",
+                            (table,)
+                        )
+                        if not cur.fetchone():
+                            cur.execute(f"SELECT create_hypertable('{table}', 'ts', migrate_data => true)")
+                            logger.info(f"TimescaleDB hypertable created for '{table}'")
+                        else:
+                            logger.info(f"Table '{table}' is already a TimescaleDB hypertable")
+                    else:
+                        logger.warning("TimescaleDB extension not installed - using plain PostgreSQL table")
+                except Exception as e:
+                    logger.warning(f"TimescaleDB hypertable setup skipped: {e}")
+
+        self._conn.commit()
+        logger.info(f"PostgreSQL table '{table}' ready")
+
+    def _safe_table_name(self) -> str:
+        """Sanitize table name to prevent SQL injection."""
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_]', '', self._config.db_table)
+        return name or 'recording_data'
+
+    def write_row(self, values: Dict[str, Any]):
+        """Buffer a row for batch insert."""
+        if not self._conn:
+            return
+
+        try:
+            import json as _json
+            timestamp = datetime.now().isoformat()
+            # Filter to numeric values for storage
+            numeric_values = {}
+            for k, v in values.items():
+                if isinstance(v, (int, float)) and not (isinstance(v, float) and (v != v or abs(v) == float('inf'))):
+                    numeric_values[k] = round(v, 6) if isinstance(v, float) else v
+
+            self._batch.append((timestamp, self._session_id, _json.dumps(numeric_values)))
+
+            if len(self._batch) >= self._config.db_batch_size:
+                self._flush()
+        except Exception as e:
+            logger.warning(f"PostgreSQL write error: {e}")
+
+    def _flush(self):
+        """Flush batch to database."""
+        if not self._batch or not self._conn:
+            return
+
+        table = self._safe_table_name()
+        try:
+            with self._conn.cursor() as cur:
+                # Use executemany for batch insert
+                cur.executemany(
+                    f"INSERT INTO {table} (ts, session_id, channel_values) VALUES (%s, %s, %s)",
+                    self._batch
+                )
+            self._conn.commit()
+            self._rows_written += len(self._batch)
+            self._batch = []
+        except Exception as e:
+            logger.error(f"PostgreSQL flush error: {e}")
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+
+    def close(self):
+        """Flush remaining data and close connection."""
+        if self._batch:
+            self._flush()
+
+        if self._conn:
+            try:
+                self._conn.close()
+                logger.info(f"PostgreSQL closed ({self._rows_written} rows written)")
+            except Exception as e:
+                logger.warning(f"PostgreSQL close error: {e}")
+            self._conn = None
+
+    @property
+    def rows_written(self) -> int:
+        return self._rows_written
+
+    @staticmethod
+    def test_connection(host: str, port: int, dbname: str, user: str, password: str) -> tuple:
+        """Test a PostgreSQL connection. Returns (success, message)."""
+        try:
+            import psycopg2
+        except ImportError:
+            return False, "psycopg2-binary not installed"
+
+        try:
+            conn = psycopg2.connect(
+                host=host, port=port, dbname=dbname,
+                user=user, password=password,
+                connect_timeout=5,
+            )
+            # Check server version
+            with conn.cursor() as cur:
+                cur.execute("SELECT version()")
+                version = cur.fetchone()[0]
+            conn.close()
+            return True, f"Connected: {version.split(',')[0]}"
+        except Exception as e:
+            return False, str(e)
 
 
 @dataclass
@@ -180,6 +379,9 @@ class RecordingManager:
 
         # Circular file tracking
         self.circular_files: List[Path] = []
+
+        # PostgreSQL writer (optional, alongside CSV)
+        self.db_writer: Optional[PostgreSQLWriter] = None
 
     def configure(self, config_dict: dict):
         """Update recording configuration"""
@@ -257,6 +459,18 @@ class RecordingManager:
                 if self.config.on_limit_reached == 'circular':
                     self.circular_files = [self.current_file]
 
+                # Start PostgreSQL writer if enabled
+                if self.config.db_enabled:
+                    self.db_writer = PostgreSQLWriter(self.config)
+                    if self.db_writer.available:
+                        session_id = self.recording_start_time.strftime('%Y%m%d_%H%M%S')
+                        if not self.db_writer.connect(session_id):
+                            logger.warning("PostgreSQL connection failed - continuing with file-only recording")
+                            self.db_writer = None
+                    else:
+                        logger.warning("psycopg2 not installed - PostgreSQL storage unavailable")
+                        self.db_writer = None
+
                 logger.info(f"Recording started: {self.current_file}")
                 should_notify = True
 
@@ -301,6 +515,11 @@ class RecordingManager:
                 self._flush_buffer()
 
             self._close_current_file()
+
+            # Close PostgreSQL writer
+            if self.db_writer:
+                self.db_writer.close()
+                self.db_writer = None
 
             self.recording = False
             duration = (datetime.now() - self.recording_start_time).total_seconds() if self.recording_start_time else 0
@@ -473,6 +692,10 @@ class RecordingManager:
             self.samples_written += 1
             self.current_file_samples += 1
             self.bytes_written = self.current_file.stat().st_size if self.current_file else 0
+
+            # Write to PostgreSQL if enabled
+            if self.db_writer:
+                self.db_writer.write_row(values)
         except IOError as e:
             logger.error(f"File I/O error writing sample: {e}")
             # Try to recover by reopening file
@@ -839,6 +1062,9 @@ class RecordingManager:
                 "recording_buffer_pending": len(self.write_buffer),
                 "trigger_armed": self.trigger_armed,
                 "trigger_fired": self.trigger_fired,
+                "db_enabled": self.config.db_enabled,
+                "db_connected": self.db_writer is not None,
+                "db_rows_written": self.db_writer.rows_written if self.db_writer else 0,
             }
 
     def list_files(self) -> List[dict]:
@@ -872,8 +1098,8 @@ class RecordingManager:
                                 # Header row
                                 channels = [c.strip() for c in line.split(',')[1:]]  # Skip timestamp
                                 break
-                except:
-                    pass
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Failed to read recording file header for {f.name}: {e}")
 
                 files.append({
                     "name": f.name,
@@ -1260,19 +1486,19 @@ class RecordingManager:
                     if line.startswith('# Duration:'):
                         try:
                             result["duration_seconds"] = float(line.split(':')[1].strip().rstrip('s'))
-                        except:
-                            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug(f"Could not parse duration from recording header: {e}")
                     elif line.startswith('# Total Samples:') or line.startswith('# Samples:'):
                         try:
                             result["sample_count"] = int(line.split(':')[1].strip())
-                        except:
-                            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug(f"Could not parse sample count from recording header: {e}")
                     elif line.startswith('# Effective Rate:'):
                         try:
                             rate_str = line.split(':')[1].strip().split()[0]
                             result["sample_rate_hz"] = float(rate_str)
-                        except:
-                            pass
+                        except (ValueError, IndexError) as e:
+                            logger.debug(f"Could not parse sample rate from recording header: {e}")
                     elif not line.startswith('#'):
                         header_line = line.strip()
                         break
@@ -1312,8 +1538,8 @@ class RecordingManager:
                         start = datetime.fromisoformat(first_data_ts.replace('Z', '+00:00'))
                         end = datetime.fromisoformat(last_data_ts.replace('Z', '+00:00'))
                         result["duration_seconds"] = (end - start).total_seconds()
-                    except:
-                        pass
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Could not compute recording duration from timestamps: {e}")
 
                 result["success"] = True
 

@@ -70,8 +70,9 @@ const unit = computed(() => {
 })
 
 // Label: use explicit label prop, or fall back to channel name (TAG)
+// Strip "py." prefix for display — Python script outputs show as plain names
 const displayLabel = computed(() =>
-  props.label || props.channel
+  (props.label || props.channel || '').replace(/^py\./, '')
 )
 
 const statusClass = computed(() => {

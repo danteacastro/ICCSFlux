@@ -714,8 +714,8 @@ class UserVariableManager:
                 if var.last_reset:
                     try:
                         last_reset_date = var.last_reset[:10]  # YYYY-MM-DD
-                    except:
-                        pass
+                    except (TypeError, IndexError) as e:
+                        logger.warning(f"Invalid last_reset format for {var.name}: {var.last_reset} ({e})")
 
                 # Reset if: current time >= reset time AND we haven't reset today
                 if (current_time >= reset_time and last_reset_date != today_str):
@@ -737,8 +737,8 @@ class UserVariableManager:
                         var.last_reset = now.isoformat()
                         var._last_source_value = None
                         logger.info(f"Elapsed time reset triggered for: {var.name}")
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error evaluating elapsed reset for {var.name}: {e}")
 
     def _update_timer(self, var: UserVariable, now: float):
         """Update timer variable value"""
@@ -1198,8 +1198,8 @@ class UserVariableManager:
                     hours, remainder = divmod(int(elapsed), 3600)
                     minutes, seconds = divmod(remainder, 60)
                     status['elapsed_formatted'] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Error computing session elapsed time: {e}")
             return status
 
     def check_session_timeout(self) -> Optional[Dict[str, Any]]:
@@ -1246,8 +1246,8 @@ class UserVariableManager:
                         result['reason'] = 'timeout'
                         result['timeout_minutes'] = self.session.config.timeout_minutes
                     return result
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Error checking session timeout: {e}")
 
         return None
 

@@ -447,7 +447,7 @@ function handlePidPipeSelect(id: string | null) {
 
           <component
             :is="getWidgetComponent(getWidget(item.i)?.type || 'numeric')"
-            v-bind="(getWidgetProps(item.i) as any)"
+            v-bind="getWidgetProps(item.i)"
             @configure="openWidgetConfig(item.i)"
             @change="handleToggleChange(item.i, $event)"
             class="widget-content"

@@ -62,7 +62,7 @@ const isOn = computed(() => {
 
 // Display label - check props first, then widget config from store, then channel name
 const displayLabel = computed(() =>
-  props.label || widgetConfig.value?.label || props.channel || widgetConfig.value?.channel || ''
+  (props.label || widgetConfig.value?.label || props.channel || widgetConfig.value?.channel || '').replace(/^py\./, '')
 )
 
 // Support both direct props and style object for colors

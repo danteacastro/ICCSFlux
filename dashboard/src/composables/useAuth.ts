@@ -65,16 +65,65 @@ const DEFAULT_GUEST: AuthUser = {
 
 const AUTH_STORAGE_KEY = 'nisystem-auth-session'
 
+// Maximum age for persisted sessions (24 hours)
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+// Idle timeout — log out after 30 minutes of inactivity
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000
+const IDLE_CHECK_INTERVAL_MS = 60 * 1000  // Check every minute
+
+interface PersistedSession extends AuthUser {
+  _persistedAt: number
+}
+
+// Track user activity for idle timeout
+let _lastActivityTime = Date.now()
+let _idleCheckTimer: ReturnType<typeof setInterval> | null = null
+
+function _resetIdleTimer() {
+  _lastActivityTime = Date.now()
+}
+
+function _startIdleMonitor(logoutFn: () => void) {
+  if (_idleCheckTimer) return
+  // Listen for user interaction events
+  const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
+  events.forEach(evt => document.addEventListener(evt, _resetIdleTimer, { passive: true }))
+  _idleCheckTimer = setInterval(() => {
+    if (Date.now() - _lastActivityTime > IDLE_TIMEOUT_MS) {
+      console.warn('[AUTH] Session idle timeout — logging out')
+      logoutFn()
+    }
+  }, IDLE_CHECK_INTERVAL_MS)
+}
+
+function _stopIdleMonitor() {
+  if (_idleCheckTimer) {
+    clearInterval(_idleCheckTimer)
+    _idleCheckTimer = null
+  }
+  const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
+  events.forEach(evt => document.removeEventListener(evt, _resetIdleTimer))
+}
+
 // Try to restore persisted session from localStorage
 function loadPersistedSession(): AuthUser | null {
   try {
     const saved = localStorage.getItem(AUTH_STORAGE_KEY)
     if (saved) {
-      const session = JSON.parse(saved)
+      const session: PersistedSession = JSON.parse(saved)
       // Restore any authenticated session (not guest)
       if (session.role && session.role !== 'guest') {
+        // Check if the session has expired
+        if (session._persistedAt && (Date.now() - session._persistedAt) > SESSION_MAX_AGE_MS) {
+          console.warn('[AUTH] Persisted session expired, discarding')
+          localStorage.removeItem(AUTH_STORAGE_KEY)
+          return null
+        }
         console.log('[AUTH] Restored persisted session:', session.username, session.role)
-        return session
+        // Return without the internal _persistedAt field
+        const { _persistedAt, ...user } = session
+        return user
       }
     }
   } catch (e) {
@@ -86,7 +135,8 @@ function loadPersistedSession(): AuthUser | null {
 function saveSession(user: AuthUser | null) {
   try {
     if (user && user.role !== 'guest') {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user))
+      const persisted: PersistedSession = { ...user, _persistedAt: Date.now() }
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(persisted))
       console.log('[AUTH] Persisted session:', user.username, user.role)
     } else {
       localStorage.removeItem(AUTH_STORAGE_KEY)
@@ -125,24 +175,22 @@ let handlersInitialized = false
 
 /**
  * Check if current user has a specific permission.
- *
- * WARNING: This is a FUNCTION, not a computed ref. Calling it inside a Vue
- * computed() will NOT create a reactive dependency! Vue cannot track that
- * this function reads currentUser.value internally.
- *
- * For reactive permission checks in computed properties, use the role-based
- * computed refs instead: isAdmin, isSupervisor, isOperator, isGuest
- *
- * Example:
- *   BAD:  computed(() => auth.hasPermission('foo') || auth.isOperator.value)
- *   GOOD: computed(() => auth.isOperator.value)
+ * Reads currentUser.value internally, so IS reactive inside computed() / templates.
+ * For role-based checks, prefer the computed refs: isAdmin, isSupervisor, isOperator.
  */
 const hasPermission = (permission: string): boolean => {
   if (!currentUser.value) return false
-  // Admin role has all permissions (bypass explicit permission check)
   if (currentUser.value.role === 'admin') return true
   return currentUser.value.permissions.includes(permission)
 }
+
+/**
+ * Reactive computed wrapper for permission checks.
+ * Returns a ComputedRef<boolean> that auto-updates when user/role changes.
+ *
+ * Usage: const canEdit = auth.canDo('edit.config')  // canEdit.value is reactive
+ */
+const canDo = (permission: string) => computed(() => hasPermission(permission))
 
 // Role hierarchy: admin > supervisor > operator > guest
 // USE THESE in computed() for proper reactivity!
@@ -278,17 +326,19 @@ export function useAuth() {
 
     // Wait for response (with timeout)
     return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        isLoggingIn.value = false
-        authError.value = 'Login timeout'
-        resolve(false)
-      }, 10000)
-
       const unsubscribe = onAuthChange((status) => {
         clearTimeout(timeout)
         unsubscribe()
+        isLoggingIn.value = false
         resolve(status.authenticated)
       })
+
+      const timeout = setTimeout(() => {
+        unsubscribe()  // Clean up callback to prevent stale resolve
+        isLoggingIn.value = false
+        authError.value = 'Login timed out — server may be unreachable'
+        resolve(false)
+      }, 10000)
     })
   }
 
@@ -299,7 +349,18 @@ export function useAuth() {
     authenticated.value = false
     currentUser.value = DEFAULT_GUEST
     saveSession(null)  // Clear persisted session
+    _stopIdleMonitor()
   }
+
+  // Start/stop idle monitor when auth state changes
+  watch(authenticated, (isAuth) => {
+    if (isAuth) {
+      _resetIdleTimer()
+      _startIdleMonitor(logout)
+    } else {
+      _stopIdleMonitor()
+    }
+  }, { immediate: true })
 
   function requestAuthStatus() {
     if (!mqtt.connected.value) return
@@ -437,6 +498,7 @@ export function useAuth() {
     isOperator,
     isGuest,
     hasPermission,
+    canDo,
 
     // Auth actions
     login,

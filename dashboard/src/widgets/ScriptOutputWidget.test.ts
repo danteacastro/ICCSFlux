@@ -8,28 +8,49 @@
  * constraints. Business logic should be tested in useBackendScripts tests.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
+
+interface ScriptOutputLine {
+  type: string
+  message: string
+  timestamp: number
+}
+
+interface ScriptInfo {
+  name: string
+  state: string
+}
+
+interface MockScriptOutputState {
+  mockScriptOutputs: Ref<Record<string, ScriptOutputLine[]>>
+  mockScripts: Ref<Record<string, ScriptInfo>>
+  mockClearScriptOutput: Mock
+  mockClearAllOutput: Mock
+}
+
+const getScriptOutputMockState = () =>
+  (globalThis as unknown as Record<string, MockScriptOutputState>).__mockScriptOutputState
 
 // Mock the useBackendScripts composable
 vi.mock('../composables/useBackendScripts', () => {
   const { ref, computed } = require('vue')
 
-  const mockScriptOutputs = ref<Record<string, any[]>>({})
-  const mockScripts = ref<Record<string, any>>({})
+  const mockScriptOutputs = ref<Record<string, ScriptOutputLine[]>>({})
+  const mockScripts = ref<Record<string, ScriptInfo>>({})
   const mockClearScriptOutput = vi.fn()
   const mockClearAllOutput = vi.fn()
 
   const mockRunningScripts = computed(() => {
-    return Object.values(mockScripts.value).filter((s: any) => s.state === 'running')
+    return Object.values(mockScripts.value).filter((s: ScriptInfo) => s.state === 'running')
   })
 
   const mockScriptsList = computed(() => {
     return Object.values(mockScripts.value)
   })
 
-  ;(global as any).__mockScriptOutputState = {
+  ;(globalThis as unknown as Record<string, MockScriptOutputState>).__mockScriptOutputState = {
     mockScriptOutputs,
     mockScripts,
     mockClearScriptOutput,
@@ -53,7 +74,7 @@ import ScriptOutputWidget from './ScriptOutputWidget.vue'
 describe('ScriptOutputWidget', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockScriptOutputState
+    const state = getScriptOutputMockState()
     if (state) {
       state.mockScriptOutputs.value = {}
       state.mockScripts.value = {}
@@ -143,7 +164,7 @@ describe('ScriptOutputWidget', () => {
 
   describe('Output Lines', () => {
     beforeEach(() => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       state.mockScriptOutputs.value = {
         'script1': [
           { type: 'stdout', message: 'Hello World', timestamp: 1700000000000 },
@@ -192,7 +213,7 @@ describe('ScriptOutputWidget', () => {
 
   describe('Output Type Styling', () => {
     beforeEach(() => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       state.mockScriptOutputs.value = {
         'script1': [
           { type: 'stdout', message: 'Standard output', timestamp: 1000 },
@@ -258,7 +279,7 @@ describe('ScriptOutputWidget', () => {
 
   describe('Script Filtering', () => {
     beforeEach(() => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       state.mockScriptOutputs.value = {
         'script1': [
           { type: 'stdout', message: 'Script 1 output', timestamp: 1000 }
@@ -312,7 +333,7 @@ describe('ScriptOutputWidget', () => {
     })
 
     it('should call clearAllOutput when clear clicked (no filter)', async () => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       const wrapper = mount(ScriptOutputWidget, {
         props: { widgetId: 'output-1' }
       })
@@ -324,7 +345,7 @@ describe('ScriptOutputWidget', () => {
     })
 
     it('should call clearScriptOutput when clear clicked (with filter)', async () => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       const wrapper = mount(ScriptOutputWidget, {
         props: { widgetId: 'output-1', scriptId: 'script1' }
       })
@@ -377,7 +398,7 @@ describe('ScriptOutputWidget', () => {
 
   describe('Max Lines', () => {
     beforeEach(() => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       const outputs = []
       for (let i = 0; i < 150; i++) {
         outputs.push({ type: 'stdout', message: `Line ${i}`, timestamp: i * 1000 })
@@ -416,7 +437,7 @@ describe('ScriptOutputWidget', () => {
 
   describe('Edge Cases', () => {
     it('should handle script with no outputs', () => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       state.mockScriptOutputs.value = { 'script1': [] }
       state.mockScripts.value = { 'script1': { name: 'Test', state: 'idle' } }
 
@@ -427,7 +448,7 @@ describe('ScriptOutputWidget', () => {
     })
 
     it('should sort outputs by timestamp', () => {
-      const state = (global as any).__mockScriptOutputState
+      const state = getScriptOutputMockState()
       state.mockScriptOutputs.value = {
         'script1': [
           { type: 'stdout', message: 'Third', timestamp: 3000 },

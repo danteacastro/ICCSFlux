@@ -12,7 +12,18 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
+import type { ChannelConfig, ChannelValue } from '../types'
+
+interface MockLedState {
+  mockChannels: Ref<Record<string, Partial<ChannelConfig>>>
+  mockValues: Ref<Record<string, Partial<ChannelValue>>>
+  mockIsAcquiring: Ref<boolean>
+  mockEditMode: Ref<boolean>
+}
+
+const getLedMockState = () =>
+  (globalThis as unknown as Record<string, MockLedState>).__mockLedState
 
 // Mock the dashboard store
 vi.mock('../stores/dashboard', () => {
@@ -31,7 +42,7 @@ vi.mock('../stores/dashboard', () => {
   const mockIsAcquiring = ref(true)
   const mockEditMode = ref(false)
 
-  ;(global as any).__mockLedState = {
+  ;(globalThis as unknown as Record<string, MockLedState>).__mockLedState = {
     mockChannels,
     mockValues,
     mockIsAcquiring,
@@ -65,7 +76,7 @@ import LedIndicator from './LedIndicator.vue'
 describe('LedIndicator', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    const state = (global as any).__mockLedState
+    const state = getLedMockState()
     if (state) {
       state.mockIsAcquiring.value = true
       state.mockEditMode.value = false
@@ -133,7 +144,7 @@ describe('LedIndicator', () => {
     })
 
     it('should show OFF color when value is 0', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 0, timestamp: Date.now() }
       }
@@ -154,7 +165,7 @@ describe('LedIndicator', () => {
     })
 
     it('should not have glow when OFF', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 0, timestamp: Date.now() }
       }
@@ -173,7 +184,7 @@ describe('LedIndicator', () => {
 
   describe('Invert Logic', () => {
     it('should invert state when invert prop is true', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 0, timestamp: Date.now() }
       }
@@ -187,7 +198,7 @@ describe('LedIndicator', () => {
     })
 
     it('should show OFF color when not inverted and value is 0', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 0, timestamp: Date.now() }
       }
@@ -208,7 +219,7 @@ describe('LedIndicator', () => {
 
   describe('Stale Data', () => {
     it('should show LED as off when not acquiring', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockIsAcquiring.value = false
 
       const wrapper = mount(LedIndicator, {
@@ -220,7 +231,7 @@ describe('LedIndicator', () => {
     })
 
     it('should show LED as off for stale timestamp', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 1, timestamp: Date.now() - 10000 } // 10 seconds ago
       }
@@ -317,7 +328,7 @@ describe('LedIndicator', () => {
     })
 
     it('should apply custom OFF color from style', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockValues.value = {
         'DI_001': { value: 0, timestamp: Date.now() }
       }
@@ -360,7 +371,7 @@ describe('LedIndicator', () => {
 
   describe('Edit Mode', () => {
     it('should show settings button in edit mode', () => {
-      const state = (global as any).__mockLedState
+      const state = getLedMockState()
       state.mockEditMode.value = true
 
       const wrapper = mount(LedIndicator, {

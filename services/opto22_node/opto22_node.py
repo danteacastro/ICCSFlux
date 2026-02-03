@@ -1045,7 +1045,8 @@ class SequenceManager:
             if op == ">": return float(val) > float(target)
             if op == "<=": return float(val) <= float(target)
             if op == ">=": return float(val) >= float(target)
-        except: pass
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Safety condition evaluation failed: {val} {op} {target}: {e}")
         return False
 
     def load_config(self, config: Dict[str, Any]):
@@ -1343,7 +1344,7 @@ class Opto22Config:
 
     # Opto22 REST API settings
     api_key: str = ''  # groov API key for authentication
-    verify_ssl: bool = False  # Self-signed cert on localhost
+    verify_ssl: bool = True  # Set False only for self-signed certs in isolated networks
 
     scan_rate_hz: float = 4.0
     publish_rate_hz: float = 4.0  # Rate at which to publish MQTT messages

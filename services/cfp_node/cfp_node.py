@@ -119,8 +119,8 @@ class ModbusTCPClient:
         if self.socket:
             try:
                 self.socket.close()
-            except:
-                pass
+            except OSError as e:
+                logger.warning(f"Error closing cFP socket: {e}")
             self.socket = None
 
     def is_connected(self) -> bool:

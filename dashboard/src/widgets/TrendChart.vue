@@ -151,7 +151,7 @@ const currentValues = computed(() => {
     const config = store.channels[ch]
     return {
       channel: ch,
-      name: ch,  // TAG is the only identifier
+      name: ch.replace(/^py\./, ''),  // Strip py. prefix for display
       value: data?.value,
       unit: config?.unit || '',
       color: getChannelColor(ch, idx),
@@ -247,7 +247,7 @@ function initChart() {
       // X-axis (channel values, not time)
       {
         stroke: '#666',
-        grid: gridStyle as any,
+        grid: gridStyle as uPlot.Axis.Grid,
         ticks: { stroke: '#444', width: 1 },
         font: '10px sans-serif',
         labelFont: '10px sans-serif',
@@ -260,7 +260,7 @@ function initChart() {
       // Y-axis (channel values)
       {
         stroke: '#666',
-        grid: gridStyle as any,
+        grid: gridStyle as uPlot.Axis.Grid,
         ticks: { stroke: '#444', width: 1 },
         font: '10px sans-serif',
         labelFont: '10px sans-serif',
@@ -276,7 +276,7 @@ function initChart() {
       // X-axis
       {
         stroke: '#666',
-        grid: gridStyle as any,
+        grid: gridStyle as uPlot.Axis.Grid,
         ticks: { stroke: '#444', width: 1 },
         font: '10px sans-serif',
         labelFont: '10px sans-serif',
@@ -290,7 +290,7 @@ function initChart() {
       // Primary Y-axis (left)
       {
         stroke: '#666',
-        grid: gridStyle as any,
+        grid: gridStyle as uPlot.Axis.Grid,
         ticks: { stroke: '#444', width: 1 },
         font: '10px sans-serif',
         labelFont: '10px sans-serif',

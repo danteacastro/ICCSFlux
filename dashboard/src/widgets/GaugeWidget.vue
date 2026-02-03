@@ -35,7 +35,7 @@ const isStale = computed(() => {
 })
 
 const displayLabel = computed(() =>
-  props.label || props.channel
+  (props.label || props.channel || '').replace(/^py\./, '')
 )
 
 const unit = computed(() => {

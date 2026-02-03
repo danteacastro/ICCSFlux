@@ -27,6 +27,10 @@ from user_session import (
     UserRole, Permission, ROLE_PERMISSIONS
 )
 
+# Test credentials - NOT for production use
+TEST_ADMIN_USERNAME = "admin"
+TEST_ADMIN_PASSWORD = "admin"  # Default password from UserSessionManager
+
 
 @pytest.fixture
 def temp_dir():
@@ -382,7 +386,7 @@ class TestPermissions:
 
     def test_admin_permissions(self, session_manager):
         """Admin should have all permissions"""
-        session = session_manager.authenticate("admin", "admin")
+        session = session_manager.authenticate(TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
 
         # Should have ALL permissions
         for permission in Permission:
