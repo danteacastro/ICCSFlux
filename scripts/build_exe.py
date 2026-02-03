@@ -20,6 +20,7 @@ import os
 import sys
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 
@@ -44,6 +45,75 @@ AZURE_SPEC = ("AzureUploader", SPEC_DIR / "azure_uploader.spec")
 def log(msg, level="INFO"):
     prefix = {"INFO": "[BUILD]", "WARN": "[WARN]", "ERROR": "[ERROR]", "OK": "[  OK ]"}
     print(f"{prefix.get(level, '[    ]')} {msg}")
+
+
+def get_build_version() -> dict:
+    """Capture build version info from git and system metadata."""
+    version = {
+        "build_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "git_hash": "unknown",
+        "git_hash_short": "unknown",
+        "git_dirty": False,
+        "git_branch": "unknown",
+        "git_tag": None,
+    }
+
+    try:
+        # Short and full hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0:
+            version["git_hash"] = result.stdout.strip()
+            version["git_hash_short"] = version["git_hash"][:8]
+
+        # Branch name
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0:
+            version["git_branch"] = result.stdout.strip()
+
+        # Dirty working tree?
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0:
+            version["git_dirty"] = bool(result.stdout.strip())
+
+        # Latest tag (if any)
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            version["git_tag"] = result.stdout.strip()
+
+    except FileNotFoundError:
+        log("git not found — version info will be incomplete", "WARN")
+
+    return version
+
+
+def write_version_file(version: dict):
+    """Write VERSION.txt to the build output directory."""
+    tag_line = version["git_tag"] or "none"
+    dirty = " (uncommitted changes)" if version["git_dirty"] else ""
+    lines = [
+        f"ICCSFlux Portable Build",
+        f"=======================",
+        f"Build time:  {version['build_time']}",
+        f"Git commit:  {version['git_hash_short']}{dirty}",
+        f"Full hash:   {version['git_hash']}",
+        f"Branch:      {version['git_branch']}",
+        f"Tag:         {tag_line}",
+    ]
+    version_path = BUILD_DIR / "VERSION.txt"
+    version_path.write_text("\n".join(lines) + "\n")
+    log(f"Version file written ({version['git_hash_short']}{dirty})", "OK")
 
 
 def check_prerequisites():
@@ -677,8 +747,8 @@ pause
     return True
 
 
-def create_readme():
-    """Create README file."""
+def create_readme(version: dict = None):
+    """Create README file with optional build version info."""
     readme = '''ICCSFlux Portable - Industrial Data Acquisition System
 =========================================================
 
@@ -814,6 +884,21 @@ MQTT: Eclipse Mosquitto 2.0.18
 
 This is a self-contained, industrial-grade portable distribution.
 '''
+    # Append build version info if available
+    if version:
+        dirty = " (uncommitted changes)" if version.get("git_dirty") else ""
+        tag = version.get("git_tag") or "none"
+        version_block = f"""
+Build Version
+-------------
+Build time:  {version['build_time']}
+Git commit:  {version['git_hash_short']}{dirty}
+Branch:      {version['git_branch']}
+Tag:         {tag}
+See VERSION.txt for full details.
+"""
+        readme += version_block
+
     (BUILD_DIR / "README.txt").write_text(readme)
 
     log("README created", "OK")
@@ -839,6 +924,11 @@ def main():
     print("       ICCSFlux Portable Builder (PyInstaller Edition)")
     print("=" * 60)
     print()
+
+    # Capture build version early (before any git changes from build process)
+    version = get_build_version()
+    dirty = " (dirty)" if version["git_dirty"] else ""
+    log(f"Build version: {version['git_hash_short']}{dirty} ({version['git_branch']})")
 
     if not check_prerequisites():
         return 1
@@ -885,16 +975,20 @@ def main():
 
     copy_documentation()
     create_batch_launchers()
-    create_readme()
+    create_readme(version)
+    write_version_file(version)
 
     size_mb = get_build_size()
+    dirty = " (dirty)" if version["git_dirty"] else ""
 
     print()
     print("=" * 60)
     log("Build complete!", "OK")
     print()
-    print(f"  Output: {BUILD_DIR}")
-    print(f"  Size:   {size_mb:.1f} MB")
+    print(f"  Output:  {BUILD_DIR}")
+    print(f"  Size:    {size_mb:.1f} MB")
+    print(f"  Version: {version['git_hash_short']}{dirty}")
+    print(f"  Built:   {version['build_time']}")
     print()
     print("  To run: Double-click ICCSFlux.bat")
     print("=" * 60)

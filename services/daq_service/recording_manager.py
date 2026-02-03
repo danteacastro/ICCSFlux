@@ -10,12 +10,53 @@ import os
 import shutil
 import stat
 import hashlib
+import sys
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 import logging
+
+# Platform-specific file locking
+if sys.platform == 'win32':
+    try:
+        import msvcrt
+        _HAS_FILE_LOCK = True
+    except ImportError:
+        _HAS_FILE_LOCK = False
+else:
+    try:
+        import fcntl
+        _HAS_FILE_LOCK = True
+    except ImportError:
+        _HAS_FILE_LOCK = False
+
+
+def _lock_file(fh):
+    """Acquire an exclusive OS-level lock on an open file handle."""
+    if not _HAS_FILE_LOCK:
+        return
+    try:
+        if sys.platform == 'win32':
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError) as e:
+        logging.getLogger('RecordingManager').warning(f"Could not acquire file lock: {e}")
+
+
+def _unlock_file(fh):
+    """Release OS-level lock on an open file handle."""
+    if not _HAS_FILE_LOCK:
+        return
+    try:
+        if sys.platform == 'win32':
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except (OSError, IOError):
+        pass
 
 logger = logging.getLogger('RecordingManager')
 
@@ -447,6 +488,7 @@ class RecordingManager:
 
             try:
                 self.current_file_handle = open(self.current_file, 'w', newline='')
+                _lock_file(self.current_file_handle)
                 self.csv_writer = None  # Will be initialized on first write
                 self.column_order = []
 
@@ -762,6 +804,10 @@ class RecordingManager:
                 self.csv_writer.writerow(row)
 
             self.current_file_handle.flush()
+            try:
+                os.fsync(self.current_file_handle.fileno())
+            except OSError:
+                pass
             self.write_buffer = []
             self.last_flush_time = datetime.now()
         except IOError as e:
@@ -960,6 +1006,12 @@ class RecordingManager:
             self.current_file_handle.write(f"# Total Samples: {self.samples_written}\n")
             self.current_file_handle.write(f"# File Samples: {self.current_file_samples}\n")
             self.current_file_handle.write(f"# File Count: {self.file_count}\n")
+            self.current_file_handle.flush()
+            try:
+                os.fsync(self.current_file_handle.fileno())
+            except OSError:
+                pass
+            _unlock_file(self.current_file_handle)
             self.current_file_handle.close()
             self.current_file_handle = None
             self.csv_writer = None
