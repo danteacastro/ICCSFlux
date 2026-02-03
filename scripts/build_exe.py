@@ -29,13 +29,16 @@ BUILD_DIR = PROJECT_ROOT / "dist" / "ICCSFlux-Portable"
 EXE_DIR = PROJECT_ROOT / "dist" / "exe"
 VENDOR_DIR = PROJECT_ROOT / "vendor"
 SPEC_DIR = PROJECT_ROOT / "scripts"
+AZURE_VENV_DIR = PROJECT_ROOT / "build" / "azure-venv"
 
-# Spec files for PyInstaller
+# Spec files for PyInstaller (built from main venv)
 SPEC_FILES = {
     "DAQService": SPEC_DIR / "daq_service.spec",
     "ICCSFlux": SPEC_DIR / "iccsflux.spec",
-    "AzureUploader": SPEC_DIR / "azure_uploader.spec",
 }
+
+# Azure spec (built from isolated venv with paho-mqtt 1.x)
+AZURE_SPEC = ("AzureUploader", SPEC_DIR / "azure_uploader.spec")
 
 
 def log(msg, level="INFO"):
@@ -177,6 +180,111 @@ def compile_executables(quick_mode=False):
     return True
 
 
+def create_azure_venv():
+    """Create an isolated venv with paho-mqtt 1.x + azure-iot-device for AzureUploader build.
+
+    The Azure IoT SDK requires paho-mqtt<2, which conflicts with the main project's
+    paho-mqtt>=2.0.0.  We solve this by building AzureUploader.exe in its own venv.
+    """
+    log("Creating isolated Azure build environment...")
+
+    azure_packages_dir = VENDOR_DIR / "azure-packages"
+    has_vendor_packages = azure_packages_dir.exists() and any(azure_packages_dir.glob("*.whl"))
+
+    # Create venv
+    AZURE_VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
+    if AZURE_VENV_DIR.exists():
+        log("  Removing previous Azure venv...")
+        shutil.rmtree(AZURE_VENV_DIR, ignore_errors=True)
+
+    log("  Creating venv...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(AZURE_VENV_DIR)],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        log(f"Failed to create Azure venv: {e.stderr.decode() if e.stderr else e}", "ERROR")
+        return None
+
+    # Determine pip and python paths in the venv
+    venv_python = AZURE_VENV_DIR / "Scripts" / "python.exe"
+    if not venv_python.exists():
+        # Linux/macOS fallback
+        venv_python = AZURE_VENV_DIR / "bin" / "python"
+
+    if not venv_python.exists():
+        log(f"Venv python not found at {venv_python}", "ERROR")
+        return None
+
+    # Install PyInstaller
+    log("  Installing PyInstaller in Azure venv...")
+    try:
+        subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "pyinstaller>=6.0.0", "--quiet"],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        log(f"Failed to install PyInstaller: {e.stderr.decode() if e.stderr else e}", "ERROR")
+        return None
+
+    # Install Azure packages (prefer vendor wheels for offline builds)
+    log("  Installing azure-iot-device + paho-mqtt 1.x...")
+    pip_args = [
+        str(venv_python), "-m", "pip", "install",
+        "paho-mqtt>=1.6.0,<2.0.0",
+        "azure-iot-device>=2.12.0",
+        "--quiet",
+    ]
+    if has_vendor_packages:
+        pip_args.extend(["--find-links", str(azure_packages_dir)])
+
+    try:
+        subprocess.run(pip_args, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        log(f"Failed to install Azure packages: {e.stderr.decode() if e.stderr else e}", "ERROR")
+        return None
+
+    log("  Azure build environment ready", "OK")
+    return venv_python
+
+
+def compile_azure_exe(venv_python, quick_mode=False):
+    """Compile AzureUploader.exe using the isolated Azure venv."""
+    name, spec_file = AZURE_SPEC
+    exe_path = EXE_DIR / f"{name}.exe"
+
+    if quick_mode and exe_path.exists():
+        log(f"  {name}.exe exists, skipping (--quick mode)")
+        return True
+
+    if not spec_file.exists():
+        log(f"Spec file not found: {spec_file}", "ERROR")
+        return False
+
+    log(f"  Compiling {name} (isolated Azure venv)...")
+    try:
+        subprocess.run(
+            [
+                str(venv_python), "-m", "PyInstaller",
+                str(spec_file),
+                "--distpath", str(EXE_DIR),
+                "--workpath", str(PROJECT_ROOT / "build" / "pyinstaller"),
+                "--noconfirm",
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        log(f"  {name}.exe compiled successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        log(f"Failed to compile {name}: {e.stderr.decode() if e.stderr else e}", "ERROR")
+        return False
+
+
 def setup_mosquitto():
     """Copy Mosquitto MQTT broker from vendor directory."""
     log("Setting up Mosquitto MQTT broker...")
@@ -256,6 +364,7 @@ def copy_executables():
     """Copy compiled executables to build directory."""
     log("Copying executables...")
 
+    # Core executables (required)
     for name in SPEC_FILES.keys():
         exe_src = EXE_DIR / f"{name}.exe"
         if exe_src.exists():
@@ -264,6 +373,15 @@ def copy_executables():
         else:
             log(f"  {name}.exe not found!", "ERROR")
             return False
+
+    # Azure executable (optional -- build continues without it)
+    azure_name = AZURE_SPEC[0]
+    azure_src = EXE_DIR / f"{azure_name}.exe"
+    if azure_src.exists():
+        shutil.copy2(azure_src, BUILD_DIR / f"{azure_name}.exe")
+        log(f"  Copied {azure_name}.exe")
+    else:
+        log(f"  {azure_name}.exe not found (Azure IoT Hub feature unavailable)", "WARN")
 
     log("Executables copied", "OK")
     return True
@@ -734,6 +852,16 @@ def main():
     print()
     if not compile_executables(quick_mode=args.quick):
         return 1
+
+    # Build AzureUploader in isolated venv (paho-mqtt 1.x + azure-iot-device)
+    print()
+    log("Building Azure IoT Hub Uploader...")
+    azure_python = create_azure_venv()
+    if azure_python:
+        if not compile_azure_exe(azure_python, quick_mode=args.quick):
+            log("AzureUploader.exe build failed (Azure feature will be unavailable)", "WARN")
+    else:
+        log("Azure venv creation failed (Azure feature will be unavailable)", "WARN")
 
     print()
     if not setup_mosquitto():

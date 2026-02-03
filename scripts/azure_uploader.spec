@@ -43,12 +43,21 @@ a = Analysis(
         'azure.iot.device.exceptions',
         'azure.iot.device.aio',
 
-        # Azure dependencies
+        # Azure SDK dependencies
         'urllib3',
         'certifi',
         'requests',
+        'requests.adapters',
+        'requests.auth',
+        'requests_unixsocket2',
         'janus',
         'typing_extensions',
+        'deprecation',
+        'packaging',
+        'packaging.version',
+        'socks',
+        'charset_normalizer',
+        'idna',
     ],
     hookspath=[],
     hooksconfig={},

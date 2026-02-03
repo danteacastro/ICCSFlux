@@ -44,6 +44,12 @@ PYTHON_PACKAGES = [
     "pycomm3>=1.2.0",
 ]
 
+# Azure IoT packages (separate due to paho-mqtt 1.x requirement)
+AZURE_PACKAGES = [
+    "paho-mqtt>=1.6.0,<2.0.0",
+    "azure-iot-device>=2.12.0",
+]
+
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 VENDOR_DIR = PROJECT_ROOT / "vendor"
@@ -143,6 +149,35 @@ def download_python_packages():
         log("  No packages downloaded!", "ERROR")
         print(result.stderr)
         return False
+
+
+def download_azure_packages():
+    """Download Azure IoT packages (paho-mqtt 1.x + azure-iot-device) into separate directory."""
+    log("Downloading Azure IoT packages...")
+    azure_dir = VENDOR_DIR / "azure-packages"
+    azure_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download wheels (no platform restriction -- most are pure Python)
+    log("  Downloading Azure IoT SDK and dependencies...")
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pip", "download",
+            *AZURE_PACKAGES,
+            "-d", str(azure_dir),
+        ],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        log(f"  Azure package download failed: {result.stderr}", "ERROR")
+        return False
+
+    wheels = list(azure_dir.glob("*.whl"))
+    tarballs = list(azure_dir.glob("*.tar.gz"))
+    total = len(wheels) + len(tarballs)
+    log(f"  Downloaded {total} packages ({len(wheels)} wheels, {len(tarballs)} source)", "OK")
+    return total > 0
 
 
 def download_npm_packages():
@@ -378,6 +413,11 @@ def main():
     # Download Python packages
     if not download_python_packages():
         success = False
+    print()
+
+    # Download Azure IoT packages (separate due to paho-mqtt version conflict)
+    if not download_azure_packages():
+        log("Azure packages download failed (Azure IoT Hub feature will be unavailable)", "WARN")
     print()
 
     # Cache npm packages
