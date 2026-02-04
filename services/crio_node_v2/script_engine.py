@@ -142,6 +142,9 @@ class Counter:
                     a state change (0 = disabled).
         auto_reset: Automatically reset count when target is reached
                     (increments ``batch`` number).
+        mode:       'rate' (default) — update() integrates a rate signal over
+                    time (e.g. Hz, GPM).  'cumulative' — update() tracks delta
+                    between successive readings (e.g. hardware edge count).
 
     Quick examples::
 
@@ -155,6 +158,11 @@ class Counter:
         fuel.update(tags.Gas_SCFM)   # call every scan
         fuel.total                    # cumulative value
 
+        # Hardware edge counter (cumulative mode)
+        flow = Counter(mode='cumulative')
+        flow.update(tags.Flow_Pulses)  # hardware edge count
+        flow.total                     # tracks delta between reads
+
         # Shifting count — events in rolling window
         faults = Counter(window=600)
         faults.tick()                 # record event
@@ -162,13 +170,14 @@ class Counter:
         faults.rate                   # events per second
     """
 
-    def __init__(self, target=None, window=None, debounce=0, auto_reset=False):
+    def __init__(self, target=None, window=None, debounce=0, auto_reset=False, mode='rate'):
         # Core counting
         self._count = 0
         self._total = 0
         self._target = target
         self._auto_reset = auto_reset
         self._batch = 0
+        self._mode = mode  # 'rate' or 'cumulative'
 
         # Sliding window
         self._window_seconds = window
@@ -298,13 +307,21 @@ class Counter:
             self._duty_events = [(t, v) for t, v in self._duty_events if t >= cutoff]
 
     def _update_analog(self, value: float, now: float):
-        """Handle analog rate signal — integrate over dt."""
+        """Handle analog signal — integrate rate or track cumulative delta."""
         if self._last_value is not None:
             dt = now - self._last_update_time
             if dt > 0:
-                increment = value * dt
-                self._count += increment
-                self._total += increment
+                if self._mode == 'cumulative':
+                    # Delta between successive readings (for hardware edge counts)
+                    delta = value - self._last_value
+                    if delta >= 0:
+                        self._count += delta
+                        self._total += delta
+                else:
+                    # Integrate rate signal over time (default)
+                    increment = value * dt
+                    self._count += increment
+                    self._total += increment
         self._last_value = value
         self._last_update_time = now
 

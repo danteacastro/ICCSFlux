@@ -239,6 +239,7 @@ class NIDAQmxHardware(HardwareInterface):
         self._ao_tasks: Dict[str, Any] = {}  # Analog output tasks
         self._ctr_in_tasks: Dict[str, Any] = {}   # Counter input tasks (per-channel)
         self._ctr_out_tasks: Dict[str, Any] = {}  # Counter/pulse output tasks (per-channel)
+        self._counter_rollover: Dict[str, Dict] = {}  # rollover tracking for edge count mode
 
         # Channel mappings: task_key -> [channel_names]
         self._di_channels: Dict[str, List[str]] = {}
@@ -864,6 +865,19 @@ class NIDAQmxHardware(HardwareInterface):
                 # Period mode: convert period to frequency for display
                 if ch_config and ch_config.counter_mode == 'period' and value > 0:
                     value = 1.0 / value
+                elif ch_config and ch_config.counter_mode == 'count':
+                    # Handle 32-bit rollover for edge counting
+                    if ch_name not in self._counter_rollover:
+                        self._counter_rollover[ch_name] = {'prev': 0, 'offset': 0}
+                    state = self._counter_rollover[ch_name]
+                    raw = int(value)
+                    if raw < state['prev']:
+                        state['offset'] += 0x100000000
+                        logger.info(f"Counter rollover detected on {ch_name}: "
+                                   f"raw {state['prev']} -> {raw}, "
+                                   f"total offset now {state['offset']}")
+                    state['prev'] = raw
+                    value = raw + state['offset']
                 result[ch_name] = (value, now)
             except Exception as e:
                 logger.warning(f"Error reading counter {ch_name}: {e}")

@@ -181,6 +181,7 @@ class HardwareReader:
         self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
+        self._counter_rollover: Dict[str, Dict] = {}  # rollover tracking for edge count mode
         self._momentary_timers: Dict[str, threading.Timer] = {}  # Relay momentary pulse timers
 
         # Output state cache (for read-back) - preserve values across reinit
@@ -1470,6 +1471,20 @@ class HardwareReader:
                         channel = self.config.channels.get(name)
                         if channel and channel.counter_mode == "period" and value > 0:
                             value = 1.0 / value
+                        elif channel and channel.counter_mode == "count":
+                            # Handle 32-bit rollover for edge counting
+                            if name not in self._counter_rollover:
+                                self._counter_rollover[name] = {'prev': 0, 'offset': 0}
+                            state = self._counter_rollover[name]
+                            raw = int(value)
+                            if raw < state['prev']:
+                                # Rollover detected — add 2^32
+                                state['offset'] += 0x100000000
+                                logger.info(f"Counter rollover detected on {name}: "
+                                           f"raw {state['prev']} -> {raw}, "
+                                           f"total offset now {state['offset']}")
+                            state['prev'] = raw
+                            value = raw + state['offset']
                         with self.lock:
                             self.latest_values[name] = value
                     except Exception as e:
