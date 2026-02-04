@@ -1037,6 +1037,13 @@ class ScriptEngine:
         def write_output(name: str, value: Any) -> bool:
             if self._node.state.is_output_locked(name):
                 return False
+            # Block writes to outputs held by safety actions
+            if self._node.safety.is_safety_held(name):
+                hold_info = self._node.safety.get_safety_hold_info(name)
+                alarm_ch = hold_info.get('alarm_channel', '?') if hold_info else '?'
+                logger.warning(f"Script write blocked: {name} is safety-held "
+                              f"(held by alarm on {alarm_ch})")
+                return False
             success = self._node.hardware.write_output(name, value)
             if success:
                 # Use timeout on lock to avoid blocking safety-critical operations

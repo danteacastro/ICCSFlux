@@ -200,6 +200,11 @@ class HardwareReader:
         self._max_recovery_attempts = 3
         self._error_callback: Optional[callable] = None  # Callback when reader dies
 
+        # Software watchdog for output safety
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_interval_s: float = 2.0  # Check health every 2 seconds
+        self._watchdog_triggered = False
+
         # Lock for thread safety
         self.lock = threading.Lock()
 
@@ -208,6 +213,9 @@ class HardwareReader:
 
         # Start continuous acquisition
         self._start_continuous_acquisition()
+
+        # Start software watchdog (monitors reader health, sets outputs safe if it dies)
+        self._start_watchdog()
 
     def _is_crio_channel(self, physical_channel: str) -> bool:
         """
@@ -1281,6 +1289,90 @@ class HardwareReader:
 
         logger.info("Continuous acquisition stopped")
 
+    # =========================================================================
+    # SOFTWARE WATCHDOG (monitors reader health, forces outputs safe)
+    # =========================================================================
+
+    def _start_watchdog(self):
+        """Start independent watchdog thread that monitors reader health."""
+        if not self.output_tasks:
+            logger.info("No output tasks configured - watchdog not started")
+            return
+
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop,
+            name="HardwareReader-Watchdog",
+            daemon=True
+        )
+        self._watchdog_thread.start()
+        logger.info(f"Hardware watchdog started (interval={self._watchdog_interval_s}s, "
+                    f"monitoring {len(self.output_tasks)} outputs)")
+
+    def _watchdog_loop(self):
+        """Watchdog loop - runs independently of reader thread.
+
+        Checks reader health every interval. If the reader thread dies
+        or becomes unhealthy, forces all outputs to safe state (0/OFF).
+        """
+        while self._running:
+            time.sleep(self._watchdog_interval_s)
+
+            if not self._running:
+                break
+
+            # Check reader thread health
+            if not self.is_healthy() and not self._watchdog_triggered:
+                logger.critical(
+                    "[WATCHDOG] Reader thread unhealthy! "
+                    f"running={self._running}, died={self._reader_died}, "
+                    f"thread_alive={self._reader_thread.is_alive() if self._reader_thread else False}"
+                )
+                self._set_all_outputs_safe("watchdog_trip")
+                self._watchdog_triggered = True
+
+                # Notify via error callback
+                if self._error_callback:
+                    try:
+                        self._error_callback("watchdog_trip", {
+                            "message": "Watchdog set outputs to safe state",
+                            "output_count": len(self.output_tasks)
+                        })
+                    except Exception:
+                        pass
+
+        logger.info("Watchdog thread stopped")
+
+    def _set_all_outputs_safe(self, reason: str = "unknown"):
+        """Set all output channels to safe state (0/OFF).
+
+        Called by watchdog when reader thread dies. Writes directly to
+        hardware tasks to ensure outputs are zeroed even if the main
+        service loop is stalled.
+        """
+        logger.critical(f"[SAFE STATE] Setting all outputs to safe state - reason: {reason}")
+
+        with self.lock:
+            for name, task in self.output_tasks.items():
+                channel = None
+                for ch_name, ch_config in self.config.channels.items():
+                    if ch_name == name:
+                        channel = ch_config
+                        break
+
+                try:
+                    if channel and channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                        task.write(False)
+                    elif channel and channel.channel_type in (ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT):
+                        task.stop()
+                    else:
+                        # Voltage or current output: write 0
+                        task.write(0.0)
+
+                    self.output_values[name] = 0.0
+                    logger.warning(f"[SAFE STATE] {name} -> 0 (safe)")
+                except Exception as e:
+                    logger.error(f"[SAFE STATE] Failed to set {name}: {e}")
+
     def _reader_thread_func(self):
         """
         Background thread that continuously reads from hardware buffers.
@@ -1463,7 +1555,9 @@ class HardwareReader:
             'reader_died': self._reader_died,
             'error_count': self._error_count,
             'recovery_attempts': self._recovery_attempts,
-            'healthy': self.is_healthy()
+            'healthy': self.is_healthy(),
+            'watchdog_triggered': self._watchdog_triggered,
+            'watchdog_active': self._watchdog_thread.is_alive() if self._watchdog_thread else False,
         }
 
     def read_channel(self, channel_name: str) -> Optional[float]:
@@ -1714,6 +1808,10 @@ class HardwareReader:
 
         # Stop continuous acquisition first (stops background thread)
         self._stop_continuous_acquisition()
+
+        # Stop watchdog thread (exits when _running = False)
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=3.0)
 
         with self.lock:
             # Close input tasks

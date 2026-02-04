@@ -1218,6 +1218,7 @@ class ScriptRuntime:
                 'getattr', 'setattr', 'delattr', 'eval', 'exec',
                 'compile', 'open', '__import__', 'vars', 'dir',
                 'globals', 'locals', 'breakpoint', 'memoryview',
+                'classmethod', 'staticmethod', 'property', 'super',
             })
             _blocked_module_names = frozenset({
                 'os', 'sys', 'subprocess', 'importlib', 'ctypes',

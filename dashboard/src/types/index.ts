@@ -1794,3 +1794,48 @@ export interface CrioCallbackPayload {
   node_id?: string
   operation?: string
 }
+
+// =========================================================================
+// Notification System (Twilio SMS + Email)
+// =========================================================================
+
+export type NotificationEventType = 'triggered' | 'cleared' | 'acknowledged' | 'alarm_flood'
+
+export interface NotificationTriggerRules {
+  severities: AlarmSeverityLevel[]
+  event_types: NotificationEventType[]
+  groups: string[]
+  alarm_select_mode: 'all' | 'include_only' | 'exclude'
+  alarm_ids: string[]
+}
+
+export interface TwilioNotificationConfig {
+  enabled: boolean
+  account_sid: string
+  auth_token: string
+  from_number: string
+  to_numbers: string[]
+  rules: NotificationTriggerRules
+}
+
+export interface EmailNotificationConfig {
+  enabled: boolean
+  smtp_host: string
+  smtp_port: number
+  use_tls: boolean
+  username: string
+  password: string
+  from_address: string
+  to_addresses: string[]
+  rules: NotificationTriggerRules
+}
+
+export interface NotificationSettings {
+  twilio: TwilioNotificationConfig
+  email: EmailNotificationConfig
+  cooldown_seconds: number
+  daily_limit: number
+  quiet_hours_enabled: boolean
+  quiet_hours_start: string
+  quiet_hours_end: string
+}

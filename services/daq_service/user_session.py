@@ -70,6 +70,7 @@ class Permission(Enum):
     MODIFY_SYSTEM = "config.system.modify"
     EXPORT_AUDIT = "audit.export"
     BYPASS_SAFETY_LOCK = "safety.bypass"
+    TRIGGER_SAFE_STATE = "system.safe_state"
 
 
 # Role to permissions mapping (hierarchical)
@@ -90,6 +91,7 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
         Permission.START_ACQUISITION,
         Permission.STOP_ACQUISITION,
         Permission.CONTROL_OUTPUTS,
+        Permission.TRIGGER_SAFE_STATE,
     },
     UserRole.SUPERVISOR: {
         Permission.VIEW_DATA,
@@ -111,6 +113,7 @@ ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
         Permission.LOAD_PROJECT,
         Permission.SAVE_PROJECT,
         Permission.EXPORT_AUDIT,
+        Permission.TRIGGER_SAFE_STATE,
     },
     UserRole.ADMIN: set(Permission),  # All permissions
 }

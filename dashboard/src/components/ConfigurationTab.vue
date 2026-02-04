@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
-import type { ChannelType, ChannelConfig } from '../types'
+import type { ChannelType, ChannelConfig, NotificationSettings, NotificationTriggerRules, AlarmSeverityLevel } from '../types'
 import {
   THERMOCOUPLE_TYPES,
   VOLTAGE_RANGES,
@@ -732,8 +732,134 @@ const systemSettingsForm = ref({
     channel: '',
     frequency_hz: 1.0
   },
-  confirm_output_changes: false
+  confirm_output_changes: false,
+  notifications: getDefaultNotificationSettings()
 })
+
+function getDefaultNotificationSettings(): NotificationSettings {
+  return {
+    twilio: {
+      enabled: false,
+      account_sid: '',
+      auth_token: '',
+      from_number: '',
+      to_numbers: [],
+      rules: getDefaultTriggerRules()
+    },
+    email: {
+      enabled: false,
+      smtp_host: '',
+      smtp_port: 587,
+      use_tls: true,
+      username: '',
+      password: '',
+      from_address: '',
+      to_addresses: [],
+      rules: getDefaultTriggerRules()
+    },
+    cooldown_seconds: 300,
+    daily_limit: 100,
+    quiet_hours_enabled: false,
+    quiet_hours_start: '22:00',
+    quiet_hours_end: '06:00'
+  }
+}
+
+function getDefaultTriggerRules(): NotificationTriggerRules {
+  return {
+    severities: ['critical', 'high'],
+    event_types: ['triggered', 'alarm_flood'],
+    groups: [],
+    alarm_select_mode: 'all' as const,
+    alarm_ids: []
+  }
+}
+
+// Notification UI helpers
+const notifTwilioToNumbers = computed({
+  get: () => systemSettingsForm.value.notifications.twilio.to_numbers.join(', '),
+  set: (val: string) => {
+    systemSettingsForm.value.notifications.twilio.to_numbers = val.split(',').map(s => s.trim()).filter(Boolean)
+  }
+})
+
+const notifEmailToAddresses = computed({
+  get: () => systemSettingsForm.value.notifications.email.to_addresses.join(', '),
+  set: (val: string) => {
+    systemSettingsForm.value.notifications.email.to_addresses = val.split(',').map(s => s.trim()).filter(Boolean)
+  }
+})
+
+const notifSendingTest = ref(false)
+
+// Computed list of configured alarms for notification alarm selection
+const configuredAlarmList = computed(() => {
+  const configs = safety.alarmConfigs.value
+  const result: { id: string; name: string; channel: string; severity: string; group: string }[] = []
+  for (const [channel, config] of Object.entries(configs)) {
+    if (config && config.enabled) {
+      result.push({
+        id: config.id || `alarm-${channel}`,
+        name: config.name || channel,
+        channel,
+        severity: (config.severity as string) || 'medium',
+        group: config.group || ''
+      })
+    }
+  }
+  return result.sort((a, b) => {
+    const gCmp = a.group.localeCompare(b.group)
+    return gCmp !== 0 ? gCmp : a.name.localeCompare(b.name)
+  })
+})
+
+// Unique alarm groups from configured alarms
+const alarmGroupList = computed(() => {
+  const groups = new Set<string>()
+  for (const alarm of configuredAlarmList.value) {
+    if (alarm.group) groups.add(alarm.group)
+  }
+  return Array.from(groups).sort()
+})
+
+function toggleSeverity(rules: NotificationTriggerRules, sev: AlarmSeverityLevel) {
+  const idx = rules.severities.indexOf(sev)
+  if (idx >= 0) rules.severities.splice(idx, 1)
+  else rules.severities.push(sev)
+}
+
+function toggleEventType(rules: NotificationTriggerRules, evt: string) {
+  const idx = rules.event_types.indexOf(evt as any)
+  if (idx >= 0) rules.event_types.splice(idx, 1)
+  else rules.event_types.push(evt as any)
+}
+
+function toggleGroup(rules: NotificationTriggerRules, group: string) {
+  const idx = rules.groups.indexOf(group)
+  if (idx >= 0) rules.groups.splice(idx, 1)
+  else rules.groups.push(group)
+}
+
+function toggleAlarmId(rules: NotificationTriggerRules, alarmId: string) {
+  const idx = rules.alarm_ids.indexOf(alarmId)
+  if (idx >= 0) rules.alarm_ids.splice(idx, 1)
+  else rules.alarm_ids.push(alarmId)
+}
+
+function sendTestNotification(channel: 'twilio' | 'email') {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  notifSendingTest.value = true
+  mqtt.sendNodeCommand('notifications/test', {
+    channel,
+    config: systemSettingsForm.value.notifications
+  })
+  const label = channel === 'twilio' ? 'SMS' : 'Email'
+  showFeedback('info', `Sending test ${label}... Check your ${channel === 'twilio' ? 'phone' : 'inbox'}.`)
+  setTimeout(() => { notifSendingTest.value = false }, 5000)
+}
 
 // Auto-Gen Widgets Modal State
 const showAutoGenModal = ref(false)
@@ -1524,7 +1650,8 @@ function openSystemSettings() {
       channel: wd?.channel || '',
       frequency_hz: wd?.frequency_hz || 1.0
     },
-    confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false
+    confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false,
+    notifications: (projectFiles.currentProjectData.value?.system as any)?.notifications ?? getDefaultNotificationSettings()
   }
   showSystemSettings.value = true
 }
@@ -1550,7 +1677,13 @@ function saveSystemSettings() {
     }
     (projectFiles.currentProjectData.value.system as any).project_mode = newMode
     ;(projectFiles.currentProjectData.value.system as any).confirm_output_changes = systemSettingsForm.value.confirm_output_changes
+    ;(projectFiles.currentProjectData.value.system as any).notifications = systemSettingsForm.value.notifications
     projectFiles.markDirty()
+  }
+
+  // Send notification config to backend
+  if (systemSettingsForm.value.notifications.twilio.enabled || systemSettingsForm.value.notifications.email.enabled) {
+    mqtt.sendNodeCommand('notifications/config/update', systemSettingsForm.value.notifications)
   }
 
   // Warn if channels don't match the selected project mode
@@ -6360,6 +6493,236 @@ watch(
               </div>
             </div>
 
+            <!-- ============================================ -->
+            <!-- SMS Notifications (Twilio) -->
+            <!-- ============================================ -->
+            <div class="settings-section">
+              <h4>SMS Notifications (Twilio)</h4>
+              <div class="form-row">
+                <label>Enable SMS</label>
+                <label class="toggle-label">
+                  <input type="checkbox" v-model="systemSettingsForm.notifications.twilio.enabled" />
+                  <span>{{ systemSettingsForm.notifications.twilio.enabled ? 'Active' : 'Off' }}</span>
+                </label>
+              </div>
+
+              <template v-if="systemSettingsForm.notifications.twilio.enabled">
+                <!-- Connection -->
+                <div class="form-row">
+                  <label>Account SID</label>
+                  <input type="text" v-model="systemSettingsForm.notifications.twilio.account_sid" placeholder="ACxxxxxxxxxx" />
+                </div>
+                <div class="form-row">
+                  <label>Auth Token</label>
+                  <input type="password" v-model="systemSettingsForm.notifications.twilio.auth_token" placeholder="Auth token" />
+                </div>
+                <div class="form-row">
+                  <label>From Number</label>
+                  <input type="text" v-model="systemSettingsForm.notifications.twilio.from_number" placeholder="+1234567890" />
+                </div>
+                <div class="form-row">
+                  <label>To Numbers</label>
+                  <input type="text" v-model="notifTwilioToNumbers" placeholder="+1234567890, +0987654321" />
+                  <span class="form-hint">Comma-separated phone numbers</span>
+                </div>
+
+                <!-- Trigger Rules -->
+                <h5 style="margin: 12px 0 6px; color: var(--text-secondary);">Trigger Rules</h5>
+                <div class="form-row">
+                  <label>Severity</label>
+                  <div class="checkbox-group">
+                    <label v-for="sev in (['critical', 'high', 'medium', 'low'] as const)" :key="sev" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.twilio.rules.severities.includes(sev)" @change="toggleSeverity(systemSettingsForm.notifications.twilio.rules, sev)" />
+                      <span :class="'sev-' + sev">{{ sev.charAt(0).toUpperCase() + sev.slice(1) }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Events</label>
+                  <div class="checkbox-group">
+                    <label v-for="evt in [{ id: 'triggered', label: 'New Alarm' }, { id: 'cleared', label: 'Cleared' }, { id: 'acknowledged', label: 'Acknowledged' }, { id: 'alarm_flood', label: 'Alarm Flood' }]" :key="evt.id" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.twilio.rules.event_types.includes(evt.id as any)" @change="toggleEventType(systemSettingsForm.notifications.twilio.rules, evt.id)" />
+                      <span>{{ evt.label }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-row" v-if="alarmGroupList.length > 0">
+                  <label>Groups</label>
+                  <div class="checkbox-group">
+                    <span class="form-hint" style="margin-bottom: 4px;">Empty = all groups</span>
+                    <label v-for="grp in alarmGroupList" :key="grp" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.twilio.rules.groups.includes(grp)" @change="toggleGroup(systemSettingsForm.notifications.twilio.rules, grp)" />
+                      <span>{{ grp }}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <!-- Alarm selection -->
+                <div class="form-row">
+                  <label>Alarm Selection</label>
+                  <select v-model="systemSettingsForm.notifications.twilio.rules.alarm_select_mode" class="mode-select">
+                    <option value="all">All matching rules</option>
+                    <option value="include_only">Only selected alarms</option>
+                    <option value="exclude">All except excluded</option>
+                  </select>
+                </div>
+                <div v-if="systemSettingsForm.notifications.twilio.rules.alarm_select_mode !== 'all'" class="alarm-select-list">
+                  <div v-for="alarm in configuredAlarmList" :key="alarm.id" class="alarm-select-item">
+                    <label class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.twilio.rules.alarm_ids.includes(alarm.id)" @change="toggleAlarmId(systemSettingsForm.notifications.twilio.rules, alarm.id)" />
+                      <span>{{ alarm.name }}</span>
+                      <span class="alarm-select-meta">{{ alarm.channel }} &middot; <span :class="'sev-' + alarm.severity">{{ alarm.severity }}</span></span>
+                    </label>
+                  </div>
+                  <div v-if="configuredAlarmList.length === 0" class="form-hint">No enabled alarms configured</div>
+                </div>
+
+                <button class="btn btn-sm btn-secondary" style="margin-top: 8px;" @click="sendTestNotification('twilio')" :disabled="notifSendingTest">
+                  {{ notifSendingTest ? 'Sending...' : 'Send Test SMS' }}
+                </button>
+              </template>
+            </div>
+
+            <!-- ============================================ -->
+            <!-- Email Notifications (SMTP) -->
+            <!-- ============================================ -->
+            <div class="settings-section">
+              <h4>Email Notifications (SMTP)</h4>
+              <div class="form-row">
+                <label>Enable Email</label>
+                <label class="toggle-label">
+                  <input type="checkbox" v-model="systemSettingsForm.notifications.email.enabled" />
+                  <span>{{ systemSettingsForm.notifications.email.enabled ? 'Active' : 'Off' }}</span>
+                </label>
+              </div>
+
+              <template v-if="systemSettingsForm.notifications.email.enabled">
+                <!-- Connection -->
+                <div class="form-row">
+                  <label>SMTP Host</label>
+                  <input type="text" v-model="systemSettingsForm.notifications.email.smtp_host" placeholder="smtp.gmail.com" />
+                </div>
+                <div class="form-row">
+                  <label>SMTP Port</label>
+                  <input type="number" v-model.number="systemSettingsForm.notifications.email.smtp_port" min="1" max="65535" />
+                </div>
+                <div class="form-row">
+                  <label>Use TLS</label>
+                  <label class="toggle-label">
+                    <input type="checkbox" v-model="systemSettingsForm.notifications.email.use_tls" />
+                    <span>{{ systemSettingsForm.notifications.email.use_tls ? 'Yes' : 'No' }}</span>
+                  </label>
+                </div>
+                <div class="form-row">
+                  <label>Username</label>
+                  <input type="text" v-model="systemSettingsForm.notifications.email.username" placeholder="user@example.com" />
+                </div>
+                <div class="form-row">
+                  <label>Password</label>
+                  <input type="password" v-model="systemSettingsForm.notifications.email.password" placeholder="App password" />
+                </div>
+                <div class="form-row">
+                  <label>From Address</label>
+                  <input type="text" v-model="systemSettingsForm.notifications.email.from_address" placeholder="alerts@example.com" />
+                </div>
+                <div class="form-row">
+                  <label>To Addresses</label>
+                  <input type="text" v-model="notifEmailToAddresses" placeholder="admin@example.com, ops@example.com" />
+                  <span class="form-hint">Comma-separated email addresses</span>
+                </div>
+
+                <!-- Trigger Rules -->
+                <h5 style="margin: 12px 0 6px; color: var(--text-secondary);">Trigger Rules</h5>
+                <div class="form-row">
+                  <label>Severity</label>
+                  <div class="checkbox-group">
+                    <label v-for="sev in (['critical', 'high', 'medium', 'low'] as const)" :key="sev" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.email.rules.severities.includes(sev)" @change="toggleSeverity(systemSettingsForm.notifications.email.rules, sev)" />
+                      <span :class="'sev-' + sev">{{ sev.charAt(0).toUpperCase() + sev.slice(1) }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Events</label>
+                  <div class="checkbox-group">
+                    <label v-for="evt in [{ id: 'triggered', label: 'New Alarm' }, { id: 'cleared', label: 'Cleared' }, { id: 'acknowledged', label: 'Acknowledged' }, { id: 'alarm_flood', label: 'Alarm Flood' }]" :key="evt.id" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.email.rules.event_types.includes(evt.id as any)" @change="toggleEventType(systemSettingsForm.notifications.email.rules, evt.id)" />
+                      <span>{{ evt.label }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-row" v-if="alarmGroupList.length > 0">
+                  <label>Groups</label>
+                  <div class="checkbox-group">
+                    <span class="form-hint" style="margin-bottom: 4px;">Empty = all groups</span>
+                    <label v-for="grp in alarmGroupList" :key="grp" class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.email.rules.groups.includes(grp)" @change="toggleGroup(systemSettingsForm.notifications.email.rules, grp)" />
+                      <span>{{ grp }}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <!-- Alarm selection -->
+                <div class="form-row">
+                  <label>Alarm Selection</label>
+                  <select v-model="systemSettingsForm.notifications.email.rules.alarm_select_mode" class="mode-select">
+                    <option value="all">All matching rules</option>
+                    <option value="include_only">Only selected alarms</option>
+                    <option value="exclude">All except excluded</option>
+                  </select>
+                </div>
+                <div v-if="systemSettingsForm.notifications.email.rules.alarm_select_mode !== 'all'" class="alarm-select-list">
+                  <div v-for="alarm in configuredAlarmList" :key="alarm.id" class="alarm-select-item">
+                    <label class="checkbox-inline">
+                      <input type="checkbox" :checked="systemSettingsForm.notifications.email.rules.alarm_ids.includes(alarm.id)" @change="toggleAlarmId(systemSettingsForm.notifications.email.rules, alarm.id)" />
+                      <span>{{ alarm.name }}</span>
+                      <span class="alarm-select-meta">{{ alarm.channel }} &middot; <span :class="'sev-' + alarm.severity">{{ alarm.severity }}</span></span>
+                    </label>
+                  </div>
+                  <div v-if="configuredAlarmList.length === 0" class="form-hint">No enabled alarms configured</div>
+                </div>
+
+                <button class="btn btn-sm btn-secondary" style="margin-top: 8px;" @click="sendTestNotification('email')" :disabled="notifSendingTest">
+                  {{ notifSendingTest ? 'Sending...' : 'Send Test Email' }}
+                </button>
+              </template>
+            </div>
+
+            <!-- ============================================ -->
+            <!-- Notification Rate Limits -->
+            <!-- ============================================ -->
+            <div class="settings-section" v-if="systemSettingsForm.notifications.twilio.enabled || systemSettingsForm.notifications.email.enabled">
+              <h4>Notification Limits</h4>
+              <div class="form-row">
+                <label>Cooldown (seconds)</label>
+                <input type="number" v-model.number="systemSettingsForm.notifications.cooldown_seconds" min="60" max="3600" />
+                <span class="form-hint">Minimum time between notifications for the same alarm</span>
+              </div>
+              <div class="form-row">
+                <label>Daily Limit</label>
+                <input type="number" v-model.number="systemSettingsForm.notifications.daily_limit" min="1" max="1000" />
+                <span class="form-hint">Maximum notifications per day (resets at midnight)</span>
+              </div>
+              <div class="form-row">
+                <label>Quiet Hours</label>
+                <label class="toggle-label">
+                  <input type="checkbox" v-model="systemSettingsForm.notifications.quiet_hours_enabled" />
+                  <span>{{ systemSettingsForm.notifications.quiet_hours_enabled ? 'Active' : 'Off' }}</span>
+                </label>
+              </div>
+              <template v-if="systemSettingsForm.notifications.quiet_hours_enabled">
+                <div class="form-row">
+                  <label>Start Time</label>
+                  <input type="time" v-model="systemSettingsForm.notifications.quiet_hours_start" />
+                </div>
+                <div class="form-row">
+                  <label>End Time</label>
+                  <input type="time" v-model="systemSettingsForm.notifications.quiet_hours_end" />
+                </div>
+                <span class="form-hint">Critical alarms always send during quiet hours</span>
+              </template>
+            </div>
+
             <div class="settings-info">
               <div class="info-row">
                 <span class="info-label">Status:</span>
@@ -10202,5 +10565,53 @@ select option:disabled {
 .btn-sm {
   padding: 4px 12px;
   font-size: 0.8rem;
+}
+
+/* Notification settings */
+.checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.checkbox-inline input[type="checkbox"] {
+  margin: 0;
+}
+
+.sev-critical { color: #ef4444; font-weight: 600; }
+.sev-high { color: #f97316; font-weight: 600; }
+.sev-medium { color: #eab308; }
+.sev-low { color: #22c55e; }
+
+.alarm-select-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  padding: 4px;
+  margin-top: 4px;
+}
+
+.alarm-select-item {
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.alarm-select-item:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.alarm-select-meta {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  color: #888;
 }
 </style>

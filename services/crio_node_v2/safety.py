@@ -87,6 +87,10 @@ class SafetyManager:
         self._states: Dict[str, ChannelAlarmState] = {}
         self._output_channels: set = set()
 
+        # Track outputs held by safety actions (prevents scripts/MQTT from overriding)
+        # Maps: output_channel -> { 'alarm_channel': str, 'action': str, 'held_since': float }
+        self._safety_held_outputs: Dict[str, Dict[str, Any]] = {}
+
         # Callback for alarm events
         self.on_alarm: Optional[Callable[[AlarmEvent], None]] = None
 
@@ -232,6 +236,7 @@ class SafetyManager:
                         state.state = AlarmState.NORMAL
                         state.active_alarm_type = None
                         state.active_since = None
+                        self._release_holds_for_channel(channel)
                     else:
                         state.state = AlarmState.RETURNED
 
@@ -269,6 +274,14 @@ class SafetyManager:
                     self.on_action(target_channel, action, target_value)
                 except Exception as e:
                     logger.error(f"Safety action callback error: {e}", exc_info=True)
+
+            # Mark output as safety-held (prevents scripts/MQTT from overriding)
+            self._safety_held_outputs[target_channel] = {
+                'alarm_channel': channel,
+                'action': action,
+                'held_since': time.time()
+            }
+            logger.info(f"Output {target_channel} safety-held by alarm on {channel}")
         else:
             logger.warning(f"Unknown safety action format: {action}")
 
@@ -286,6 +299,7 @@ class SafetyManager:
                 state.state = AlarmState.NORMAL
                 state.active_alarm_type = None
                 state.active_since = None
+                self._release_holds_for_channel(channel)
 
             logger.info(f"Alarm acknowledged: {channel}")
             return True
@@ -332,6 +346,28 @@ class SafetyManager:
 
         return counts
 
+    def _release_holds_for_channel(self, alarm_channel: str):
+        """Release all safety holds that were triggered by the given alarm channel."""
+        released = []
+        for output_ch, hold_info in list(self._safety_held_outputs.items()):
+            if hold_info['alarm_channel'] == alarm_channel:
+                released.append(output_ch)
+                del self._safety_held_outputs[output_ch]
+        if released:
+            logger.info(f"Safety holds released for {released} (alarm {alarm_channel} cleared)")
+
+    def is_safety_held(self, channel: str) -> bool:
+        """Check if an output channel is held by a safety action."""
+        return channel in self._safety_held_outputs
+
+    def get_safety_hold_info(self, channel: str) -> Optional[Dict[str, Any]]:
+        """Get safety hold details for an output channel, or None if not held."""
+        return self._safety_held_outputs.get(channel)
+
+    def get_all_safety_holds(self) -> Dict[str, Dict[str, Any]]:
+        """Get all current safety holds. For status reporting."""
+        return dict(self._safety_held_outputs)
+
     def clear_all(self):
         """Clear all alarm states (for testing/reset)."""
         for state in self._states.values():
@@ -339,3 +375,4 @@ class SafetyManager:
             state.active_alarm_type = None
             state.active_since = None
             state.acknowledged = False
+        self._safety_held_outputs.clear()

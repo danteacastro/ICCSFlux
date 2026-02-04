@@ -526,6 +526,10 @@ class CRIONodeV2:
             if '/output' in topic:
                 self._cmd_write_output(payload)
 
+        elif '/safety/' in topic:
+            if 'safe-state' in topic or 'safe_state' in topic:
+                self._cmd_safe_state(payload)
+
         elif '/alarm/' in topic or '/alarms/' in topic:
             if '/ack' in topic or '/acknowledge' in topic:
                 self._cmd_alarm_ack(payload)
@@ -635,6 +639,14 @@ class CRIONodeV2:
             self._publish_command_ack(channel, False, "Output locked by session")
             return
 
+        # Check safety hold (output held by safety action due to active alarm)
+        if self.safety.is_safety_held(channel):
+            hold_info = self.safety.get_safety_hold_info(channel)
+            alarm_ch = hold_info.get('alarm_channel', 'unknown') if hold_info else 'unknown'
+            logger.warning(f"Output {channel} blocked: safety-held by alarm on {alarm_ch}")
+            self._publish_command_ack(channel, False, f"Output safety-held by alarm on {alarm_ch}")
+            return
+
         # Write to hardware
         success = self.hardware.write_output(channel, value)
 
@@ -668,6 +680,36 @@ class CRIONodeV2:
             'request_id': request_id,
             'timestamp': datetime.now().isoformat()
         })
+
+    def _cmd_safe_state(self, payload: Dict[str, Any]):
+        """Handle atomic safe-state command from DAQ service.
+
+        Sets ALL outputs to safe state in a single call, rather than
+        relying on individual per-channel output commands over MQTT.
+        """
+        reason = payload.get('reason', 'command') if isinstance(payload, dict) else 'command'
+        request_id = payload.get('request_id', '')
+        logger.critical(f"[SAFE STATE] Atomic safe-state command received - reason: {reason}")
+
+        self.hardware.set_safe_state()
+
+        # Update output value cache to reflect safe state
+        with self.values_lock:
+            for ch_name, ch_config in self.config.channels.items():
+                if 'output' in ch_config.channel_type:
+                    self.output_values[ch_name] = ch_config.default_value
+
+        # Publish confirmation back to DAQ service
+        self.mqtt.publish("safety/safe-state/ack", {
+            'success': True,
+            'reason': reason,
+            'request_id': request_id,
+            'timestamp': datetime.now().isoformat()
+        })
+        logger.critical("[SAFE STATE] All outputs set to safe state (atomic)")
+
+        # Publish updated output values so DAQ service gets confirmation
+        self._publish_all_values()
 
     def _cmd_config_full(self, payload: Dict[str, Any]):
         """Handle full config push from DAQ."""

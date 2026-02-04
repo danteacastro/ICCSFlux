@@ -9,11 +9,27 @@
 - **Azure**: Separate `AzureUploader` exe uploads to Azure IoT Hub (external process, not part of main DAQ service)
 - **Portable build**: PyInstaller compiles to `dist/ICCSFlux-Portable/` — runs on any Windows PC without Python/Node installed
 
+## Running .bat Files (Claude Code)
+
+This project runs on Windows. The Bash tool uses a Unix-style shell, so `.bat` files must be invoked via PowerShell:
+
+```powershell
+powershell.exe -NoProfile -Command "Set-Location 'c:\Users\User\Documents\Projects\NISystem'; & '.\venv\Scripts\python.exe' scripts\build_exe.py 2>&1"
+```
+
+General pattern for running any `.bat` or Windows command and capturing output:
+
+```powershell
+powershell.exe -NoProfile -Command "<commands here> 2>&1"
+```
+
+Do NOT use `cmd.exe /c` — it often swallows output. Do NOT call `.bat` files directly — they are not recognized by the Unix shell. Use PowerShell for all Windows-specific invocations.
+
 ## Portable Build
 
 ```cmd
 build.bat                    # Full build (requires PyInstaller, npm, vendor/mosquitto)
-python scripts/build_exe.py  # Direct invocation
+python scripts/build_exe.py  # Direct invocation (preferred from Claude Code — see above)
 ```
 
 - Azure uploader builds in an **isolated venv** (`build/azure-venv/`) because it requires paho-mqtt <2.0 while the main project uses paho-mqtt >=2.0

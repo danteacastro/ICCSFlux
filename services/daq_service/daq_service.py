@@ -59,6 +59,7 @@ from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
 from user_variables import UserVariableManager
 from alarm_manager import AlarmManager, AlarmConfig, AlarmSeverity, LatchBehavior
+from notification_manager import NotificationManager
 from safety_manager import SafetyManager, Interlock, InterlockCondition, InterlockControl, SafeStateConfig
 from audit_trail import AuditTrail, AuditEventType
 from user_session import UserSessionManager, UserRole, Permission
@@ -317,6 +318,9 @@ class DAQService:
         # Enhanced alarm manager
         self.alarm_manager: Optional[AlarmManager] = None
 
+        # Notification manager (Twilio SMS + Email)
+        self.notification_manager: Optional[NotificationManager] = None
+
         # Backend safety manager (interlocks, latch, trip actions)
         self.safety_manager: Optional[SafetyManager] = None
 
@@ -365,6 +369,7 @@ class DAQService:
         self._init_watchdog_engine()
         self._init_user_variables()
         self._init_alarm_manager()
+        self._init_notification_manager()
         self._init_safety_manager()
         self._init_audit_trail()
         self._init_user_session_manager()
@@ -2508,6 +2513,26 @@ Unit conversions:
 
         logger.info(f"Alarm manager initialized with {len(self.alarm_manager.alarm_configs)} alarm configs")
 
+    def _init_notification_manager(self):
+        """Initialize the notification manager for Twilio SMS + Email alarm notifications."""
+        data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
+        self.notification_manager = NotificationManager(
+            data_dir=data_dir,
+            publish_callback=self._notification_publish,
+        )
+        logger.info("Notification manager initialized")
+
+    def _notification_publish(self, event_type: str, data: dict):
+        """Callback from notification manager to publish status/error events."""
+        if not self.mqtt_client:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/notifications/{event_type}",
+            json.dumps(data),
+            qos=1
+        )
+
     def _init_safety_manager(self):
         """Initialize the backend safety manager for interlock evaluation and latch control.
 
@@ -2842,6 +2867,13 @@ Unit conversions:
                 retain=True,
                 qos=1
             )
+            # Forward to notification manager with group enrichment
+            if self.notification_manager:
+                enriched = dict(data)
+                alarm_cfg = self.alarm_manager.get_alarm_config(data.get('alarm_id', '')) if self.alarm_manager else None
+                if alarm_cfg:
+                    enriched['group'] = alarm_cfg.group
+                self.notification_manager.on_alarm_event('triggered', enriched)
         elif event_type == 'alarm_cleared':
             # Publish cleared state
             self.mqtt_client.publish(
@@ -2850,6 +2882,20 @@ Unit conversions:
                 retain=True,
                 qos=1
             )
+            # Forward to notification manager
+            if self.notification_manager:
+                enriched = dict(data)
+                alarm_cfg = self.alarm_manager.get_alarm_config(data.get('alarm_id', '')) if self.alarm_manager else None
+                if alarm_cfg:
+                    enriched['group'] = alarm_cfg.group
+                    enriched['severity'] = alarm_cfg.severity.name
+                    enriched['name'] = alarm_cfg.name
+                    enriched['channel'] = alarm_cfg.channel
+                self.notification_manager.on_alarm_event('cleared', enriched)
+        elif event_type == 'alarm_flood':
+            # Forward alarm flood to notification manager
+            if self.notification_manager:
+                self.notification_manager.on_alarm_event('alarm_flood', data)
         elif event_type == 'action':
             # Legacy action handler (config-defined safety actions)
             action_id = data.get('action_id')
@@ -3390,6 +3436,11 @@ Unit conversions:
             client.subscribe(f"{base}/archive/retrieve")
             client.subscribe(f"{base}/archive/verify")
 
+            # Subscribe to notification management topics
+            client.subscribe(f"{base}/notifications/config/update")
+            client.subscribe(f"{base}/notifications/config/get")
+            client.subscribe(f"{base}/notifications/test")
+
             # Subscribe to safety/interlock management topics
             client.subscribe(f"{base}/safety/latch/arm")
             client.subscribe(f"{base}/safety/latch/disarm")
@@ -3547,8 +3598,8 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] safe-state received")
-            self._handle_safe_state(payload)
+            logger.info(f"[CRITICAL] safe-state received (request_id={request_id})")
+            self._handle_safe_state(payload, request_id)
         except Exception as e:
             logger.error(f"[CRITICAL] safe-state handler failed: {e}", exc_info=True)
 
@@ -3678,7 +3729,8 @@ Unit conversions:
             if not payload:
                 return
             logger.info(f"[CMD-FALLBACK] safe-state via queue")
-            self._handle_safe_state(payload)
+            fallback_request_id = payload.get('request_id') if isinstance(payload, dict) else None
+            self._handle_safe_state(payload, fallback_request_id)
             return
 
         # === AUTHENTICATION (accepts from any node via wildcard subscription) ===
@@ -3878,6 +3930,14 @@ Unit conversions:
             self._handle_azure_stop()
         elif topic == f"{base}/azure/status/get":
             self._handle_azure_status_get()
+
+        # === NOTIFICATION MANAGEMENT ===
+        elif topic == f"{base}/notifications/config/update":
+            self._handle_notifications_config_update(payload)
+        elif topic == f"{base}/notifications/config/get":
+            self._handle_notifications_config_get()
+        elif topic == f"{base}/notifications/test":
+            self._handle_notifications_test(payload)
 
         # === DEPENDENCY MANAGEMENT ===
         elif topic == f"{base}/dependencies/check":
@@ -4625,16 +4685,27 @@ Unit conversions:
             logger.error(f"[STATE MACHINE] Error stopping acquisition: {e}", exc_info=True)
             self._publish_command_ack("acquire/stop", request_id, False, str(e))
 
-    def _handle_safe_state(self, payload: Any):
+    def _handle_safe_state(self, payload: Any, request_id: Optional[str] = None):
         """Set all outputs to safe state (DO=0, AO=0)
 
         Called when loading/importing a project to ensure outputs are safe
         before any configuration changes are applied.
         """
+        # PERMISSION CHECK
+        if not self._has_permission(Permission.TRIGGER_SAFE_STATE):
+            logger.warning("[SECURITY] Safe-state command denied - insufficient permissions")
+            self._publish_command_ack("system/safe-state", request_id, False, "Permission denied")
+            return
+
         reason = payload.get('reason', 'command') if isinstance(payload, dict) else 'command'
         logger.info(f"[SAFE STATE] Setting all outputs to safe state - reason: {reason}")
 
-        # Reset all digital outputs to OFF (0)
+        # Forward atomic safe-state command to all online cRIO nodes
+        # This triggers hardware.set_safe_state() on the cRIO in a single call,
+        # rather than relying on individual per-channel output commands
+        self._forward_safe_state_to_crio(reason, request_id)
+
+        # Reset all local outputs (cRIO channels also sent individually as fallback)
         for channel_name, config in self.config.channels.items():
             if config.channel_type == ChannelType.DIGITAL_OUTPUT:
                 try:
@@ -4666,6 +4737,7 @@ Unit conversions:
                 'timestamp': datetime.now().isoformat()
             })
         )
+        self._publish_command_ack("system/safe-state", request_id, True)
         logger.info("[SAFE STATE] All outputs set to safe state")
 
     def _handle_recording_start(self, payload: Any):
@@ -4771,6 +4843,68 @@ Unit conversions:
     def _handle_recording_config_get(self):
         """Return current recording configuration"""
         self._publish_recording_config()
+
+    # =========================================================================
+    # NOTIFICATION MANAGEMENT HANDLERS
+    # =========================================================================
+
+    def _handle_notifications_config_update(self, payload: Any):
+        """Update notification configuration (Twilio SMS + Email)."""
+        if not isinstance(payload, dict):
+            self._publish_notifications_response(False, "Invalid payload")
+            return
+
+        if not self.notification_manager:
+            self._publish_notifications_response(False, "Notification manager not initialized")
+            return
+
+        if self.notification_manager.configure(payload):
+            self._publish_notifications_response(True, "Notification configuration updated")
+        else:
+            self._publish_notifications_response(False, "Failed to update notification config")
+
+    def _handle_notifications_config_get(self):
+        """Return current notification configuration."""
+        if not self.notification_manager:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/notifications/config",
+            json.dumps(self.notification_manager.get_config()),
+            retain=True,
+            qos=1
+        )
+
+    def _handle_notifications_test(self, payload: Any):
+        """Send a test notification (SMS or Email)."""
+        if not isinstance(payload, dict):
+            self._publish_notifications_response(False, "Invalid payload")
+            return
+
+        if not self.notification_manager:
+            self._publish_notifications_response(False, "Notification manager not initialized")
+            return
+
+        channel = payload.get('channel', '')
+        config_override = payload.get('config')
+
+        result = self.notification_manager.send_test_notification(channel, config_override)
+        self._publish_notifications_response(result['success'], result['message'])
+
+    def _publish_notifications_response(self, success: bool, message: str):
+        """Publish notification command response."""
+        if not self.mqtt_client:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/notifications/response",
+            json.dumps({
+                'success': success,
+                'message': message,
+                'timestamp': datetime.now().isoformat()
+            }),
+            qos=1
+        )
 
     def _handle_recording_list(self):
         """List recorded files"""
@@ -5058,6 +5192,10 @@ Unit conversions:
         crio_ping_counter = 0
         crio_ping_interval = 5  # heartbeats between pings
 
+        # Session cleanup interval (every ~5 min = every 150 heartbeats at 2s interval)
+        session_cleanup_counter = 0
+        session_cleanup_interval = 150
+
         while not self._shutdown_requested.wait(timeout=self._heartbeat_interval):
             if not self._running.is_set():
                 continue
@@ -5101,6 +5239,13 @@ Unit conversions:
                 if crio_ping_counter >= crio_ping_interval:
                     crio_ping_counter = 0
                     self._send_crio_discovery_ping()
+
+                # Periodic session cleanup — remove expired sessions to prevent memory growth
+                session_cleanup_counter += 1
+                if session_cleanup_counter >= session_cleanup_interval:
+                    session_cleanup_counter = 0
+                    if self.user_session_manager:
+                        self.user_session_manager.cleanup_expired_sessions()
 
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
@@ -8736,6 +8881,40 @@ Unit conversions:
                 qos=1
             )
             logger.info(f"Forwarded acquisition {command} to cRIO: {node.node_id} (request_id={request_id[:8]})")
+
+    def _forward_safe_state_to_crio(self, reason: str, request_id: Optional[str] = None):
+        """
+        Forward atomic safe-state command to all online cRIO nodes.
+
+        Sends a single MQTT message per cRIO that triggers hardware.set_safe_state()
+        on the cRIO, setting ALL outputs to safe values atomically. This is more
+        reliable than sending individual per-channel output commands.
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return
+
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        if not crio_nodes:
+            return
+
+        mqtt_base = self.config.system.mqtt_base_topic
+
+        for node in crio_nodes:
+            if node.status != 'online':
+                logger.warning(f"[SAFE STATE] cRIO {node.node_id} is offline - cannot forward safe-state")
+                continue
+
+            topic = f"{mqtt_base}/nodes/{node.node_id}/safety/safe-state"
+            self.mqtt_client.publish(
+                topic,
+                json.dumps({
+                    'reason': reason,
+                    'request_id': request_id or '',
+                    'timestamp': datetime.now().isoformat()
+                }),
+                qos=1
+            )
+            logger.info(f"[SAFE STATE] Forwarded atomic safe-state to cRIO: {node.node_id}")
 
     def _forward_alarm_ack_to_crio(self, channel: str, user: str):
         """
@@ -12828,15 +13007,24 @@ Unit conversions:
             time.sleep(sleep_time)
 
     def _log_value(self, channel_name: str, value: Any):
-        """Log a value to file"""
+        """Log a value to file (rotates daily at midnight)"""
+        today = datetime.now().strftime('%Y%m%d')
+
+        # Rotate file at midnight
+        if self.log_file is not None and getattr(self, '_log_file_date', '') != today:
+            self.log_file.flush()
+            self.log_file.close()
+            self.log_file = None
+
         if self.log_file is None:
             log_dir = Path(self.config.system.log_directory)
             log_dir.mkdir(parents=True, exist_ok=True)
 
-            log_path = log_dir / f"data_{datetime.now().strftime('%Y%m%d')}.csv"
+            log_path = log_dir / f"data_{today}.csv"
             file_exists = log_path.exists()
 
             self.log_file = open(log_path, 'a')
+            self._log_file_date = today
 
             if not file_exists:
                 # Write header
@@ -12927,6 +13115,11 @@ Unit conversions:
         if self._get_azure_config():
             logger.info("Sending stop command to Azure uploader service...")
             self._publish_azure_command('stop')
+
+        # Stop notification manager
+        if self.notification_manager:
+            logger.info("Stopping notification manager...")
+            self.notification_manager.shutdown()
 
         # Save alarm manager state
         if self.alarm_manager:
