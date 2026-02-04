@@ -113,6 +113,7 @@ These objects and functions are available immediately without any import stateme
 
 | Class | Description |
 |-------|-------------|
+| `Counter(target, window, debounce, auto_reset, mode)` | Universal counter: totalizing, targets, duty cycle, run hours, cycles |
 | `RateCalculator(window_seconds)` | Calculate rate of change |
 | `Accumulator(initial=0)` | Track cumulative totals |
 | `EdgeDetector(threshold=0.5)` | Detect rising/falling edges |
@@ -662,6 +663,55 @@ while session.active:
 
 ## Helper Classes
 
+### Counter
+
+Universal counter with totalizing, batch targets, sliding window, debounce, duty cycle, run hours, and cycle tracking.
+
+**Constructor**: `Counter(target=None, window=None, debounce=0, auto_reset=False, mode='rate')`
+
+- `mode='rate'` (default): `update()` integrates a rate signal (Hz, GPM) over time
+- `mode='cumulative'`: `update()` tracks delta between readings (hardware edge counts)
+
+```python
+# Totalizer from frequency counter (rate mode)
+fuel = Counter()
+while session.active:
+    fuel.update(tags.Gas_Flow_Hz)
+    publish('TotalFuel', fuel.total, units='SCF')
+    await next_scan()
+
+# Hardware edge counter (cumulative mode)
+flow = Counter(mode='cumulative')
+while session.active:
+    flow.update(tags.Flow_Pulses)
+    publish('TotalGallons', flow.total / 100, units='gal')
+    await next_scan()
+
+# Production counter with batch target
+parts = Counter(target=500, auto_reset=True)
+while session.active:
+    if tags.Part_Sensor:
+        parts.increment()
+    publish('Count', parts.count)
+    publish('Batch', parts.batch)
+    await next_scan()
+
+# Pump duty cycle and run hours
+pump = Counter(window=3600)
+while session.active:
+    pump.update(tags.Pump_Status)  # 0/1 digital
+    publish('Duty', pump.duty, units='%')
+    publish('RunHours', pump.run_hours, units='hr')
+    publish('Cycles', pump.cycles)
+    await next_scan()
+```
+
+**Key properties**: `count`, `total`, `done`, `remaining`, `batch`, `window_count`, `rate`, `duty`, `run_time`, `run_hours`, `cycles`, `cycle_avg`, `cycle_min`, `cycle_max`, `state`, `stable`, `elapsed`
+
+**Key methods**: `increment(n)`, `decrement(n)`, `tick()`, `reset()`, `set(value)`, `update(value)`, `lap(name)`
+
+> Use `mode='cumulative'` when reading hardware counter channels in edge count mode. Default `mode='rate'` is for frequency/rate signals only.
+
 ### RateCalculator
 
 Calculates rate of change over a time window.
@@ -694,7 +744,7 @@ total_flow = Accumulator(initial=0)
 while session.active:
     counter = tags.FlowPulseCounter
 
-    # Accumulate (handles counter rollover)
+    # Accumulate delta between readings
     total_pulses = total_flow.update(counter)
 
     # Convert to gallons

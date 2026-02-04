@@ -445,7 +445,58 @@ Define actions that can be triggered by alarms or interlocks:
 | Simulation Mode | Generate simulated data | OFF |
 | Node ID | Multi-node identifier | node-001 |
 
-### 5.4 Project Management
+### 5.4 Notifications
+
+Configure SMS and email alerts for alarm events. Each notification channel (SMS, Email) has independent trigger rules.
+
+#### Notification Channels
+
+| Channel | Provider | Requirements |
+|---------|----------|-------------|
+| **SMS** | Twilio | Account SID, Auth Token, From/To phone numbers |
+| **Email** | SMTP | Server, port, credentials, sender/recipient addresses |
+
+#### Trigger Rules (per channel)
+
+Each channel filters notifications through multiple layers:
+
+1. **Event Type**: Which alarm events trigger a notification
+   - `triggered` — alarm activated
+   - `cleared` — alarm returned to normal
+   - `acknowledged` — operator acknowledged alarm
+   - `alarm_flood` — flood condition detected (10+ alarms in 60s)
+
+2. **Severity**: Which alarm severities to include
+   - Critical, High, Medium, Low (select any combination)
+
+3. **Alarm Groups**: Filter by channel group (e.g., "Boiler", "Cooling", "Electrical")
+
+4. **Alarm Selection**: Fine-grained per-alarm control
+   - **All** — notify for all alarms matching above filters
+   - **Include Only** — notify only for specifically selected alarms
+   - **Exclude** — notify for all except specifically excluded alarms
+
+#### Rate Limiting
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Per-alarm cooldown | Minimum seconds between repeat notifications for the same alarm | 300 (5 min) |
+| Daily limit | Maximum notifications per day (resets at midnight) | 100 |
+| Quiet hours | Suppress non-CRITICAL notifications during off-hours | Disabled |
+
+#### Setting Up Notifications
+
+1. Open **Configuration Tab** → **System Settings** (gear icon)
+2. Scroll to **SMS Notifications** or **Email Notifications**
+3. Toggle **Enable** on
+4. Enter connection credentials
+5. Configure trigger rules (severity, event types, groups, alarm selection)
+6. Click **Test** to verify delivery
+7. Click **Save** to persist
+
+> SMS and Email have completely independent trigger rules. For example, you can send SMS only for CRITICAL alarms while sending email for all severities.
+
+### 5.5 Project Management
 
 - **Export Project**: Download complete configuration as JSON
 - **Import Project**: Load configuration from file

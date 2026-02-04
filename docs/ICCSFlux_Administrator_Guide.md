@@ -843,6 +843,76 @@ systemctl restart crio_node.service
 
 ---
 
+## 8.5 Notification System Administration
+
+### Twilio SMS Setup
+
+1. Create a Twilio account at [twilio.com](https://www.twilio.com)
+2. From the Twilio Console, note your:
+   - **Account SID** (starts with `AC`)
+   - **Auth Token**
+   - **Phone Number** (Twilio-assigned, e.g., `+15551234567`)
+3. In ICCSFlux, open **Configuration → System Settings → SMS Notifications**
+4. Enter Account SID, Auth Token, From Number, and recipient To Numbers
+5. Click **Test** to send a test message
+
+**How it works**: ICCSFlux calls the Twilio REST API directly via HTTPS (`requests.post`). No Twilio SDK is installed. The only outbound connection is `https://api.twilio.com`. No inbound webhooks are required.
+
+**Cost**: Twilio charges per message (~$0.0079/SMS in the US). With the default daily limit of 100, maximum cost is under $1/day.
+
+### SMTP Email Setup
+
+1. Obtain SMTP credentials from your email provider:
+
+   | Provider | Server | Port | Notes |
+   |----------|--------|------|-------|
+   | Office 365 | `smtp.office365.com` | 587 | Use TLS, requires app password if MFA enabled |
+   | Gmail | `smtp.gmail.com` | 587 | Requires App Password (not regular password) |
+   | Corporate | Ask IT | 25 or 587 | May require internal relay configuration |
+
+2. In ICCSFlux, open **Configuration → System Settings → Email Notifications**
+3. Enter SMTP server, port, username, password, From address, and To addresses
+4. Enable TLS (recommended for port 587)
+5. Click **Test** to send a test email
+
+**Security**: SMTP credentials are stored in the project JSON file alongside other configuration. The project file should be protected via OS-level file permissions. Credentials are never logged.
+
+### Notification Filtering
+
+Each channel (SMS, Email) has independent 7-layer filtering:
+
+```
+Alarm Event
+  │
+  ├─ 1. Event Type filter (triggered / cleared / acknowledged / flood)
+  ├─ 2. Severity filter (CRITICAL / HIGH / MEDIUM / LOW)
+  ├─ 3. Group filter (Boiler / Cooling / etc.)
+  ├─ 4. Alarm selection (all / include_only / exclude)
+  ├─ 5. Per-alarm cooldown (default 300s — same alarm won't repeat)
+  ├─ 6. Daily limit (default 100 — resets at midnight)
+  └─ 7. Quiet hours (suppress non-CRITICAL during off-hours)
+        │
+        ▼
+    Notification Delivered (SMS or Email)
+```
+
+### Configuration Storage
+
+Notification configuration is persisted to the project JSON file and sent to the DAQ service via MQTT (`notifications/config/update`). The DAQ service stores an in-memory copy and applies filtering in real time.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Test SMS fails | Invalid Account SID or Auth Token | Verify credentials in Twilio Console |
+| Test email fails | Wrong SMTP server/port | Check provider settings; ensure TLS matches port |
+| No notifications during alarm | Filtering too restrictive | Check severity, event type, and group filters |
+| Duplicate notifications | Cooldown too short | Increase per-alarm cooldown period |
+| Notifications stop after N per day | Daily limit reached | Increase daily limit or review alarm config |
+| No notifications during quiet hours | Quiet hours active | Only CRITICAL alarms bypass quiet hours |
+
+---
+
 ## 9. Security Hardening
 
 ### 9.1 MQTT Security Model (Zero-Config)

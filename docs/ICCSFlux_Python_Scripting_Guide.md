@@ -89,7 +89,7 @@ These are available immediately without imports:
 | **Persistence** | `persist(key, value)`, `restore(key, default=None)` |
 | **Time Functions** | `now`, `now_ms`, `now_iso`, `time_of_day`, `elapsed_since`, `format_timestamp` |
 | **Conversions** | `F_to_C`, `C_to_F`, `GPM_to_LPM`, `LPM_to_GPM`, `PSI_to_bar`, `bar_to_PSI`, `gal_to_L`, `L_to_gal`, `BTU_to_kJ`, `kJ_to_BTU`, `lb_to_kg`, `kg_to_lb` |
-| **Helpers** | `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `Scheduler`, `StateMachine` |
+| **Helpers** | `Counter`, `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `Scheduler`, `StateMachine` |
 | **Libraries** | `time`, `datetime`, `math`, `json`, `re`, `statistics`, `numpy` (also as `np`), `scipy` |
 | **Built-ins** | `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `pow`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip` |
 
@@ -1069,6 +1069,139 @@ while session.active:
     await next_scan()
 ```
 
+### Counter
+
+Universal counter with totalizing, batch targets, sliding window rates, debounce, duty cycle, run hours, cycle tracking, and stopwatch capabilities. Use only the features you need.
+
+**Constructor parameters** (all optional):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `target` | `None` | Preset value. `done` becomes True when count >= target |
+| `window` | `None` | Sliding window in seconds for `window_count` and `rate` |
+| `debounce` | `0` | Require N consecutive stable readings before accepting state change |
+| `auto_reset` | `False` | Auto-reset count when target reached (increments `batch`) |
+| `mode` | `'rate'` | `'rate'` integrates a rate signal (Hz, GPM). `'cumulative'` tracks delta between readings (hardware edge counts) |
+
+#### Basic counting with target
+```python
+parts = Counter(target=500, auto_reset=True)
+
+while session.active:
+    if tags.Part_Sensor:
+        parts.increment()
+
+    publish('PartCount', parts.count)
+    publish('BatchNum', parts.batch)
+    publish('Remaining', parts.remaining)
+
+    if parts.done:
+        print(f"Batch {parts.batch} complete!")
+
+    await next_scan()
+```
+
+#### Totalizer — integrate a rate signal
+```python
+# Frequency counter gives Hz — integrate to total gallons
+fuel = Counter()
+
+while session.active:
+    fuel.update(tags.Gas_Flow_Hz)  # rate mode (default)
+    publish('TotalFuel', fuel.total / tags.Pulses_Per_Gallon, units='gal')
+    await next_scan()
+```
+
+#### Hardware edge counter — cumulative mode
+```python
+# Hardware counter in edge count mode gives cumulative pulses.
+# Use mode='cumulative' to track deltas (NOT integrate).
+flow = Counter(mode='cumulative')
+
+while session.active:
+    flow.update(tags.Flow_Pulses)  # cumulative edge count from hardware
+    publish('TotalGallons', flow.total / 100, units='gal')
+    await next_scan()
+```
+
+> **Important**: If your hardware counter channel is in **edge count mode** (cumulative pulses), you must use `mode='cumulative'`. The default `mode='rate'` assumes the value is a rate (Hz) and will produce incorrect results with cumulative counts.
+
+#### Digital signal — duty cycle and run hours
+```python
+pump = Counter(window=3600)  # 1-hour window for duty cycle
+
+while session.active:
+    pump.update(tags.Pump_Status)  # 0/1 digital signal
+
+    publish('PumpCycles', pump.cycles)
+    publish('PumpDuty', pump.duty, units='%')
+    publish('PumpRunHours', pump.run_hours, units='hr')
+    publish('CycleAvg', pump.cycle_avg, units='sec')
+    await next_scan()
+```
+
+#### Sliding window — event rate
+```python
+faults = Counter(window=600)  # 10-minute window
+
+while session.active:
+    if tags.Fault_Signal:
+        faults.tick()  # record timestamped event
+
+    publish('FaultsInWindow', faults.window_count)
+    publish('FaultRate', faults.rate, units='/sec')
+    await next_scan()
+```
+
+#### Persisting counter state across restarts
+```python
+# Restore previous total on script start
+saved = restore('flow_total', 0.0)
+flow = Counter(mode='cumulative')
+
+while session.active:
+    flow.update(tags.Flow_Pulses)
+    total = saved + flow.total
+    publish('LifetimeGallons', total / 100, units='gal')
+    persist('flow_total', total)  # survives service restarts
+    await next_scan()
+```
+
+**Counter properties reference:**
+
+| Property | Description |
+|----------|-------------|
+| `count` | Current count (resets with `reset()`) |
+| `total` | Lifetime cumulative total (never auto-resets) |
+| `target` | Preset target value (settable) |
+| `done` | True when count >= target |
+| `remaining` | Count remaining until target |
+| `batch` | Times target reached (with `auto_reset=True`) |
+| `window_count` | Events within the sliding window |
+| `rate` | Events per second over the window |
+| `state` | Debounced boolean state |
+| `stable` | True if debounce buffer is unanimous |
+| `duty` | Duty cycle percentage 0-100 (requires `window`) |
+| `run_time` | Cumulative seconds ON |
+| `run_hours` | Cumulative hours ON |
+| `cycles` | Total completed ON-OFF cycles |
+| `cycle_avg` | Mean cycle duration (seconds) |
+| `cycle_min` | Shortest cycle duration |
+| `cycle_max` | Longest cycle duration |
+| `elapsed` | Seconds since creation or last `reset()` |
+
+**Counter methods:**
+
+| Method | Description |
+|--------|-------------|
+| `increment(n=1)` | Add n to count |
+| `decrement(n=1)` | Subtract n from count |
+| `tick()` | Record a timestamped event (for window rate) |
+| `reset()` | Reset count to 0 (preserves total) |
+| `set(value)` | Set count to specific value |
+| `update(value)` | Smart update: bool for edges/duty, float for rate/cumulative |
+| `lap(name)` | Record a named lap time |
+
 ---
 
 ## Scheduler
@@ -1849,6 +1982,7 @@ print(f"Operation took {elapsed*1000:.1f} ms")
 ### Helper Classes
 | Class | Description |
 |-------|-------------|
+| `Counter(target, window, debounce, auto_reset, mode)` | Universal counter with totalizing, targets, duty cycle, run hours |
 | `RateCalculator(window_seconds)` | Calculate rate of change |
 | `Accumulator(initial=0)` | Track cumulative totals |
 | `EdgeDetector(threshold=0.5)` | Detect rising/falling edges |

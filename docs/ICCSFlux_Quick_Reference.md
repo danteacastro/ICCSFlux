@@ -54,6 +54,28 @@
 3. Click **Download** or **Export**
 4. Choose format (CSV/Excel)
 
+## Script Helper Classes
+
+| Class | Use For |
+|-------|---------|
+| `Counter(mode='rate')` | Totalizing rate signals (Hz, GPM) |
+| `Counter(mode='cumulative')` | Tracking hardware edge counts |
+| `RateCalculator(window)` | Rate of change over time window |
+| `Accumulator(initial)` | Cumulative totals |
+| `EdgeDetector(threshold)` | Rising/falling edge detection |
+| `RollingStats(window_size)` | Running mean/min/max/std |
+| `Scheduler()` | Timed recurring tasks |
+| `StateMachine(initial)` | Sequences and batch recipes |
+
+## Notifications
+
+| Channel | Setup Location |
+|---------|---------------|
+| SMS (Twilio) | Config → System Settings → SMS Notifications |
+| Email (SMTP) | Config → System Settings → Email Notifications |
+
+Filtering: event type → severity → group → alarm selection → cooldown → daily limit → quiet hours
+
 ## Alarm Priorities
 
 | Level | Color | Response |
