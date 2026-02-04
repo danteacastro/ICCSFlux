@@ -350,6 +350,10 @@ export interface SystemStatus {
   disk_percent?: number
   disk_used_gb?: number
   disk_total_gb?: number
+  // Database status
+  db_enabled?: boolean
+  db_connected?: boolean
+  db_rows_written?: number
 }
 
 // Result type for device command responses (test connection, tag browse, etc.)
@@ -1718,6 +1722,7 @@ export interface DiscoveryCallbackPayload {
   success: boolean
   total_channels: number
   message?: string
+  error?: string
   simulation_mode?: boolean
   chassis?: Array<{
     name: string
@@ -1725,6 +1730,7 @@ export interface DiscoveryCallbackPayload {
     modules?: Array<Record<string, unknown>>
   }>
   crio_nodes?: Array<Record<string, unknown>>
+  opto22_nodes?: Array<Record<string, unknown>>
 }
 
 /** Payload passed to config update callbacks */
@@ -1735,6 +1741,7 @@ export interface ConfigUpdateCallbackPayload {
   node_id?: string
   config_version?: string
   configs?: Array<Record<string, unknown>>
+  failed?: Array<{ name?: string; error?: string }>
 }
 
 /** Payload passed to recording callbacks */

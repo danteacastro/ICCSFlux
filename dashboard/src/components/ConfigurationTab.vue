@@ -730,7 +730,7 @@ const systemSettingsForm = ref({
   watchdog_output: {
     enabled: false,
     channel: '',
-    rate_hz: 1.0
+    frequency_hz: 1.0
   },
   confirm_output_changes: false
 })
@@ -1190,7 +1190,9 @@ function getDefaultUnit(channelType: ChannelType): string {
     current_output: 'mA',
     analog_output: 'V',  // Legacy
     modbus_register: '',
-    modbus_coil: ''
+    modbus_coil: '',
+    script: '',
+    system: ''
   }
   return units[channelType] || ''
 }
@@ -1520,7 +1522,7 @@ function openSystemSettings() {
     watchdog_output: {
       enabled: wd?.enabled || false,
       channel: wd?.channel || '',
-      rate_hz: wd?.rate_hz || 1.0
+      frequency_hz: wd?.frequency_hz || 1.0
     },
     confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false
   }
@@ -1556,7 +1558,7 @@ function saveSystemSettings() {
     ch => ch.source_type && ch.source_type !== newMode
   )
   if (mismatchedChannels.length > 0) {
-    showFeedback('warning', `${mismatchedChannels.length} channel(s) are configured for "${mismatchedChannels[0].source_type}" but project mode is "${newMode}". Update channels individually if needed.`)
+    showFeedback('warning', `${mismatchedChannels.length} channel(s) are configured for "${mismatchedChannels[0]!.source_type}" but project mode is "${newMode}". Update channels individually if needed.`)
   }
 
   mqtt.sendNodeCommand('config/system/update', {
@@ -1765,9 +1767,9 @@ function isModulePartiallySelected(module: any): boolean {
 }
 
 // Feedback messages
-const feedbackMessage = ref<{ type: 'success' | 'error' | 'info', text: string } | null>(null)
+const feedbackMessage = ref<{ type: 'success' | 'error' | 'info' | 'warning', text: string } | null>(null)
 
-function showFeedback(type: 'success' | 'error' | 'info', text: string, duration = 3000) {
+function showFeedback(type: 'success' | 'error' | 'info' | 'warning', text: string, duration = 3000) {
   feedbackMessage.value = { type, text }
   setTimeout(() => {
     feedbackMessage.value = null
@@ -2369,6 +2371,7 @@ interface ChannelTypeTab {
   icon: string
   fullName: string
   adminOnly?: boolean
+  hidden?: boolean
 }
 
 const channelTypeTabs: ChannelTypeTab[] = [
@@ -2871,6 +2874,8 @@ function formatChannelType(type: ChannelType): string {
     analog_output: 'AO',    // Legacy
     modbus_register: 'MB',
     modbus_coil: 'MBC',
+    script: 'SCR',
+    system: 'SYS',
   }
   return typeMap[type] || type
 }
@@ -3449,13 +3454,13 @@ mqtt.onConfigUpdate((response) => {
 
   // Handle config list response
   if (response.configs) {
-    availableConfigs.value = response.configs
+    availableConfigs.value = response.configs as unknown as string[]
   }
 })
 
 // Get column headers based on active tab
 const tableColumns = computed(() => {
-  const baseColumns = [
+  const baseColumns: Array<{ key: string; label: string; width: string; align?: string }> = [
     { key: 'enable', label: 'EN', width: '40px' },
     { key: 'type', label: 'TYPE', width: '50px' },
     { key: 'tag', label: 'TAG', width: '100px' },
@@ -3945,7 +3950,7 @@ watch(
               <th
                 v-for="col in tableColumns"
                 :key="col.key"
-                :style="{ width: col.width, textAlign: col.align || 'left' }"
+                :style="`width: ${col.width}; text-align: ${col.align || 'left'}`"
               >
                 {{ col.label }}
               </th>
@@ -6329,7 +6334,7 @@ watch(
                 <label>Pulse Rate (Hz)</label>
                 <input
                   type="number"
-                  v-model.number="systemSettingsForm.watchdog_output.rate_hz"
+                  v-model.number="systemSettingsForm.watchdog_output.frequency_hz"
                   min="0.1"
                   max="10"
                   step="0.1"

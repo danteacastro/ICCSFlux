@@ -148,12 +148,12 @@ function updateDevicesFromStatus(status: any) {
         if (ch.source === name) {
           channels.push({
             name: chName,
-            address: ch.address || '',
-            data_type: ch.data_type || 'float32',
+            address: (ch.address as string) || '',
+            data_type: (ch.data_type as string) || 'float32',
             scale: 1.0,
             offset: 0.0,
-            unit: ch.unit || '',
-            is_output: ch.is_output || false
+            unit: (ch.unit as string) || '',
+            is_output: (ch.is_output as boolean) || false
           })
         }
       }

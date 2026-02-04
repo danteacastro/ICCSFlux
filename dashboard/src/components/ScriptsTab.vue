@@ -293,7 +293,7 @@ const triggerForm = ref<Partial<AutomationTrigger>>({
     operator: '>',
     value: 0,
     hysteresis: 0
-  } as Partial<ValueReachedTrigger>,
+  } as ValueReachedTrigger,
   actions: []
 })
 
@@ -1181,12 +1181,18 @@ function createTrigger() {
     oneShot: false,
     cooldownMs: 5000,
     trigger: {
+      id: '',
+      name: '',
+      description: '',
       type: 'valueReached',
+      enabled: true,
+      oneShot: false,
+      cooldownMs: 5000,
       channel: '',
       operator: '>',
       value: 0,
       hysteresis: 0
-    } as Partial<ValueReachedTrigger>,
+    } as ValueReachedTrigger,
     actions: []
   }
   selectedTrigger.value = null

@@ -657,7 +657,7 @@ export function useSafety() {
     }
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
-      const removed = interlocks.value[index]
+      const removed = interlocks.value[index]!
       recordInterlockEvent(removed, 'removed', user, `Interlock removed: ${removed.name}`)
       interlocks.value.splice(index, 1)
       saveInterlocks()

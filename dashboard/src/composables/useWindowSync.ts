@@ -231,7 +231,7 @@ export function useWindowSync() {
         const windowCenterY = window.screenY + window.outerHeight / 2
 
         for (let i = 0; i < screens.length; i++) {
-          const screen = screens[i]
+          const screen = screens[i]!
           if (
             windowCenterX >= screen.left &&
             windowCenterX < screen.left + screen.width &&

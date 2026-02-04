@@ -690,7 +690,7 @@ export const SEQUENCE_TEMPLATES: SequenceTemplate[] = [
       { type: 'soak', enabled: true, label: 'Stabilize', duration: 300 },
       { type: 'message', enabled: true, label: 'Warmup complete', message: 'Warmup procedure completed', severity: 'success', pauseExecution: false },
       { type: 'recording', enabled: true, label: 'Stop recording', action: 'stop' }
-    ] as Omit<SequenceStep, 'id'>[]
+    ] as unknown as Omit<SequenceStep, 'id'>[]
   },
   {
     id: 'valve-calibration',
@@ -710,7 +710,7 @@ export const SEQUENCE_TEMPLATES: SequenceTemplate[] = [
       { type: 'endLoop', enabled: true, label: 'End valve loop', loopId: 'valve-loop' },
       { type: 'recording', enabled: true, label: 'Stop recording', action: 'stop' },
       { type: 'message', enabled: true, label: 'Calibration complete', message: 'Valve calibration completed', severity: 'success', pauseExecution: false }
-    ] as Omit<SequenceStep, 'id'>[]
+    ] as unknown as Omit<SequenceStep, 'id'>[]
   },
   {
     id: 'emergency-shutdown',
@@ -725,7 +725,7 @@ export const SEQUENCE_TEMPLATES: SequenceTemplate[] = [
       { type: 'recording', enabled: true, label: 'Log emergency', action: 'start', filename: 'emergency' },
       { type: 'soak', enabled: true, label: 'Wait for safe state', duration: 30 },
       { type: 'message', enabled: true, label: 'Shutdown complete', message: 'System in safe state - manual inspection required', severity: 'warning', pauseExecution: true }
-    ] as Omit<SequenceStep, 'id'>[]
+    ] as unknown as Omit<SequenceStep, 'id'>[]
   },
   {
     id: 'cycle-test',
@@ -747,7 +747,7 @@ export const SEQUENCE_TEMPLATES: SequenceTemplate[] = [
       { type: 'endLoop', enabled: true, label: 'End cycle loop', loopId: 'cycle-loop' },
       { type: 'recording', enabled: true, label: 'Stop recording', action: 'stop' },
       { type: 'message', enabled: true, label: 'Test complete', message: 'Cycle test completed successfully', severity: 'success', pauseExecution: false }
-    ] as Omit<SequenceStep, 'id'>[]
+    ] as unknown as Omit<SequenceStep, 'id'>[]
   },
   {
     id: 'system-check',
@@ -763,7 +763,7 @@ export const SEQUENCE_TEMPLATES: SequenceTemplate[] = [
       { type: 'soak', enabled: true, label: 'Collect baseline', duration: 30 },
       { type: 'recording', enabled: true, label: 'Stop recording', action: 'stop' },
       { type: 'message', enabled: true, label: 'Check complete', message: 'Daily system check completed - review logs', severity: 'success', pauseExecution: false }
-    ] as Omit<SequenceStep, 'id'>[]
+    ] as unknown as Omit<SequenceStep, 'id'>[]
   }
 ]
 

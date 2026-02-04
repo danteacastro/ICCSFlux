@@ -418,7 +418,7 @@ export function usePythonScripts() {
         for (let j = 0; j < columns.length; j++) {
           const colName = columns[j]
           if (colName) {
-            row[colName] = values[j] ?? null
+            row[colName] = (values[j] as string | number | boolean | null) ?? null
           }
         }
         data.push(row)

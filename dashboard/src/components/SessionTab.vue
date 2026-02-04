@@ -23,7 +23,7 @@ const publishedVariables = computed(() => {
   const vars: Array<{ name: string; value: number | string }> = []
   for (const [name, val] of Object.entries(mqtt.channelValues.value)) {
     if (name.startsWith('py.')) {
-      vars.push({ name: name.slice(3), value: val })
+      vars.push({ name: name.slice(3), value: val.value })
     }
   }
   vars.sort((a, b) => a.name.localeCompare(b.name))

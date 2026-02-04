@@ -814,7 +814,7 @@ export function useMqtt(prefix: string = 'nisystem') {
   function handleAlarm(topic: string, payload: any) {
     // Parse topic: nisystem/alarms/active/{alarm_id}
     const topicParts = topic.split('/')
-    const alarmId = topicParts[topicParts.length - 1]
+    const alarmId = topicParts[topicParts.length - 1] ?? ''
 
     // Check if this is a cleared alarm
     if (payload.active === false || payload.state === 'cleared') {
@@ -1436,17 +1436,17 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Subscribe to a specific topic with a callback
    * Returns an unsubscribe function
    */
-  function subscribe(topic: string, callback: (payload: unknown) => void): () => void {
+  function subscribe<T = unknown>(topic: string, callback: (payload: T) => void): () => void {
     if (!topicCallbacks.has(topic)) {
       topicCallbacks.set(topic, [])
     }
-    topicCallbacks.get(topic)!.push(callback)
+    topicCallbacks.get(topic)!.push(callback as (payload: unknown) => void)
 
     // Return unsubscribe function
     return () => {
       const callbacks = topicCallbacks.get(topic)
       if (callbacks) {
-        const idx = callbacks.indexOf(callback)
+        const idx = callbacks.indexOf(callback as (payload: unknown) => void)
         if (idx > -1) {
           callbacks.splice(idx, 1)
         }
