@@ -936,10 +936,10 @@ except Exception as e:
           return
         }
 
-        // Check for invalid characters in name
-        const validNamePattern = /^[a-zA-Z_][a-zA-Z0-9_]*$/
+        // Check for invalid characters in name (allows dashes for ISA-5.1 naming like PT-001)
+        const validNamePattern = /^[a-zA-Z_][a-zA-Z0-9_-]*$/
         if (!validNamePattern.test(name)) {
-          addScriptOutput(id, 'error', `publish() name "${name}" invalid - use letters, numbers, underscore (start with letter/underscore)`)
+          addScriptOutput(id, 'error', `publish() name "${name}" invalid - use letters, numbers, underscore, dash (start with letter/underscore)`)
           return
         }
 

@@ -191,27 +191,32 @@ Python's standard library is fully available:
 
 Access any channel using the `tags` object. Channels from all hardware sources (cDAQ, cRIO, Opto22) are available through the same interface.
 
-### Attribute Access
+### Bracket Access (Recommended)
+Use bracket notation for ISA-5.1 standard tag names with dashes:
 ```python
-temp = tags.TC001          # Local cDAQ thermocouple
-pressure = tags.PT001      # cRIO pressure sensor
-flow = tags.FT001          # Opto22 flow meter
+temp = tags['TC-001']          # Local cDAQ thermocouple
+pressure = tags['PT-001']      # cRIO pressure sensor
+flow = tags['FT-001']          # Opto22 flow meter
 ```
 
-### Dictionary Access
+### Dot Access
+Dot notation works for tag names that are valid Python identifiers (no dashes):
 ```python
-temp = tags['TC001']
-pressure = tags['PT-001']  # Use for names with dashes
+temp = tags.TC001              # Works for underscore/no-separator names
+pressure = tags.Inlet_Temp     # Works with underscores
+# flow = tags.FT-001           # WON'T WORK — Python reads this as subtraction
 ```
+
+> **Tip**: If your tags use ISA-5.1 naming with dashes (e.g., `PT-001`, `TC-101`), always use bracket access `tags['PT-001']`. Dot access only works for names without dashes.
 
 ### Hardware-Agnostic Access
 Scripts don't need to know which hardware a channel comes from:
 ```python
 # These all work the same regardless of source
-inlet_temp = tags.Inlet_Temp      # Could be cDAQ, cRIO, or Opto22
-outlet_temp = tags.Outlet_Temp    # Hardware source is transparent
+inlet_temp = tags['TC-101']       # Could be cDAQ, cRIO, or Opto22
+outlet_temp = tags['TC-102']      # Hardware source is transparent
 delta_t = outlet_temp - inlet_temp
-publish('DeltaT', delta_t, units='°F')
+publish('Delta-T', delta_t, units='°F')
 ```
 
 ### Get All Channel Names
@@ -430,13 +435,13 @@ Published values are automatically validated:
 # ✅ Valid names
 publish('Efficiency', 92.5)
 publish('Heat_Rate', 1250)
+publish('Heat-Rate', 100)   # Dashes allowed (ISA-5.1 naming)
 publish('_internal', 0)
 
 # ❌ Invalid - will show error
-publish('Heat-Rate', 100)   # No dashes allowed
 publish('123abc', 100)      # Can't start with number
 publish('py.Value', 100)    # Don't use py. prefix
-publish('TC001', 100)       # Can't conflict with hardware channel
+publish('TC-001', 100)      # Can't conflict with hardware channel name
 publish('Rate', 'text')     # Value must be a number
 ```
 

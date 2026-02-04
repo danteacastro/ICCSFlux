@@ -218,8 +218,8 @@ export interface FormulaReference {
 export function parseFormulaReferences(formula: string): FormulaReference[] {
   const refs: FormulaReference[] = []
 
-  // Match {ChannelName} or {ChannelName.property}
-  const channelRegex = /\{([a-zA-Z_][a-zA-Z0-9_]*)(?:\.([a-zA-Z]+))?\}/g
+  // Match {ChannelName} or {ChannelName.property} (allows dashes for ISA-5.1 naming)
+  const channelRegex = /\{([a-zA-Z_][a-zA-Z0-9_-]*)(?:\.([a-zA-Z]+))?\}/g
   let match: RegExpExecArray | null
   while ((match = channelRegex.exec(formula)) !== null) {
     refs.push({

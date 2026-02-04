@@ -275,8 +275,8 @@ export function useTagDependencies() {
       warnings.push(`Tag "${newName}" already exists`)
     }
 
-    // Check if new name is valid
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newName)) {
+    // Check if new name is valid (allows dashes for ISA-5.1 naming like PT-001)
+    if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(newName)) {
       warnings.push(`Tag name "${newName}" contains invalid characters`)
     }
 

@@ -146,13 +146,14 @@ The `tags` object provides access to all channel values regardless of hardware s
 ### Basic Access
 
 ```python
-# Attribute access (preferred for simple names)
-temp = tags.TC001
-pressure = tags.PT001
+# Bracket access (recommended — works with ISA-5.1 dashed names)
+temp = tags['TC-001']
+pressure = tags['PT-001']
 
-# Dictionary access (required for names with special chars)
-temp = tags['TC-001']  # Use this if TAG has dashes
-value = tags['My Tag']  # Use this if TAG has spaces
+# Dot access (only works for names without dashes)
+temp = tags.TC001
+pressure = tags.Inlet_Temp
+# tags.PT-001  # WON'T WORK — Python reads dash as subtraction
 ```
 
 ### Safe Access with Default
@@ -299,15 +300,15 @@ publish('HeatRate', 12500, units='BTU/hr', description='Calculated heat transfer
 # Valid names
 publish('Efficiency', 92.5)        # OK
 publish('Heat_Rate', 1250)         # OK
+publish('Heat-Rate', 100)          # OK — dashes allowed (ISA-5.1)
 publish('Value1', 100)             # OK
 publish('_internal', 0)            # OK
 
 # Invalid names (will error)
-publish('Heat-Rate', 100)          # No dashes
 publish('123abc', 100)             # Can't start with number
 publish('Heat Rate', 100)          # No spaces
 publish('py.Value', 100)           # Don't add py. prefix
-publish('TC001', 100)              # Can't conflict with hardware channel
+publish('TC-001', 100)             # Can't conflict with hardware channel
 ```
 
 ### Value Requirements
