@@ -14,6 +14,7 @@ Scripts run in isolated threads and can be controlled via MQTT.
 import ast
 import json
 import time
+import math
 import asyncio
 import threading
 import logging
@@ -949,6 +950,869 @@ class StateMachine:
 
 
 # =============================================================================
+# SIGNAL PROCESSING HELPERS (available in script namespace)
+# Keep in sync with services/crio_node_v2/script_engine.py (Group A only)
+# =============================================================================
+
+
+class SignalFilter:
+    """Exponential Moving Average / first-order low-pass filter.
+
+    Example:
+        filt = SignalFilter(alpha=0.1)          # lower alpha = smoother
+        filt = SignalFilter(tau=5.0, dt=0.1)    # time constant + sample period
+        smooth = filt.update(tags.noisy_temp)
+    """
+
+    def __init__(self, alpha: float = None, tau: float = None, dt: float = None):
+        if tau is not None and dt is not None:
+            self._alpha = max(0.0, min(1.0, dt / (tau + dt)))
+        elif alpha is not None:
+            self._alpha = max(0.0, min(1.0, alpha))
+        else:
+            self._alpha = 0.1
+        self._value = None
+
+    def update(self, value: float) -> float:
+        """Feed a new sample, returns filtered value."""
+        if self._value is None:
+            self._value = float(value)
+        else:
+            self._value += self._alpha * (float(value) - self._value)
+        return self._value
+
+    @property
+    def value(self) -> float:
+        """Current filtered value."""
+        return self._value if self._value is not None else 0.0
+
+    @property
+    def alpha(self) -> float:
+        """Current alpha coefficient."""
+        return self._alpha
+
+    def reset(self):
+        """Reset filter state."""
+        self._value = None
+
+
+class LookupTable:
+    """Linear interpolation from calibration points.
+
+    Example:
+        cal = LookupTable([(1000, 100), (5000, 50), (10000, 25)])
+        temp = cal.lookup(3000)   # interpolated
+        temp = cal(3000)          # same, via __call__
+    """
+
+    def __init__(self, points):
+        if not points or len(points) < 2:
+            raise ValueError("LookupTable requires at least 2 points")
+        self._points = sorted(points, key=lambda p: p[0])
+        self._xs = [p[0] for p in self._points]
+        self._ys = [p[1] for p in self._points]
+
+    def lookup(self, x: float) -> float:
+        """Interpolate value at x. Clamps at endpoints."""
+        x = float(x)
+        if x <= self._xs[0]:
+            return self._ys[0]
+        if x >= self._xs[-1]:
+            return self._ys[-1]
+        # Binary search for interval
+        lo, hi = 0, len(self._xs) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if self._xs[mid] <= x:
+                lo = mid
+            else:
+                hi = mid
+        # Linear interpolation
+        t = (x - self._xs[lo]) / (self._xs[hi] - self._xs[lo])
+        return self._ys[lo] + t * (self._ys[hi] - self._ys[lo])
+
+    def __call__(self, x: float) -> float:
+        return self.lookup(x)
+
+    @property
+    def points(self):
+        """Sorted calibration points."""
+        return list(self._points)
+
+
+class RampSoak:
+    """Time-based setpoint profile for thermal processes.
+
+    Segment types:
+    - ramp: {'type': 'ramp', 'target': float, 'rate': float}  (rate in units/min)
+    - soak: {'type': 'soak', 'duration': float}  (duration in seconds)
+
+    Example:
+        profile = RampSoak([
+            {'type': 'ramp', 'target': 500, 'rate': 10},
+            {'type': 'soak', 'duration': 3600},
+            {'type': 'ramp', 'target': 25,  'rate': 2},
+        ])
+        profile.start()
+        pid.Furnace.setpoint = profile.tick()
+    """
+
+    def __init__(self, segments):
+        if not segments:
+            raise ValueError("RampSoak requires at least one segment")
+        self._segments = segments
+        self._start_time = None
+        self._segment_index = 0
+        self._segment_start_time = None
+        self._segment_start_value = None
+        self._done = False
+        self._current_setpoint = 0.0
+
+    def start(self, initial_value: float = 0.0):
+        """Start the profile from initial_value."""
+        self._start_time = time.time()
+        self._segment_index = 0
+        self._segment_start_time = self._start_time
+        self._segment_start_value = float(initial_value)
+        self._current_setpoint = float(initial_value)
+        self._done = False
+
+    def tick(self) -> float:
+        """Compute and return current setpoint. Call each scan."""
+        if self._start_time is None or self._done:
+            return self._current_setpoint
+
+        now = time.time()
+
+        while self._segment_index < len(self._segments):
+            seg = self._segments[self._segment_index]
+            elapsed_in_seg = now - self._segment_start_time
+
+            if seg['type'] == 'ramp':
+                target = float(seg['target'])
+                rate_per_sec = float(seg['rate']) / 60.0  # rate is units/min
+                distance = target - self._segment_start_value
+                if rate_per_sec <= 0:
+                    ramp_duration = 0.0
+                else:
+                    ramp_duration = abs(distance) / rate_per_sec
+
+                if elapsed_in_seg >= ramp_duration:
+                    # Segment complete
+                    self._current_setpoint = target
+                    self._segment_start_value = target
+                    self._segment_start_time += ramp_duration
+                    self._segment_index += 1
+                    continue
+                else:
+                    direction = 1.0 if distance >= 0 else -1.0
+                    self._current_setpoint = self._segment_start_value + direction * rate_per_sec * elapsed_in_seg
+                    return self._current_setpoint
+
+            elif seg['type'] == 'soak':
+                duration = float(seg['duration'])
+                if elapsed_in_seg >= duration:
+                    self._segment_start_time += duration
+                    self._segment_index += 1
+                    continue
+                else:
+                    return self._current_setpoint
+            else:
+                # Unknown segment type, skip
+                self._segment_index += 1
+                continue
+
+        self._done = True
+        return self._current_setpoint
+
+    @property
+    def setpoint(self) -> float:
+        return self._current_setpoint
+
+    @property
+    def segment_index(self) -> int:
+        return self._segment_index
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    @property
+    def elapsed(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
+
+    @property
+    def progress(self) -> float:
+        """Approximate progress 0.0 to 1.0 based on segment index."""
+        total = len(self._segments)
+        if total == 0 or self._done:
+            return 1.0
+        return self._segment_index / total
+
+    def reset(self):
+        """Reset profile to initial state."""
+        self._start_time = None
+        self._segment_index = 0
+        self._segment_start_time = None
+        self._segment_start_value = None
+        self._done = False
+        self._current_setpoint = 0.0
+
+
+class TrendLine:
+    """Online linear regression over a sliding window.
+
+    Example:
+        trend = TrendLine(window=300)
+        result = trend.update(tags.reactor_pressure)
+        if result['slope'] > 0.1 and result['r_squared'] > 0.9:
+            publish('pressure_trend', 'RISING')
+    """
+
+    def __init__(self, window: int = 100):
+        self._window = max(2, window)
+        self._xs = []
+        self._ys = []
+        self._n = 0  # total updates (used as x-axis)
+
+    def update(self, value: float) -> dict:
+        """Add a value and return regression stats."""
+        self._n += 1
+        self._xs.append(self._n)
+        self._ys.append(float(value))
+        if len(self._xs) > self._window:
+            self._xs.pop(0)
+            self._ys.pop(0)
+
+        n = len(self._xs)
+        if n < 2:
+            return {'slope': 0.0, 'intercept': float(value), 'r_squared': 0.0, 'count': n}
+
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        sum_y2 = sum(y * y for y in self._ys)
+
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return {'slope': 0.0, 'intercept': sum_y / n, 'r_squared': 0.0, 'count': n}
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+
+        # R-squared
+        ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(self._xs, self._ys))
+        mean_y = sum_y / n
+        ss_tot = sum((y - mean_y) ** 2 for y in self._ys)
+        r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        return {'slope': slope, 'intercept': intercept, 'r_squared': r_squared, 'count': n}
+
+    def predict(self, steps_ahead: int = 1) -> float:
+        """Predict value steps_ahead from now using current regression."""
+        n = len(self._xs)
+        if n < 2:
+            return self._ys[-1] if self._ys else 0.0
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return sum_y / n
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        return slope * (self._n + steps_ahead) + intercept
+
+    def time_to_value(self, target: float) -> float:
+        """Estimate steps until value reaches target. Returns float('nan') if unreachable."""
+        n = len(self._xs)
+        if n < 2:
+            return float('nan')
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return float('nan')
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        if slope == 0:
+            return float('nan')
+        x_target = (target - intercept) / slope
+        steps = x_target - self._n
+        if steps < 0:
+            return float('nan')
+        return steps
+
+
+class RingBuffer:
+    """Fixed-size circular buffer with computed statistics.
+
+    Example:
+        buf = RingBuffer(size=100)
+        buf.append(tags.vibration)
+        if buf.full and buf.max - buf.min > threshold:
+            publish('vibration_alarm', 1)
+    """
+
+    def __init__(self, size: int = 100):
+        self._size = max(1, size)
+        self._data = []
+        self._index = 0
+        self._full = False
+
+    def append(self, value: float):
+        """Add a value to the buffer."""
+        value = float(value)
+        if len(self._data) < self._size:
+            self._data.append(value)
+        else:
+            self._data[self._index] = value
+            self._full = True
+        self._index = (self._index + 1) % self._size
+
+    @property
+    def values(self) -> list:
+        """Contents in chronological order (oldest first)."""
+        if not self._full:
+            return list(self._data)
+        return self._data[self._index:] + self._data[:self._index]
+
+    @property
+    def count(self) -> int:
+        return len(self._data)
+
+    @property
+    def full(self) -> bool:
+        return self._full
+
+    @property
+    def mean(self) -> float:
+        if not self._data:
+            return 0.0
+        return sum(self._data) / len(self._data)
+
+    @property
+    def min(self) -> float:
+        return min(self._data) if self._data else 0.0
+
+    @property
+    def max(self) -> float:
+        return max(self._data) if self._data else 0.0
+
+    @property
+    def std(self) -> float:
+        n = len(self._data)
+        if n < 2:
+            return 0.0
+        m = sum(self._data) / n
+        variance = sum((x - m) ** 2 for x in self._data) / (n - 1)
+        return variance ** 0.5
+
+    @property
+    def last(self) -> float:
+        if not self._data:
+            return 0.0
+        return self._data[(self._index - 1) % len(self._data)]
+
+    @property
+    def first(self) -> float:
+        if not self._data:
+            return 0.0
+        if self._full:
+            return self._data[self._index % self._size]
+        return self._data[0]
+
+    def clear(self):
+        """Clear all data."""
+        self._data.clear()
+        self._index = 0
+        self._full = False
+
+
+class PeakDetector:
+    """Detect peaks in a signal using rising/falling state transitions.
+
+    Example:
+        peaks = PeakDetector(min_height=0.5, min_distance=10)
+        result = peaks.update(tags.detector_signal)
+        if result:
+            publish('peak_height', result['height'])
+    """
+
+    MAX_PEAKS = 1000
+
+    def __init__(self, min_height: float = None, min_distance: int = 0, threshold: float = 0.0):
+        self._min_height = min_height
+        self._min_distance = max(0, min_distance)
+        self._threshold = float(threshold)
+        self._prev = None
+        self._prev2 = None
+        self._position = 0
+        self._last_peak_pos = -self._min_distance - 1
+        self._rising = False
+        self._area_acc = 0.0
+        self._area_baseline = None
+        self._peaks = []
+        self._last_peak = None
+
+    def update(self, value: float) -> dict:
+        """Feed a new sample. Returns peak dict when a peak is confirmed, else None."""
+        value = float(value)
+        self._position += 1
+        result = None
+
+        if self._prev is not None and self._prev2 is not None:
+            # Peak: prev > prev2 and prev > value (prev was a local maximum)
+            if self._prev > self._prev2 and self._prev > value:
+                height = self._prev - self._threshold
+                distance_ok = (self._position - 1 - self._last_peak_pos) >= self._min_distance
+                height_ok = self._min_height is None or height >= self._min_height
+
+                if distance_ok and height_ok:
+                    result = {
+                        'height': self._prev,
+                        'position': self._position - 1,
+                        'area': self._area_acc,
+                    }
+                    self._last_peak = result
+                    self._peaks.append(result)
+                    if len(self._peaks) > self.MAX_PEAKS:
+                        self._peaks = self._peaks[-self.MAX_PEAKS:]
+                    self._last_peak_pos = self._position - 1
+                    self._area_acc = 0.0
+
+        # Accumulate area above threshold
+        if value > self._threshold:
+            self._area_acc += value - self._threshold
+
+        self._prev2 = self._prev
+        self._prev = value
+        return result
+
+    @property
+    def count(self) -> int:
+        return len(self._peaks)
+
+    @property
+    def last_peak(self) -> dict:
+        return self._last_peak
+
+    @property
+    def peaks(self) -> list:
+        return list(self._peaks)
+
+
+# =============================================================================
+# ADVANCED HELPERS — DAQ-only (not available on cRIO)
+# =============================================================================
+
+
+class SpectralAnalysis:
+    """FFT-based frequency domain analysis.
+
+    Uses numpy.fft if available, falls back to pure-Python Cooley-Tukey radix-2 FFT.
+
+    Example:
+        spec = SpectralAnalysis(window_size=256, sample_rate=100.0)
+        spec.update(tags.vibration)
+        if spec.ready:
+            result = spec.analyze()
+            publish('dominant_freq', result['dominant_freq'])
+    """
+
+    def __init__(self, window_size: int = 256, sample_rate: float = 10.0):
+        # Round up to next power of 2
+        self._n = 1
+        while self._n < window_size:
+            self._n *= 2
+        self._sample_rate = float(sample_rate)
+        self._buffer = []
+        # Pre-compute Hanning window
+        self._window = [0.5 * (1 - math.cos(2 * math.pi * i / (self._n - 1))) for i in range(self._n)]
+
+    def update(self, value: float):
+        """Add a sample to the internal buffer."""
+        self._buffer.append(float(value))
+        if len(self._buffer) > self._n:
+            self._buffer.pop(0)
+
+    @property
+    def ready(self) -> bool:
+        return len(self._buffer) >= self._n
+
+    def analyze(self) -> dict:
+        """Compute frequency spectrum. Returns None if not enough data."""
+        if not self.ready:
+            return None
+
+        data = self._buffer[-self._n:]
+        # Apply window
+        windowed = [d * w for d, w in zip(data, self._window)]
+
+        try:
+            import numpy as np
+            spectrum = np.fft.rfft(windowed)
+            magnitudes = [abs(c) * 2.0 / self._n for c in spectrum]
+        except ImportError:
+            spectrum = self._fft(windowed)
+            half = self._n // 2 + 1
+            magnitudes = [abs(spectrum[i]) * 2.0 / self._n for i in range(half)]
+
+        freq_resolution = self._sample_rate / self._n
+        frequencies = [i * freq_resolution for i in range(len(magnitudes))]
+
+        # Skip DC component for dominant frequency
+        if len(magnitudes) > 1:
+            max_idx = max(range(1, len(magnitudes)), key=lambda i: magnitudes[i])
+            dominant_freq = frequencies[max_idx]
+            dominant_mag = magnitudes[max_idx]
+        else:
+            dominant_freq = 0.0
+            dominant_mag = 0.0
+
+        # THD: ratio of harmonics to fundamental
+        thd = 0.0
+        if dominant_mag > 0 and len(magnitudes) > 2:
+            harmonic_power = sum(m * m for i, m in enumerate(magnitudes) if i > 0 and i != max_idx)
+            thd = (harmonic_power ** 0.5) / dominant_mag
+
+        return {
+            'frequencies': frequencies,
+            'magnitudes': magnitudes,
+            'dominant_freq': dominant_freq,
+            'dominant_mag': dominant_mag,
+            'thd': thd,
+        }
+
+    @staticmethod
+    def _fft(x):
+        """Pure-Python Cooley-Tukey radix-2 FFT. Input must be power-of-2 length."""
+        n = len(x)
+        if n <= 1:
+            return [complex(v) for v in x]
+        even = SpectralAnalysis._fft(x[0::2])
+        odd = SpectralAnalysis._fft(x[1::2])
+        result = [0] * n
+        for k in range(n // 2):
+            w = complex(math.cos(-2 * math.pi * k / n), math.sin(-2 * math.pi * k / n))
+            result[k] = even[k] + w * odd[k]
+            result[k + n // 2] = even[k] - w * odd[k]
+        return result
+
+
+class SPCChart:
+    """Statistical Process Control with Xbar/R chart and Western Electric rules.
+
+    Example:
+        spc = SPCChart(subgroup_size=5)
+        spc.add_sample(tags.part_diameter)
+        if not spc.in_control:
+            violations = spc.check_rules()
+            publish('spc_violation', violations[0])
+    """
+
+    # A2, D3, D4 constants for Xbar/R charts (subgroup sizes 2-10)
+    _A2 = {2: 1.880, 3: 1.023, 4: 0.729, 5: 0.577, 6: 0.483, 7: 0.419, 8: 0.373, 9: 0.337, 10: 0.308}
+    _D3 = {2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0.076, 8: 0.136, 9: 0.184, 10: 0.223}
+    _D4 = {2: 3.267, 3: 2.574, 4: 2.282, 5: 2.114, 6: 2.004, 7: 1.924, 8: 1.864, 9: 1.816, 10: 1.777}
+
+    def __init__(self, subgroup_size: int = 5, num_subgroups: int = 25):
+        self._sg_size = max(2, min(10, subgroup_size))
+        self._max_subgroups = max(5, num_subgroups)
+        self._current_subgroup = []
+        self._subgroup_means = []
+        self._subgroup_ranges = []
+        self._lsl = None
+        self._usl = None
+
+    def add_sample(self, value: float):
+        """Add an individual sample. Automatically forms subgroups."""
+        self._current_subgroup.append(float(value))
+        if len(self._current_subgroup) >= self._sg_size:
+            self.add_subgroup(self._current_subgroup)
+            self._current_subgroup = []
+
+    def add_subgroup(self, values: list):
+        """Add a complete subgroup of measurements."""
+        vals = [float(v) for v in values]
+        self._subgroup_means.append(sum(vals) / len(vals))
+        self._subgroup_ranges.append(max(vals) - min(vals))
+        if len(self._subgroup_means) > self._max_subgroups:
+            self._subgroup_means.pop(0)
+            self._subgroup_ranges.pop(0)
+
+    def set_spec_limits(self, lsl: float, usl: float):
+        """Set specification limits for Cp/Cpk calculation."""
+        self._lsl = float(lsl)
+        self._usl = float(usl)
+
+    @property
+    def x_bar(self) -> float:
+        return sum(self._subgroup_means) / len(self._subgroup_means) if self._subgroup_means else 0.0
+
+    @property
+    def r_bar(self) -> float:
+        return sum(self._subgroup_ranges) / len(self._subgroup_ranges) if self._subgroup_ranges else 0.0
+
+    @property
+    def ucl(self) -> float:
+        a2 = self._A2.get(self._sg_size, 0.577)
+        return self.x_bar + a2 * self.r_bar
+
+    @property
+    def lcl(self) -> float:
+        a2 = self._A2.get(self._sg_size, 0.577)
+        return self.x_bar - a2 * self.r_bar
+
+    @property
+    def sigma(self) -> float:
+        """Estimated process standard deviation from R-bar."""
+        d2_table = {2: 1.128, 3: 1.693, 4: 2.059, 5: 2.326, 6: 2.534, 7: 2.704, 8: 2.847, 9: 2.970, 10: 3.078}
+        d2 = d2_table.get(self._sg_size, 2.326)
+        return self.r_bar / d2 if d2 > 0 else 0.0
+
+    @property
+    def cp(self) -> float:
+        if self._lsl is None or self._usl is None or self.sigma == 0:
+            return 0.0
+        return (self._usl - self._lsl) / (6 * self.sigma)
+
+    @property
+    def cpk(self) -> float:
+        if self._lsl is None or self._usl is None or self.sigma == 0:
+            return 0.0
+        cpu = (self._usl - self.x_bar) / (3 * self.sigma)
+        cpl = (self.x_bar - self._lsl) / (3 * self.sigma)
+        return min(cpu, cpl)
+
+    @property
+    def in_control(self) -> bool:
+        return len(self.check_rules()) == 0
+
+    def check_rules(self) -> list:
+        """Check Western Electric rules. Returns list of violation descriptions."""
+        violations = []
+        means = self._subgroup_means
+        if len(means) < 2:
+            return violations
+
+        center = self.x_bar
+        one_sigma = (self.ucl - center) / 3
+        if one_sigma == 0:
+            return violations
+
+        # Rule 1: Any point beyond 3-sigma
+        for i, m in enumerate(means):
+            if abs(m - center) > 3 * one_sigma:
+                violations.append(f"Rule 1: Point {i} beyond 3-sigma ({m:.4f})")
+
+        # Rule 2: 2 of 3 consecutive beyond 2-sigma on same side
+        for i in range(2, len(means)):
+            window = means[i - 2:i + 1]
+            above = sum(1 for m in window if m > center + 2 * one_sigma)
+            below = sum(1 for m in window if m < center - 2 * one_sigma)
+            if above >= 2:
+                violations.append(f"Rule 2: 2 of 3 above 2-sigma at point {i}")
+            if below >= 2:
+                violations.append(f"Rule 2: 2 of 3 below 2-sigma at point {i}")
+
+        # Rule 3: 4 of 5 consecutive beyond 1-sigma on same side
+        for i in range(4, len(means)):
+            window = means[i - 4:i + 1]
+            above = sum(1 for m in window if m > center + one_sigma)
+            below = sum(1 for m in window if m < center - one_sigma)
+            if above >= 4:
+                violations.append(f"Rule 3: 4 of 5 above 1-sigma at point {i}")
+            if below >= 4:
+                violations.append(f"Rule 3: 4 of 5 below 1-sigma at point {i}")
+
+        # Rule 4: 8 consecutive on same side of center
+        for i in range(7, len(means)):
+            window = means[i - 7:i + 1]
+            if all(m > center for m in window):
+                violations.append(f"Rule 4: 8 consecutive above center at point {i}")
+            if all(m < center for m in window):
+                violations.append(f"Rule 4: 8 consecutive below center at point {i}")
+
+        return violations
+
+
+class BiquadFilter:
+    """Second-order IIR digital filter (biquad).
+
+    Use factory methods to create specific filter types:
+        lp = BiquadFilter.lowpass(cutoff_hz=5.0, sample_rate=100.0)
+        hp = BiquadFilter.highpass(cutoff_hz=1.0, sample_rate=100.0)
+        bp = BiquadFilter.bandpass(center_hz=10.0, sample_rate=100.0, q=2.0)
+        notch = BiquadFilter.notch(center_hz=60.0, sample_rate=100.0)
+        output = lp.process(sample)
+    """
+
+    def __init__(self, b0, b1, b2, a1, a2):
+        self._b0 = b0
+        self._b1 = b1
+        self._b2 = b2
+        self._a1 = a1
+        self._a2 = a2
+        self._x1 = 0.0
+        self._x2 = 0.0
+        self._y1 = 0.0
+        self._y2 = 0.0
+
+    def process(self, sample: float) -> float:
+        """Process one sample through the filter."""
+        x0 = float(sample)
+        y0 = self._b0 * x0 + self._b1 * self._x1 + self._b2 * self._x2 - self._a1 * self._y1 - self._a2 * self._y2
+        self._x2 = self._x1
+        self._x1 = x0
+        self._y2 = self._y1
+        self._y1 = y0
+        return y0
+
+    def reset(self):
+        self._x1 = self._x2 = self._y1 = self._y2 = 0.0
+
+    @classmethod
+    def lowpass(cls, cutoff_hz: float, sample_rate: float, q: float = 0.7071):
+        """Create a low-pass biquad filter."""
+        w0 = 2 * math.pi * cutoff_hz / sample_rate
+        alpha = math.sin(w0) / (2 * q)
+        cos_w0 = math.cos(w0)
+        a0 = 1 + alpha
+        return cls(
+            b0=(1 - cos_w0) / 2 / a0,
+            b1=(1 - cos_w0) / a0,
+            b2=(1 - cos_w0) / 2 / a0,
+            a1=-2 * cos_w0 / a0,
+            a2=(1 - alpha) / a0,
+        )
+
+    @classmethod
+    def highpass(cls, cutoff_hz: float, sample_rate: float, q: float = 0.7071):
+        """Create a high-pass biquad filter."""
+        w0 = 2 * math.pi * cutoff_hz / sample_rate
+        alpha = math.sin(w0) / (2 * q)
+        cos_w0 = math.cos(w0)
+        a0 = 1 + alpha
+        return cls(
+            b0=(1 + cos_w0) / 2 / a0,
+            b1=-(1 + cos_w0) / a0,
+            b2=(1 + cos_w0) / 2 / a0,
+            a1=-2 * cos_w0 / a0,
+            a2=(1 - alpha) / a0,
+        )
+
+    @classmethod
+    def bandpass(cls, center_hz: float, sample_rate: float, q: float = 1.0):
+        """Create a band-pass biquad filter."""
+        w0 = 2 * math.pi * center_hz / sample_rate
+        alpha = math.sin(w0) / (2 * q)
+        cos_w0 = math.cos(w0)
+        a0 = 1 + alpha
+        return cls(
+            b0=alpha / a0,
+            b1=0.0,
+            b2=-alpha / a0,
+            a1=-2 * cos_w0 / a0,
+            a2=(1 - alpha) / a0,
+        )
+
+    @classmethod
+    def notch(cls, center_hz: float, sample_rate: float, q: float = 1.0):
+        """Create a notch (band-reject) biquad filter."""
+        w0 = 2 * math.pi * center_hz / sample_rate
+        alpha = math.sin(w0) / (2 * q)
+        cos_w0 = math.cos(w0)
+        a0 = 1 + alpha
+        return cls(
+            b0=1.0 / a0,
+            b1=-2 * cos_w0 / a0,
+            b2=1.0 / a0,
+            a1=-2 * cos_w0 / a0,
+            a2=(1 - alpha) / a0,
+        )
+
+    @staticmethod
+    def cascade(filters: list):
+        """Chain multiple biquad filters in series."""
+        return _CascadeFilter(filters)
+
+
+class _CascadeFilter:
+    """Internal: chains multiple biquad filters."""
+
+    def __init__(self, filters):
+        self._filters = list(filters)
+
+    def process(self, sample: float) -> float:
+        value = float(sample)
+        for f in self._filters:
+            value = f.process(value)
+        return value
+
+    def reset(self):
+        for f in self._filters:
+            f.reset()
+
+
+class DataLog:
+    """Structured custom data logging from scripts.
+
+    Uses the existing publish() mechanism — no direct database access.
+    Published values are captured by the recording manager automatically.
+
+    Example:
+        log = DataLog('quality')
+        log.log(tags.PartWidth, label='width_mm')
+        log.mark('out_of_spec')
+    """
+
+    MAX_MARKS = 1000
+
+    def __init__(self, name: str, publish_fn=None):
+        self._name = str(name)
+        self._publish = publish_fn
+        self._count = 0
+        self._marks = []
+
+    def log(self, value, label: str = None):
+        """Log a value. Published as 'datalog.{name}.{label}'."""
+        key = f'datalog.{self._name}.{label}' if label else f'datalog.{self._name}'
+        self._count += 1
+        if self._publish:
+            self._publish(key, value)
+
+    def log_dict(self, data: dict):
+        """Log multiple key-value pairs at once."""
+        for k, v in data.items():
+            self.log(v, label=str(k))
+
+    def mark(self, event_name: str):
+        """Record a named event marker (published as value=1)."""
+        key = f'datalog.{self._name}.mark.{event_name}'
+        self._count += 1
+        self._marks.append({'event': event_name, 'timestamp': time.time()})
+        if len(self._marks) > self.MAX_MARKS:
+            self._marks = self._marks[-self.MAX_MARKS:]
+        if self._publish:
+            self._publish(key, 1)
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def marks(self) -> list:
+        return list(self._marks)
+
+
+# =============================================================================
 # UNIT CONVERSION FUNCTIONS (available in script namespace)
 # =============================================================================
 
@@ -1412,6 +2276,20 @@ class ScriptRuntime:
             'RollingStats': RollingStats,
             'Scheduler': Scheduler,
             'StateMachine': StateMachine,
+
+            # Signal processing helpers (Group A — also on cRIO)
+            'SignalFilter': SignalFilter,
+            'LookupTable': LookupTable,
+            'RampSoak': RampSoak,
+            'TrendLine': TrendLine,
+            'RingBuffer': RingBuffer,
+            'PeakDetector': PeakDetector,
+
+            # Advanced helpers (Group B — DAQ-only)
+            'SpectralAnalysis': SpectralAnalysis,
+            'SPCChart': SPCChart,
+            'BiquadFilter': BiquadFilter,
+            'DataLog': lambda name: DataLog(name, publish_fn=publish),
 
             # Unit conversions
             'F_to_C': F_to_C,

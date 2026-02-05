@@ -493,6 +493,487 @@ class Counter:
 
 
 # =============================================================================
+# SIGNAL PROCESSING HELPERS (available in script namespace)
+# Keep in sync with services/daq_service/script_manager.py (Group A only)
+# =============================================================================
+
+
+class SignalFilter:
+    """Exponential Moving Average / first-order low-pass filter.
+
+    Example:
+        filt = SignalFilter(alpha=0.1)          # lower alpha = smoother
+        filt = SignalFilter(tau=5.0, dt=0.1)    # time constant + sample period
+        smooth = filt.update(tags.noisy_temp)
+    """
+
+    def __init__(self, alpha: float = None, tau: float = None, dt: float = None):
+        if tau is not None and dt is not None:
+            self._alpha = max(0.0, min(1.0, dt / (tau + dt)))
+        elif alpha is not None:
+            self._alpha = max(0.0, min(1.0, alpha))
+        else:
+            self._alpha = 0.1
+        self._value = None
+
+    def update(self, value: float) -> float:
+        """Feed a new sample, returns filtered value."""
+        if self._value is None:
+            self._value = float(value)
+        else:
+            self._value += self._alpha * (float(value) - self._value)
+        return self._value
+
+    @property
+    def value(self) -> float:
+        """Current filtered value."""
+        return self._value if self._value is not None else 0.0
+
+    @property
+    def alpha(self) -> float:
+        """Current alpha coefficient."""
+        return self._alpha
+
+    def reset(self):
+        """Reset filter state."""
+        self._value = None
+
+
+class LookupTable:
+    """Linear interpolation from calibration points.
+
+    Example:
+        cal = LookupTable([(1000, 100), (5000, 50), (10000, 25)])
+        temp = cal.lookup(3000)   # interpolated
+        temp = cal(3000)          # same, via __call__
+    """
+
+    def __init__(self, points):
+        if not points or len(points) < 2:
+            raise ValueError("LookupTable requires at least 2 points")
+        self._points = sorted(points, key=lambda p: p[0])
+        self._xs = [p[0] for p in self._points]
+        self._ys = [p[1] for p in self._points]
+
+    def lookup(self, x: float) -> float:
+        """Interpolate value at x. Clamps at endpoints."""
+        x = float(x)
+        if x <= self._xs[0]:
+            return self._ys[0]
+        if x >= self._xs[-1]:
+            return self._ys[-1]
+        # Binary search for interval
+        lo, hi = 0, len(self._xs) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if self._xs[mid] <= x:
+                lo = mid
+            else:
+                hi = mid
+        # Linear interpolation
+        t = (x - self._xs[lo]) / (self._xs[hi] - self._xs[lo])
+        return self._ys[lo] + t * (self._ys[hi] - self._ys[lo])
+
+    def __call__(self, x: float) -> float:
+        return self.lookup(x)
+
+    @property
+    def points(self):
+        """Sorted calibration points."""
+        return list(self._points)
+
+
+class RampSoak:
+    """Time-based setpoint profile for thermal processes.
+
+    Segment types:
+    - ramp: {'type': 'ramp', 'target': float, 'rate': float}  (rate in units/min)
+    - soak: {'type': 'soak', 'duration': float}  (duration in seconds)
+
+    Example:
+        profile = RampSoak([
+            {'type': 'ramp', 'target': 500, 'rate': 10},
+            {'type': 'soak', 'duration': 3600},
+            {'type': 'ramp', 'target': 25,  'rate': 2},
+        ])
+        profile.start()
+        pid.Furnace.setpoint = profile.tick()
+    """
+
+    def __init__(self, segments):
+        if not segments:
+            raise ValueError("RampSoak requires at least one segment")
+        self._segments = segments
+        self._start_time = None
+        self._segment_index = 0
+        self._segment_start_time = None
+        self._segment_start_value = None
+        self._done = False
+        self._current_setpoint = 0.0
+
+    def start(self, initial_value: float = 0.0):
+        """Start the profile from initial_value."""
+        self._start_time = time.time()
+        self._segment_index = 0
+        self._segment_start_time = self._start_time
+        self._segment_start_value = float(initial_value)
+        self._current_setpoint = float(initial_value)
+        self._done = False
+
+    def tick(self) -> float:
+        """Compute and return current setpoint. Call each scan."""
+        if self._start_time is None or self._done:
+            return self._current_setpoint
+
+        now = time.time()
+
+        while self._segment_index < len(self._segments):
+            seg = self._segments[self._segment_index]
+            elapsed_in_seg = now - self._segment_start_time
+
+            if seg['type'] == 'ramp':
+                target = float(seg['target'])
+                rate_per_sec = float(seg['rate']) / 60.0  # rate is units/min
+                distance = target - self._segment_start_value
+                if rate_per_sec <= 0:
+                    ramp_duration = 0.0
+                else:
+                    ramp_duration = abs(distance) / rate_per_sec
+
+                if elapsed_in_seg >= ramp_duration:
+                    # Segment complete
+                    self._current_setpoint = target
+                    self._segment_start_value = target
+                    self._segment_start_time += ramp_duration
+                    self._segment_index += 1
+                    continue
+                else:
+                    direction = 1.0 if distance >= 0 else -1.0
+                    self._current_setpoint = self._segment_start_value + direction * rate_per_sec * elapsed_in_seg
+                    return self._current_setpoint
+
+            elif seg['type'] == 'soak':
+                duration = float(seg['duration'])
+                if elapsed_in_seg >= duration:
+                    self._segment_start_time += duration
+                    self._segment_index += 1
+                    continue
+                else:
+                    return self._current_setpoint
+            else:
+                # Unknown segment type, skip
+                self._segment_index += 1
+                continue
+
+        self._done = True
+        return self._current_setpoint
+
+    @property
+    def setpoint(self) -> float:
+        return self._current_setpoint
+
+    @property
+    def segment_index(self) -> int:
+        return self._segment_index
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    @property
+    def elapsed(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
+
+    @property
+    def progress(self) -> float:
+        """Approximate progress 0.0 to 1.0 based on segment index."""
+        total = len(self._segments)
+        if total == 0 or self._done:
+            return 1.0
+        return self._segment_index / total
+
+    def reset(self):
+        """Reset profile to initial state."""
+        self._start_time = None
+        self._segment_index = 0
+        self._segment_start_time = None
+        self._segment_start_value = None
+        self._done = False
+        self._current_setpoint = 0.0
+
+
+class TrendLine:
+    """Online linear regression over a sliding window.
+
+    Example:
+        trend = TrendLine(window=300)
+        result = trend.update(tags.reactor_pressure)
+        if result['slope'] > 0.1 and result['r_squared'] > 0.9:
+            publish('pressure_trend', 'RISING')
+    """
+
+    def __init__(self, window: int = 100):
+        self._window = max(2, window)
+        self._xs = []
+        self._ys = []
+        self._n = 0  # total updates (used as x-axis)
+
+    def update(self, value: float) -> dict:
+        """Add a value and return regression stats."""
+        self._n += 1
+        self._xs.append(self._n)
+        self._ys.append(float(value))
+        if len(self._xs) > self._window:
+            self._xs.pop(0)
+            self._ys.pop(0)
+
+        n = len(self._xs)
+        if n < 2:
+            return {'slope': 0.0, 'intercept': float(value), 'r_squared': 0.0, 'count': n}
+
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        sum_y2 = sum(y * y for y in self._ys)
+
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return {'slope': 0.0, 'intercept': sum_y / n, 'r_squared': 0.0, 'count': n}
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+
+        # R-squared
+        ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(self._xs, self._ys))
+        mean_y = sum_y / n
+        ss_tot = sum((y - mean_y) ** 2 for y in self._ys)
+        r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        return {'slope': slope, 'intercept': intercept, 'r_squared': r_squared, 'count': n}
+
+    def predict(self, steps_ahead: int = 1) -> float:
+        """Predict value steps_ahead from now using current regression."""
+        n = len(self._xs)
+        if n < 2:
+            return self._ys[-1] if self._ys else 0.0
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return sum_y / n
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        return slope * (self._n + steps_ahead) + intercept
+
+    def time_to_value(self, target: float) -> float:
+        """Estimate steps until value reaches target. Returns float('nan') if unreachable."""
+        n = len(self._xs)
+        if n < 2:
+            return float('nan')
+        sum_x = sum(self._xs)
+        sum_y = sum(self._ys)
+        sum_xy = sum(x * y for x, y in zip(self._xs, self._ys))
+        sum_x2 = sum(x * x for x in self._xs)
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return float('nan')
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        if slope == 0:
+            return float('nan')
+        x_target = (target - intercept) / slope
+        steps = x_target - self._n
+        if steps < 0:
+            return float('nan')
+        return steps
+
+
+class RingBuffer:
+    """Fixed-size circular buffer with computed statistics.
+
+    Example:
+        buf = RingBuffer(size=100)
+        buf.append(tags.vibration)
+        if buf.full and buf.max - buf.min > threshold:
+            publish('vibration_alarm', 1)
+    """
+
+    def __init__(self, size: int = 100):
+        self._size = max(1, size)
+        self._data = []
+        self._index = 0
+        self._full = False
+
+    def append(self, value: float):
+        """Add a value to the buffer."""
+        value = float(value)
+        if len(self._data) < self._size:
+            self._data.append(value)
+        else:
+            self._data[self._index] = value
+            self._full = True
+        self._index = (self._index + 1) % self._size
+
+    @property
+    def values(self) -> list:
+        """Contents in chronological order (oldest first)."""
+        if not self._full:
+            return list(self._data)
+        return self._data[self._index:] + self._data[:self._index]
+
+    @property
+    def count(self) -> int:
+        return len(self._data)
+
+    @property
+    def full(self) -> bool:
+        return self._full
+
+    @property
+    def mean(self) -> float:
+        if not self._data:
+            return 0.0
+        return sum(self._data) / len(self._data)
+
+    @property
+    def min(self) -> float:
+        return min(self._data) if self._data else 0.0
+
+    @property
+    def max(self) -> float:
+        return max(self._data) if self._data else 0.0
+
+    @property
+    def std(self) -> float:
+        n = len(self._data)
+        if n < 2:
+            return 0.0
+        m = sum(self._data) / n
+        variance = sum((x - m) ** 2 for x in self._data) / (n - 1)
+        return variance ** 0.5
+
+    @property
+    def last(self) -> float:
+        if not self._data:
+            return 0.0
+        return self._data[(self._index - 1) % len(self._data)]
+
+    @property
+    def first(self) -> float:
+        if not self._data:
+            return 0.0
+        if self._full:
+            return self._data[self._index % self._size]
+        return self._data[0]
+
+    def clear(self):
+        """Clear all data."""
+        self._data.clear()
+        self._index = 0
+        self._full = False
+
+
+class PeakDetector:
+    """Detect peaks in a signal using rising/falling state transitions.
+
+    Example:
+        peaks = PeakDetector(min_height=0.5, min_distance=10)
+        result = peaks.update(tags.detector_signal)
+        if result:
+            publish('peak_height', result['height'])
+    """
+
+    MAX_PEAKS = 1000
+
+    def __init__(self, min_height: float = None, min_distance: int = 0, threshold: float = 0.0):
+        self._min_height = min_height
+        self._min_distance = max(0, min_distance)
+        self._threshold = float(threshold)
+        self._prev = None
+        self._prev2 = None
+        self._position = 0
+        self._last_peak_pos = -self._min_distance - 1
+        self._rising = False
+        self._area_acc = 0.0
+        self._area_baseline = None
+        self._peaks = []
+        self._last_peak = None
+
+    def update(self, value: float) -> dict:
+        """Feed a new sample. Returns peak dict when a peak is confirmed, else None."""
+        value = float(value)
+        self._position += 1
+        result = None
+
+        if self._prev is not None and self._prev2 is not None:
+            # Peak: prev > prev2 and prev > value (prev was a local maximum)
+            if self._prev > self._prev2 and self._prev > value:
+                height = self._prev - self._threshold
+                distance_ok = (self._position - 1 - self._last_peak_pos) >= self._min_distance
+                height_ok = self._min_height is None or height >= self._min_height
+
+                if distance_ok and height_ok:
+                    result = {
+                        'height': self._prev,
+                        'position': self._position - 1,
+                        'area': self._area_acc,
+                    }
+                    self._last_peak = result
+                    self._peaks.append(result)
+                    if len(self._peaks) > self.MAX_PEAKS:
+                        self._peaks = self._peaks[-self.MAX_PEAKS:]
+                    self._last_peak_pos = self._position - 1
+                    self._area_acc = 0.0
+
+        # Accumulate area above threshold
+        if value > self._threshold:
+            self._area_acc += value - self._threshold
+
+        self._prev2 = self._prev
+        self._prev = value
+        return result
+
+    @property
+    def count(self) -> int:
+        return len(self._peaks)
+
+    @property
+    def last_peak(self) -> dict:
+        return self._last_peak
+
+    @property
+    def peaks(self) -> list:
+        return list(self._peaks)
+
+
+# =============================================================================
+# DAQ-ONLY CLASS STUBS (clear error message instead of NameError)
+# These classes are only available on the DAQ service, not on cRIO.
+# =============================================================================
+
+def _daq_only_class(name):
+    """Create a stub class that raises RuntimeError when instantiated on cRIO."""
+    def _init(self, *args, **kwargs):
+        raise RuntimeError(
+            f"{name} is only available on the DAQ service (not cRIO). "
+            f"Use Group A helpers instead: SignalFilter, LookupTable, RampSoak, "
+            f"TrendLine, RingBuffer, PeakDetector."
+        )
+    return type(name, (), {'__init__': _init})
+
+
+_SpectralAnalysisStub = _daq_only_class('SpectralAnalysis')
+_SPCChartStub = _daq_only_class('SPCChart')
+_BiquadFilterStub = _daq_only_class('BiquadFilter')
+_DataLogStub = _daq_only_class('DataLog')
+
+
+# =============================================================================
 # UNIT CONVERSIONS
 # =============================================================================
 
@@ -1122,6 +1603,20 @@ class ScriptEngine:
             'Accumulator': Accumulator,
             'EdgeDetector': EdgeDetector,
             'RollingStats': RollingStats,
+
+            # Signal processing helpers (Group A — synced with DAQ)
+            'SignalFilter': SignalFilter,
+            'LookupTable': LookupTable,
+            'RampSoak': RampSoak,
+            'TrendLine': TrendLine,
+            'RingBuffer': RingBuffer,
+            'PeakDetector': PeakDetector,
+
+            # DAQ-only stubs (clear error instead of NameError)
+            'SpectralAnalysis': _SpectralAnalysisStub,
+            'SPCChart': _SPCChartStub,
+            'BiquadFilter': _BiquadFilterStub,
+            'DataLog': _DataLogStub,
 
             # Unit conversions
             'F_to_C': F_to_C, 'C_to_F': C_to_F,

@@ -87,8 +87,25 @@ Both `services/daq_service/script_manager.py` and `services/crio_node_v2/script_
 
 ## Testing
 
-- **Unit tests**: `python -m pytest tests/test_daq_orchestration.py` — 68 tests, no external deps required
-- **Integration tests**: `python -m pytest tests/` — requires running MQTT broker + DAQ service on localhost
+Run all unit tests (no external deps required):
+
+```bash
+python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/test_security_and_resilience.py tests/test_crio_script_engine_unit.py tests/test_recording_manager.py tests/test_session_and_recording.py tests/test_script_helpers.py -v
+```
+
+**477 total tests** across 7 files:
+
+| File | Tests | Coverage |
+|------|-------|---------|
+| `test_daq_orchestration.py` | 68 | State machine, alarm manager, script manager (Counter, sandbox), channel config, recording config |
+| `test_longevity.py` | 32 | Counter rollover at 2^32, cumulative mode, midnight reset, notification queue overflow, cooldown pruning, session cleanup |
+| `test_security_and_resilience.py` | 98 | Sandbox security (imports, dunders, builtins, escapes, safe ops, blocked list sync), notification manager, state persistence |
+| `test_crio_script_engine_unit.py` | 75 | RateCalculator, Accumulator, EdgeDetector, RollingStats, SharedVariableStore, TagsAPI, OutputsAPI, SessionAPI, VarsAPI |
+| `test_recording_manager.py` | 37 | Recording config, start/stop, decimation, time interval, channel selection, script values, filenames, directories, buffered/immediate mode, triggered recording, file rotation by samples, thread safety |
+| `test_session_and_recording.py` | 63 | Session state validation (start guards, alarm checks), variable resets, timer management, callbacks (scheduler, recording, sequences), timeout, ALCOA+ integrity (SHA-256, tamper detection, read-only), rotation (size, samples, stop mode), circular mode, acquisition cascade |
+| `test_script_helpers.py` | 104 | SignalFilter (EMA, tau/dt, convergence), LookupTable (interpolation, clamping, sorting), RampSoak (ramp/soak/reset), TrendLine (regression, predict, time_to_value), RingBuffer (wrap, stats, clear), PeakDetector (height/distance filtering, area), SpectralAnalysis (FFT, pure-Python fallback), SPCChart (Xbar/R, Western Electric rules, Cp/Cpk), BiquadFilter (LP/HP/BP/notch, cascade), DataLog (publish, marks), cRIO DAQ-only stubs |
+
+- **Integration tests**: `python -m pytest tests/` — includes above plus `test_user_variables.py` and `test_daq_service.py` which require running MQTT broker + DAQ service
 - Test helpers in `tests/test_helpers.py` (MQTTTestHarness)
 - Dashboard must pass `vue-tsc` strict type checking before build (`npm run build` in `dashboard/`)
 
