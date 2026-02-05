@@ -380,6 +380,13 @@ class Counter:
 
     def update(self, value):
         now = time.time()
+
+        # Cumulative mode: always treat as numeric (hardware counters
+        # can read 0 or 1 which would otherwise route to _update_bool)
+        if self._mode == 'cumulative':
+            self._update_analog(float(value), now)
+            return
+
         is_bool = isinstance(value, bool) or (isinstance(value, (int, float)) and value in (0, 1, 0.0, 1.0, True, False))
         if is_bool:
             self._update_bool(bool(value), now)
@@ -440,6 +447,7 @@ class Counter:
                     self._total += increment
         self._last_value = value
         self._last_update_time = now
+        self._check_target()
 
     # ----- target / batch -----------------------------------------------
 
