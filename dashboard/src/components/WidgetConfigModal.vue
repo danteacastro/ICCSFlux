@@ -54,6 +54,16 @@ watch(() => props.widgetId, () => {
     if (localWidget.value.type === 'title' && !localWidget.value.text) {
       localWidget.value.text = localWidget.value.title || localWidget.value.label || 'Title'
     }
+    // For divider widgets, initialize orientation and lineStyle if not set
+    if (localWidget.value.type === 'divider') {
+      if (!localWidget.value.orientation) localWidget.value.orientation = 'horizontal'
+      if (!localWidget.value.lineStyle) localWidget.value.lineStyle = 'solid'
+    }
+    // For heater_zone widgets, initialize advancedParams array
+    if (localWidget.value.type === 'heater_zone') {
+      if (!localWidget.value.advancedParams) localWidget.value.advancedParams = []
+      if (!localWidget.value.temperatureUnit) localWidget.value.temperatureUnit = 'F'
+    }
   }
 }, { immediate: true })
 
@@ -264,6 +274,28 @@ function toggleChannel(channelName: string, add: boolean) {
   }
 }
 
+// HeaterZone: all channels for channel dropdowns (no type filter)
+const allChannelsForHeater = computed(() => {
+  const hw = Object.entries(store.channels).sort((a, b) => {
+    const aOrder = CHANNEL_TYPE_ORDER[a[1].channel_type] ?? 50
+    const bOrder = CHANNEL_TYPE_ORDER[b[1].channel_type] ?? 50
+    if (aOrder !== bOrder) return aOrder - bOrder
+    return a[0].localeCompare(b[0], undefined, { numeric: true })
+  })
+  return hw
+})
+
+// HeaterZone: add/remove advanced parameter rows
+function addAdvancedParam() {
+  if (!localWidget.value.advancedParams) localWidget.value.advancedParams = []
+  localWidget.value.advancedParams.push({ channel: '', label: '', readonly: false })
+}
+
+function removeAdvancedParam(index: number) {
+  if (!localWidget.value.advancedParams) return
+  localWidget.value.advancedParams.splice(index, 1)
+}
+
 // Save changes
 function save() {
   if (!props.widgetId || !localWidget.value) return
@@ -362,8 +394,8 @@ const selectedChartChannels = computed(() => {
         </div>
 
         <div class="modal-body">
-          <!-- Common: Custom Label (overrides TAG display) - hide for title widgets -->
-          <div v-if="widgetType !== 'title'" class="form-group">
+          <!-- Common: Custom Label (overrides TAG display) - hide for title and divider widgets -->
+          <div v-if="widgetType !== 'title' && widgetType !== 'divider'" class="form-group">
             <label>Custom Label</label>
             <input
               type="text"
@@ -410,30 +442,20 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
-          <!-- Compact/Industrial mode (numeric, led, value_table) -->
-          <template v-if="['numeric', 'led', 'value_table'].includes(widgetType)">
+          <!-- Industrial mode (numeric, led) - compact is automatic based on height -->
+          <template v-if="['numeric', 'led'].includes(widgetType)">
             <div class="config-section">
               <div class="section-header">Display Mode</div>
-              <div class="form-row">
-                <div class="form-group half checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      v-model="localWidget.compact"
-                    />
-                    Compact
-                  </label>
-                </div>
-                <div class="form-group half checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      v-model="localWidget.industrial"
-                    />
-                    Industrial Style
-                  </label>
-                </div>
+              <div class="form-group checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    v-model="localWidget.industrial"
+                  />
+                  Industrial Style
+                </label>
               </div>
+              <div class="form-hint">Compact layout is automatic when height is 1 row.</div>
             </div>
           </template>
 
@@ -1016,6 +1038,87 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
+          <!-- Heater Zone specific -->
+          <template v-if="widgetType === 'heater_zone'">
+            <div class="form-group">
+              <label>PV Channel (Temperature)</label>
+              <select v-model="localWidget.pvChannel">
+                <option value="">-- Select PV Channel --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>SP Channel (Setpoint)</label>
+              <select v-model="localWidget.spChannel">
+                <option value="">-- Select SP Channel --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Enable Channel (On/Off)</label>
+              <select v-model="localWidget.enableChannel">
+                <option value="">-- Select Enable Channel --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Output Channel (% Power)</label>
+              <select v-model="localWidget.outputChannel">
+                <option value="">-- None (optional) --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Temperature Unit</label>
+              <select v-model="localWidget.temperatureUnit">
+                <option value="F">°F (Fahrenheit)</option>
+                <option value="C">°C (Celsius)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>SP Min</label>
+                <input type="number" v-model.number="localWidget.spMin" placeholder="0" />
+              </div>
+              <div class="form-group half">
+                <label>SP Max</label>
+                <input type="number" v-model.number="localWidget.spMax" placeholder="2000" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" min="0" max="4" placeholder="0" />
+            </div>
+
+            <!-- Advanced parameters (right-click modal registers) -->
+            <div class="form-group">
+              <label>Advanced Parameters (right-click menu)</label>
+              <div v-for="(param, idx) in localWidget.advancedParams" :key="idx" class="advanced-param-row">
+                <select v-model="param.channel" class="param-channel">
+                  <option value="">-- Channel --</option>
+                  <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                    {{ name }}
+                  </option>
+                </select>
+                <input type="text" v-model="param.label" placeholder="Label" class="param-label" />
+                <label class="param-readonly" title="Read-only">
+                  <input type="checkbox" v-model="param.readonly" />
+                  RO
+                </label>
+                <button class="btn-remove-param" @click="removeAdvancedParam(idx)" title="Remove">&times;</button>
+              </div>
+              <button class="btn-add-param" @click="addAdvancedParam">+ Add Parameter</button>
+            </div>
+          </template>
+
           <!-- Bar Graph specific -->
           <template v-if="widgetType === 'bar_graph'">
             <div class="form-group">
@@ -1043,6 +1146,10 @@ const selectedChartChannels = computed(() => {
 
           <!-- Divider specific -->
           <template v-if="widgetType === 'divider'">
+            <div class="form-group">
+              <label>Title</label>
+              <input type="text" v-model="localWidget.title" placeholder="Section title (optional)" />
+            </div>
             <div class="form-group">
               <label>Orientation</label>
               <select v-model="localWidget.orientation">
@@ -1158,21 +1265,13 @@ const selectedChartChannels = computed(() => {
           <template v-if="widgetType === 'script_monitor'">
             <div class="config-section">
               <div class="section-header">Display Options</div>
-              <div class="form-row">
-                <div class="form-group half">
-                  <label>Columns</label>
-                  <select v-model.number="localWidget.columns">
-                    <option :value="1">1 Column</option>
-                    <option :value="2">2 Columns</option>
-                    <option :value="3">3 Columns</option>
-                  </select>
-                </div>
-                <div class="form-group half checkbox" style="padding-top: 20px;">
-                  <label>
-                    <input type="checkbox" v-model="localWidget.compact" />
-                    Compact Mode
-                  </label>
-                </div>
+              <div class="form-group">
+                <label>Columns</label>
+                <select v-model.number="localWidget.columns">
+                  <option :value="1">1 Column</option>
+                  <option :value="2">2 Columns</option>
+                  <option :value="3">3 Columns</option>
+                </select>
               </div>
               <div class="form-group checkbox">
                 <label>
@@ -1706,5 +1805,74 @@ const selectedChartChannels = computed(() => {
 
 .btn-icon:hover {
   background: rgba(239, 68, 68, 0.2);
+}
+
+/* Heater Zone advanced params */
+.advanced-param-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.param-channel {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+}
+
+.param-label {
+  width: 80px;
+  padding: 4px 6px;
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+}
+
+.param-readonly {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: #888;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn-remove-param {
+  background: transparent;
+  border: none;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.btn-remove-param:hover {
+  color: #ef4444;
+}
+
+.btn-add-param {
+  width: 100%;
+  padding: 4px 8px;
+  margin-top: 4px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px dashed #3b82f6;
+  border-radius: 4px;
+  color: #3b82f6;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-add-param:hover {
+  background: rgba(59, 130, 246, 0.2);
 }
 </style>

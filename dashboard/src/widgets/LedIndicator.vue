@@ -60,10 +60,16 @@ const isOn = computed(() => {
   return shouldInvert ? val === 0 : val !== 0
 })
 
-// Display label - check props first, then widget config from store, then channel name
-const displayLabel = computed(() =>
-  (props.label || widgetConfig.value?.label || props.channel || widgetConfig.value?.channel || '').replace(/^py\./, '')
-)
+// Display label - use props passed from DashboardGrid, fallback to channel name
+// DashboardGrid maps widget.title -> props.label for non-title widgets
+const displayLabel = computed(() => {
+  // props.label comes from DashboardGrid's title->label mapping
+  // props.channel is always passed for widgets with channels
+  // widgetConfig fallback for cases where props aren't passed correctly
+  const widget = widgetConfig.value
+  const label = props.label || props.channel || widget?.title || widget?.label || widget?.channel || props.widgetId || 'LED'
+  return label.replace(/^py\./, '')
+})
 
 // Support both direct props and style object for colors
 const onColor = computed(() => props.onColor || props.style?.onColor || '#22c55e')
@@ -120,12 +126,12 @@ const shouldShowStatus = computed(() => props.showStatus === true)
           boxShadow: isOn && !industrial ? `0 0 8px ${ledColor}` : 'none'
         }"
       ></div>
-      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+      <div class="label">{{ displayLabel }}</div>
     </div>
 
     <!-- Vertical layout (shown when tall enough) -->
     <div class="layout-vertical">
-      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
+      <div class="label">{{ displayLabel }}</div>
       <div
         class="led"
         :style="{
@@ -210,12 +216,19 @@ const shouldShowStatus = computed(() => props.showStatus === true)
    LAYOUT SWITCHING VIA CONTAINER QUERIES
    ======================================== */
 
-/* Default: show horizontal, hide vertical */
+/* Default: show horizontal (compact), hide vertical */
 .layout-horizontal {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
+  padding: 0 4px;
+}
+
+.layout-horizontal .label {
+  flex: 1;
+  text-align: left;
+  min-width: 30px;
 }
 
 .layout-vertical {
@@ -227,8 +240,8 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   height: 100%;
 }
 
-/* When widget is tall enough (2+ rows ~60px), switch to vertical layout */
-@container (min-height: 60px) {
+/* When widget is tall enough (2+ rows ~55px), switch to vertical layout */
+@container (min-height: 55px) {
   .layout-horizontal {
     display: none;
   }
@@ -249,7 +262,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 /* Larger LED in vertical mode */
-@container (min-height: 60px) {
+@container (min-height: 55px) {
   .led {
     width: 24px;
     height: 24px;
@@ -267,9 +280,9 @@ const shouldShowStatus = computed(() => props.showStatus === true)
    LABEL
    ======================================== */
 .label {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 500;
-  color: #ccc;
+  color: #aaa;
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -278,10 +291,8 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 /* Label styling in vertical mode */
-@container (min-height: 60px) {
+@container (min-height: 55px) {
   .label {
-    font-size: 0.65rem;
-    color: #888;
     text-align: center;
     max-width: 100%;
   }

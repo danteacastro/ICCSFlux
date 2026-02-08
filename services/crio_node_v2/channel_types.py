@@ -140,7 +140,7 @@ MODULE_TYPE_MAP: Dict[str, ChannelType] = {
 
     # Current input modules
     '9203': ChannelType.CURRENT_INPUT,
-    '9207': ChannelType.CURRENT_INPUT,  # Combo module, default to current
+    '9207': ChannelType.VOLTAGE_INPUT,  # Combo module: ai0-ai7 voltage, ai8-ai15 current
     '9208': ChannelType.CURRENT_INPUT,
     '9227': ChannelType.CURRENT_INPUT,
     '9246': ChannelType.CURRENT_INPUT,
@@ -215,6 +215,30 @@ MODULE_TYPE_MAP: Dict[str, ChannelType] = {
     # Counter modules
     '9361': ChannelType.COUNTER_INPUT,
 }
+
+# Combo modules where channel type varies by channel index within the same module
+# Key: module number, Value: (alt_type, index_start) — channels at index >= index_start use alt_type
+COMBO_MODULE_MAP: Dict[str, tuple] = {
+    '9207': (ChannelType.CURRENT_INPUT, 8),  # ai0-ai7 = voltage, ai8-ai15 = current
+}
+
+
+def get_combo_channel_type(model_number: str, channel_index: int) -> Optional[ChannelType]:
+    """
+    For combo modules (e.g., NI 9207), get the channel type based on channel index.
+
+    Returns the alternate type if the channel index is at or above the split point,
+    or None if this is not a combo module.
+    """
+    clean_number = ''.join(c for c in model_number if c.isdigit())
+    combo = COMBO_MODULE_MAP.get(clean_number)
+    if combo is None:
+        return None
+    alt_type, index_start = combo
+    if channel_index >= index_start:
+        return alt_type
+    return None
+
 
 # Relay module subtype metadata (for informational use — these remain DIGITAL_OUTPUT in DAQmx)
 RELAY_MODULES: Dict[str, str] = {

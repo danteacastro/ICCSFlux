@@ -45,6 +45,12 @@ class ChannelConfig:
     # Thermocouple specific
     thermocouple_type: Optional[str] = None
     cjc_source: str = 'internal'
+    cjc_value: float = 25.0  # For constant CJC (°C)
+
+    # RTD specific
+    rtd_type: str = 'Pt3850'       # Pt3750, Pt3850, Pt3851, Pt3911, Pt3916, Pt3920, Pt3928, Custom
+    rtd_wiring: str = '4-wire'     # 2-wire, 3-wire, 4-wire
+    rtd_current: float = 0.001     # Excitation current in Amps (1mA default)
 
     # Range
     voltage_range: float = 10.0
@@ -228,6 +234,10 @@ class ChannelConfig:
             scaled_max=float(data['scaled_max']) if data.get('scaled_max') is not None else None,
             thermocouple_type=tc_type,
             cjc_source=data.get('cjc_source', 'internal'),
+            cjc_value=float(data.get('cjc_value', 25.0)),
+            rtd_type=data.get('rtd_type', 'Pt3850'),
+            rtd_wiring=data.get('rtd_wiring', '4-wire'),
+            rtd_current=float(data.get('rtd_current', 0.001)),
             voltage_range=data.get('voltage_range', 10.0),
             current_range_ma=data.get('current_range_ma', 20.0),
             invert=data.get('invert', False),
@@ -349,6 +359,12 @@ class NodeConfig:
                     'pre_scaled_max': ch.pre_scaled_max,
                     'scaled_min': ch.scaled_min,
                     'scaled_max': ch.scaled_max,
+                    'thermocouple_type': ch.thermocouple_type,
+                    'cjc_source': ch.cjc_source,
+                    'cjc_value': ch.cjc_value,
+                    'rtd_type': ch.rtd_type,
+                    'rtd_wiring': ch.rtd_wiring,
+                    'rtd_current': ch.rtd_current,
                     'invert': ch.invert,
                     'default_value': ch.default_value,
                     'alarm_enabled': ch.alarm_enabled,

@@ -1,0 +1,235 @@
+{
+  "channels": {},
+  "layout": {
+    "widgets": [],
+    "pages": [
+      {
+        "id": "default",
+        "name": "Page 1",
+        "widgets": [],
+        "order": 0,
+        "createdAt": "2026-02-05T17:07:57.189Z"
+      }
+    ],
+    "currentPageId": "default",
+    "gridColumns": 24,
+    "rowHeight": 30
+  },
+  "variables": [],
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [
+      {
+        "id": "seq-startup",
+        "name": "System Startup Sequence",
+        "description": "Controlled startup of cooling system",
+        "enabled": true,
+        "steps": [
+          {
+            "action": "set",
+            "channel": "P-101",
+            "value": true,
+            "description": "Start primary pump"
+          },
+          {
+            "action": "wait",
+            "duration": 5,
+            "description": "Wait for flow to establish"
+          },
+          {
+            "action": "set",
+            "channel": "XV-101",
+            "value": true,
+            "description": "Open Pod A valve"
+          },
+          {
+            "action": "set",
+            "channel": "XV-201",
+            "value": true,
+            "description": "Open Pod B valve"
+          },
+          {
+            "action": "wait",
+            "duration": 3,
+            "description": "Wait for valves"
+          },
+          {
+            "action": "set",
+            "channel": "CH-101",
+            "value": true,
+            "description": "Start chiller"
+          },
+          {
+            "action": "set",
+            "channel": "CT-FAN",
+            "value": true,
+            "description": "Start cooling tower fan"
+          }
+        ]
+      },
+      {
+        "id": "seq-shutdown",
+        "name": "System Shutdown Sequence",
+        "description": "Controlled shutdown of cooling system",
+        "enabled": true,
+        "steps": [
+          {
+            "action": "set",
+            "channel": "CH-101",
+            "value": false,
+            "description": "Stop chiller"
+          },
+          {
+            "action": "wait",
+            "duration": 30,
+            "description": "Coast-down period"
+          },
+          {
+            "action": "set",
+            "channel": "CT-FAN",
+            "value": false,
+            "description": "Stop cooling tower"
+          },
+          {
+            "action": "set",
+            "channel": "XV-101",
+            "value": false,
+            "description": "Close Pod A valve"
+          },
+          {
+            "action": "set",
+            "channel": "XV-201",
+            "value": false,
+            "description": "Close Pod B valve"
+          },
+          {
+            "action": "wait",
+            "duration": 5,
+            "description": "Wait for valves"
+          },
+          {
+            "action": "set",
+            "channel": "P-101",
+            "value": false,
+            "description": "Stop pump"
+          }
+        ]
+      }
+    ],
+    "schedules": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": [],
+    "pythonScripts": [],
+    "functionBlocks": [],
+    "formulaBlocks": [],
+    "drawPatterns": {
+      "patterns": [],
+      "history": []
+    },
+    "watchdogs": [],
+    "stateMachines": [],
+    "reportTemplates": [],
+    "scheduledReports": []
+  },
+  "recording": {
+    "config": {
+      "basePath": "./data",
+      "filePrefix": "recording",
+      "fileFormat": "csv",
+      "sampleInterval": 1000,
+      "sampleIntervalUnit": "ms",
+      "decimation": 1,
+      "rotationMode": "size",
+      "maxFileSize": 100,
+      "maxFileDuration": 3600,
+      "maxFileSamples": 10000,
+      "namingPattern": "timestamp",
+      "includeDate": true,
+      "includeTime": true,
+      "includeChannelsInName": false,
+      "sequentialStart": 1,
+      "sequentialPadding": 3,
+      "customSuffix": "",
+      "directoryStructure": "daily",
+      "experimentName": "AI Datacenter Cooling Demo",
+      "writeMode": "buffered",
+      "bufferSize": 100,
+      "flushInterval": 5,
+      "onLimitReached": "rotate",
+      "circularMaxFiles": 10,
+      "mode": "manual",
+      "triggerChannel": "",
+      "triggerCondition": "above",
+      "triggerValue": 0,
+      "preTriggerSamples": 100,
+      "postTriggerSamples": 1000,
+      "scheduleEnabled": false,
+      "scheduleStart": "08:00",
+      "scheduleEnd": "17:00",
+      "scheduleDays": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
+      "csvEnabled": true,
+      "appendOnly": false,
+      "verifyOnClose": true,
+      "includeAuditMetadata": true,
+      "dbEnabled": false,
+      "dbHost": "localhost",
+      "dbPort": 5432,
+      "dbName": "iccsflux",
+      "dbUser": "iccsflux",
+      "dbPassword": "",
+      "dbTable": "recording_data",
+      "dbBatchSize": 50,
+      "dbTimescale": false,
+      "filenamePattern": "AIDC_{timestamp}",
+      "maxFileSizeMb": 50
+    },
+    "selectedChannels": [
+      "TT-101",
+      "TT-102",
+      "TT-103",
+      "TT-104",
+      "TT-201",
+      "TT-202",
+      "TT-301",
+      "TT-302",
+      "FT-101",
+      "FT-201",
+      "FT-301",
+      "PT-101",
+      "PT-102",
+      "PDT-101",
+      "WT-101",
+      "WT-201",
+      "WT-301",
+      "WT-401",
+      "WT-501",
+      "VT-101",
+      "VT-201",
+      "VT-301"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": {},
+    "interlocks": [],
+    "safetyActions": {},
+    "safeStateConfig": {},
+    "autoExecuteSafetyActions": false
+  },
+  "notebook": {
+    "entries": [],
+    "experiments": []
+  },
+  "name": "ICCSFlux (Export 2026-02-05)",
+  "type": "nisystem-project",
+  "version": "2.0",
+  "config": "system.ini",
+  "created": "2026-02-05T11:08:55.550510",
+  "modified": "2026-02-05T11:08:55.576566"
+}

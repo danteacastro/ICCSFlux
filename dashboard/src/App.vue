@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed, watch, provide } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch, provide, markRaw, type Component } from 'vue'
 import { useDashboardStore } from './stores/dashboard'
 import { useMqtt } from './composables/useMqtt'
 import { useScripts } from './composables/useScripts'
@@ -42,6 +42,18 @@ const showLoginDialog = ref(false)
 
 // Tabs
 const activeTab = ref('overview')
+
+// Map activeTab to component for keep-alive (prevents destroy/recreate on tab switch)
+const tabComponents: Record<string, Component> = {
+  overview: markRaw(DashboardGrid),
+  configuration: markRaw(ConfigurationTab),
+  scripts: markRaw(ScriptsTab),
+  data: markRaw(DataTab),
+  safety: markRaw(SafetyTab),
+  notebook: markRaw(NotebookTab),
+  admin: markRaw(AdminTab),
+}
+const activeTabComponent = computed(() => tabComponents[activeTab.value] || DashboardGrid)
 
 // Permission-based EDIT control (viewing is allowed for everyone)
 // These are provided to child components via provide/inject
@@ -723,13 +735,9 @@ async function handleManualSave() {
     <main class="app-main">
       <!-- P&ID Toolbar (shown when in P&ID edit mode on overview) -->
       <PidToolbar v-if="activeTab === 'overview' && store.pidEditMode" />
-      <DashboardGrid v-if="activeTab === 'overview'" />
-      <ConfigurationTab v-else-if="activeTab === 'configuration'" />
-      <ScriptsTab v-else-if="activeTab === 'scripts'" />
-      <DataTab v-else-if="activeTab === 'data'" />
-      <SafetyTab v-else-if="activeTab === 'safety'" />
-      <NotebookTab v-else-if="activeTab === 'notebook'" />
-      <AdminTab v-else-if="activeTab === 'admin'" />
+      <keep-alive>
+        <component :is="activeTabComponent" :key="activeTab" />
+      </keep-alive>
     </main>
 
     <!-- Notifications Toast -->

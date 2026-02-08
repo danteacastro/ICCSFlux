@@ -75,6 +75,7 @@ export type WidgetType =
   | 'crio_status'
   | 'latch_switch'
   | 'script_monitor'
+  | 'heater_zone'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -120,6 +121,7 @@ export interface ChannelConfig {
   // Thermocouple-specific
   thermocouple_type?: 'J' | 'K' | 'T' | 'E' | 'N' | 'R' | 'S' | 'B'
   cjc_source?: 'internal' | 'constant' | 'channel'
+  cjc_value?: number             // Constant CJC temperature in °C (when cjc_source='constant')
 
   // RTD-specific
   rtd_type?: 'Pt100' | 'Pt500' | 'Pt1000' | 'custom'
@@ -639,6 +641,19 @@ export interface WidgetConfig {
   refreshRate?: number
   // Styling
   style?: WidgetStyle
+  // HeaterZone-specific (multi-channel composite widget)
+  pvChannel?: string
+  spChannel?: string
+  enableChannel?: string
+  outputChannel?: string
+  spMin?: number
+  spMax?: number
+  temperatureUnit?: 'F' | 'C'
+  advancedParams?: Array<{
+    channel: string
+    label: string
+    readonly?: boolean
+  }>
 }
 
 // Pipe/Connection point on grid
@@ -726,7 +741,34 @@ export interface PidSymbol {
   }>
   // Hidden built-in ports (by port ID)
   hiddenPorts?: string[]
+
+  // HMI Control config (only used when type starts with 'hmi_')
+  hmiMinValue?: number
+  hmiMaxValue?: number
+  hmiAlarmHigh?: number
+  hmiAlarmLow?: number
+  hmiWarningHigh?: number
+  hmiWarningLow?: number
+  hmiOrientation?: 'horizontal' | 'vertical'
+  hmiUnit?: string
+  // Multi-State Indicator: value-to-state mapping
+  hmiStates?: Array<{ value: number; label: string; color: string }>
+  // Selector Switch: position definitions
+  hmiSelectorPositions?: Array<{ value: number; label: string }>
+  // Command Button: action to execute on press
+  hmiButtonAction?: ButtonAction
+  // Legacy: simple value to write on press (deprecated, use hmiButtonAction)
+  hmiButtonValue?: number
+  // Trend Sparkline: number of history samples to keep
+  hmiSparklineSamples?: number
+  // Off-page connector: target page for navigation
+  linkedPageId?: string
+  // Named layer membership
+  layerId?: string
 }
+
+// Arrow marker types for pipe endpoints
+export type PidArrowType = 'none' | 'arrow' | 'open' | 'dot' | 'diamond' | 'bar'
 
 // Free-form pipe (bezier/polyline, not orthogonal-only)
 export interface PidPipe {
@@ -738,12 +780,21 @@ export interface PidPipe {
   // Styling
   color?: string
   strokeWidth?: number
+  opacity?: number           // 0-1, default 1
   dashed?: boolean
+  dashPattern?: string       // Custom SVG dash-array, e.g. "8,4", overrides dashed
   animated?: boolean
   label?: string
-  // Arrow markers
-  startArrow?: boolean
-  endArrow?: boolean
+  labelPosition?: 'start' | 'middle' | 'end'  // default 'middle'
+  // Arrow markers (PidArrowType or boolean for backwards compat)
+  startArrow?: PidArrowType | boolean
+  endArrow?: PidArrowType | boolean
+  // Rounded corners
+  rounded?: boolean
+  cornerRadius?: number      // default 8
+  // Line jumps at crossings
+  jumpStyle?: 'none' | 'arc' | 'gap'
+  jumpSize?: number          // default 8
   // Z-index for layering
   zIndex?: number
   // === Enhanced Features (Phase 1+) ===
@@ -765,6 +816,8 @@ export interface PidPipe {
   medium?: 'water' | 'steam' | 'gas' | 'air' | 'oil' | 'chemical' | 'electrical' | 'signal' | 'custom'
   // ISA-5.1 line coding
   lineCode?: string          // e.g., 'pneumatic', 'hydraulic', 'electrical'
+  // Named layer membership
+  layerId?: string
 }
 
 // P&ID layer data for a page
@@ -784,6 +837,20 @@ export interface PidLayerData {
   // Grid snapping options (Phase 4)
   gridSnap?: boolean
   gridSize?: number
+  // User-created guide lines (dragged from rulers)
+  guides?: Array<{ id: string; axis: 'h' | 'v'; position: number }>
+  // Named layer metadata
+  layerInfos?: PidLayerInfo[]
+}
+
+// Named layer for P&ID elements
+export interface PidLayerInfo {
+  id: string
+  name: string
+  visible: boolean
+  locked: boolean
+  opacity: number
+  order: number
 }
 
 // ============================================================================
@@ -811,6 +878,8 @@ export interface PidTextAnnotation {
   zIndex?: number
   // Grouping
   groupId?: string
+  // Named layer membership
+  layerId?: string
 }
 
 /**
@@ -1039,18 +1108,84 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   value_table: { w: 3, h: 4, minW: 2, minH: 2 },
   crio_status: { w: 2, h: 2, minW: 2, minH: 2 },
   latch_switch: { w: 1, h: 1, minW: 1, minH: 1 },
-  script_monitor: { w: 3, h: 4, minW: 2, minH: 2 }
+  script_monitor: { w: 3, h: 4, minW: 2, minH: 2 },
+  heater_zone: { w: 2, h: 2, minW: 2, minH: 2 }
 }
 
-// Preset colors for widgets
+// Preset colors for widgets (expanded palette)
 export const WIDGET_COLORS = {
   led: {
-    on: ['#22c55e', '#3b82f6', '#fbbf24', '#ef4444', '#8b5cf6', '#ec4899'],
-    off: ['#166534', '#1e3a8a', '#78350f', '#7f1d1d', '#4c1d95', '#831843']
+    on: [
+      '#22c55e', // green
+      '#3b82f6', // blue
+      '#fbbf24', // amber
+      '#ef4444', // red
+      '#8b5cf6', // violet
+      '#ec4899', // pink
+      '#06b6d4', // cyan
+      '#f97316', // orange
+      '#84cc16', // lime
+      '#14b8a6', // teal
+      '#6366f1', // indigo
+      '#f43f5e', // rose
+    ],
+    off: [
+      '#166534', // green-dark
+      '#1e3a8a', // blue-dark
+      '#78350f', // amber-dark
+      '#7f1d1d', // red-dark
+      '#4c1d95', // violet-dark
+      '#831843', // pink-dark
+      '#164e63', // cyan-dark
+      '#7c2d12', // orange-dark
+      '#365314', // lime-dark
+      '#134e4a', // teal-dark
+      '#312e81', // indigo-dark
+      '#881337', // rose-dark
+    ]
   },
-  text: ['#ffffff', '#60a5fa', '#22c55e', '#fbbf24', '#ef4444', '#a855f7', '#888888'],
-  background: ['transparent', '#1a1a2e', '#0f0f1a', '#1e3a5f', '#14532d', '#7f1d1d', '#78350f'],
-  button: ['#3b82f6', '#22c55e', '#ef4444', '#fbbf24', '#8b5cf6', '#ec4899', '#6b7280']
+  text: [
+    '#ffffff', // white
+    '#60a5fa', // blue
+    '#4ade80', // green
+    '#fbbf24', // amber
+    '#ef4444', // red
+    '#a855f7', // purple
+    '#22d3ee', // cyan
+    '#fb923c', // orange
+    '#a3e635', // lime
+    '#2dd4bf', // teal
+    '#f472b6', // pink
+    '#888888', // gray
+  ],
+  background: [
+    'transparent',
+    '#1a1a2e', // dark navy
+    '#0f0f1a', // darker
+    '#1e3a5f', // blue tint
+    '#14532d', // green tint
+    '#7f1d1d', // red tint
+    '#78350f', // amber tint
+    '#164e63', // cyan tint
+    '#4c1d95', // purple tint
+    '#134e4a', // teal tint
+    '#1e1b4b', // indigo tint
+    '#3f3f46', // zinc
+  ],
+  button: [
+    '#3b82f6', // blue
+    '#22c55e', // green
+    '#ef4444', // red
+    '#fbbf24', // amber
+    '#8b5cf6', // violet
+    '#ec4899', // pink
+    '#06b6d4', // cyan
+    '#f97316', // orange
+    '#14b8a6', // teal
+    '#6366f1', // indigo
+    '#84cc16', // lime
+    '#6b7280', // gray
+  ]
 }
 
 // ============================================

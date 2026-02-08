@@ -787,6 +787,12 @@ class CRIONodeV2:
                 invert=ch_data.get('invert', False),
                 default_value=ch_data.get('default_value', 0.0),
                 thermocouple_type=tc_type,
+                cjc_source=ch_data.get('cjc_source', 'internal'),
+                cjc_value=float(ch_data.get('cjc_value', 25.0)),
+                # RTD
+                rtd_type=ch_data.get('rtd_type', 'Pt3850'),
+                rtd_wiring=ch_data.get('rtd_wiring', '4-wire'),
+                rtd_current=float(ch_data.get('rtd_current', 0.001)),
                 voltage_range=ch_data.get('voltage_range', 10.0),
                 current_range_ma=ch_data.get('current_range_ma', 20.0),
                 # Alarm configuration
@@ -1452,8 +1458,8 @@ class CRIONodeV2:
                     # Dashboard maps: voltage->VI, current->CI, thermocouple->TC, etc.
                     channels = []
                     try:
-                        for ch in device.ai_physical_chans:
-                            ch_type = self._get_channel_category(product_type, 'ai')
+                        for i, ch in enumerate(device.ai_physical_chans):
+                            ch_type = self._get_channel_category(product_type, 'ai', i)
                             channels.append({
                                 'name': str(ch.name),
                                 'physical_channel': str(ch.name),
@@ -1524,7 +1530,12 @@ class CRIONodeV2:
 
         return modules
 
-    def _get_channel_category(self, product_type: str, channel_type: str) -> str:
+    # Combo modules: (alt_category, split_index) — channels at index >= split use alt
+    _COMBO_MODULES = {
+        '9207': ('current', 8),  # ai0-7 = voltage, ai8-15 = current
+    }
+
+    def _get_channel_category(self, product_type: str, channel_type: str, channel_index: int = 0) -> str:
         """Determine channel type based on module type.
 
         Returns full type names that match dashboard CSS classes.
@@ -1533,6 +1544,11 @@ class CRIONodeV2:
         import re
         match = re.search(r'9\d{3}', product_type)
         module_num = match.group() if match else ''
+
+        # Check combo modules first (e.g., NI 9207: ai0-7 voltage, ai8-15 current)
+        combo = self._COMBO_MODULES.get(module_num)
+        if combo and channel_index >= combo[1]:
+            return combo[0]
 
         # Thermocouple modules
         if module_num in ['9210', '9211', '9212', '9213', '9214', '9219']:
@@ -1543,27 +1559,42 @@ class CRIONodeV2:
             return 'rtd'
 
         # Current input modules
-        if module_num in ['9203', '9207', '9208', '9227']:
+        if module_num in ['9203', '9208', '9227', '9246', '9247', '9253']:
             return 'current'
 
         # Current output modules
         if module_num in ['9265', '9266']:
             return 'current_output'
 
-        # Voltage input modules
-        if module_num in ['9201', '9202', '9205', '9206', '9215', '9220', '9221', '9229', '9239']:
+        # Voltage input modules (9207 combo handled above)
+        if module_num in ['9201', '9202', '9205', '9206', '9207', '9215',
+                          '9220', '9221', '9222', '9223', '9229', '9239']:
             return 'voltage'
 
         # Voltage output modules
-        if module_num in ['9260', '9263', '9264', '9269']:
+        if module_num in ['9260', '9262', '9263', '9264', '9269']:
             return 'voltage_output'
 
+        # Strain/Bridge modules
+        if module_num in ['9235', '9236', '9237']:
+            return 'strain_input'
+
+        # IEPE/Accelerometer modules
+        if module_num in ['9230', '9231', '9232', '9233', '9234', '9250', '9251']:
+            return 'iepe_input'
+
+        # Counter modules
+        if module_num in ['9361']:
+            return 'counter'
+
         # Digital input modules
-        if module_num in ['9401', '9402', '9411', '9421', '9422', '9423', '9425', '9426', '9435']:
+        if module_num in ['9375', '9401', '9402', '9403', '9411',
+                          '9421', '9422', '9423', '9425', '9426', '9435']:
             return 'digital_input'
 
         # Digital output modules
-        if module_num in ['9472', '9474', '9475', '9476', '9477', '9478']:
+        if module_num in ['9470', '9472', '9474', '9475', '9476',
+                          '9477', '9478', '9481', '9482', '9485']:
             return 'digital_output'
 
         # Default based on channel type

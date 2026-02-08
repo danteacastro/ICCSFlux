@@ -112,22 +112,46 @@ onUnmounted(() => clearConfirmTimer())
 
 <template>
   <div class="toggle-switch" :class="{ disabled: !canToggle, blocked: isBlocked }" :title="statusText">
-    <div class="label">{{ displayLabel }}</div>
-    <button
-      v-if="!showConfirm"
-      class="switch"
-      :class="{ on: isOn }"
-      :style="{ backgroundColor: isOn ? onColor : offColor }"
-      @click="toggle"
-      :disabled="!canToggle"
-    >
-      <span class="slider"></span>
-    </button>
-    <div v-else class="confirm-panel">
-      <span class="confirm-text">Confirm?</span>
-      <button class="confirm-btn yes" @click="confirmAction">✓</button>
-      <button class="confirm-btn no" @click="cancelConfirm">✕</button>
+    <!-- Compact horizontal layout (shown when short) -->
+    <div class="layout-horizontal">
+      <div class="label">{{ displayLabel }}</div>
+      <button
+        v-if="!showConfirm"
+        class="switch"
+        :class="{ on: isOn }"
+        :style="{ backgroundColor: isOn ? onColor : offColor }"
+        @click="toggle"
+        :disabled="!canToggle"
+      >
+        <span class="slider"></span>
+      </button>
+      <div v-else class="confirm-panel">
+        <span class="confirm-text">Confirm?</span>
+        <button class="confirm-btn yes" @click="confirmAction">✓</button>
+        <button class="confirm-btn no" @click="cancelConfirm">✕</button>
+      </div>
     </div>
+
+    <!-- Vertical layout (shown when tall enough) -->
+    <div class="layout-vertical">
+      <div class="label">{{ displayLabel }}</div>
+      <button
+        v-if="!showConfirm"
+        class="switch"
+        :class="{ on: isOn }"
+        :style="{ backgroundColor: isOn ? onColor : offColor }"
+        @click="toggle"
+        :disabled="!canToggle"
+      >
+        <span class="slider"></span>
+      </button>
+      <div v-else class="confirm-panel">
+        <span class="confirm-text">Confirm?</span>
+        <button class="confirm-btn yes" @click="confirmAction">✓</button>
+        <button class="confirm-btn no" @click="cancelConfirm">✕</button>
+      </div>
+    </div>
+
     <InterlockBlockOverlay v-if="isBlocked" :blocked-by="blockStatus.blockedBy" />
   </div>
 </template>
@@ -136,7 +160,6 @@ onUnmounted(() => clearConfirmTimer())
 .toggle-switch {
   position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
@@ -151,34 +174,56 @@ onUnmounted(() => clearConfirmTimer())
   opacity: 0.5;
 }
 
+/* ========================================
+   LAYOUT SWITCHING VIA CONTAINER QUERIES
+   ======================================== */
+
+/* Default: show horizontal (compact), hide vertical */
+.layout-horizontal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 4px;
+}
+
+.layout-horizontal .label {
+  flex: 1;
+  text-align: left;
+  min-width: 30px;
+}
+
+.layout-vertical {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.layout-vertical .label {
+  margin-bottom: 4px;
+}
+
+/* When tall enough (2+ rows ~55px), switch to vertical layout */
+@container (min-height: 55px) {
+  .layout-horizontal {
+    display: none;
+  }
+  .layout-vertical {
+    display: flex;
+  }
+}
+
 .label {
   font-size: 0.65rem;
-  color: var(--label-color, #888);
+  font-weight: 500;
+  color: #aaa;
   text-transform: uppercase;
-  margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-}
-
-/* Compact horizontal layout when short (1 row ~30-40px) */
-@container (max-height: 50px) {
-  .toggle-switch {
-    flex-direction: row;
-    gap: 8px;
-    padding: 4px 8px;
-  }
-
-  .label {
-    margin-bottom: 0;
-    flex: 1;
-    text-align: left;
-  }
-
-  .switch {
-    flex-shrink: 0;
-  }
 }
 
 .switch {

@@ -20,6 +20,7 @@ const props = defineProps<{
   showUnit?: boolean
   style?: WidgetStyle
   visualStyle?: SetpointStyle
+  h?: number  // Grid height - auto-compact when h=1
 }>()
 
 const containerStyle = computed(() => {
@@ -336,41 +337,67 @@ function onKnobMouseUp() {
 
 <template>
   <div class="setpoint-widget" :class="[visualStyle || 'standard', { disabled: isDisabled, blocked: isBlocked, warning: warningMessage }]" :style="containerStyle">
-    <div class="label">{{ displayLabel }}</div>
-
     <!-- Warning for misconfigured widget -->
     <div v-if="warningMessage" class="warning-message">{{ warningMessage }}</div>
 
     <!-- Standard style: +/- buttons -->
     <template v-else-if="!visualStyle || visualStyle === 'standard'">
-      <div class="setpoint-controls">
-        <button class="step-btn" @click="decrement" :disabled="isDisabled">−</button>
-
-        <div class="value-container" @click="startEdit">
-          <template v-if="!isEditing">
-            <span class="value">{{ displayValue }}</span>
-            <span v-if="unit" class="unit">{{ unit }}</span>
-          </template>
-          <input
-            v-else
-            ref="inputRef"
-            type="number"
-            v-model="inputValue"
-            :min="minVal"
-            :max="maxVal"
-            :step="stepVal"
-            @blur="applyValue"
-            @keydown="onKeydown"
-            autofocus
-            class="value-input"
-          />
+      <!-- Compact horizontal layout (shown when short) -->
+      <div class="layout-horizontal">
+        <div class="label">{{ displayLabel }}</div>
+        <div class="setpoint-controls">
+          <button class="step-btn" @click="decrement" :disabled="isDisabled">−</button>
+          <div class="value-container" @click="startEdit">
+            <template v-if="!isEditing">
+              <span class="value">{{ displayValue }}</span>
+              <span v-if="unit" class="unit">{{ unit }}</span>
+            </template>
+            <input
+              v-else
+              ref="inputRef"
+              type="number"
+              v-model="inputValue"
+              :min="minVal"
+              :max="maxVal"
+              :step="stepVal"
+              @blur="applyValue"
+              @keydown="onKeydown"
+              autofocus
+              class="value-input"
+            />
+          </div>
+          <button class="step-btn" @click="increment" :disabled="isDisabled">+</button>
         </div>
-
-        <button class="step-btn" @click="increment" :disabled="isDisabled">+</button>
       </div>
 
-      <div class="range-info">
-        {{ minVal }} - {{ maxVal }} {{ unit }}
+      <!-- Vertical layout (shown when tall enough) -->
+      <div class="layout-vertical">
+        <div class="label">{{ displayLabel }}</div>
+        <div class="setpoint-controls">
+          <button class="step-btn" @click="decrement" :disabled="isDisabled">−</button>
+          <div class="value-container" @click="startEdit">
+            <template v-if="!isEditing">
+              <span class="value">{{ displayValue }}</span>
+              <span v-if="unit" class="unit">{{ unit }}</span>
+            </template>
+            <input
+              v-else
+              type="number"
+              v-model="inputValue"
+              :min="minVal"
+              :max="maxVal"
+              :step="stepVal"
+              @blur="applyValue"
+              @keydown="onKeydown"
+              autofocus
+              class="value-input"
+            />
+          </div>
+          <button class="step-btn" @click="increment" :disabled="isDisabled">+</button>
+        </div>
+        <div class="range-info">
+          {{ minVal }} - {{ maxVal }} {{ unit }}
+        </div>
       </div>
     </template>
 
@@ -423,7 +450,6 @@ function onKnobMouseUp() {
 <style scoped>
 .setpoint-widget {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
@@ -433,11 +459,59 @@ function onKnobMouseUp() {
   border: 1px solid var(--border-color, #2a2a4a);
   position: relative;
   gap: 2px;
+  container-type: size;
+}
+
+/* ========================================
+   LAYOUT SWITCHING VIA CONTAINER QUERIES
+   ======================================== */
+
+/* Default: show horizontal (compact), hide vertical */
+.layout-horizontal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 4px;
+}
+
+.layout-horizontal .label {
+  flex: 1;
+  text-align: left;
+  min-width: 30px;
+}
+
+.layout-horizontal .step-btn {
+  width: 18px;
+  height: 18px;
+}
+
+.layout-horizontal .value {
+  font-size: 0.85rem;
+}
+
+.layout-vertical {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+/* When tall enough (2+ rows ~55px), switch to vertical layout */
+@container (min-height: 55px) {
+  .layout-horizontal {
+    display: none;
+  }
+  .layout-vertical {
+    display: flex;
+  }
 }
 
 .label {
-  font-size: 0.55rem;
-  color: #888;
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: #aaa;
   text-transform: uppercase;
   max-width: 100%;
   overflow: hidden;

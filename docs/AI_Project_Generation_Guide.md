@@ -63,8 +63,8 @@ The `system` object configures the DAQ backend service.
   "mqtt_broker": "localhost",
   "mqtt_port": 1883,
   "mqtt_base_topic": "nisystem",
-  "scan_rate_hz": 50,
-  "publish_rate_hz": 10,
+  "scan_rate_hz": 10,
+  "publish_rate_hz": 4,
   "simulation_mode": true,
   "log_directory": "./logs",
   "system_name": "My Test Facility",
@@ -83,7 +83,7 @@ The `system` object configures the DAQ backend service.
 | `mqtt_port` | number | No | `1883` | MQTT broker port |
 | `mqtt_base_topic` | string | No | `"nisystem"` | Base topic prefix for all MQTT messages |
 | `scan_rate_hz` | number | No | `50` | Hardware scan rate in Hz (1-1000) |
-| `publish_rate_hz` | number | No | `10` | Rate to publish data to MQTT (1-100) |
+| `publish_rate_hz` | number | No | `4` | Rate to publish data to MQTT (1-4 Hz max) |
 | `simulation_mode` | boolean | No | `false` | If true, generates simulated data instead of reading hardware |
 | `log_directory` | string | No | `"./logs"` | Directory for log files |
 | `system_name` | string | **Yes** | - | Human-readable name shown in UI |
@@ -97,9 +97,10 @@ The `system` object configures the DAQ backend service.
 | Application | Scan Rate | Publish Rate |
 |-------------|-----------|--------------|
 | Slow thermal processes | 1-10 Hz | 1-2 Hz |
-| General industrial | 10-50 Hz | 4-10 Hz |
-| Fast control loops | 50-200 Hz | 10-20 Hz |
-| Vibration/dynamic | 500-1000 Hz | 50-100 Hz |
+| General industrial | 10-50 Hz | 2-4 Hz |
+| Fast control loops | 50-100 Hz | 4 Hz |
+
+**Note:** The maximum publish rate is 4 Hz. Higher internal scan rates are allowed for PID loops and script calculations, but MQTT publishing is capped at 4 Hz.
 
 ---
 
@@ -152,6 +153,8 @@ The `channels` object is a dictionary where **keys are TAG names** (unique ident
 
 ### Channel Types Overview
 
+**Valid channel types** (ONLY these are allowed in `channel_type` field):
+
 | Type | Description | Typical Use |
 |------|-------------|-------------|
 | `thermocouple` | Temperature sensor (TC) | Process temperatures |
@@ -162,6 +165,31 @@ The `channels` object is a dictionary where **keys are TAG names** (unique ident
 | `current_output` | 4-20mA analog output | Control signals |
 | `digital_input` | On/Off input | Switches, status signals |
 | `digital_output` | On/Off output | Valves, relays, indicators |
+| `counter` | Counter/pulse input | Flow totalizers, encoder counts |
+| `strain_input` | Strain gauge input | Load cells, force sensors |
+| `iepe_input` | IEPE accelerometer | Vibration sensors |
+| `resistance_input` | Resistance measurement | Resistance sensors |
+
+**IMPORTANT:** Do NOT use `script`, `calculated`, `virtual`, or any other type not listed above. These are NOT valid channel types and will cause the project to fail to load.
+
+### Calculated/Derived Values
+
+Calculated values (PUE, COP, delta-T, etc.) should NOT be defined as channels. Instead:
+1. Use Python scripts in the `pythonScripts` section
+2. Use the `publish()` function to output calculated values
+3. Published script values appear on MQTT but are not displayed in dashboard widgets
+
+Example script for calculated value:
+```python
+# In pythonScripts section
+{
+  "id": "calc-pue",
+  "name": "Power Usage Effectiveness",
+  "enabled": true,
+  "runOnStartup": true,
+  "code": "it_power = tags['WT_IT_Load']\ncooling = tags['WT_Cooling']\npue = (it_power + cooling) / it_power if it_power > 100 else 1.0\npublish('CALC-PUE', pue, units='')"
+}
+```
 
 ---
 
@@ -1184,8 +1212,8 @@ Visual separator line.
     "mqtt_broker": "localhost",
     "mqtt_port": 1883,
     "mqtt_base_topic": "nisystem",
-    "scan_rate_hz": 20,
-    "publish_rate_hz": 5,
+    "scan_rate_hz": 10,
+    "publish_rate_hz": 4,
     "simulation_mode": true,
     "system_name": "HX Test Stand",
     "system_id": "HX-001"

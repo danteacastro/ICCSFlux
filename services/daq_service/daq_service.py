@@ -512,7 +512,7 @@ class DAQService:
             logger.error(f"Configuration validation failed: {e}")
             raise
 
-    def _apply_project_config(self, project_data: Dict[str, Any]) -> bool:
+    def _apply_project_config(self, project_data: Dict[str, Any]) -> tuple[bool, str]:
         """Apply configuration from project JSON (channels, system settings)
 
         This replaces the need for a separate .ini file - all config is in the project JSON.
@@ -521,7 +521,7 @@ class DAQService:
             project_data: The loaded project JSON dict
 
         Returns:
-            True if config was applied successfully
+            Tuple of (success, error_message). error_message is empty on success.
         """
         try:
             # Parse system settings from project
@@ -582,9 +582,10 @@ class DAQService:
                     scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                     voltage_range=float(ch_data.get("voltage_range", 10.0)),
                     current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
-                    terminal_config=ch_data.get("terminal_config", "RSE"),
+                    terminal_config=ch_data.get("terminal_config", "DEFAULT"),
                     thermocouple_type=tc_type,
                     cjc_source=ch_data.get("cjc_source", "internal"),
+                    cjc_value=float(ch_data.get("cjc_value", 25.0)),
                     # RTD
                     rtd_type=ch_data.get("rtd_type", "Pt100"),
                     rtd_resistance=float(ch_data.get("rtd_resistance", 100.0)),
@@ -674,6 +675,15 @@ class DAQService:
                 self.alarm_manager.clear_all(clear_configs=True)
             self._init_alarm_manager(from_project=True)
 
+            # Load alarm flood detection settings from project safety config
+            safety_data = project_data.get('safety', {})
+            flood_cfg = safety_data.get('alarmFlood')
+            if flood_cfg and isinstance(flood_cfg, dict) and self.alarm_manager:
+                self.alarm_manager.configure_flood(
+                    threshold=flood_cfg.get('threshold', 10),
+                    window_s=flood_cfg.get('window_s', 60.0)
+                )
+
             # Clear and reload safety manager interlocks from project
             if self.safety_manager:
                 self.safety_manager.clear_all()
@@ -733,13 +743,14 @@ class DAQService:
             # This ensures cRIO has TAG name -> physical channel mappings
             self._push_config_to_all_crios()
 
-            return True
+            return True, ""
 
         except Exception as e:
-            logger.error(f"Failed to apply project config: {e}")
+            error_msg = str(e)
+            logger.error(f"Failed to apply project config: {error_msg}")
             import traceback
             traceback.print_exc()
-            return False
+            return False, error_msg
 
     def _init_modbus_reader(self):
         """Initialize Modbus reader if Modbus devices are configured"""
@@ -6330,6 +6341,15 @@ Unit conversions:
                                 f"channel={self.config.system.watchdog_output_channel}, "
                                 f"rate={self.config.system.watchdog_output_rate_hz} Hz")
 
+            # Update alarm flood detection parameters if provided
+            if 'alarm_flood' in payload and self.alarm_manager:
+                af = payload['alarm_flood']
+                if isinstance(af, dict):
+                    self.alarm_manager.configure_flood(
+                        threshold=af.get('threshold', 10),
+                        window_s=af.get('window_s', 60.0)
+                    )
+
             # Publish status to reflect new settings
             self._publish_system_status()
 
@@ -6719,9 +6739,10 @@ Unit conversions:
             if has_embedded_channels:
                 # New format: Apply channels and system settings from project JSON
                 logger.info(f"Loading project with embedded config: {len(project_data['channels'])} channels")
-                if not self._apply_project_config(project_data):
+                success, error_msg = self._apply_project_config(project_data)
+                if not success:
                     if publish:
-                        self._publish_project_response(False, "Failed to apply project configuration")
+                        self._publish_project_response(False, f"Failed to apply project configuration: {error_msg}")
                     return False
             else:
                 # Legacy format: Check if we need to switch config files
@@ -6888,7 +6909,8 @@ Unit conversions:
             logger.info(f"Saved imported project to {project_path}")
 
             # Apply the project configuration
-            if self._apply_project_config(payload):
+            success, error_msg = self._apply_project_config(payload)
+            if success:
                 self.current_project_data = payload
                 self.current_project_path = project_path  # Now has a file path
                 self._save_last_project_path(project_path)
@@ -6898,7 +6920,7 @@ Unit conversions:
                 logger.info(f"Imported project: {project_name} -> {filename}")
                 self._publish_project_response(True, f"Project '{project_name}' imported to projects/{filename}")
             else:
-                self._publish_project_response(False, "Failed to apply project configuration")
+                self._publish_project_response(False, f"Failed to apply project configuration: {error_msg}")
         except Exception as e:
             logger.error(f"Error importing project JSON: {e}")
             self._publish_project_response(False, str(e))
@@ -9924,6 +9946,16 @@ Unit conversions:
                 logger.warning(f"Invalid thermocouple type: {config_data['tc_type']}")
         if 'cjc_source' in config_data:
             channel.cjc_source = config_data['cjc_source']
+        if 'cjc_value' in config_data:
+            channel.cjc_value = float(config_data['cjc_value'])
+
+        # RTD parameters
+        if 'rtd_type' in config_data:
+            channel.rtd_type = config_data['rtd_type']
+        if 'rtd_wiring' in config_data:
+            channel.rtd_wiring = config_data['rtd_wiring']
+        if 'rtd_current' in config_data:
+            channel.rtd_current = float(config_data['rtd_current'])
 
         # Voltage input parameters
         if 'voltage_range' in config_data:
@@ -10202,6 +10234,10 @@ Unit conversions:
                 current_range_ma=float(config_data.get('current_range_ma', 20.0)),
                 thermocouple_type=tc_type,
                 cjc_source=config_data.get('cjc_source', 'internal'),
+                cjc_value=float(config_data.get('cjc_value', 25.0)),
+                rtd_type=config_data.get('rtd_type', 'Pt100'),
+                rtd_wiring=config_data.get('rtd_wiring', config_data.get('resistance_config', '4-wire')),
+                rtd_current=float(config_data.get('rtd_current', 0.001)),
                 counter_mode=config_data.get('counter_mode', 'frequency'),
                 pulses_per_unit=float(config_data.get('pulses_per_unit', 1.0)),
                 counter_edge=config_data.get('counter_edge', 'rising'),
@@ -10410,6 +10446,8 @@ Unit conversions:
                     channel_type_str = 'rtd'
                 elif hw_type in ('voltage_input', 'analog_input'):
                     channel_type_str = 'voltage_input'
+                elif hw_type in ('counter_input', 'ci'):
+                    channel_type_str = 'counter'
                 # Fallback to category for specialized types
                 elif category == 'thermocouple':
                     channel_type_str = 'thermocouple'
@@ -10419,7 +10457,7 @@ Unit conversions:
                     channel_type_str = 'rtd'
                 elif category == 'strain_input':
                     channel_type_str = 'strain'
-                elif category == 'counter_input':
+                elif category in ('counter', 'counter_input'):
                     channel_type_str = 'counter'
                 elif category == 'voltage_input':
                     channel_type_str = 'voltage_input'
@@ -10465,9 +10503,10 @@ Unit conversions:
                     group=ch_config.get('group', ''),
                     thermocouple_type=tc_type,
                     cjc_source=ch_config.get('cjc_source', 'internal'),
+                    cjc_value=float(ch_config.get('cjc_value', 25.0)),
                     voltage_range=float(ch_config.get('voltage_range', 10.0)),
                     current_range_ma=float(ch_config.get('current_range_ma', 20.0)),
-                    terminal_config=ch_config.get('terminal_config', 'RSE'),
+                    terminal_config=ch_config.get('terminal_config', 'DEFAULT'),
                     # RTD
                     rtd_type=ch_config.get('rtd_type', 'Pt100'),
                     rtd_wiring=ch_config.get('rtd_wiring', ch_config.get('resistance_config', '4-wire')),
@@ -11296,6 +11335,11 @@ Unit conversions:
                     # Thermocouple-specific
                     "thermocouple_type": ch.thermocouple_type.value if ch.thermocouple_type else None,
                     "cjc_source": ch.cjc_source,
+                    "cjc_value": getattr(ch, 'cjc_value', 25.0),
+                    # RTD-specific
+                    "rtd_type": getattr(ch, 'rtd_type', 'Pt100'),
+                    "rtd_wiring": getattr(ch, 'rtd_wiring', '4-wire'),
+                    "rtd_current": getattr(ch, 'rtd_current', 0.001),
                     # Ranges
                     "voltage_range": ch.voltage_range,
                     "current_range_ma": ch.current_range_ma,
@@ -11452,7 +11496,7 @@ Unit conversions:
                 section['log_interval_ms'] = str(ch.log_interval_ms)
 
             # Terminal configuration (only save if not default)
-            if ch.terminal_config != 'RSE':
+            if ch.terminal_config != 'DEFAULT':
                 section['terminal_config'] = ch.terminal_config
 
             # RTD-specific (only save if not default)
@@ -11567,6 +11611,10 @@ Unit conversions:
                 "safety_interlock": channel.safety_interlock,
                 "thermocouple_type": channel.thermocouple_type.value if channel.thermocouple_type else None,
                 "cjc_source": channel.cjc_source,
+                "cjc_value": getattr(channel, 'cjc_value', 25.0),
+                "rtd_type": getattr(channel, 'rtd_type', 'Pt100'),
+                "rtd_wiring": getattr(channel, 'rtd_wiring', '4-wire'),
+                "rtd_current": getattr(channel, 'rtd_current', 0.001),
                 "voltage_range": channel.voltage_range,
                 "current_range_ma": channel.current_range_ma,
                 "log_interval_ms": channel.log_interval_ms,

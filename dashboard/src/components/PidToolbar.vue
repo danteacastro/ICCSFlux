@@ -13,140 +13,34 @@
  * - Keyboard shortcuts
  */
 
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
-import { SCADA_SYMBOLS, type ScadaSymbolType } from '../assets/symbols'
+import PidLayerPanel from './PidLayerPanel.vue'
 
 const store = useDashboardStore()
 
-// Text tool mode
-const textToolActive = ref(false)
-
-// Alignment dropdown
-const alignMenuOpen = ref(false)
-
-// Currently selected symbol type for adding
-const selectedSymbolType = ref<ScadaSymbolType>('solenoidValve')
-
-// Available symbols with display names - grouped by category
-const availableSymbols: { type: ScadaSymbolType; name: string; category: string }[] = [
-  // Valves
-  { type: 'solenoidValve', name: 'Solenoid Valve', category: 'Valves' },
-  { type: 'controlValve', name: 'Control Valve', category: 'Valves' },
-  { type: 'ballValve', name: 'Ball Valve', category: 'Valves' },
-  { type: 'gateValve', name: 'Gate Valve', category: 'Valves' },
-  { type: 'checkValve', name: 'Check Valve', category: 'Valves' },
-  { type: 'reliefValve', name: 'Relief Valve', category: 'Valves' },
-  { type: 'butterflyValve', name: 'Butterfly Valve', category: 'Valves' },
-  { type: 'threeWayValve', name: '3-Way Valve', category: 'Valves' },
-  { type: 'needleValve', name: 'Needle Valve', category: 'Valves' },
-  { type: 'diaphragmValve', name: 'Diaphragm Valve', category: 'Valves' },
-  { type: 'plugValve', name: 'Plug Valve', category: 'Valves' },
-  { type: 'pressureRegulator', name: 'Pressure Regulator', category: 'Valves' },
-  // Equipment
-  { type: 'pump', name: 'Pump (Centrifugal)', category: 'Equipment' },
-  { type: 'pdPump', name: 'PD Pump', category: 'Equipment' },
-  { type: 'diaphragmPump', name: 'Diaphragm Pump', category: 'Equipment' },
-  { type: 'gearPump', name: 'Gear Pump', category: 'Equipment' },
-  { type: 'compressor', name: 'Compressor', category: 'Equipment' },
-  { type: 'blower', name: 'Blower/Fan', category: 'Equipment' },
-  { type: 'axialFan', name: 'Axial Fan', category: 'Equipment' },
-  { type: 'motor', name: 'Motor', category: 'Equipment' },
-  { type: 'filter', name: 'Filter', category: 'Equipment' },
-  { type: 'mixer', name: 'Mixer', category: 'Equipment' },
-  { type: 'agitator', name: 'Agitator', category: 'Equipment' },
-  { type: 'conveyor', name: 'Conveyor', category: 'Equipment' },
-  { type: 'centrifuge', name: 'Centrifuge', category: 'Equipment' },
-  { type: 'dryer', name: 'Dryer', category: 'Equipment' },
-  // Vessels
-  { type: 'tank', name: 'Tank (Vertical)', category: 'Vessels' },
-  { type: 'horizontalTank', name: 'Horizontal Tank', category: 'Vessels' },
-  { type: 'reactor', name: 'Reactor', category: 'Vessels' },
-  { type: 'column', name: 'Column/Tower', category: 'Vessels' },
-  { type: 'drum', name: 'Drum/Accumulator', category: 'Vessels' },
-  { type: 'cyclone', name: 'Cyclone Separator', category: 'Vessels' },
-  { type: 'separator', name: 'Separator/KO Drum', category: 'Vessels' },
-  { type: 'scrubber', name: 'Scrubber', category: 'Vessels' },
-  { type: 'absorber', name: 'Absorber Tower', category: 'Vessels' },
-  // Heat Exchangers
-  { type: 'heatExchanger', name: 'Shell & Tube HX', category: 'Heat Exchangers' },
-  { type: 'plateHeatExchanger', name: 'Plate Heat Exchanger', category: 'Heat Exchangers' },
-  { type: 'heater', name: 'Heater', category: 'Heat Exchangers' },
-  { type: 'cooler', name: 'Cooler', category: 'Heat Exchangers' },
-  { type: 'condenser', name: 'Condenser', category: 'Heat Exchangers' },
-  { type: 'evaporator', name: 'Evaporator', category: 'Heat Exchangers' },
-  { type: 'boiler', name: 'Boiler', category: 'Heat Exchangers' },
-  { type: 'airCooler', name: 'Air Cooler (Fin Fan)', category: 'Heat Exchangers' },
-  // Instruments
-  { type: 'pressureTransducer', name: 'Pressure Transmitter', category: 'Instruments' },
-  { type: 'temperatureElement', name: 'Temperature Element', category: 'Instruments' },
-  { type: 'flowMeter', name: 'Flow Meter', category: 'Instruments' },
-  { type: 'levelTransmitter', name: 'Level Transmitter', category: 'Instruments' },
-  { type: 'pressureGauge', name: 'Pressure Gauge', category: 'Instruments' },
-  { type: 'analyzer', name: 'Analyzer', category: 'Instruments' },
-  { type: 'phSensor', name: 'pH Sensor', category: 'Instruments' },
-  { type: 'conductivitySensor', name: 'Conductivity Sensor', category: 'Instruments' },
-  { type: 'loadCell', name: 'Load Cell/Scale', category: 'Instruments' },
-  { type: 'vibrationSensor', name: 'Vibration Sensor', category: 'Instruments' },
-  { type: 'orificePlate', name: 'Orifice Plate', category: 'Instruments' },
-  // Electrical
-  { type: 'vfd', name: 'VFD (Variable Freq Drive)', category: 'Electrical' },
-  { type: 'circuitBreaker', name: 'Circuit Breaker', category: 'Electrical' },
-  { type: 'transformer', name: 'Transformer', category: 'Electrical' },
-  { type: 'powerSupply', name: 'Power Supply', category: 'Electrical' },
-  { type: 'generator', name: 'Generator', category: 'Electrical' },
-  // Power Generation
-  { type: 'turbine', name: 'Turbine', category: 'Power Generation' },
-  { type: 'chpUnit', name: 'CHP Unit', category: 'Power Generation' },
-  // Piping
-  { type: 'flange', name: 'Flange', category: 'Piping' },
-  { type: 'reducer', name: 'Reducer', category: 'Piping' },
-  { type: 'pipeTee', name: 'Pipe Tee', category: 'Piping' },
-  { type: 'elbow90', name: '90° Elbow', category: 'Piping' },
-  { type: 'strainer', name: 'Strainer', category: 'Piping' },
-  { type: 'sightGlass', name: 'Sight Glass', category: 'Piping' },
-  // Flow Arrows
-  { type: 'flowArrowRight', name: 'Flow Arrow →', category: 'Connectors' },
-  { type: 'flowArrowLeft', name: 'Flow Arrow ←', category: 'Connectors' },
-  { type: 'flowArrowDown', name: 'Flow Arrow ↓', category: 'Connectors' },
-  { type: 'flowArrowUp', name: 'Flow Arrow ↑', category: 'Connectors' },
-  { type: 'offPageRight', name: 'Off-Page →', category: 'Connectors' },
-  { type: 'offPageLeft', name: 'Off-Page ←', category: 'Connectors' },
-]
-
-// Symbol categories (computed from available symbols)
-const symbolCategories = computed(() => {
-  const categories = new Set(availableSymbols.map(s => s.category))
-  return Array.from(categories)
+// Pipe drawing options — shared with canvas via store
+const pipeColor = computed({
+  get: () => store.pidPipeColor,
+  set: (v: string) => { store.pidPipeColor = v }
+})
+const pipeDashed = computed({
+  get: () => store.pidPipeDashed,
+  set: (v: boolean) => { store.pidPipeDashed = v }
+})
+const pipeAnimated = computed({
+  get: () => store.pidPipeAnimated,
+  set: (v: boolean) => { store.pidPipeAnimated = v }
 })
 
-function getSymbolsInCategory(category: string) {
-  return availableSymbols.filter(s => s.category === category)
-}
-
-// Pipe drawing options
-const pipeColor = ref('#60a5fa')
-const pipeDashed = ref(false)
-const pipeAnimated = ref(false)
+// UI state
+const textToolActive = ref(false)
+const alignMenuOpen = ref(false)
+const layerPanelOpen = ref(false)
 
 // Toggle pipe drawing mode
 function togglePipeDrawing() {
   store.setPidDrawingMode(!store.pidDrawingMode)
-}
-
-// Add a new symbol to the canvas
-function addSymbol() {
-  // Add symbol at center of viewport (will be draggable)
-  store.addPidSymbol({
-    type: selectedSymbolType.value,
-    x: 200,
-    y: 200,
-    width: 60,
-    height: 60,
-    rotation: 0,
-    color: '#60a5fa',
-    showValue: false
-  })
 }
 
 // Exit P&ID edit mode
@@ -161,9 +55,12 @@ function clearAll() {
   }
 }
 
-// Get symbol preview SVG
-function getSymbolPreview(type: ScadaSymbolType): string {
-  return SCADA_SYMBOLS[type] || ''
+// Fit to content
+function fitToContent() {
+  const canvasEl = document.querySelector('.pid-canvas') as HTMLElement | null
+  if (canvasEl) {
+    store.pidFitToContent(canvasEl.clientWidth, canvasEl.clientHeight)
+  }
 }
 
 // Toggle text tool mode
@@ -395,6 +292,19 @@ function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
+  // R: Rotate selected symbol 90° CW
+  if ((e.key === 'r' || e.key === 'R') && !isCtrl) {
+    e.preventDefault()
+    const ids = store.pidSelectedIds.symbolIds
+    if (ids.length > 0) {
+      for (const id of ids) {
+        const sym = store.pidLayer.symbols.find(s => s.id === id)
+        if (sym) store.updatePidSymbolWithUndo(id, { rotation: (sym.rotation || 0) + 90 })
+      }
+    }
+    return
+  }
+
   // Ctrl+G: Group selected
   if (isCtrl && (e.key === 'g' || e.key === 'G') && !isShift) {
     e.preventDefault()
@@ -413,6 +323,35 @@ function handleKeyDown(e: KeyboardEvent) {
   if ((e.key === 'g' || e.key === 'G') && !isCtrl) {
     e.preventDefault()
     store.togglePidGridSnap()
+    return
+  }
+
+  // M: Toggle minimap
+  if ((e.key === 'm' || e.key === 'M') && !isCtrl) {
+    e.preventDefault()
+    store.pidShowMinimap = !store.pidShowMinimap
+    return
+  }
+
+  // Zoom: Ctrl+= (zoom in), Ctrl+- (zoom out), Ctrl+0 (reset)
+  if (isCtrl && (e.key === '=' || e.key === '+')) {
+    e.preventDefault()
+    store.setPidZoom(store.pidZoom + 0.1)
+    return
+  }
+  if (isCtrl && e.key === '-') {
+    e.preventDefault()
+    store.setPidZoom(store.pidZoom - 0.1)
+    return
+  }
+  if (isCtrl && e.key === '0') {
+    e.preventDefault()
+    store.pidResetZoom()
+    return
+  }
+  if (isCtrl && isShift && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    fitToContent()
     return
   }
 
@@ -496,8 +435,8 @@ function removeBackgroundImage() {
   }
 }
 
-// Export P&ID as PNG using html2canvas
-async function exportAsPng() {
+// Export P&ID as SVG
+async function exportAsSvg() {
   try {
     // Find the PID canvas element
     const canvasEl = document.querySelector('.pid-canvas') as HTMLElement
@@ -510,7 +449,7 @@ async function exportAsPng() {
     exportSvgFallback(canvasEl)
   } catch (err) {
     console.error('Export failed:', err)
-    alert('Export failed. Make sure html2canvas is installed: npm install html2canvas')
+    alert('SVG export failed. See console for details.')
   }
 }
 
@@ -606,6 +545,18 @@ onUnmounted(() => {
 
     <!-- Copy/Paste Section -->
     <div class="toolbar-section">
+      <button
+        class="btn-tool"
+        :disabled="!store.hasPidSelection"
+        @click="handleCut"
+        title="Cut (Ctrl+X)"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" />
+          <line x1="20" y1="4" x2="8.12" y2="15.88" /><line x1="14.47" y1="14.48" x2="20" y2="20" />
+          <line x1="8.12" y1="8.12" x2="12" y2="12" />
+        </svg>
+      </button>
       <button
         class="btn-tool"
         :disabled="!store.hasPidSelection"
@@ -808,20 +759,29 @@ onUnmounted(() => {
 
     <!-- Add Symbol Section -->
     <div class="toolbar-section">
-      <span class="section-label">Add Symbol:</span>
-      <select v-model="selectedSymbolType" class="symbol-select">
-        <optgroup v-for="category in symbolCategories" :key="category" :label="category">
-          <option v-for="sym in getSymbolsInCategory(category)" :key="sym.type" :value="sym.type">
-            {{ sym.name }}
-          </option>
-        </optgroup>
-      </select>
-      <button class="btn-add" @click="addSymbol" title="Add Symbol">
+      <button
+        class="btn-panel-toggle"
+        :class="{ active: store.pidSymbolPanelOpen }"
+        @click="store.pidSymbolPanelOpen = !store.pidSymbolPanelOpen"
+        title="Toggle Symbol Panel"
+      >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <line x1="9" y1="3" x2="9" y2="21" />
         </svg>
-        Add
+        Symbols
+      </button>
+      <button
+        class="btn-panel-toggle"
+        :class="{ active: store.pidPropertiesPanelOpen }"
+        @click="store.pidPropertiesPanelOpen = !store.pidPropertiesPanelOpen"
+        title="Toggle Properties Panel"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <line x1="15" y1="3" x2="15" y2="21" />
+        </svg>
+        Props
       </button>
     </div>
 
@@ -856,6 +816,11 @@ onUnmounted(() => {
       <label class="checkbox-label" title="Animated Flow">
         <input type="checkbox" v-model="pipeAnimated" />
         Flow
+      </label>
+
+      <label class="checkbox-label" title="Auto-Route: pipes route around obstacles">
+        <input type="checkbox" :checked="store.pidAutoRoute" @change="store.pidAutoRoute = !store.pidAutoRoute" />
+        Auto-Route
       </label>
     </div>
 
@@ -924,6 +889,41 @@ onUnmounted(() => {
         <option :value="40">40px</option>
         <option :value="50">50px</option>
       </select>
+      <!-- Rulers toggle -->
+      <button
+        class="btn-grid"
+        :class="{ active: store.pidShowRulers }"
+        @click="store.pidShowRulers = !store.pidShowRulers"
+        title="Toggle Rulers + Guides"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="3" x2="3" y2="21" />
+          <line x1="3" y1="3" x2="21" y2="3" />
+          <line x1="7" y1="3" x2="7" y2="5" />
+          <line x1="11" y1="3" x2="11" y2="7" />
+          <line x1="15" y1="3" x2="15" y2="5" />
+          <line x1="19" y1="3" x2="19" y2="7" />
+          <line x1="3" y1="7" x2="5" y2="7" />
+          <line x1="3" y1="11" x2="7" y2="11" />
+          <line x1="3" y1="15" x2="5" y2="15" />
+          <line x1="3" y1="19" x2="7" y2="19" />
+        </svg>
+        Rulers
+      </button>
+      <!-- Layers toggle -->
+      <button
+        class="btn-grid"
+        :class="{ active: layerPanelOpen }"
+        @click="layerPanelOpen = !layerPanelOpen"
+        title="Toggle Layers Panel"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2" />
+          <polyline points="2 17 12 22 22 17" />
+          <polyline points="2 12 12 17 22 12" />
+        </svg>
+        Layers
+      </button>
       <!-- ISA-101 Grayscale Mode -->
       <button
         class="btn-isa"
@@ -936,6 +936,72 @@ onUnmounted(() => {
           <path d="M12 3 A9 9 0 0 1 12 21" fill="currentColor" opacity="0.3" />
         </svg>
         ISA-101
+      </button>
+      <!-- Minimap Toggle -->
+      <button
+        class="btn-minimap"
+        :class="{ active: store.pidShowMinimap }"
+        @click="store.pidShowMinimap = !store.pidShowMinimap"
+        title="Toggle Minimap (M)"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <rect x="12" y="12" width="8" height="8" rx="1" opacity="0.5" />
+        </svg>
+        Map
+      </button>
+    </div>
+
+    <div class="toolbar-divider" />
+
+    <!-- Zoom Controls -->
+    <div class="toolbar-section zoom-section">
+      <button
+        class="btn-tool"
+        @click="store.setPidZoom(store.pidZoom - 0.1)"
+        :disabled="store.pidZoom <= 0.1"
+        title="Zoom Out"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <line x1="8" y1="11" x2="14" y2="11" />
+        </svg>
+      </button>
+      <span class="zoom-display" @click="store.pidResetZoom()" title="Click to reset to 100%">
+        {{ Math.round(store.pidZoom * 100) }}%
+      </span>
+      <button
+        class="btn-tool"
+        @click="store.setPidZoom(store.pidZoom + 0.1)"
+        :disabled="store.pidZoom >= 5"
+        title="Zoom In"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <line x1="11" y1="8" x2="11" y2="14" />
+          <line x1="8" y1="11" x2="14" y2="11" />
+        </svg>
+      </button>
+      <button
+        class="btn-tool"
+        @click="store.pidResetZoom()"
+        title="Reset Zoom & Pan (100%)"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      </button>
+      <button
+        class="btn-tool"
+        @click="fitToContent"
+        title="Fit to Content (Ctrl+Shift+F)"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+        </svg>
       </button>
     </div>
 
@@ -968,13 +1034,13 @@ onUnmounted(() => {
 
     <!-- Export -->
     <div class="toolbar-section">
-      <button class="btn-export" @click="exportAsPng" title="Export as PNG Image">
+      <button class="btn-export" @click="exportAsSvg" title="Export as SVG Image">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
-        Export PNG
+        Export SVG
       </button>
     </div>
 
@@ -995,6 +1061,11 @@ onUnmounted(() => {
     <div class="toolbar-help">
       <span v-if="store.pidDrawingMode">Click to add points, double-click to finish pipe</span>
       <span v-else>Drag symbols to position, corners to resize</span>
+    </div>
+
+    <!-- Floating Layer Panel -->
+    <div v-if="layerPanelOpen" class="layer-panel-float">
+      <PidLayerPanel />
     </div>
   </div>
 </template>
@@ -1058,14 +1129,6 @@ button {
   background: #718096;
 }
 
-.btn-add {
-  background: #22c55e;
-  color: #fff;
-}
-
-.btn-add:hover {
-  background: #16a34a;
-}
 
 .btn-pipe {
   background: #3b82f6;
@@ -1128,6 +1191,16 @@ button {
 .btn-text.active {
   background: #f59e0b;
   animation: pulse 1s infinite;
+}
+
+/* Add text button */
+.btn-add {
+  background: #10b981;
+  color: #fff;
+}
+
+.btn-add:hover {
+  background: #059669;
 }
 
 /* Grid section */
@@ -1295,14 +1368,6 @@ button {
 }
 
 /* Inputs */
-.symbol-select {
-  padding: 4px 8px;
-  background: #2d3748;
-  border: 1px solid #4a5568;
-  border-radius: 4px;
-  color: #fff;
-  font-size: 12px;
-}
 
 .color-picker {
   width: 28px;
@@ -1326,10 +1391,55 @@ button {
   margin: 0;
 }
 
+/* Panel toggle button */
+.btn-panel-toggle {
+  background: #4a5568;
+  color: #fff;
+}
+
+.btn-panel-toggle:hover {
+  background: #718096;
+}
+
+.btn-panel-toggle.active {
+  background: #6366f1;
+}
+
+/* Zoom controls */
+.zoom-section {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-display {
+  font-size: 12px;
+  font-weight: 600;
+  color: #60a5fa;
+  min-width: 40px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.zoom-display:hover {
+  color: #93c5fd;
+}
+
 /* Help text */
 .toolbar-help {
   font-size: 11px;
   color: #888;
   font-style: italic;
+}
+
+.layer-panel-float {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-radius: 6px;
 }
 </style>

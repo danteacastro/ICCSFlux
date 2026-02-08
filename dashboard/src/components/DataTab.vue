@@ -3,12 +3,16 @@ import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
+import { useBackendScripts } from '../composables/useBackendScripts'
+import { useSafety } from '../composables/useSafety'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useAzureIot } from '../composables/useAzureIot'
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
 const pythonScripts = usePythonScripts()
+const backendScripts = useBackendScripts()
+const safety = useSafety()
 const projectFiles = useProjectFiles()
 const azureIot = useAzureIot()
 
@@ -65,26 +69,128 @@ function showFeedback(type: 'success' | 'error' | 'info', text: string, duration
   }, duration)
 }
 
+// ============================================================================
+// Channel entry used across all groups
+// ============================================================================
+interface DataChannelEntry {
+  name: string           // Internal key (used for selection/recording)
+  displayName: string    // Human-readable label shown in UI
+  type: string           // Channel type or category label
+  unit: string
+  group?: string
+  physical_channel?: string  // For module-based sorting (tags only)
+}
+
+interface DataChannelSubGroup {
+  label: string
+  channels: DataChannelEntry[]
+}
+
+interface DataChannelGroup {
+  id: string
+  label: string
+  color: string
+  channels: DataChannelEntry[]
+  subGroups?: DataChannelSubGroup[]
+}
+
+// ============================================================================
 // Available tags from store (channels + script-published values)
+// Now includes all four data source categories
+// ============================================================================
 const availableChannels = computed(() => {
-  // Hardware channels
-  const hwChannels = Object.entries(store.channels).map(([name, config]) => ({
-    name,  // TAG is the only identifier
-    type: config.channel_type,
-    unit: config.unit,
-    group: config.group || 'Ungrouped',
-    physical_channel: config.physical_channel || ''  // For module-based sorting
-  }))
+  const all: DataChannelEntry[] = []
 
-  // Script-published values (prefixed with py.)
-  const scriptChannels = pythonScripts.getPublishedChannelNames().map(name => ({
-    name,  // e.g., "py.Efficiency"
-    type: 'computed',
-    unit: pythonScripts.getPublishedUnits()[name] || '',
-    group: 'Python Scripts'
-  }))
+  // 1. Hardware channels (Tags)
+  for (const [name, config] of Object.entries(store.channels)) {
+    all.push({
+      name,
+      displayName: name,
+      type: config.channel_type,
+      unit: config.unit,
+      group: config.group || 'Ungrouped',
+      physical_channel: config.physical_channel || ''
+    })
+  }
 
-  return [...hwChannels, ...scriptChannels]
+  // 2. Published Variables (code-parsed + live runtime, deduped)
+  const publishedNames = new Set<string>()
+
+  // Parse publish() calls from script code (available immediately)
+  for (const script of backendScripts.scriptsList.value) {
+    if (!script.code) continue
+    const publishRegex = /publish\s*\(\s*['"]([^'"]+)['"]/g
+    let match
+    while ((match = publishRegex.exec(script.code)) !== null) {
+      publishedNames.add(match[1]!)
+    }
+  }
+
+  // Also include any live py.* values from runtime
+  for (const name of pythonScripts.getPublishedChannelNames()) {
+    publishedNames.add(name.replace(/^py\./, ''))
+  }
+
+  const publishedUnits = pythonScripts.getPublishedUnits()
+  for (const bareName of publishedNames) {
+    all.push({
+      name: `py.${bareName}`,
+      displayName: bareName,
+      type: 'published',
+      unit: publishedUnits[`py.${bareName}`] || ''
+    })
+  }
+
+  // 3. System State
+  all.push({
+    name: 'sys.acquiring',
+    displayName: 'Acquiring',
+    type: 'system',
+    unit: 'bool'
+  })
+  all.push({
+    name: 'sys.session_active',
+    displayName: 'Session Active',
+    type: 'system',
+    unit: 'bool'
+  })
+
+  // 4. Alarm booleans (per-threshold, for channels with alarm configs)
+  const alarmConfigs = safety.alarmConfigs.value
+  for (const [chName, config] of Object.entries(store.channels)) {
+    // Only include channels that have alarm evaluation enabled
+    if (!alarmConfigs[chName]?.enabled) continue
+    const unit = config.unit || ''
+    const thresholds: [string, string, number | undefined][] = [
+      ['low_limit', 'Low Limit', config.low_limit],
+      ['low_warning', 'Low Warning', config.low_warning],
+      ['high_warning', 'High Warning', config.high_warning],
+      ['high_limit', 'High Limit', config.high_limit],
+    ]
+    for (const [key, label, value] of thresholds) {
+      if (value == null) continue
+      all.push({
+        name: `alarm.${chName}.${key}`,
+        displayName: `${label} (${value}${unit ? ' ' + unit : ''})`,
+        type: 'alarm',
+        unit: 'bool',
+        group: chName
+      })
+    }
+  }
+
+  // 5. Interlock booleans
+  for (const interlock of safety.interlocks.value) {
+    if (!interlock.enabled) continue
+    all.push({
+      name: `interlock.${interlock.id}`,
+      displayName: interlock.name,
+      type: 'interlock',
+      unit: 'bool'
+    })
+  }
+
+  return all
 })
 
 // Natural sort comparator for alphanumeric strings
@@ -145,23 +251,71 @@ function moduleSort(a: { name: string, physical_channel?: string }, b: { name: s
   return naturalSort(a.name, b.name)
 }
 
-// Sorted channels: DAQ tags first (by module/channel), then Python script tags
-// DAQ: Mod1/ai0, Mod1/ai1, ... Mod2/ai0, Mod2/ai1, ... Mod5/ai0, etc.
-// Python: py.Efficiency, py.FlowRate, etc.
-const sortedChannels = computed(() => {
-  const daqChannels = availableChannels.value.filter(ch => !ch.name.startsWith('py.'))
-  const pythonChannels = availableChannels.value.filter(ch => ch.name.startsWith('py.'))
+// ============================================================================
+// Grouped channels for the four-section display
+// ============================================================================
+const channelGroups = computed<DataChannelGroup[]>(() => {
+  const all = availableChannels.value
+  const groups: DataChannelGroup[] = []
 
-  return [
-    ...daqChannels.sort(moduleSort),
-    ...pythonChannels.sort((a, b) => naturalSort(a.name, b.name))
-  ]
+  // 1. Tags (hardware channels, sorted by module)
+  const tags = all
+    .filter(ch => ch.type !== 'published' && ch.type !== 'system' && ch.type !== 'alarm' && ch.type !== 'interlock')
+    .sort(moduleSort)
+  if (tags.length > 0) {
+    groups.push({ id: 'tags', label: 'Tags', color: '#888', channels: tags })
+  }
+
+  // 2. Published Variables (sorted alphabetically)
+  const published = all
+    .filter(ch => ch.type === 'published')
+    .sort((a, b) => naturalSort(a.displayName, b.displayName))
+  if (published.length > 0) {
+    groups.push({ id: 'published', label: 'Published Variables', color: '#7c3aed', channels: published })
+  }
+
+  // 3. System State
+  const system = all.filter(ch => ch.type === 'system')
+  if (system.length > 0) {
+    groups.push({ id: 'system', label: 'System State', color: '#3b82f6', channels: system })
+  }
+
+  // 4. Alarms & Interlocks (alarms sub-grouped by channel, interlocks flat)
+  const alarms = all.filter(ch => ch.type === 'alarm')
+  const interlocks = all.filter(ch => ch.type === 'interlock')
+  if (alarms.length > 0 || interlocks.length > 0) {
+    const subGroups: DataChannelSubGroup[] = []
+
+    // Group alarm entries by their source channel
+    const alarmsByChannel = new Map<string, DataChannelEntry[]>()
+    for (const ch of alarms) {
+      const channelName = ch.group || ch.name
+      if (!alarmsByChannel.has(channelName)) alarmsByChannel.set(channelName, [])
+      alarmsByChannel.get(channelName)!.push(ch)
+    }
+    for (const [channelName, entries] of alarmsByChannel) {
+      subGroups.push({ label: channelName, channels: entries })
+    }
+
+    // Interlocks as a sub-group
+    if (interlocks.length > 0) {
+      subGroups.push({ label: 'Interlocks', channels: interlocks })
+    }
+
+    groups.push({
+      id: 'alarms',
+      label: 'Alarms & Interlocks',
+      color: '#f59e0b',
+      channels: [...alarms, ...interlocks],
+      subGroups
+    })
+  }
+
+  return groups
 })
 
-// Check if we have both DAQ and Python channels (for separator display)
-const hasPythonChannels = computed(() =>
-  availableChannels.value.some(ch => ch.name.startsWith('py.'))
-)
+// Flat list of all channel names for select-all / count
+const allChannelNames = computed(() => availableChannels.value.map(ch => ch.name))
 
 // Toggle channel selection
 function toggleChannel(channelName: string) {
@@ -174,7 +328,7 @@ function toggleChannel(channelName: string) {
   } else {
     current.push(channelName)
     store.setSelectedRecordingChannels(current)
-    if (current.length === availableChannels.value.length) {
+    if (current.length === allChannelNames.value.length) {
       store.setSelectAllRecordingChannels(true)
     }
   }
@@ -182,7 +336,7 @@ function toggleChannel(channelName: string) {
 
 function toggleAllChannels() {
   if (selectAllChannels.value) {
-    store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
+    store.setSelectedRecordingChannels(allChannelNames.value)
   } else {
     store.setSelectedRecordingChannels([])
   }
@@ -228,7 +382,7 @@ const previewFilename = computed(() => {
   }
 
   if (config.includeChannelsInName) {
-    const channelCount = selectAllChannels.value ? availableChannels.value.length : selectedChannels.value.length
+    const channelCount = selectAllChannels.value ? allChannelNames.value.length : selectedChannels.value.length
     name += `_${channelCount}ch`
   }
 
@@ -259,7 +413,7 @@ const previewDirectory = computed(() => {
 
 // Estimated file size per hour
 const estimatedSizePerHour = computed(() => {
-  const channelCount = selectAllChannels.value ? availableChannels.value.length : selectedChannels.value.length
+  const channelCount = selectAllChannels.value ? allChannelNames.value.length : selectedChannels.value.length
   const samplesPerSecond = effectiveSampleRate.value
   const bytesPerSample = 20 // Approximate: timestamp + value + comma
   const bytesPerHour = channelCount * samplesPerSecond * 3600 * bytesPerSample
@@ -331,6 +485,9 @@ function startRecording() {
     schedule_start: cfg.scheduleStart,
     schedule_end: cfg.scheduleEnd,
     schedule_days: cfg.scheduleDays,
+
+    // File Reuse
+    reuse_file: cfg.reuseFile,
 
     // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11)
     append_only: cfg.appendOnly,
@@ -425,7 +582,7 @@ function toggleAzureStreaming() {
 }
 
 function selectAllAzureChannels() {
-  azureChannels.value = availableChannels.value.map(ch => ch.name)
+  azureChannels.value = allChannelNames.value
 }
 
 function clearAzureChannels() {
@@ -502,7 +659,7 @@ onMounted(() => {
   // Select all channels by default if none selected
   if (store.selectedRecordingChannels.length === 0) {
     store.setSelectAllRecordingChannels(true)
-    store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
+    store.setSelectedRecordingChannels(allChannelNames.value)
   }
 
   // Fetch recording config and file list from backend
@@ -519,7 +676,7 @@ onMounted(() => {
     // Re-select all channels if nothing selected
     if (store.selectedRecordingChannels.length === 0) {
       store.setSelectAllRecordingChannels(true)
-      store.setSelectedRecordingChannels(availableChannels.value.map(ch => ch.name))
+      store.setSelectedRecordingChannels(allChannelNames.value)
     }
   })
 
@@ -636,47 +793,79 @@ const scheduleDayLabels = [
         </div>
 
         <div class="channel-list">
-          <!-- Flat sorted list - DAQ tags first, then Python script tags -->
-          <template v-for="(ch, index) in sortedChannels" :key="ch.name">
-            <!-- Show separator before first Python channel -->
-            <div
-              v-if="ch.name.startsWith('py.') && (index === 0 || !sortedChannels[index - 1]?.name.startsWith('py.'))"
-              class="channel-group-separator"
-            >
-              <span>Python Script Outputs</span>
+          <template v-for="group in channelGroups" :key="group.id">
+            <!-- Group separator header -->
+            <div class="channel-group-separator" :style="{ color: group.color }">
+              <span>{{ group.label }}</span>
             </div>
 
-            <div
-              class="channel-item"
-              :class="{
-                selected: selectAllChannels || selectedChannels.includes(ch.name),
-                disabled: configLocked,
-                'python-channel': ch.name.startsWith('py.')
-              }"
-              @click="!configLocked && toggleChannel(ch.name)"
-            >
-              <input
-                type="checkbox"
-                :checked="selectAllChannels || selectedChannels.includes(ch.name)"
-                :disabled="configLocked"
-                @click.stop
-                @change="toggleChannel(ch.name)"
-              />
-              <div class="channel-info">
-                <span class="channel-name">{{ ch.name.replace(/^py\./, '') }}</span>
-                <span class="channel-meta">{{ ch.type }} {{ ch.unit ? `(${ch.unit})` : '' }}</span>
+            <!-- Alarm/Interlock group: render sub-groups with channel headers -->
+            <template v-if="group.subGroups">
+              <template v-for="sub in group.subGroups" :key="sub.label">
+                <div class="channel-subgroup-header">{{ sub.label }}</div>
+                <div
+                  v-for="ch in sub.channels"
+                  :key="ch.name"
+                  class="channel-item"
+                  :class="{
+                    selected: selectAllChannels || selectedChannels.includes(ch.name),
+                    disabled: configLocked,
+                    'alarm-channel': ch.type === 'alarm' || ch.type === 'interlock'
+                  }"
+                  @click="!configLocked && toggleChannel(ch.name)"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="selectAllChannels || selectedChannels.includes(ch.name)"
+                    :disabled="configLocked"
+                    @click.stop
+                    @change="toggleChannel(ch.name)"
+                  />
+                  <div class="channel-info">
+                    <span class="channel-name">{{ ch.displayName }}</span>
+                    <span class="channel-meta">{{ ch.unit }}</span>
+                  </div>
+                </div>
+              </template>
+            </template>
+
+            <!-- Other groups: flat channel list -->
+            <template v-else>
+              <div
+                v-for="ch in group.channels"
+                :key="ch.name"
+                class="channel-item"
+                :class="{
+                  selected: selectAllChannels || selectedChannels.includes(ch.name),
+                  disabled: configLocked,
+                  'python-channel': ch.type === 'published',
+                  'system-channel': ch.type === 'system'
+                }"
+                @click="!configLocked && toggleChannel(ch.name)"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectAllChannels || selectedChannels.includes(ch.name)"
+                  :disabled="configLocked"
+                  @click.stop
+                  @change="toggleChannel(ch.name)"
+                />
+                <div class="channel-info">
+                  <span class="channel-name">{{ ch.displayName }}</span>
+                  <span class="channel-meta">{{ ch.type !== 'published' && ch.type !== 'system' ? ch.type : '' }} {{ ch.unit ? `(${ch.unit})` : '' }}</span>
+                </div>
               </div>
-            </div>
+            </template>
           </template>
 
-          <div v-if="availableChannels.length === 0" class="no-channels">
+          <div v-if="allChannelNames.length === 0" class="no-channels">
             <p>No tags configured</p>
             <p class="hint">Configure tags in the Configuration tab or add script outputs</p>
           </div>
         </div>
 
         <div class="channel-summary">
-          {{ selectAllChannels ? availableChannels.length : selectedChannels.length }} tags selected
+          {{ selectAllChannels ? allChannelNames.length : selectedChannels.length }} tags selected
         </div>
       </div>
 
@@ -1029,6 +1218,20 @@ const scheduleDayLabels = [
           </div>
         </div>
 
+        <!-- Reuse File Option -->
+        <div class="settings-section">
+          <div class="form-row checkboxes">
+            <label class="checkbox-label" :class="{ disabled: configLocked }">
+              <input type="checkbox" v-model="recordingConfig.reuseFile" :disabled="configLocked" />
+              Append to Same File
+            </label>
+          </div>
+          <div class="section-hint">
+            When enabled, stopping and restarting recording appends to the same file instead of creating a new one.
+            {{ recordingConfig.reuseFile && recordingConfig.appendOnly ? 'Note: Append-Only lock is deferred until reuse is disabled.' : '' }}
+          </div>
+        </div>
+
         <!-- ALCOA+ Data Integrity Section (FDA 21 CFR Part 11 Compliance) -->
         <div class="settings-section alcoa-section">
           <h3>
@@ -1144,7 +1347,7 @@ const scheduleDayLabels = [
                 <select v-model="recordingConfig.triggerChannel" :disabled="configLocked">
                   <option value="">Select tag...</option>
                   <option v-for="ch in availableChannels" :key="ch.name" :value="ch.name">
-                    {{ ch.name.replace(/^py\./, '') }}
+                    {{ ch.displayName }}
                   </option>
                 </select>
               </div>
@@ -1331,7 +1534,7 @@ const scheduleDayLabels = [
           <h3>Recording Summary</h3>
           <div class="info-item">
             <span class="info-label">Tags:</span>
-            <span class="info-value">{{ selectAllChannels ? availableChannels.length : selectedChannels.length }}</span>
+            <span class="info-value">{{ selectAllChannels ? allChannelNames.length : selectedChannels.length }}</span>
           </div>
           <div class="info-item">
             <span class="info-label">Interval:</span>
@@ -1592,7 +1795,7 @@ const scheduleDayLabels = [
                       ? azureChannels.splice(azureChannels.indexOf(ch.name), 1)
                       : azureChannels.push(ch.name)"
                   />
-                  <span>{{ ch.name }}</span>
+                  <span>{{ ch.displayName }}</span>
                 </label>
               </div>
             </div>
@@ -2169,7 +2372,6 @@ const scheduleDayLabels = [
   gap: 8px;
   padding: 12px 8px 6px;
   margin-top: 8px;
-  color: #7c3aed;
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -2181,7 +2383,35 @@ const scheduleDayLabels = [
   content: '';
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, transparent, #7c3aed40, transparent);
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: 0.25;
+}
+
+.channel-subgroup-header {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #f59e0b;
+  padding: 6px 8px 2px 20px;
+  margin-top: 4px;
+}
+
+.channel-item.system-channel {
+  border-color: #3b82f6;
+}
+
+.channel-item.system-channel.selected {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.channel-item.alarm-channel {
+  margin-left: 12px;
+  border-color: #f59e0b;
+}
+
+.channel-item.alarm-channel.selected {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
 }
 
 .channel-info {

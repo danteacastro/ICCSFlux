@@ -13,6 +13,7 @@ const props = withDefaults(defineProps<{
   showUnit?: boolean       // Show unit - defaults to true
   valueColor?: string
   backgroundColor?: string
+  h?: number               // Grid height - auto-compact when h=1
   style?: {
     backgroundColor?: string
     textColor?: string
@@ -86,9 +87,8 @@ const statusClass = computed(() => {
   return 'normal'
 })
 
-// Computed style classes
+// Computed style classes (compact is automatic via CSS container queries)
 const modeClasses = computed(() => ({
-  compact: props.compact,
   industrial: props.industrial
 }))
 
@@ -109,10 +109,22 @@ const customStyles = computed(() => {
 
 <template>
   <div class="numeric-display" :class="[statusClass, modeClasses]" :style="customStyles">
-    <div class="label" v-if="showLabel">{{ displayLabel }}</div>
-    <div class="value-container">
-      <span class="value">{{ displayValue }}</span>
-      <span class="unit" v-if="showUnit && unit">{{ unit }}</span>
+    <!-- Compact horizontal layout (shown when short) -->
+    <div class="layout-horizontal">
+      <div class="label" v-if="showLabel">{{ displayLabel }}</div>
+      <div class="value-container">
+        <span class="value">{{ displayValue }}</span>
+        <span class="unit" v-if="showUnit && unit">{{ unit }}</span>
+      </div>
+    </div>
+
+    <!-- Vertical layout (shown when tall enough) -->
+    <div class="layout-vertical">
+      <div class="label" v-if="showLabel">{{ displayLabel }}</div>
+      <div class="value-container">
+        <span class="value">{{ displayValue }}</span>
+        <span class="unit" v-if="showUnit && unit">{{ unit }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -120,19 +132,69 @@ const customStyles = computed(() => {
 <style scoped>
 .numeric-display {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
   align-items: center;
+  justify-content: center;
   height: 100%;
   padding: 4px 6px;
   background: var(--widget-bg, #1a1a2e);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   box-sizing: border-box;
+  container-type: size;
+}
+
+/* ========================================
+   LAYOUT SWITCHING VIA CONTAINER QUERIES
+   ======================================== */
+
+/* Default: show horizontal (compact), hide vertical */
+.layout-horizontal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.layout-horizontal .label {
+  flex: 1 1 auto;
+  min-width: 30px;
+  text-align: left;
+}
+
+.layout-horizontal .value {
+  font-size: 0.95rem;
+}
+
+.layout-horizontal .unit {
+  font-size: 0.5rem;
+}
+
+.layout-vertical {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.layout-vertical .label {
+  margin-bottom: 2px;
+}
+
+/* When tall enough (2+ rows ~60px), switch to vertical layout */
+@container (min-height: 55px) {
+  .layout-horizontal {
+    display: none;
+  }
+  .layout-vertical {
+    display: flex;
+  }
 }
 
 .label {
-  font-size: 0.6rem;
+  font-size: 0.65rem;
+  font-weight: 500;
   color: #aaa;
   text-transform: uppercase;
   white-space: nowrap;
@@ -140,7 +202,6 @@ const customStyles = computed(() => {
   text-overflow: ellipsis;
   max-width: 100%;
   line-height: 1.2;
-  margin-bottom: 2px;
 }
 
 .value-container {
@@ -219,30 +280,6 @@ const customStyles = computed(() => {
 }
 
 /* ========================================
-   COMPACT MODE - horizontal layout
-   ======================================== */
-.compact {
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  padding: 2px 8px;
-  gap: 8px;
-}
-
-.compact .label {
-  margin-bottom: 0;
-  font-size: 0.6rem;
-}
-
-.compact .value {
-  font-size: 0.95rem;
-}
-
-.compact .unit {
-  font-size: 0.5rem;
-}
-
-/* ========================================
    INDUSTRIAL MODE - LabVIEW style
    ======================================== */
 .industrial {
@@ -317,12 +354,12 @@ const customStyles = computed(() => {
   border-color: #5a3a3a;
 }
 
-/* Compact + Industrial combo */
-.compact.industrial {
-  padding: 2px 6px;
+/* Industrial compact mode adjustments */
+.industrial .layout-horizontal {
+  padding: 0 2px;
 }
 
-.compact.industrial .value {
+.industrial .layout-horizontal .value {
   font-size: 0.85rem;
 }
 

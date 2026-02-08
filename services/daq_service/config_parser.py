@@ -239,16 +239,18 @@ class ChannelConfig:
     voltage_range: float = 10.0
     current_range_ma: float = 20.0
 
-    # Terminal configuration for analog inputs (RSE, DIFF, NRSE, PSEUDO_DIFF)
-    # RSE = Referenced Single-Ended (default, most common)
+    # Terminal configuration for analog inputs (DEFAULT, RSE, DIFF, NRSE, PSEUDO_DIFF)
+    # DEFAULT = Let DAQmx auto-select (recommended - works with all modules)
+    # RSE = Referenced Single-Ended
     # DIFF = Differential (better noise rejection, uses 2 channels)
     # NRSE = Non-Referenced Single-Ended
     # PSEUDO_DIFF = Pseudo-Differential
-    terminal_config: str = "RSE"
+    terminal_config: str = "DEFAULT"
 
     # Thermocouple specific
     thermocouple_type: Optional[ThermocoupleType] = None
     cjc_source: str = "internal"
+    cjc_value: float = 25.0          # Constant CJC temperature in °C (when cjc_source='constant')
 
     # RTD specific
     rtd_type: str = "Pt100"          # Pt100, Pt500, Pt1000, custom

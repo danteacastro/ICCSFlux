@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 from abc import ABC, abstractmethod
 
-from .channel_types import ChannelType, get_module_channel_type, get_module_hardware_limits
+from .channel_types import ChannelType, get_module_channel_type, get_module_hardware_limits, get_combo_channel_type
 from .config import ChannelConfig, apply_scaling
 
 
@@ -270,6 +270,10 @@ class NIDAQmxHardware(HardwareInterface):
         # This is the SINGLE SOURCE OF TRUTH for channel types
         self._detected_module_types: Dict[str, str] = {}
 
+        # Hardware-detected product types (module_name -> product_type string)
+        # Used for combo module lookup (e.g., NI 9207)
+        self._detected_product_types: Dict[str, str] = {}
+
         # Per-channel hardware limits cache (populated during module detection)
         self._channel_hw_limits: Dict[str, Dict[str, float]] = {}
 
@@ -292,6 +296,7 @@ class NIDAQmxHardware(HardwareInterface):
                 # Use channel_types.py MODULE_TYPE_MAP to get correct type
                 detected_type = get_module_channel_type(product_type)
                 self._detected_module_types[module_name] = detected_type.value
+                self._detected_product_types[module_name] = product_type
 
                 # Cache hardware limits for output modules
                 hw_limits = get_module_hardware_limits(product_type)
@@ -312,12 +317,21 @@ class NIDAQmxHardware(HardwareInterface):
         Get the ACTUAL channel type from hardware detection.
 
         If hardware detection found the module, use that type.
+        For combo modules (e.g., NI 9207), the type depends on channel index.
         Otherwise fall back to config type (with warning).
         """
         # Extract module name from physical channel
         module = ch.physical_channel.split('/')[0] if '/' in ch.physical_channel else None
 
         if module and module in self._detected_module_types:
+            # Check if this is a combo module where type depends on channel index
+            product_type = self._detected_product_types.get(module, '')
+            if product_type:
+                ch_index = _get_physical_channel_index(ch.physical_channel)
+                combo_type = get_combo_channel_type(product_type, ch_index)
+                if combo_type is not None:
+                    return combo_type.value
+
             detected = self._detected_module_types[module]
             if detected != ch.channel_type:
                 logger.warning(
@@ -498,11 +512,23 @@ class NIDAQmxHardware(HardwareInterface):
                         tc_type_str = 'K'
                     tc_type = getattr(nidaqmx.constants.ThermocoupleType,
                                       tc_type_str.upper(), nidaqmx.constants.ThermocoupleType.K)
-                    logger.info(f"Creating TC channel: {ch.name} ({full_path}) type={tc_type_str}")
+                    # Map CJC source from config
+                    cjc_map = {
+                        'INTERNAL': nidaqmx.constants.CJCSource.BUILT_IN,
+                        'BUILT_IN': nidaqmx.constants.CJCSource.BUILT_IN,
+                        'CONSTANT': nidaqmx.constants.CJCSource.CONSTANT_USER_VALUE,
+                        'CHANNEL': nidaqmx.constants.CJCSource.SCANNABLE_CHANNEL,
+                    }
+                    cjc_str = (ch.cjc_source or 'internal').upper().strip()
+                    cjc_source = cjc_map.get(cjc_str, nidaqmx.constants.CJCSource.BUILT_IN)
+                    cjc_val = getattr(ch, 'cjc_value', 25.0) if cjc_str == 'CONSTANT' else 25.0
+
+                    logger.info(f"Creating TC channel: {ch.name} ({full_path}) type={tc_type_str} cjc={ch.cjc_source}")
                     task.ai_channels.add_ai_thrmcpl_chan(
                         full_path,
                         thermocouple_type=tc_type,
-                        cjc_source=nidaqmx.constants.CJCSource.BUILT_IN
+                        cjc_source=cjc_source,
+                        cjc_val=cjc_val
                     )
                 elif actual_type == 'current_input':
                     # Current input (e.g., NI 9203, 9207, 9208) - typically ±20mA
@@ -517,11 +543,38 @@ class NIDAQmxHardware(HardwareInterface):
                     )
                 elif actual_type == 'rtd':
                     # RTD channel (e.g., NI 9216, 9217, 9226)
-                    logger.info(f"Creating RTD channel: {ch.name} ({full_path})")
+                    # Map RTD wiring from config
+                    rtd_wiring_map = {
+                        '2-wire': nidaqmx.constants.ResistanceConfiguration.TWO_WIRE,
+                        '3-wire': nidaqmx.constants.ResistanceConfiguration.THREE_WIRE,
+                        '4-wire': nidaqmx.constants.ResistanceConfiguration.FOUR_WIRE,
+                    }
+                    rtd_wiring = rtd_wiring_map.get(
+                        getattr(ch, 'rtd_wiring', '4-wire'),
+                        nidaqmx.constants.ResistanceConfiguration.FOUR_WIRE
+                    )
+                    # Map RTD type from config
+                    rtd_type_map = {
+                        'PT3750': nidaqmx.constants.RTDType.PT_3750,
+                        'PT3850': nidaqmx.constants.RTDType.PT_3850,
+                        'PT3851': nidaqmx.constants.RTDType.PT_3851,
+                        'PT3911': nidaqmx.constants.RTDType.PT_3911,
+                        'PT3916': nidaqmx.constants.RTDType.PT_3916,
+                        'PT3920': nidaqmx.constants.RTDType.PT_3920,
+                        'PT3928': nidaqmx.constants.RTDType.PT_3928,
+                        'CUSTOM': nidaqmx.constants.RTDType.CUSTOM,
+                    }
+                    rtd_type_str = getattr(ch, 'rtd_type', 'Pt3850')
+                    rtd_type = rtd_type_map.get(
+                        rtd_type_str.upper().replace('_', ''),
+                        nidaqmx.constants.RTDType.PT_3850
+                    )
+                    logger.info(f"Creating RTD channel: {ch.name} ({full_path}) "
+                               f"type={rtd_type_str} wiring={getattr(ch, 'rtd_wiring', '4-wire')}")
                     task.ai_channels.add_ai_rtd_chan(
                         full_path,
-                        resistance_config=nidaqmx.constants.ResistanceConfiguration.FOUR_WIRE,
-                        rtd_type=nidaqmx.constants.RTDType.PT_3850
+                        resistance_config=rtd_wiring,
+                        rtd_type=rtd_type
                     )
                 elif actual_type == 'resistance_input':
                     # Resistance measurement (e.g., NI 9219 in resistance mode)

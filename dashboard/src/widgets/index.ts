@@ -33,6 +33,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   variable_explorer: defineAsyncComponent(() => import('./VariableExplorerWidget.vue')),
   variable_input: defineAsyncComponent(() => import('./VariableInputWidget.vue')),
   pid_loop: defineAsyncComponent(() => import('./PidLoopWidget.vue')),
+  heater_zone: defineAsyncComponent(() => import('./HeaterZoneWidget.vue')),
   // Placeholders for future widgets
   table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
@@ -136,6 +137,14 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'PID control loop faceplate',
     needsChannel: false,
     defaultSize: { w: 2, h: 3 }
+  },
+  {
+    type: 'heater_zone',
+    name: 'Heater Zone',
+    icon: '🔥',
+    description: 'Temperature controller faceplate (SLM1-C)',
+    needsChannel: false,
+    defaultSize: { w: 2, h: 2 }
   },
   {
     type: 'toggle',

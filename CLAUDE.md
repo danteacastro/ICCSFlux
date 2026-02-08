@@ -109,6 +109,43 @@ python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/t
 - Test helpers in `tests/test_helpers.py` (MQTTTestHarness)
 - Dashboard must pass `vue-tsc` strict type checking before build (`npm run build` in `dashboard/`)
 
+## Project JSON Constraints
+
+When creating or modifying project JSON files (`config/projects/*.json`):
+
+### Valid Channel Types
+
+**ONLY these channel types are valid** (defined in `config_parser.py` ChannelType enum):
+
+| Type | Description |
+|------|-------------|
+| `thermocouple` | Thermocouple temperature sensors (J, K, T, E, N, R, S, B) |
+| `rtd` | RTD temperature sensors |
+| `voltage_input` | Analog voltage input (0-10V) |
+| `current_input` | Analog current input (4-20mA) |
+| `voltage_output` | Analog voltage output |
+| `current_output` | Analog current output |
+| `digital_input` | Discrete input |
+| `digital_output` | Discrete output |
+| `counter` | Counter/pulse input |
+| `strain_input` | Strain gauge input |
+| `iepe_input` | IEPE accelerometer input |
+| `resistance_input` | Resistance measurement |
+
+**DO NOT USE**: `script`, `calculated`, `virtual`, or any other type not listed above. These will cause `ValueError: 'xxx' is not a valid ChannelType` when loading the project.
+
+### Calculated Values
+
+Calculated/derived values (PUE, COP, delta-T, heat loads, etc.) should NOT be defined as channels. Instead:
+1. Create Python scripts in the `pythonScripts` section
+2. Use `publish('ValueName', value, units='...')` to output calculated values
+3. Script-published values go to MQTT but cannot be displayed in dashboard widgets (widgets must reference real channels)
+
+### Rate Limits
+
+- Maximum publish rate: **4 Hz** (configurable up to 4 Hz, not higher)
+- Scan rate can be higher (10-100 Hz) for internal PID loops and script calculations
+
 ## Key Design Decisions
 
 - DAQ service uses a **state machine** (`state_machine.py`) for acquisition lifecycle: STOPPED → INITIALIZING → RUNNING → STOPPING → STOPPED

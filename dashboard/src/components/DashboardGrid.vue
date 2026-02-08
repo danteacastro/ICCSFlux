@@ -8,6 +8,8 @@ import { getWidgetComponent } from '../widgets'
 import WidgetConfigModal from './WidgetConfigModal.vue'
 import PipeOverlay from './PipeOverlay.vue'
 import PidCanvas from './PidCanvas.vue'
+import PidSymbolPanel from './PidSymbolPanel.vue'
+import PidPropertiesPanel from './PidPropertiesPanel.vue'
 import type { WidgetConfig, PipeConnection, PidLayerData } from '../types'
 import { SYMBOL_PORTS, type ScadaSymbolType } from '../assets/symbols'
 
@@ -122,9 +124,14 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
 
   const props: Record<string, unknown> = {}
 
+  // Pass grid height for auto-compact detection
+  if (widget.h !== undefined) props.h = widget.h
+
   if (widget.channel) props.channel = widget.channel
   if (widget.channels) props.channels = widget.channels
+  // Support both 'label' and 'title' for widget labels (title is common in project JSON)
   if (widget.label) props.label = widget.label
+  else if (widget.title && widget.type !== 'title') props.label = widget.title
   if (widget.decimals !== undefined) props.decimals = widget.decimals
   if (widget.showLabel !== undefined) props.showLabel = widget.showLabel
   if (widget.showUnit !== undefined) props.showUnit = widget.showUnit
@@ -215,6 +222,16 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
 
   // General title prop (for widgets that support it like alarm_summary, interlock_status)
   if (widget.title !== undefined && widget.type !== 'title') props.title = widget.title
+
+  // HeaterZone props
+  if (widget.pvChannel) props.pvChannel = widget.pvChannel
+  if (widget.spChannel) props.spChannel = widget.spChannel
+  if (widget.enableChannel) props.enableChannel = widget.enableChannel
+  if (widget.outputChannel) props.outputChannel = widget.outputChannel
+  if (widget.spMin !== undefined) props.spMin = widget.spMin
+  if (widget.spMax !== undefined) props.spMax = widget.spMax
+  if (widget.temperatureUnit) props.temperatureUnit = widget.temperatureUnit
+  if (widget.advancedParams) props.advancedParams = widget.advancedParams
 
   return props
 }
@@ -389,6 +406,11 @@ function handlePidPipeSelect(id: string | null) {
       @select:pipe="handlePipeSelect"
     />
 
+    <!-- P&ID Symbol Panel (shown in edit mode) -->
+    <PidSymbolPanel
+      v-if="store.pidEditMode && store.pidSymbolPanelOpen"
+    />
+
     <!-- P&ID Canvas Layer (free-form, pixel-based) -->
     <PidCanvas
       v-if="store.pidLayer.visible !== false"
@@ -398,6 +420,11 @@ function handlePidPipeSelect(id: string | null) {
       @update:pid-layer="handlePidLayerUpdate"
       @select:symbol="handlePidSymbolSelect"
       @select:pipe="handlePidPipeSelect"
+    />
+
+    <!-- P&ID Properties Panel (shown in edit mode) -->
+    <PidPropertiesPanel
+      v-if="store.pidEditMode && store.pidPropertiesPanelOpen"
     />
 
     <GridLayout

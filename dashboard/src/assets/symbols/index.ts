@@ -936,7 +936,6 @@ export const OffPageConnectorRight = `
 <svg viewBox="0 0 60 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect x="0" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
   <polygon points="15,8 45,8 55,20 45,32 15,32" stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.15"/>
-  <text x="30" y="24" text-anchor="middle" font-size="12" font-weight="bold" fill="currentColor" font-family="sans-serif">→</text>
 </svg>
 `
 
@@ -945,7 +944,6 @@ export const OffPageConnectorLeft = `
 <svg viewBox="0 0 60 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect x="45" y="16" width="15" height="8" fill="currentColor" opacity="0.3"/>
   <polygon points="45,8 15,8 5,20 15,32 45,32" stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.15"/>
-  <text x="30" y="24" text-anchor="middle" font-size="12" font-weight="bold" fill="currentColor" font-family="sans-serif">←</text>
 </svg>
 `
 
@@ -953,7 +951,6 @@ export const OffPageConnectorLeft = `
 export const OffPageConnectorTo = `
 <svg viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
   <polygon points="5,5 45,5 45,35 25,45 5,35" stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.15"/>
-  <path d="M25 18 L25 30 M19 24 L25 30 L31 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `
 
@@ -961,7 +958,6 @@ export const OffPageConnectorTo = `
 export const OffPageConnectorFrom = `
 <svg viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
   <polygon points="5,15 25,5 45,15 45,45 5,45" stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.15"/>
-  <path d="M25 32 L25 20 M19 26 L25 20 L31 26" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `
 
@@ -1528,6 +1524,26 @@ export const SYMBOL_INFO: Record<ScadaSymbolType, { label: string; category: str
   conveyor: { label: 'Conveyor', category: 'Equipment' },
   dryer: { label: 'Dryer', category: 'Equipment' },
 }
+
+/**
+ * Categories whose symbols render nozzle stubs on ports.
+ * Equipment-type symbols get stubs; inline components (valves, instruments,
+ * piping, connectors) do not.
+ */
+export const NOZZLE_STUB_CATEGORIES: ReadonlySet<string> = new Set([
+  'Equipment',
+  'Heat Exchangers',
+  'Vessels',
+  'Heating & Combustion',
+  'Power Generation',
+  'Hydrogen & Fuel Cell',
+  'Gasification & Biomass',
+])
+
+// Off-page connector symbol types (for special label rendering + page navigation)
+export const OFF_PAGE_CONNECTOR_TYPES: ReadonlySet<string> = new Set([
+  'offPageRight', 'offPageLeft', 'offPageTo', 'offPageFrom',
+])
 
 // Get symbols by category
 export function getSymbolsByCategory(): Record<string, ScadaSymbolType[]> {

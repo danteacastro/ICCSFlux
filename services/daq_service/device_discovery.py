@@ -92,9 +92,11 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9229": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±60V AI"},
     "NI 9239": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V AI 24-bit"},
 
+    # Combo modules (voltage + current on same module — per-channel type handled in _enumerate_channels)
+    "NI 9207": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch V/I AI (ai0-7 V, ai8-15 I)"},
+
     # Current input modules
     "NI 9203": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI"},
-    "NI 9207": {"category": ModuleCategory.CURRENT_INPUT, "channels": 16, "description": "16-Ch V/I AI"},
     "NI 9208": {"category": ModuleCategory.CURRENT_INPUT, "channels": 16, "description": "16-Ch ±20mA AI"},
     "NI 9227": {"category": ModuleCategory.CURRENT_INPUT, "channels": 4, "description": "4-Ch Current AI"},
     "NI 9246": {"category": ModuleCategory.CURRENT_INPUT, "channels": 3, "description": "3-Ch Current AI"},
@@ -656,25 +658,37 @@ class DeviceDiscovery:
             description=description
         )
 
-        # Enumerate physical channels
-        module.channels = self._enumerate_channels(device, category)
+        # Enumerate physical channels (pass product_type for combo module handling)
+        module.channels = self._enumerate_channels(device, category, product_type)
 
         return module
 
-    def _enumerate_channels(self, device, category: ModuleCategory) -> List[PhysicalChannel]:
+    # Combo modules: channels at index >= split_point use the alternate category
+    COMBO_MODULES: Dict[str, tuple] = {
+        "NI 9207": ("current_input", 8),  # ai0-7 = voltage_input, ai8-15 = current_input
+    }
+
+    def _enumerate_channels(self, device, category: ModuleCategory, product_type: str = "") -> List[PhysicalChannel]:
         """Enumerate all physical channels on a device"""
         channels: List[PhysicalChannel] = []
         device_name = device.name
         cat_value = category.value if isinstance(category, ModuleCategory) else str(category)
 
+        # Check if this is a combo module (e.g., NI 9207)
+        combo = self.COMBO_MODULES.get(product_type)
+
         # Analog input channels
         for i, ai_chan in enumerate(device.ai_physical_chans):
+            # For combo modules, override category for channels at/above split index
+            ch_category = cat_value
+            if combo and i >= combo[1]:
+                ch_category = combo[0]
             channels.append(PhysicalChannel(
                 name=ai_chan.name,
                 device=device_name,
                 channel_type="ai",
                 index=i,
-                category=cat_value,
+                category=ch_category,
                 description=f"Analog Input {i}"
             ))
 

@@ -14,20 +14,121 @@
  * - Rotation at any angle
  */
 
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watchEffect } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
-import { SCADA_SYMBOLS, SYMBOL_PORTS, getPortPosition, type ScadaSymbolType } from '../assets/symbols'
-import type { PidSymbol, PidPipe, PidPoint, PidLayerData, PidPipeConnection } from '../types'
+import { SCADA_SYMBOLS, SYMBOL_PORTS, SYMBOL_INFO, NOZZLE_STUB_CATEGORIES, OFF_PAGE_CONNECTOR_TYPES, getPortPosition, type ScadaSymbolType } from '../assets/symbols'
+import { autoRoute } from '../utils/autoRoute'
+import type { PidSymbol, PidPipe, PidPoint, PidLayerData, PidPipeConnection, PidTextAnnotation, PidArrowType } from '../types'
 import PidFaceplate from './PidFaceplate.vue'
+import PidContextMenu from './PidContextMenu.vue'
+import type { MenuTarget } from './PidContextMenu.vue'
+import { isHmiControl, getHmiDefaultSize } from '../constants/hmiControls'
+import { getHmiComponent } from './hmi/index'
 
-// Snap threshold in pixels
-const SNAP_THRESHOLD = 15
+// Snap threshold in pixels (base value, adjusted by zoom)
+const SNAP_THRESHOLD_BASE = 15
+const SNAP_THRESHOLD = computed(() => SNAP_THRESHOLD_BASE / zoom.value)
 
 // Grid snap settings (from store)
 const gridSnapEnabled = computed(() => store.pidGridSnapEnabled)
 const gridSize = computed(() => store.pidGridSize)
 const showGrid = computed(() => store.pidShowGrid)
 const orthogonalPipes = computed(() => store.pidOrthogonalPipes)
+
+// Zoom/Pan (edit-mode only)
+const zoom = computed(() => props.editMode ? store.pidZoom : 1)
+const panX = computed(() => props.editMode ? store.pidPanX : 0)
+const panY = computed(() => props.editMode ? store.pidPanY : 0)
+
+// Panning state
+const isPanning = ref(false)
+const panStart = ref({ x: 0, y: 0, panX: 0, panY: 0 })
+const spaceHeld = ref(false)
+
+// Alignment guides
+interface AlignmentGuide {
+  axis: 'h' | 'v'        // horizontal or vertical line
+  pos: number             // y for horizontal, x for vertical
+  from: number            // start extent
+  to: number              // end extent
+}
+const activeGuides = ref<AlignmentGuide[]>([])
+
+// Minimap
+const showMinimap = computed(() => store.pidShowMinimap)
+
+const minimapBounds = computed(() => {
+  let minX = 0, minY = 0, maxX = 1000, maxY = 800
+  for (const sym of props.pidLayer.symbols) {
+    minX = Math.min(minX, sym.x)
+    minY = Math.min(minY, sym.y)
+    maxX = Math.max(maxX, sym.x + sym.width)
+    maxY = Math.max(maxY, sym.y + sym.height)
+  }
+  for (const pipe of props.pidLayer.pipes) {
+    for (const pt of pipe.points) {
+      minX = Math.min(minX, pt.x)
+      minY = Math.min(minY, pt.y)
+      maxX = Math.max(maxX, pt.x)
+      maxY = Math.max(maxY, pt.y)
+    }
+  }
+  const pad = 50
+  return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 }
+})
+
+const minimapViewBox = computed(() => {
+  const b = minimapBounds.value
+  return `${b.x} ${b.y} ${b.w} ${b.h}`
+})
+
+const minimapViewport = computed(() => {
+  const rect = canvasRef.value?.getBoundingClientRect()
+  const w = (rect?.width ?? 800) / zoom.value
+  const h = (rect?.height ?? 600) / zoom.value
+  const x = -panX.value / zoom.value
+  const y = -panY.value / zoom.value
+  return { x, y, w, h }
+})
+
+function onMinimapMouseDown(event: MouseEvent) {
+  const target = event.currentTarget as HTMLElement
+  const svg = target.querySelector('svg')
+  if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const b = minimapBounds.value
+  // Map click position to world coordinates
+  const worldX = b.x + (event.clientX - rect.left) / rect.width * b.w
+  const worldY = b.y + (event.clientY - rect.top) / rect.height * b.h
+  // Center viewport on clicked position
+  const canvasRect = canvasRef.value?.getBoundingClientRect()
+  const vw = (canvasRect?.width ?? 800) / zoom.value
+  const vh = (canvasRect?.height ?? 600) / zoom.value
+  store.setPidPan(-(worldX - vw / 2) * zoom.value, -(worldY - vh / 2) * zoom.value)
+}
+
+// Layer visibility filtering
+const hiddenLayerIds = computed(() => {
+  const infos = props.pidLayer.layerInfos
+  if (!infos || infos.length === 0) return new Set<string>()
+  return new Set(infos.filter(l => !l.visible).map(l => l.id))
+})
+
+const visibleSymbols = computed(() => {
+  if (hiddenLayerIds.value.size === 0) return props.pidLayer.symbols
+  return props.pidLayer.symbols.filter(s => !hiddenLayerIds.value.has(s.layerId || 'main'))
+})
+
+const visiblePipes = computed(() => {
+  if (hiddenLayerIds.value.size === 0) return props.pidLayer.pipes
+  return props.pidLayer.pipes.filter(p => !hiddenLayerIds.value.has(p.layerId || 'main'))
+})
+
+const visibleTextAnnotations = computed(() => {
+  const all = props.pidLayer.textAnnotations || []
+  if (hiddenLayerIds.value.size === 0) return all
+  return all.filter(t => !hiddenLayerIds.value.has(t.layerId || 'main'))
+})
 
 // Groups with calculated bounding boxes
 const visibleGroups = computed(() => {
@@ -88,6 +189,238 @@ function isGroupSelected(groupId: string): boolean {
   return store.pidSelectedIds.symbolIds.some(id => group.symbolIds.includes(id)) ||
     store.pidSelectedIds.pipeIds.some(id => group.pipeIds.includes(id)) ||
     store.pidSelectedIds.textAnnotationIds.some(id => group.textAnnotationIds.includes(id))
+}
+
+// Inline label editing (pipe labels + text annotations)
+const inlineEditTarget = ref<{ type: 'pipeLabel'; pipeId: string } | { type: 'textAnnotation'; id: string } | null>(null)
+const inlineEditValue = ref('')
+const inlineEditPos = ref({ x: 0, y: 0 })
+const inlineEditInput = ref<HTMLInputElement | null>(null)
+
+function onPipeLabelDblClick(event: MouseEvent, pipe: PidPipe) {
+  if (!props.editMode) return
+  event.stopPropagation()
+  event.preventDefault()
+  const labelPt = getPipeLabelPoint(pipe)
+  if (!labelPt || !canvasRef.value) return
+  const rect = canvasRef.value.getBoundingClientRect()
+  inlineEditPos.value = {
+    x: rect.left + labelPt.x * zoom.value + panX.value,
+    y: rect.top + labelPt.y * zoom.value + panY.value
+  }
+  inlineEditValue.value = pipe.label || ''
+  inlineEditTarget.value = { type: 'pipeLabel', pipeId: pipe.id }
+  nextTick(() => {
+    inlineEditInput.value?.focus()
+    inlineEditInput.value?.select()
+  })
+}
+
+function onTextAnnotationDblClick(event: MouseEvent, text: PidTextAnnotation) {
+  if (!props.editMode) return
+  event.stopPropagation()
+  event.preventDefault()
+  const el = event.currentTarget as HTMLElement
+  if (!el || !canvasRef.value) return
+  const elRect = el.getBoundingClientRect()
+  inlineEditPos.value = {
+    x: elRect.left + elRect.width / 2,
+    y: elRect.top + elRect.height / 2
+  }
+  inlineEditValue.value = text.text || ''
+  inlineEditTarget.value = { type: 'textAnnotation', id: text.id }
+  nextTick(() => {
+    inlineEditInput.value?.focus()
+    inlineEditInput.value?.select()
+  })
+}
+
+function commitInlineEdit() {
+  if (!inlineEditTarget.value) return
+  const target = inlineEditTarget.value
+  const value = inlineEditValue.value.trim()
+  inlineEditTarget.value = null
+  if (target.type === 'pipeLabel') {
+    store.updatePidPipeWithUndo(target.pipeId, { label: value || undefined })
+  } else {
+    if (value) {
+      store.updatePidTextAnnotation(target.id, { text: value })
+    }
+  }
+}
+
+function cancelInlineEdit() {
+  inlineEditTarget.value = null
+}
+
+// Rulers and guide lines
+const showRulers = computed(() => store.pidShowRulers)
+const RULER_SIZE = 24 // pixels
+const rulerHCanvas = ref<HTMLCanvasElement | null>(null)
+const rulerVCanvas = ref<HTMLCanvasElement | null>(null)
+const draggingGuide = ref<{ axis: 'h' | 'v'; position: number; id?: string } | null>(null)
+const draggingGuidePos = ref(0)
+
+function drawRuler(canvas: HTMLCanvasElement | null, axis: 'h' | 'v', zoomVal: number, panVal: number, length: number) {
+  if (!canvas) return
+  const dpr = window.devicePixelRatio || 1
+  const w = axis === 'h' ? length : RULER_SIZE
+  const h = axis === 'h' ? RULER_SIZE : length
+  canvas.width = w * dpr
+  canvas.height = h * dpr
+  canvas.style.width = `${w}px`
+  canvas.style.height = `${h}px`
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, w, h)
+  ctx.fillStyle = '#1e293b'
+  ctx.fillRect(0, 0, w, h)
+
+  // Determine tick spacing based on zoom
+  let majorStep = 100
+  if (zoomVal < 0.25) majorStep = 500
+  else if (zoomVal < 0.5) majorStep = 200
+  else if (zoomVal > 3) majorStep = 50
+  const minorStep = majorStep / 5
+
+  ctx.strokeStyle = '#475569'
+  ctx.fillStyle = '#94a3b8'
+  ctx.font = '9px system-ui'
+  ctx.textBaseline = axis === 'h' ? 'top' : 'middle'
+
+  const start = -panVal / zoomVal
+  const end = start + length / zoomVal
+  const firstMajor = Math.floor(start / majorStep) * majorStep
+  const firstMinor = Math.floor(start / minorStep) * minorStep
+
+  // Minor ticks
+  ctx.beginPath()
+  for (let v = firstMinor; v <= end; v += minorStep) {
+    const screenPos = (v * zoomVal) + panVal
+    if (axis === 'h') {
+      ctx.moveTo(screenPos, RULER_SIZE - 4)
+      ctx.lineTo(screenPos, RULER_SIZE)
+    } else {
+      ctx.moveTo(RULER_SIZE - 4, screenPos)
+      ctx.lineTo(RULER_SIZE, screenPos)
+    }
+  }
+  ctx.stroke()
+
+  // Major ticks + labels
+  ctx.strokeStyle = '#64748b'
+  ctx.beginPath()
+  for (let v = firstMajor; v <= end; v += majorStep) {
+    const screenPos = (v * zoomVal) + panVal
+    if (axis === 'h') {
+      ctx.moveTo(screenPos, RULER_SIZE - 10)
+      ctx.lineTo(screenPos, RULER_SIZE)
+      ctx.fillText(String(Math.round(v)), screenPos + 2, 2)
+    } else {
+      ctx.moveTo(RULER_SIZE - 10, screenPos)
+      ctx.lineTo(RULER_SIZE, screenPos)
+      ctx.save()
+      ctx.translate(2, screenPos + 2)
+      ctx.rotate(-Math.PI / 2)
+      ctx.fillText(String(Math.round(v)), 0, 0)
+      ctx.restore()
+    }
+  }
+  ctx.stroke()
+
+  // Bottom/right border
+  ctx.strokeStyle = '#334155'
+  ctx.beginPath()
+  if (axis === 'h') {
+    ctx.moveTo(0, RULER_SIZE - 0.5)
+    ctx.lineTo(w, RULER_SIZE - 0.5)
+  } else {
+    ctx.moveTo(RULER_SIZE - 0.5, 0)
+    ctx.lineTo(RULER_SIZE - 0.5, h)
+  }
+  ctx.stroke()
+}
+
+function onRulerMouseDown(event: MouseEvent, axis: 'h' | 'v') {
+  if (!props.editMode) return
+  event.preventDefault()
+  const pos = axis === 'h'
+    ? (event.clientY - (canvasRef.value?.getBoundingClientRect().top ?? 0) - panY.value) / zoom.value
+    : (event.clientX - (canvasRef.value?.getBoundingClientRect().left ?? 0) - panX.value) / zoom.value
+  draggingGuide.value = { axis, position: pos }
+  draggingGuidePos.value = pos
+
+  function onMove(e: MouseEvent) {
+    if (!draggingGuide.value || !canvasRef.value) return
+    const rect = canvasRef.value.getBoundingClientRect()
+    const newPos = axis === 'h'
+      ? (e.clientY - rect.top - panY.value) / zoom.value
+      : (e.clientX - rect.left - panX.value) / zoom.value
+    draggingGuidePos.value = newPos
+    draggingGuide.value.position = newPos
+  }
+
+  function onUp(e: MouseEvent) {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    if (!draggingGuide.value || !canvasRef.value) return
+    const rect = canvasRef.value.getBoundingClientRect()
+    const inCanvas = axis === 'h'
+      ? (e.clientY > rect.top + RULER_SIZE && e.clientY < rect.bottom)
+      : (e.clientX > rect.left + RULER_SIZE && e.clientX < rect.right)
+    if (inCanvas) {
+      if (draggingGuide.value.id) {
+        store.updatePidGuide(draggingGuide.value.id, draggingGuide.value.position)
+      } else {
+        store.addPidGuide(axis, draggingGuide.value.position)
+      }
+    } else if (draggingGuide.value.id) {
+      // Dragged back to ruler = delete
+      store.removePidGuide(draggingGuide.value.id)
+    }
+    draggingGuide.value = null
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+function onGuideMouseDown(event: MouseEvent, guide: { id: string; axis: 'h' | 'v'; position: number }) {
+  if (!props.editMode) return
+  event.preventDefault()
+  event.stopPropagation()
+  draggingGuide.value = { axis: guide.axis, position: guide.position, id: guide.id }
+  draggingGuidePos.value = guide.position
+
+  function onMove(e: MouseEvent) {
+    if (!draggingGuide.value || !canvasRef.value) return
+    const rect = canvasRef.value.getBoundingClientRect()
+    const newPos = guide.axis === 'h'
+      ? (e.clientY - rect.top - panY.value) / zoom.value
+      : (e.clientX - rect.left - panX.value) / zoom.value
+    draggingGuidePos.value = newPos
+    draggingGuide.value.position = newPos
+  }
+
+  function onUp(e: MouseEvent) {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    if (!draggingGuide.value || !canvasRef.value) return
+    const rect = canvasRef.value.getBoundingClientRect()
+    const inCanvas = guide.axis === 'h'
+      ? (e.clientY > rect.top + RULER_SIZE && e.clientY < rect.bottom)
+      : (e.clientX > rect.left + RULER_SIZE && e.clientX < rect.right)
+    if (inCanvas) {
+      store.updatePidGuide(guide.id, draggingGuide.value.position)
+    } else {
+      store.removePidGuide(guide.id)
+    }
+    draggingGuide.value = null
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
 }
 
 // Snap coordinate to grid
@@ -218,6 +551,10 @@ const store = useDashboardStore()
 // Selection state
 const selectedSymbolId = ref<string | null>(null)
 const selectedPipeId = ref<string | null>(null)
+const hoveredSymbolId = ref<string | null>(null)
+
+// Context menu state
+const contextMenu = ref<{ x: number; y: number; target: MenuTarget } | null>(null)
 
 // Dragging state
 const isDragging = ref(false)
@@ -292,7 +629,7 @@ function getAllPortPositions(): Array<{
 function findNearestPort(mousePos: PidPoint): typeof snapTarget.value {
   const allPorts = getAllPortPositions()
   let nearest: typeof snapTarget.value = null
-  let minDist = SNAP_THRESHOLD
+  let minDist = SNAP_THRESHOLD.value
 
   for (const port of allPorts) {
     const dist = Math.sqrt((mousePos.x - port.x) ** 2 + (mousePos.y - port.y) ** 2)
@@ -424,8 +761,55 @@ function getSymbolPorts(symbol: PidSymbol): Array<{
   return result
 }
 
+// --- Nozzle stub rendering for equipment symbols ---
+const NOZZLE_STUB_LENGTH = 12
+
+const DIRECTION_VECTORS: Record<string, { dx: number; dy: number }> = {
+  left:   { dx: -1, dy:  0 },
+  right:  { dx:  1, dy:  0 },
+  top:    { dx:  0, dy: -1 },
+  bottom: { dx:  0, dy:  1 },
+}
+
+function symbolHasNozzleStubs(symbolType: string): boolean {
+  const info = SYMBOL_INFO[symbolType as ScadaSymbolType]
+  return !!info && NOZZLE_STUB_CATEGORIES.has(info.category)
+}
+
+function getNozzleStubGeometry(port: { x: number; y: number; direction: string }) {
+  const vec = DIRECTION_VECTORS[port.direction] || { dx: 1, dy: 0 }
+  const capHalf = 3
+  const x2 = port.x + vec.dx * NOZZLE_STUB_LENGTH
+  const y2 = port.y + vec.dy * NOZZLE_STUB_LENGTH
+  const perpDx = -vec.dy
+  const perpDy = vec.dx
+  return {
+    x1: port.x, y1: port.y, x2, y2,
+    capX1: x2 + perpDx * capHalf, capY1: y2 + perpDy * capHalf,
+    capX2: x2 - perpDx * capHalf, capY2: y2 - perpDy * capHalf,
+  }
+}
+
+const nozzleStubs = computed(() => {
+  if (!props.editMode) return []
+  const stubs: Array<{
+    symbolId: string; portId: string; color: string
+    x1: number; y1: number; x2: number; y2: number
+    capX1: number; capY1: number; capX2: number; capY2: number
+  }> = []
+  for (const symbol of props.pidLayer.symbols) {
+    if (!symbolHasNozzleStubs(symbol.type)) continue
+    const color = symbol.color || '#60a5fa'
+    for (const port of getSymbolPorts(symbol)) {
+      stubs.push({ symbolId: symbol.id, portId: port.id, color, ...getNozzleStubGeometry(port) })
+    }
+  }
+  return stubs
+})
+
 // Canvas ref for coordinate calculations
 const canvasRef = ref<HTMLElement | null>(null)
+const viewportRef = ref<HTMLElement | null>(null)
 
 // Symbol configuration modal state
 const showConfigModal = ref(false)
@@ -469,6 +853,103 @@ function handleFaceplateControl(action: { type: string; value: { channel: string
     value: action.value.value
   })
 }
+
+// Context menu handlers
+function onSymbolRightClick(event: MouseEvent, symbol: PidSymbol) {
+  if (!props.editMode) return
+  // During pipe drawing, let the canvas handler finish the pipe instead
+  if (props.pipeDrawingMode) return
+  event.stopPropagation()
+  selectedSymbolId.value = symbol.id
+  emit('select:symbol', symbol.id)
+  contextMenu.value = { x: event.clientX, y: event.clientY, target: { type: 'symbol', id: symbol.id } }
+}
+
+function onPipeRightClick(event: MouseEvent, pipe: PidPipe) {
+  if (!props.editMode) return
+  // During pipe drawing, let the canvas handler finish the pipe instead
+  if (props.pipeDrawingMode) return
+  selectedPipeId.value = pipe.id
+  emit('select:pipe', pipe.id)
+  contextMenu.value = { x: event.clientX, y: event.clientY, target: { type: 'pipe', id: pipe.id } }
+}
+
+function handleContextMenuAction(action: string) {
+  const target = contextMenu.value?.target
+  if (!target) return
+
+  if (target.type === 'symbol') {
+    switch (action) {
+      case 'configure':
+        const sym = props.pidLayer.symbols.find(s => s.id === target.id)
+        if (sym) openSymbolConfig(sym)
+        break
+      case 'cut': store.pidCut(); break
+      case 'copy': store.pidCopy(); break
+      case 'duplicate': store.pidDuplicate(); break
+      case 'delete': store.pidDeleteSelected(); break
+      case 'bringToFront': store.pidBringToFront(); break
+      case 'sendToBack': store.pidSendToBack(); break
+      case 'rotateCW': {
+        const s = props.pidLayer.symbols.find(s => s.id === target.id)
+        if (s) store.updatePidSymbolWithUndo(target.id, { rotation: (s.rotation || 0) + 90 })
+        break
+      }
+      case 'rotateCCW': {
+        const s = props.pidLayer.symbols.find(s => s.id === target.id)
+        if (s) store.updatePidSymbolWithUndo(target.id, { rotation: (s.rotation || 0) - 90 })
+        break
+      }
+    }
+  } else if (target.type === 'pipe') {
+    switch (action) {
+      case 'delete': store.pidDeleteSelected(); break
+      case 'toggleDashed': {
+        const p = props.pidLayer.pipes.find(p => p.id === target.id)
+        if (p) store.updatePidPipeWithUndo(target.id, { dashed: !p.dashed, dashPattern: undefined })
+        break
+      }
+      case 'toggleAnimation': {
+        const p = props.pidLayer.pipes.find(p => p.id === target.id)
+        if (p) store.updatePidPipeWithUndo(target.id, { animated: !p.animated })
+        break
+      }
+      case 'reversePipe': {
+        const p = props.pidLayer.pipes.find(p => p.id === target.id)
+        if (p) {
+          store.updatePidPipeWithUndo(target.id, {
+            points: [...p.points].reverse(),
+            startConnection: p.endConnection,
+            endConnection: p.startConnection,
+            startSymbolId: p.endSymbolId,
+            endSymbolId: p.startSymbolId,
+            startPortId: p.endPortId,
+            endPortId: p.startPortId,
+            startArrow: p.endArrow,
+            endArrow: p.startArrow,
+          })
+        }
+        break
+      }
+      case 'copyStyle': {
+        store.pidCopyStyle(target.id)
+        break
+      }
+      case 'pasteStyle': {
+        store.pidPasteStyle(target.id)
+        break
+      }
+    }
+  } else {
+    switch (action) {
+      case 'paste': store.pidPaste(); break
+      case 'selectAll': store.pidSelectAll(); break
+      case 'toggleGrid': store.togglePidGridSnap(); break
+      case 'resetZoom': store.pidResetZoom(); break
+    }
+  }
+}
+
 const configForm = ref({
   label: '',
   channel: '',
@@ -648,10 +1129,13 @@ function saveSymbolConfig() {
 
 // Handle symbol double-click for config
 function onSymbolDoubleClick(event: MouseEvent, symbol: PidSymbol) {
-  if (!props.editMode) return
   event.preventDefault()
   event.stopPropagation()
-  openSymbolConfig(symbol)
+  if (props.editMode) {
+    openSymbolConfig(symbol)
+  } else if (OFF_PAGE_CONNECTOR_TYPES.has(symbol.type) && symbol.linkedPageId) {
+    store.switchPage(symbol.linkedPageId)
+  }
 }
 
 // Get canvas-relative coordinates from mouse event
@@ -659,8 +1143,8 @@ function getCanvasCoords(event: MouseEvent): PidPoint {
   if (!canvasRef.value) return { x: 0, y: 0 }
   const rect = canvasRef.value.getBoundingClientRect()
   return {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top
+    x: (event.clientX - rect.left - panX.value) / zoom.value,
+    y: (event.clientY - rect.top - panY.value) / zoom.value
   }
 }
 
@@ -802,9 +1286,11 @@ function getSymbolValue(symbol: PidSymbol): string {
 
 // Symbol selection
 function onSymbolMouseDown(event: MouseEvent, symbol: PidSymbol) {
-  // In runtime mode, open faceplate on click
+  // In runtime mode, open faceplate on click (skip for HMI controls — they handle their own interaction)
   if (!props.editMode) {
-    openFaceplate(event, symbol)
+    if (!isHmiControl(symbol.type)) {
+      openFaceplate(event, symbol)
+    }
     return
   }
 
@@ -814,7 +1300,7 @@ function onSymbolMouseDown(event: MouseEvent, symbol: PidSymbol) {
   // Check if clicking a resize handle
   const target = event.target as HTMLElement
   if (target.classList.contains('resize-handle')) {
-    // Handle resize
+    if (symbol.locked) return  // Locked symbols can't be resized
     const handle = target.dataset.handle as 'nw' | 'ne' | 'sw' | 'se'
     startResize(event, symbol, handle)
     return
@@ -824,9 +1310,21 @@ function onSymbolMouseDown(event: MouseEvent, symbol: PidSymbol) {
   const group = store.pidGetGroup(symbol.id)
   if (group) {
     store.pidSelectGroup(group.id)
+  } else if (event.shiftKey) {
+    // Shift+click: toggle selection (add/remove)
+    store.pidToggleSelection(symbol.id, 'symbol')
   } else {
     // Single symbol selection
     store.pidSelectItems([symbol.id], [], [])
+  }
+
+  // Locked symbols can be selected but not dragged
+  if (symbol.locked) {
+    selectedSymbolId.value = symbol.id
+    selectedPipeId.value = null
+    emit('select:symbol', symbol.id)
+    emit('select:pipe', null)
+    return
   }
 
   // Start drag
@@ -846,6 +1344,228 @@ function onSymbolMouseDown(event: MouseEvent, symbol: PidSymbol) {
 
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
+}
+
+function onTextAnnotationMouseDown(event: MouseEvent, text: PidTextAnnotation) {
+  if (!props.editMode) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  // Select the text annotation
+  store.pidSelectItems([], [], [text.id])
+  selectedSymbolId.value = null
+  selectedPipeId.value = null
+
+  // Start drag using the same drag infrastructure
+  isDragging.value = true
+  const coords = getCanvasCoords(event)
+  dragStart.value = {
+    x: coords.x,
+    y: coords.y,
+    symbolX: text.x,
+    symbolY: text.y
+  }
+
+  window.addEventListener('mousemove', onDragMove)
+  window.addEventListener('mouseup', onDragEnd)
+}
+
+// Auto-reroute pipe endpoints connected to moved symbols
+function rerouteConnectedPipes(pipes: PidPipe[], symbols: PidSymbol[]): PidPipe[] {
+  const symbolMap = new Map(symbols.map(s => [s.id, s]))
+  return pipes.map(pipe => {
+    let updated = false
+    let newPoints = pipe.points
+
+    // Check start connection
+    if (pipe.startConnection) {
+      const sym = symbolMap.get(pipe.startConnection.symbolId)
+      if (sym) {
+        const pos = getPortPosition(
+          sym.type as ScadaSymbolType,
+          pipe.startConnection.portId,
+          sym.x, sym.y, sym.width, sym.height,
+          (sym.rotation || 0) as 0 | 90 | 180 | 270
+        )
+        if (pos && newPoints.length > 0) {
+          const first = newPoints[0]!
+          if (first.x !== pos.x || first.y !== pos.y) {
+            newPoints = [...newPoints]
+            newPoints[0] = { x: pos.x, y: pos.y }
+            updated = true
+          }
+        }
+      }
+    }
+
+    // Check end connection
+    if (pipe.endConnection) {
+      const sym = symbolMap.get(pipe.endConnection.symbolId)
+      if (sym) {
+        const pos = getPortPosition(
+          sym.type as ScadaSymbolType,
+          pipe.endConnection.portId,
+          sym.x, sym.y, sym.width, sym.height,
+          (sym.rotation || 0) as 0 | 90 | 180 | 270
+        )
+        if (pos && newPoints.length > 0) {
+          const last = newPoints[newPoints.length - 1]!
+          if (last.x !== pos.x || last.y !== pos.y) {
+            if (!updated) newPoints = [...newPoints]
+            newPoints[newPoints.length - 1] = { x: pos.x, y: pos.y }
+            updated = true
+          }
+        }
+      }
+    }
+
+    // Full auto-reroute when enabled and both ends are port-connected
+    if (store.pidAutoRoute && updated && pipe.startConnection && pipe.endConnection) {
+      const startSym = symbolMap.get(pipe.startConnection.symbolId)
+      const endSym = symbolMap.get(pipe.endConnection.symbolId)
+      if (startSym && endSym) {
+        const sp = getSymbolPorts(startSym).find(p => p.id === pipe.startConnection!.portId)
+        const ep = getSymbolPorts(endSym).find(p => p.id === pipe.endConnection!.portId)
+        if (sp && ep) {
+          const obstacles = symbols
+            .filter(s => s.id !== startSym.id && s.id !== endSym.id)
+            .map(s => ({ x: s.x, y: s.y, width: s.width, height: s.height }))
+          newPoints = autoRoute(
+            { x: sp.x, y: sp.y, direction: sp.direction },
+            { x: ep.x, y: ep.y, direction: ep.direction },
+            obstacles
+          )
+        }
+      }
+    }
+
+    return updated ? { ...pipe, points: newPoints } : pipe
+  })
+}
+
+// Compute alignment guides and return snapped position
+function computeAlignmentSnap(
+  draggedIds: string[],
+  targetX: number, targetY: number,
+  targetW: number, targetH: number
+): { x: number; y: number; guides: AlignmentGuide[] } {
+  const ALIGN_THRESHOLD = 5 / zoom.value
+  const guides: AlignmentGuide[] = []
+  let snapX = targetX
+  let snapY = targetY
+
+  // Edges and center of dragged symbol
+  const dLeft = targetX
+  const dRight = targetX + targetW
+  const dCx = targetX + targetW / 2
+  const dTop = targetY
+  const dBottom = targetY + targetH
+  const dCy = targetY + targetH / 2
+
+  let bestDx = ALIGN_THRESHOLD + 1
+  let bestDy = ALIGN_THRESHOLD + 1
+
+  for (const other of props.pidLayer.symbols) {
+    if (draggedIds.includes(other.id)) continue
+
+    const oLeft = other.x
+    const oRight = other.x + other.width
+    const oCx = other.x + other.width / 2
+    const oTop = other.y
+    const oBottom = other.y + other.height
+    const oCy = other.y + other.height / 2
+
+    // Vertical alignment checks (snap X)
+    const vChecks: [number, number][] = [
+      [dLeft, oLeft], [dLeft, oRight], [dRight, oLeft], [dRight, oRight], [dCx, oCx]
+    ]
+    for (const [dEdge, oEdge] of vChecks) {
+      const diff = Math.abs(dEdge - oEdge)
+      if (diff < bestDx) {
+        bestDx = diff
+        snapX = targetX + (oEdge - dEdge)
+      }
+    }
+
+    // Horizontal alignment checks (snap Y)
+    const hChecks: [number, number][] = [
+      [dTop, oTop], [dTop, oBottom], [dBottom, oTop], [dBottom, oBottom], [dCy, oCy]
+    ]
+    for (const [dEdge, oEdge] of hChecks) {
+      const diff = Math.abs(dEdge - oEdge)
+      if (diff < bestDy) {
+        bestDy = diff
+        snapY = targetY + (oEdge - dEdge)
+      }
+    }
+  }
+
+  // Also snap to user guide lines
+  for (const guide of props.pidLayer.guides || []) {
+    if (guide.axis === 'v') {
+      for (const dEdge of [dLeft, dRight, dCx]) {
+        const diff = Math.abs(dEdge - guide.position)
+        if (diff < bestDx) {
+          bestDx = diff
+          snapX = targetX + (guide.position - dEdge)
+        }
+      }
+    } else {
+      for (const dEdge of [dTop, dBottom, dCy]) {
+        const diff = Math.abs(dEdge - guide.position)
+        if (diff < bestDy) {
+          bestDy = diff
+          snapY = targetY + (guide.position - dEdge)
+        }
+      }
+    }
+  }
+
+  // If no snap occurred, revert
+  if (bestDx > ALIGN_THRESHOLD) snapX = targetX
+  if (bestDy > ALIGN_THRESHOLD) snapY = targetY
+
+  // Build guide lines for snapped positions
+  if (snapX !== targetX) {
+    // Find which vertical line we snapped to
+    const sLeft = snapX
+    const sRight = snapX + targetW
+    const sCx = snapX + targetW / 2
+    for (const other of props.pidLayer.symbols) {
+      if (draggedIds.includes(other.id)) continue
+      const oEdges = [other.x, other.x + other.width, other.x + other.width / 2]
+      for (const oEdge of oEdges) {
+        for (const sEdge of [sLeft, sRight, sCx]) {
+          if (Math.abs(sEdge - oEdge) < 1) {
+            const minY = Math.min(snapY, other.y)
+            const maxY = Math.max(snapY + targetH, other.y + other.height)
+            guides.push({ axis: 'v', pos: sEdge, from: minY, to: maxY })
+          }
+        }
+      }
+    }
+  }
+
+  if (snapY !== targetY) {
+    const sTop = snapY
+    const sBottom = snapY + targetH
+    const sCy = snapY + targetH / 2
+    for (const other of props.pidLayer.symbols) {
+      if (draggedIds.includes(other.id)) continue
+      const oEdges = [other.y, other.y + other.height, other.y + other.height / 2]
+      for (const oEdge of oEdges) {
+        for (const sEdge of [sTop, sBottom, sCy]) {
+          if (Math.abs(sEdge - oEdge) < 1) {
+            const minX = Math.min(snapX, other.x)
+            const maxX = Math.max(snapX + targetW, other.x + other.width)
+            guides.push({ axis: 'h', pos: sEdge, from: minX, to: maxX })
+          }
+        }
+      }
+    }
+  }
+
+  return { x: snapX, y: snapY, guides }
 }
 
 function onDragMove(event: MouseEvent) {
@@ -873,10 +1593,26 @@ function onDragMove(event: MouseEvent) {
     }
   }
 
+  // Alignment guides for multi-selection (based on dragged symbol)
+  if (hasMultiSelection) {
+    const draggedSymbol = props.pidLayer.symbols.find(s => s.id === selectedSymbolId.value)
+    if (draggedSymbol) {
+      const alignResult = computeAlignmentSnap(
+        selectedSymbolIds, draggedSymbol.x + dx, draggedSymbol.y + dy,
+        draggedSymbol.width, draggedSymbol.height
+      )
+      if (alignResult.guides.length > 0) {
+        dx += alignResult.x - (draggedSymbol.x + dx)
+        dy += alignResult.y - (draggedSymbol.y + dy)
+      }
+      activeGuides.value = alignResult.guides
+    }
+  }
+
   if (hasMultiSelection && selectedSymbolIds.includes(selectedSymbolId.value)) {
-    // Move all selected items together
+    // Move all selected items together (skip locked symbols)
     let newSymbols = props.pidLayer.symbols.map(s => {
-      if (selectedSymbolIds.includes(s.id)) {
+      if (selectedSymbolIds.includes(s.id) && !s.locked) {
         return { ...s, x: Math.max(0, s.x + dx), y: Math.max(0, s.y + dy) }
       }
       return s
@@ -888,6 +1624,9 @@ function onDragMove(event: MouseEvent) {
       }
       return p
     })
+
+    // Auto-reroute non-selected pipes connected to moved symbols
+    newPipes = rerouteConnectedPipes(newPipes, newSymbols)
 
     let newTextAnnotations = (props.pidLayer.textAnnotations || []).map(t => {
       if (selectedTextIds.includes(t.id)) {
@@ -925,6 +1664,16 @@ function onDragMove(event: MouseEvent) {
       newY = snapped.y
     }
 
+    // Alignment guides (override grid snap when triggered)
+    const alignResult = computeAlignmentSnap(
+      [selectedSymbolId.value], newX, newY, symbol.width, symbol.height
+    )
+    if (alignResult.guides.length > 0) {
+      newX = alignResult.x
+      newY = alignResult.y
+    }
+    activeGuides.value = alignResult.guides
+
     // Update symbol position
     const newSymbols = props.pidLayer.symbols.map(s =>
       s.id === selectedSymbolId.value
@@ -932,13 +1681,17 @@ function onDragMove(event: MouseEvent) {
         : s
     )
 
-    emit('update:pidLayer', { ...props.pidLayer, symbols: newSymbols })
+    // Auto-reroute connected pipe endpoints
+    const newPipes = rerouteConnectedPipes(props.pidLayer.pipes, newSymbols)
+
+    emit('update:pidLayer', { ...props.pidLayer, symbols: newSymbols, pipes: newPipes })
   }
 }
 
 function onDragEnd() {
   isDragging.value = false
   dragStart.value = null
+  activeGuides.value = []
   window.removeEventListener('mousemove', onDragMove)
   window.removeEventListener('mouseup', onDragEnd)
 }
@@ -1029,9 +1782,15 @@ function onResizeEnd() {
 function onCanvasMouseDown(event: MouseEvent) {
   if (!props.editMode) return
 
-  // Only start marquee if clicking directly on the canvas (not a symbol/pipe)
+  // Pan with middle-mouse or Space+left-click
+  if (event.button === 1 || (spaceHeld.value && event.button === 0)) {
+    onPanStart(event)
+    return
+  }
+
+  // Only start marquee if clicking directly on the canvas/viewport (not a symbol/pipe)
   // and not in pipe drawing mode
-  if (event.target !== canvasRef.value || props.pipeDrawingMode) return
+  if ((event.target !== canvasRef.value && event.target !== viewportRef.value) || props.pipeDrawingMode) return
 
   // Don't start marquee on right-click
   if (event.button !== 0) return
@@ -1164,17 +1923,24 @@ const marqueeStyle = computed(() => {
   const width = Math.abs(marqueeEnd.value.x - marqueeStart.value.x)
   const height = Math.abs(marqueeEnd.value.y - marqueeStart.value.y)
 
+  // Convert world coords to screen coords (marquee is outside viewport)
   return {
-    left: `${x}px`,
-    top: `${y}px`,
-    width: `${width}px`,
-    height: `${height}px`
+    left: `${x * zoom.value + panX.value}px`,
+    top: `${y * zoom.value + panY.value}px`,
+    width: `${width * zoom.value}px`,
+    height: `${height * zoom.value}px`
   }
 })
 
 // Pipe drawing
 function onCanvasClick(event: MouseEvent) {
   if (!props.editMode) return
+
+  // Close context menu on any click
+  contextMenu.value = null
+
+  // Don't trigger click actions during pan mode
+  if (spaceHeld.value || isPanning.value) return
 
   // Skip deselect if we just finished a marquee selection
   if (justDidMarquee.value) {
@@ -1183,7 +1949,7 @@ function onCanvasClick(event: MouseEvent) {
   }
 
   // If clicking on empty space, deselect
-  if (event.target === canvasRef.value) {
+  if (event.target === canvasRef.value || event.target === viewportRef.value) {
     if (!props.pipeDrawingMode) {
       selectedSymbolId.value = null
       selectedPipeId.value = null
@@ -1243,20 +2009,47 @@ function onCanvasClick(event: MouseEvent) {
         const isSamePort = startConnection.value.symbolId === nearestPort.symbolId &&
                            startConnection.value.portId === nearestPort.portId
         if (!isSamePort && currentPipePoints.value.length >= 2) {
+          // Auto-route: if enabled, replace user waypoints with computed path
+          let pipePoints = [...currentPipePoints.value]
+          let pipePathType: 'polyline' | 'orthogonal' = 'polyline'
+          const endConn = {
+            symbolId: nearestPort.symbolId,
+            portId: nearestPort.portId,
+            x: nearestPort.x,
+            y: nearestPort.y
+          }
+
+          if (store.pidAutoRoute && startConnection.value) {
+            const startSym = props.pidLayer.symbols.find(s => s.id === startConnection.value!.symbolId)
+            const endSym = props.pidLayer.symbols.find(s => s.id === endConn.symbolId)
+            if (startSym && endSym) {
+              const startPort = getSymbolPorts(startSym).find(p => p.id === startConnection.value!.portId)
+              const endPort = getSymbolPorts(endSym).find(p => p.id === endConn.portId)
+              if (startPort && endPort) {
+                const obstacles = props.pidLayer.symbols
+                  .filter(s => s.id !== startSym.id && s.id !== endSym.id)
+                  .map(s => ({ x: s.x, y: s.y, width: s.width, height: s.height }))
+                pipePoints = autoRoute(
+                  { x: startPort.x, y: startPort.y, direction: startPort.direction },
+                  { x: endPort.x, y: endPort.y, direction: endPort.direction },
+                  obstacles
+                )
+                pipePathType = 'orthogonal'
+              }
+            }
+          }
+
           // Finish the pipe automatically
           const newPipe: PidPipe = {
             id: `pipe-${Date.now()}`,
-            points: [...currentPipePoints.value],
-            pathType: 'polyline',
-            color: '#60a5fa',
+            points: pipePoints,
+            pathType: pipePathType,
+            color: store.pidPipeColor,
             strokeWidth: 3,
+            dashed: store.pidPipeDashed || undefined,
+            animated: store.pidPipeAnimated || undefined,
             startConnection: startConnection.value,
-            endConnection: {
-              symbolId: nearestPort.symbolId,
-              portId: nearestPort.portId,
-              x: nearestPort.x,
-              y: nearestPort.y
-            }
+            endConnection: endConn
           }
 
           emit('update:pidLayer', {
@@ -1311,8 +2104,10 @@ function onCanvasDoubleClick(event: MouseEvent) {
       id: `pipe-${Date.now()}`,
       points: [...currentPipePoints.value],
       pathType: 'polyline',
-      color: '#60a5fa',
+      color: store.pidPipeColor,
       strokeWidth: 3,
+      dashed: store.pidPipeDashed || undefined,
+      animated: store.pidPipeAnimated || undefined,
       // Store connection info if snapped to ports
       startConnection: startConnection.value || undefined,
       endConnection: nearestPort ? {
@@ -1339,72 +2134,76 @@ function onCanvasDoubleClick(event: MouseEvent) {
 
 // Right-click to finish pipe (alternative to double-click)
 function onCanvasRightClick(event: MouseEvent) {
-  // Prevent context menu
+  // Prevent browser context menu
   event.preventDefault()
 
-  if (!props.pipeDrawingMode || !isDrawingPipe.value) return
+  // If drawing a pipe, right-click finishes it (existing behavior)
+  if (props.pipeDrawingMode && isDrawingPipe.value) {
+    const rawCoords = getCanvasCoords(event)
+    const nearestPort = findNearestPort(rawCoords)
 
-  // Check for end snap-to-port
-  const rawCoords = getCanvasCoords(event)
-  const nearestPort = findNearestPort(rawCoords)
-
-  // Apply orthogonal constraint by default (Shift disables it)
-  let endCoords: PidPoint
-  if (nearestPort) {
-    endCoords = { x: nearestPort.x, y: nearestPort.y }
-  } else if (currentPipePoints.value.length > 0) {
-    const shouldConstrainOrthogonal = orthogonalPipes.value && !shiftHeld.value
-    if (shouldConstrainOrthogonal) {
-      const lastPoint = currentPipePoints.value[currentPipePoints.value.length - 1]!
-      endCoords = constrainToOrthogonal(rawCoords, lastPoint)
+    let endCoords: PidPoint
+    if (nearestPort) {
+      endCoords = { x: nearestPort.x, y: nearestPort.y }
+    } else if (currentPipePoints.value.length > 0) {
+      const shouldConstrainOrthogonal = orthogonalPipes.value && !shiftHeld.value
+      if (shouldConstrainOrthogonal) {
+        const lastPoint = currentPipePoints.value[currentPipePoints.value.length - 1]!
+        endCoords = constrainToOrthogonal(rawCoords, lastPoint)
+      } else {
+        endCoords = rawCoords
+      }
     } else {
       endCoords = rawCoords
     }
-  } else {
-    endCoords = rawCoords
-  }
 
-  // Add final point
-  if (currentPipePoints.value.length >= 1) {
-    currentPipePoints.value.push(endCoords)
-  }
-
-  // Finish pipe drawing
-  if (currentPipePoints.value.length >= 2) {
-    const newPipe: PidPipe = {
-      id: `pipe-${Date.now()}`,
-      points: [...currentPipePoints.value],
-      pathType: 'polyline',
-      color: '#60a5fa',
-      strokeWidth: 3,
-      startConnection: startConnection.value || undefined,
-      endConnection: nearestPort ? {
-        symbolId: nearestPort.symbolId,
-        portId: nearestPort.portId,
-        x: nearestPort.x,
-        y: nearestPort.y
-      } : undefined
+    if (currentPipePoints.value.length >= 1) {
+      currentPipePoints.value.push(endCoords)
     }
 
-    emit('update:pidLayer', {
-      ...props.pidLayer,
-      pipes: [...props.pidLayer.pipes, newPipe]
-    })
+    if (currentPipePoints.value.length >= 2) {
+      const newPipe: PidPipe = {
+        id: `pipe-${Date.now()}`,
+        points: [...currentPipePoints.value],
+        pathType: 'polyline',
+        color: store.pidPipeColor,
+        strokeWidth: 3,
+        dashed: store.pidPipeDashed || undefined,
+        animated: store.pidPipeAnimated || undefined,
+        startConnection: startConnection.value || undefined,
+        endConnection: nearestPort ? {
+          symbolId: nearestPort.symbolId,
+          portId: nearestPort.portId,
+          x: nearestPort.x,
+          y: nearestPort.y
+        } : undefined
+      }
+
+      emit('update:pidLayer', {
+        ...props.pidLayer,
+        pipes: [...props.pidLayer.pipes, newPipe]
+      })
+    }
+
+    isDrawingPipe.value = false
+    currentPipePoints.value = []
+    tempMousePos.value = null
+    snapTarget.value = null
+    startConnection.value = null
+    return
   }
 
-  // Reset drawing state
-  isDrawingPipe.value = false
-  currentPipePoints.value = []
-  tempMousePos.value = null
-  snapTarget.value = null
-  startConnection.value = null
+  // Show context menu in edit mode (not during pipe drawing)
+  if (props.editMode && !props.pipeDrawingMode) {
+    contextMenu.value = { x: event.clientX, y: event.clientY, target: { type: 'canvas' } }
+  }
 }
 
 function onCanvasMouseMove(event: MouseEvent) {
   if (props.pipeDrawingMode) {
     const rawCoords = getCanvasCoords(event)
 
-    // Update snap target for visual feedback
+    // Update snap target for visual feedback (ports highlight in pipe drawing mode)
     snapTarget.value = findNearestPort(rawCoords)
 
     if (isDrawingPipe.value) {
@@ -1433,6 +2232,12 @@ function onCanvasKeyDown(event: KeyboardEvent) {
   // Track Shift key for orthogonal constraint
   if (event.key === 'Shift') {
     shiftHeld.value = true
+  }
+
+  // Track Space key for pan mode
+  if (event.key === ' ') {
+    event.preventDefault()
+    spaceHeld.value = true
   }
 
   // Escape cancels pipe drawing
@@ -1477,6 +2282,190 @@ function onCanvasKeyUp(event: KeyboardEvent) {
   if (event.key === 'Shift') {
     shiftHeld.value = false
   }
+  if (event.key === ' ') {
+    spaceHeld.value = false
+  }
+}
+
+// Drag-drop symbol from panel
+function onCanvasDragOver(event: DragEvent) {
+  if (!props.editMode || !event.dataTransfer) return
+  if (event.dataTransfer.types.includes('application/x-pid-symbol')) {
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+function onCanvasDrop(event: DragEvent) {
+  if (!props.editMode || !event.dataTransfer) return
+  const symbolType = event.dataTransfer.getData('application/x-pid-symbol')
+  if (!symbolType) return
+
+  const coords = getCanvasCoords(event as unknown as MouseEvent)
+  const hmiSize = getHmiDefaultSize(symbolType)
+  const w = hmiSize?.width ?? 60
+  const h = hmiSize?.height ?? 60
+  store.addPidSymbolWithUndo({
+    type: symbolType as import('../assets/symbols').ScadaSymbolType,
+    x: coords.x - w / 2,
+    y: coords.y - h / 2,
+    width: w,
+    height: h,
+    rotation: 0,
+    color: hmiSize ? undefined : '#60a5fa',
+    showValue: false
+  })
+}
+
+// Zoom with Ctrl+Wheel (edit-mode only)
+function onCanvasWheel(event: WheelEvent) {
+  if (!props.editMode) return
+  if (!event.ctrlKey) return
+  event.preventDefault()
+
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (!rect) return
+
+  // Mouse position relative to the canvas container
+  const mouseX = event.clientX - rect.left
+  const mouseY = event.clientY - rect.top
+
+  // Current world-space position under cursor
+  const worldX = (mouseX - panX.value) / zoom.value
+  const worldY = (mouseY - panY.value) / zoom.value
+
+  // Compute new zoom
+  const delta = event.deltaY > 0 ? -0.1 : 0.1
+  const newZoom = Math.max(0.1, Math.min(5, zoom.value + delta * zoom.value))
+
+  // Adjust pan so the world point under cursor stays fixed
+  const newPanX = mouseX - worldX * newZoom
+  const newPanY = mouseY - worldY * newZoom
+
+  store.setPidZoom(newZoom)
+  store.setPidPan(newPanX, newPanY)
+}
+
+// Start panning (middle-mouse or Space+left-click)
+function onPanStart(event: MouseEvent) {
+  if (!props.editMode) return
+
+  // Middle mouse button (button 1) or Space+left-click
+  const isMiddleButton = event.button === 1
+  const isSpaceDrag = spaceHeld.value && event.button === 0
+
+  if (!isMiddleButton && !isSpaceDrag) return
+
+  event.preventDefault()
+  isPanning.value = true
+  panStart.value = {
+    x: event.clientX,
+    y: event.clientY,
+    panX: store.pidPanX,
+    panY: store.pidPanY
+  }
+
+  window.addEventListener('mousemove', onPanMove)
+  window.addEventListener('mouseup', onPanEnd)
+}
+
+function onPanMove(event: MouseEvent) {
+  if (!isPanning.value) return
+  const dx = event.clientX - panStart.value.x
+  const dy = event.clientY - panStart.value.y
+  store.setPidPan(panStart.value.panX + dx, panStart.value.panY + dy)
+}
+
+function onPanEnd() {
+  isPanning.value = false
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', onPanEnd)
+}
+
+// ISA-5.1 line coding: dash patterns by lineCode, dashPattern, or explicit dashed flag
+function getPipeDashArray(pipe: PidPipe): string | undefined {
+  // Custom dash pattern takes highest priority
+  if (pipe.dashPattern) return pipe.dashPattern
+  // Explicit dashed toggle
+  if (pipe.dashed) return '8,4'
+  // ISA-5.1 patterns only when lineCode is explicitly set
+  if (pipe.lineCode) {
+    switch (pipe.lineCode) {
+      case 'pneumatic':   return '8,3,2,3,2,3'  // Dash-dot-dot
+      case 'hydraulic':   return '16,4'          // Extra-long dash
+      case 'electrical':  return '2,4'           // Dotted
+      case 'capillary':   return '2,2'           // Fine dots
+      case 'signal':      return '2,6'           // Wide-spaced dots
+      default:            return undefined
+    }
+  }
+  // No dash — solid line is the default
+  return undefined
+}
+
+// Resolve arrow type from PidArrowType | boolean for backwards compat
+function resolveArrowType(val: PidArrowType | boolean | undefined): PidArrowType {
+  if (val === true) return 'arrow'
+  if (!val) return 'none'
+  return val as PidArrowType
+}
+
+// Collect unique marker definitions needed by all pipes
+const pipeMarkerDefs = computed(() => {
+  const defs: { id: string; type: PidArrowType; endpoint: 'start' | 'end'; color: string }[] = []
+  const seen = new Set<string>()
+  for (const pipe of props.pidLayer.pipes) {
+    const color = pipe.color || '#60a5fa'
+    const startType = resolveArrowType(pipe.startArrow)
+    const endType = resolveArrowType(pipe.endArrow)
+    if (startType !== 'none') {
+      const id = `marker-${startType}-start-${color.replace('#', '')}`
+      if (!seen.has(id)) { seen.add(id); defs.push({ id, type: startType, endpoint: 'start', color }) }
+    }
+    if (endType !== 'none') {
+      const id = `marker-${endType}-end-${color.replace('#', '')}`
+      if (!seen.has(id)) { seen.add(id); defs.push({ id, type: endType, endpoint: 'end', color }) }
+    }
+  }
+  return defs
+})
+
+// Get marker URL for a pipe endpoint
+function getMarkerUrl(pipe: PidPipe, endpoint: 'start' | 'end'): string | undefined {
+  const arrowType = resolveArrowType(endpoint === 'start' ? pipe.startArrow : pipe.endArrow)
+  if (arrowType === 'none') return undefined
+  const color = (pipe.color || '#60a5fa').replace('#', '')
+  return `url(#marker-${arrowType}-${endpoint}-${color})`
+}
+
+// Compute pipe label position along the path
+function getPipeLabelPoint(pipe: PidPipe): PidPoint | null {
+  if (pipe.points.length < 2) return null
+  const position = pipe.labelPosition || 'middle'
+  if (position === 'start') return pipe.points[0]!
+  if (position === 'end') return pipe.points[pipe.points.length - 1]!
+  // 'middle': walk segments to find the halfway distance point
+  let totalLen = 0
+  const segments: { from: PidPoint; to: PidPoint; len: number }[] = []
+  for (let i = 1; i < pipe.points.length; i++) {
+    const from = pipe.points[i - 1]!
+    const to = pipe.points[i]!
+    const len = Math.hypot(to.x - from.x, to.y - from.y)
+    segments.push({ from, to, len })
+    totalLen += len
+  }
+  const halfDist = totalLen / 2
+  let walked = 0
+  for (const seg of segments) {
+    if (walked + seg.len >= halfDist) {
+      const t = seg.len > 0 ? (halfDist - walked) / seg.len : 0
+      return {
+        x: seg.from.x + t * (seg.to.x - seg.from.x),
+        y: seg.from.y + t * (seg.to.y - seg.from.y)
+      }
+    }
+    walked += seg.len
+  }
+  return pipe.points[Math.floor(pipe.points.length / 2)]!
 }
 
 // Get pipe flow state from channel binding
@@ -1523,6 +2512,122 @@ function getFlowAnimationDuration(speed: number): string {
   return `${duration}s`
 }
 
+// Line segment intersection detection for line jumps
+function segmentIntersection(
+  p1: PidPoint, p2: PidPoint, p3: PidPoint, p4: PidPoint
+): PidPoint | null {
+  const denom = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y)
+  if (Math.abs(denom) < 1e-10) return null
+  const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denom
+  const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / denom
+  if (ua < 0.01 || ua > 0.99 || ub < 0.01 || ub > 0.99) return null
+  return { x: p1.x + ua * (p2.x - p1.x), y: p1.y + ua * (p2.y - p1.y) }
+}
+
+// Generate pipe path with line jumps (arc or gap) at crossing points
+function generatePipePathWithJumps(pipe: PidPipe): string {
+  if (!pipe.jumpStyle || pipe.jumpStyle === 'none') return generatePipePath(pipe)
+  if (pipe.points.length < 2) return ''
+
+  const jumpR = (pipe.jumpSize || 8) / 2
+  const otherPipes = props.pidLayer.pipes.filter(p => p.id !== pipe.id)
+
+  // Collect all other pipes' segments
+  const otherSegments: { from: PidPoint; to: PidPoint }[] = []
+  for (const op of otherPipes) {
+    for (let i = 0; i < op.points.length - 1; i++) {
+      otherSegments.push({ from: op.points[i]!, to: op.points[i + 1]! })
+    }
+  }
+
+  let path = ''
+  for (let i = 0; i < pipe.points.length - 1; i++) {
+    const segA = pipe.points[i]!
+    const segB = pipe.points[i + 1]!
+
+    // Find all intersections on this segment
+    const hits: { t: number; pt: PidPoint }[] = []
+    for (const os of otherSegments) {
+      const pt = segmentIntersection(segA, segB, os.from, os.to)
+      if (pt) {
+        const dx = pt.x - segA.x, dy = pt.y - segA.y
+        const t = Math.hypot(dx, dy) / Math.hypot(segB.x - segA.x, segB.y - segA.y)
+        hits.push({ t, pt })
+      }
+    }
+    hits.sort((a, b) => a.t - b.t)
+
+    if (i === 0) path += `M ${segA.x} ${segA.y}`
+
+    if (hits.length === 0) {
+      path += ` L ${segB.x} ${segB.y}`
+    } else {
+      // Walk segment, inserting jumps at each intersection
+      const segDx = segB.x - segA.x, segDy = segB.y - segA.y
+      const segLen = Math.hypot(segDx, segDy)
+      const ux = segDx / segLen, uy = segDy / segLen
+
+      let lastX = segA.x, lastY = segA.y
+      for (const hit of hits) {
+        const beforeX = hit.pt.x - ux * jumpR
+        const beforeY = hit.pt.y - uy * jumpR
+        const afterX = hit.pt.x + ux * jumpR
+        const afterY = hit.pt.y + uy * jumpR
+
+        path += ` L ${beforeX} ${beforeY}`
+        if (pipe.jumpStyle === 'arc') {
+          // Semicircular arc over the crossing
+          path += ` A ${jumpR} ${jumpR} 0 0 1 ${afterX} ${afterY}`
+        } else {
+          // Gap: move without drawing
+          path += ` M ${afterX} ${afterY}`
+        }
+        lastX = afterX
+        lastY = afterY
+      }
+      path += ` L ${segB.x} ${segB.y}`
+    }
+  }
+  return path
+}
+
+// Generate rounded polyline path with curved corners
+function generateRoundedPolylinePath(points: PidPoint[], radius: number): string {
+  if (points.length < 2) return ''
+  let path = `M ${points[0]!.x} ${points[0]!.y}`
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1]!
+    const curr = points[i]!
+    const next = points[i + 1]!
+
+    const dx1 = prev.x - curr.x, dy1 = prev.y - curr.y
+    const dx2 = next.x - curr.x, dy2 = next.y - curr.y
+    const len1 = Math.hypot(dx1, dy1)
+    const len2 = Math.hypot(dx2, dy2)
+
+    if (len1 < 1 || len2 < 1) {
+      path += ` L ${curr.x} ${curr.y}`
+      continue
+    }
+
+    // Clamp radius to half the shorter adjacent segment
+    const r = Math.min(radius, len1 / 2, len2 / 2)
+
+    const entryX = curr.x + (dx1 / len1) * r
+    const entryY = curr.y + (dy1 / len1) * r
+    const exitX = curr.x + (dx2 / len2) * r
+    const exitY = curr.y + (dy2 / len2) * r
+
+    path += ` L ${entryX} ${entryY}`
+    path += ` Q ${curr.x} ${curr.y} ${exitX} ${exitY}`
+  }
+
+  const last = points[points.length - 1]!
+  path += ` L ${last.x} ${last.y}`
+  return path
+}
+
 // Generate SVG path for pipe
 function generatePipePath(pipe: PidPipe): string {
   if (pipe.points.length < 2) return ''
@@ -1531,32 +2636,50 @@ function generatePipePath(pipe: PidPipe): string {
   let path = `M ${first.x} ${first.y}`
 
   if (pipe.pathType === 'bezier' && pipe.points.length >= 3) {
-    // Smooth bezier curve through points
-    for (let i = 1; i < pipe.points.length - 1; i++) {
-      const p0 = pipe.points[i - 1]!
-      const p1 = pipe.points[i]!
-      const p2 = pipe.points[i + 1]!
-      const cx2 = (p1.x + p2.x) / 2
-      const cy2 = (p1.y + p2.y) / 2
-      path += ` Q ${p1.x} ${p1.y} ${cx2} ${cy2}`
+    // Catmull-Rom to cubic Bezier for smooth curves through all waypoints
+    const pts = pipe.points
+    const tension = 6
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)]!
+      const p1 = pts[i]!
+      const p2 = pts[i + 1]!
+      const p3 = pts[Math.min(pts.length - 1, i + 2)]!
+
+      const cp1x = p1.x + (p2.x - p0.x) / tension
+      const cp1y = p1.y + (p2.y - p0.y) / tension
+      const cp2x = p2.x - (p3.x - p1.x) / tension
+      const cp2y = p2.y - (p3.y - p1.y) / tension
+
+      path += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
     }
-    const last = pipe.points[pipe.points.length - 1]!
-    path += ` L ${last.x} ${last.y}`
   } else if (pipe.pathType === 'orthogonal') {
-    // Right-angle routing
+    // Build full list of orthogonal waypoints (including intermediate right-angle points)
+    const waypoints: PidPoint[] = [first]
     for (let i = 1; i < pipe.points.length; i++) {
       const prev = pipe.points[i - 1]!
       const curr = pipe.points[i]!
       if (prev.x !== curr.x && prev.y !== curr.y) {
-        path += ` L ${curr.x} ${prev.y}`
+        waypoints.push({ x: curr.x, y: prev.y })
       }
-      path += ` L ${curr.x} ${curr.y}`
+      waypoints.push(curr)
+    }
+
+    if (pipe.rounded && waypoints.length >= 3) {
+      path = generateRoundedPolylinePath(waypoints, pipe.cornerRadius || 8)
+    } else {
+      for (const wp of waypoints.slice(1)) {
+        path += ` L ${wp.x} ${wp.y}`
+      }
     }
   } else {
     // Polyline (straight segments)
-    for (let i = 1; i < pipe.points.length; i++) {
-      const p = pipe.points[i]!
-      path += ` L ${p.x} ${p.y}`
+    if (pipe.rounded && pipe.points.length >= 3) {
+      path = generateRoundedPolylinePath(pipe.points, pipe.cornerRadius || 8)
+    } else {
+      for (let i = 1; i < pipe.points.length; i++) {
+        const p = pipe.points[i]!
+        path += ` L ${p.x} ${p.y}`
+      }
     }
   }
 
@@ -1796,13 +2919,27 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   return Math.sqrt((px - xx) ** 2 + (py - yy) ** 2)
 }
 
+// Reactive ruler drawing
+watchEffect(() => {
+  if (!showRulers.value || !props.editMode) return
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (!rect) return
+  drawRuler(rulerHCanvas.value, 'h', zoom.value, panX.value, rect.width - RULER_SIZE)
+  drawRuler(rulerVCanvas.value, 'v', zoom.value, panY.value, rect.height - RULER_SIZE)
+})
+
 </script>
 
 <template>
   <div
     ref="canvasRef"
     class="pid-canvas"
-    :class="{ 'edit-mode': editMode, 'drawing-mode': pipeDrawingMode, 'ortho-mode': shiftHeld && pipeDrawingMode }"
+    :class="{
+      'edit-mode': editMode,
+      'drawing-mode': pipeDrawingMode,
+      'ortho-mode': shiftHeld && pipeDrawingMode,
+      'panning': isPanning || spaceHeld
+    }"
     tabindex="0"
     @mousedown="onCanvasMouseDown"
     @click="onCanvasClick"
@@ -1811,7 +2948,28 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
     @mousemove="onCanvasMouseMove"
     @keydown="onCanvasKeyDown"
     @keyup="onCanvasKeyUp"
+    @wheel="onCanvasWheel"
+    @dragover.prevent="onCanvasDragOver"
+    @drop.prevent="onCanvasDrop"
   >
+    <!-- Rulers (fixed position, outside viewport transform) -->
+    <div v-if="editMode && showRulers" class="ruler ruler-h" @mousedown.prevent="onRulerMouseDown($event, 'h')">
+      <canvas ref="rulerHCanvas" />
+    </div>
+    <div v-if="editMode && showRulers" class="ruler ruler-v" @mousedown.prevent="onRulerMouseDown($event, 'v')">
+      <canvas ref="rulerVCanvas" />
+    </div>
+    <div v-if="editMode && showRulers" class="ruler-corner" />
+
+    <!-- Zoom/Pan viewport (transforms all content; edit-mode only) -->
+    <div
+      ref="viewportRef"
+      class="pid-viewport"
+      :style="{
+        transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+        transformOrigin: '0 0'
+      }"
+    >
     <!-- Background image -->
     <img
       v-if="pidLayer.backgroundImage"
@@ -1863,8 +3021,46 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
 
     <!-- Pipes (SVG layer) -->
     <svg class="pipes-layer">
-      <!-- Existing pipes -->
-      <g v-for="pipe in pidLayer.pipes" :key="pipe.id" class="pipe-group">
+      <!-- Arrow marker definitions -->
+      <defs>
+        <template v-for="def in pipeMarkerDefs" :key="def.id">
+          <!-- Arrow (filled triangle) -->
+          <marker v-if="def.type === 'arrow'" :id="def.id"
+            viewBox="0 0 10 10" markerWidth="8" markerHeight="8"
+            :refX="def.endpoint === 'end' ? 9 : 1" refY="5"
+            orient="auto-start-reverse" markerUnits="strokeWidth">
+            <polygon :points="def.endpoint === 'end' ? '0,1 10,5 0,9' : '10,1 0,5 10,9'" :fill="def.color" />
+          </marker>
+          <!-- Open (unfilled triangle) -->
+          <marker v-else-if="def.type === 'open'" :id="def.id"
+            viewBox="0 0 10 10" markerWidth="8" markerHeight="8"
+            :refX="def.endpoint === 'end' ? 9 : 1" refY="5"
+            orient="auto-start-reverse" markerUnits="strokeWidth">
+            <polyline :points="def.endpoint === 'end' ? '0,1 10,5 0,9' : '10,1 0,5 10,9'"
+              fill="none" :stroke="def.color" stroke-width="1.5" />
+          </marker>
+          <!-- Dot (filled circle) -->
+          <marker v-else-if="def.type === 'dot'" :id="def.id"
+            viewBox="0 0 10 10" markerWidth="6" markerHeight="6"
+            refX="5" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth">
+            <circle cx="5" cy="5" r="4" :fill="def.color" />
+          </marker>
+          <!-- Diamond (filled diamond) -->
+          <marker v-else-if="def.type === 'diamond'" :id="def.id"
+            viewBox="0 0 12 12" markerWidth="8" markerHeight="8"
+            refX="6" refY="6" orient="auto-start-reverse" markerUnits="strokeWidth">
+            <polygon points="6,0 12,6 6,12 0,6" :fill="def.color" />
+          </marker>
+          <!-- Bar (perpendicular line) -->
+          <marker v-else-if="def.type === 'bar'" :id="def.id"
+            viewBox="0 0 4 10" markerWidth="4" markerHeight="8"
+            refX="2" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth">
+            <line x1="2" y1="0" x2="2" y2="10" :stroke="def.color" stroke-width="2" />
+          </marker>
+        </template>
+      </defs>
+      <!-- Existing pipes (filtered by layer visibility) -->
+      <g v-for="pipe in visiblePipes" :key="pipe.id" class="pipe-group">
         <!-- Wider invisible hit area for easier clicking -->
         <path
           :d="generatePipePath(pipe)"
@@ -1874,13 +3070,17 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
           class="pipe-hit-area"
           @mousedown.stop="onPipeMouseDown($event, pipe)"
           @dblclick.stop="onPipeDoubleClick($event, pipe)"
+          @contextmenu.prevent.stop="onPipeRightClick($event, pipe)"
         />
         <!-- Visible pipe -->
         <path
-          :d="generatePipePath(pipe)"
+          :d="generatePipePathWithJumps(pipe)"
           :stroke="pipe.color || '#60a5fa'"
           :stroke-width="pipe.strokeWidth || 3"
-          :stroke-dasharray="pipe.dashed ? '8,4' : undefined"
+          :stroke-opacity="pipe.opacity ?? 1"
+          :stroke-dasharray="getPipeDashArray(pipe)"
+          :marker-start="getMarkerUrl(pipe, 'start')"
+          :marker-end="getMarkerUrl(pipe, 'end')"
           stroke-linecap="round"
           stroke-linejoin="round"
           fill="none"
@@ -1920,16 +3120,41 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
           }"
         />
 
-        <!-- Pipe points (edit mode only) -->
+        <!-- Pipe label (double-click to edit inline) -->
+        <g v-if="pipe.label && getPipeLabelPoint(pipe)" class="pipe-label-group"
+          :class="{ 'editable': editMode }"
+          @dblclick.stop="onPipeLabelDblClick($event, pipe)">
+          <rect
+            :x="getPipeLabelPoint(pipe)!.x - (pipe.label.length * 3.5 + 6) / zoom"
+            :y="getPipeLabelPoint(pipe)!.y - 8 / zoom"
+            :width="(pipe.label.length * 7 + 12) / zoom"
+            :height="16 / zoom"
+            :rx="3 / zoom"
+            fill="rgba(15, 15, 26, 0.85)"
+            class="pipe-label-bg"
+          />
+          <text
+            :x="getPipeLabelPoint(pipe)!.x"
+            :y="getPipeLabelPoint(pipe)!.y"
+            text-anchor="middle"
+            dominant-baseline="central"
+            :fill="pipe.color || '#60a5fa'"
+            :font-size="12 / zoom"
+            class="pipe-label-text"
+          >{{ pipe.label }}</text>
+        </g>
+
+        <!-- Pipe points (edit mode only; counter-scaled for zoom) -->
         <g v-if="editMode && selectedPipeId === pipe.id" class="pipe-points">
           <circle
             v-for="(point, idx) in pipe.points"
             :key="idx"
             :cx="point.x"
             :cy="point.y"
-            r="6"
+            :r="6 / zoom"
             class="pipe-point"
             :class="{ 'first': idx === 0, 'last': idx === pipe.points.length - 1 }"
+            :stroke-width="2 / zoom"
             @mousedown="onPipePointMouseDown($event, pipe.id, idx)"
             @contextmenu.prevent="onPipePointRightClick($event, pipe.id, idx)"
           />
@@ -1948,45 +3173,105 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
         class="drawing-preview"
       />
 
-      <!-- Drawing points -->
+      <!-- Drawing points (counter-scaled for zoom) -->
       <g v-if="isDrawingPipe">
         <circle
           v-for="(point, idx) in currentPipePoints"
           :key="idx"
           :cx="point.x"
           :cy="point.y"
-          r="5"
+          :r="5 / zoom"
           fill="#22c55e"
           stroke="#fff"
-          stroke-width="2"
+          :stroke-width="2 / zoom"
         />
       </g>
 
-      <!-- Port indicators (shown when drawing pipes) -->
-      <g v-if="pipeDrawingMode" class="port-indicators">
-        <g v-for="symbol in pidLayer.symbols" :key="`ports-${symbol.id}`">
-          <circle
-            v-for="port in getSymbolPorts(symbol)"
-            :key="port.id"
-            :cx="port.x"
-            :cy="port.y"
-            r="6"
-            class="port-indicator"
-            :class="{
-              'snap-active': snapTarget?.symbolId === symbol.id && snapTarget?.portId === port.id,
-              'custom-port': port.isCustom
-            }"
+      <!-- User guide lines -->
+      <g v-if="editMode" class="guide-lines">
+        <line
+          v-for="guide in (pidLayer.guides || [])"
+          :key="guide.id"
+          :x1="guide.axis === 'v' ? guide.position : -10000"
+          :y1="guide.axis === 'h' ? guide.position : -10000"
+          :x2="guide.axis === 'v' ? guide.position : 10000"
+          :y2="guide.axis === 'h' ? guide.position : 10000"
+          class="guide-line"
+          :stroke-width="1 / zoom"
+          stroke-dasharray="4,4"
+          @mousedown.stop="onGuideMouseDown($event, guide)"
+        />
+        <!-- Dragging guide preview -->
+        <line
+          v-if="draggingGuide"
+          :x1="draggingGuide.axis === 'v' ? draggingGuide.position : -10000"
+          :y1="draggingGuide.axis === 'h' ? draggingGuide.position : -10000"
+          :x2="draggingGuide.axis === 'v' ? draggingGuide.position : 10000"
+          :y2="draggingGuide.axis === 'h' ? draggingGuide.position : 10000"
+          class="guide-line dragging"
+          :stroke-width="1 / zoom"
+          stroke-dasharray="4,4"
+        />
+      </g>
+
+      <!-- Nozzle stubs (always visible in edit mode for equipment-type symbols) -->
+      <g v-if="editMode && nozzleStubs.length" class="nozzle-stubs">
+        <g v-for="stub in nozzleStubs" :key="`stub-${stub.symbolId}-${stub.portId}`">
+          <line
+            :x1="stub.x1" :y1="stub.y1" :x2="stub.x2" :y2="stub.y2"
+            :stroke="stub.color" :stroke-width="2 / zoom" stroke-linecap="round"
+            class="nozzle-stub-line"
+          />
+          <line
+            :x1="stub.capX1" :y1="stub.capY1" :x2="stub.capX2" :y2="stub.capY2"
+            :stroke="stub.color" :stroke-width="2 / zoom" stroke-linecap="round"
+            class="nozzle-stub-cap"
           />
         </g>
       </g>
 
-      <!-- Snap highlight -->
+      <!-- Port indicators (shown when drawing pipes or hovering in edit mode) -->
+      <g v-if="pipeDrawingMode || (editMode && hoveredSymbolId)" class="port-indicators">
+        <g v-for="symbol in visibleSymbols" :key="`ports-${symbol.id}`">
+          <template v-if="pipeDrawingMode || hoveredSymbolId === symbol.id">
+            <circle
+              v-for="port in getSymbolPorts(symbol)"
+              :key="port.id"
+              :cx="port.x"
+              :cy="port.y"
+              :r="(pipeDrawingMode ? 6 : 4) / zoom"
+              class="port-indicator"
+              :class="{
+                'snap-active': snapTarget?.symbolId === symbol.id && snapTarget?.portId === port.id,
+                'custom-port': port.isCustom,
+                'hover-port': !pipeDrawingMode
+              }"
+              :stroke-width="(pipeDrawingMode ? 2 : 1.5) / zoom"
+            />
+          </template>
+        </g>
+      </g>
+
+      <!-- Snap highlight (counter-scaled for zoom) -->
       <circle
         v-if="snapTarget"
         :cx="snapTarget.x"
         :cy="snapTarget.y"
-        r="12"
+        :r="12 / zoom"
         class="snap-highlight"
+        :stroke-width="2 / zoom"
+      />
+
+      <!-- Alignment guides -->
+      <line
+        v-for="(guide, gi) in activeGuides"
+        :key="'ag-' + gi"
+        :x1="guide.axis === 'v' ? guide.pos : guide.from"
+        :y1="guide.axis === 'h' ? guide.pos : guide.from"
+        :x2="guide.axis === 'v' ? guide.pos : guide.to"
+        :y2="guide.axis === 'h' ? guide.pos : guide.to"
+        class="alignment-guide"
+        :stroke-width="0.5 / zoom"
       />
 
       <!-- Group bounding boxes (visible in edit mode) -->
@@ -1999,14 +3284,15 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
           :width="group.width + 8"
           :height="group.height + 8"
           class="group-box"
+          :stroke-width="1 / zoom"
           :class="{ 'group-selected': isGroupSelected(group.id) }"
         />
       </g>
     </svg>
 
-    <!-- Symbols (positioned divs) -->
+    <!-- Symbols (positioned divs, filtered by layer visibility) -->
     <div
-      v-for="symbol in pidLayer.symbols"
+      v-for="symbol in visibleSymbols"
       :key="symbol.id"
       class="pid-symbol"
       :class="{
@@ -2016,31 +3302,108 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
       :style="getSymbolStyle(symbol)"
       @mousedown="onSymbolMouseDown($event, symbol)"
       @dblclick="onSymbolDoubleClick($event, symbol)"
+      @contextmenu.prevent="onSymbolRightClick($event, symbol)"
+      @mouseenter="hoveredSymbolId = symbol.id"
+      @mouseleave="hoveredSymbolId = null"
     >
-      <!-- Symbol SVG (with tank fill support) -->
-      <div
-        class="symbol-svg"
-        :style="{ color: symbol.color || '#60a5fa' }"
-        v-html="symbol.type.toLowerCase().includes('tank') || symbol.type === 'reactor'
-          ? getTankSvgWithFill(symbol)
-          : getSymbolSvg(symbol.type)"
-      />
-
-      <!-- Label -->
-      <div v-if="symbol.label" class="symbol-label">{{ symbol.label }}</div>
-
-      <!-- Value -->
-      <div v-if="symbol.showValue && symbol.channel" class="symbol-value">
-        {{ getSymbolValue(symbol) }}
-      </div>
-
-      <!-- Resize handles (only visible in edit mode when selected) -->
-      <template v-if="editMode && selectedSymbolId === symbol.id">
-        <div class="resize-handle nw" data-handle="nw" />
-        <div class="resize-handle ne" data-handle="ne" />
-        <div class="resize-handle sw" data-handle="sw" />
-        <div class="resize-handle se" data-handle="se" />
+      <!-- HMI Control (HTML component) -->
+      <template v-if="isHmiControl(symbol.type)">
+        <component
+          :is="getHmiComponent(symbol.type)"
+          :symbol="symbol"
+          :edit-mode="editMode"
+        />
       </template>
+      <!-- Off-Page Connector (label inside pentagon) -->
+      <template v-else-if="OFF_PAGE_CONNECTOR_TYPES.has(symbol.type)">
+        <div
+          class="symbol-svg"
+          :style="{ color: symbol.color || '#60a5fa' }"
+          v-html="getSymbolSvg(symbol.type)"
+        />
+        <div class="offpage-label" :class="{ 'not-linked': editMode && !symbol.linkedPageId }">
+          {{ symbol.label || '?' }}
+        </div>
+      </template>
+      <!-- Process Symbol SVG (with tank fill support) -->
+      <template v-else>
+        <div
+          class="symbol-svg"
+          :style="{ color: symbol.color || '#60a5fa' }"
+          v-html="symbol.type.toLowerCase().includes('tank') || symbol.type === 'reactor'
+            ? getTankSvgWithFill(symbol)
+            : getSymbolSvg(symbol.type)"
+        />
+
+        <!-- Label -->
+        <div v-if="symbol.label" class="symbol-label">{{ symbol.label }}</div>
+
+        <!-- Value -->
+        <div v-if="symbol.showValue && symbol.channel" class="symbol-value">
+          {{ getSymbolValue(symbol) }}
+        </div>
+      </template>
+
+      <!-- Resize handles (only visible in edit mode when selected; counter-scaled for zoom) -->
+      <template v-if="editMode && selectedSymbolId === symbol.id">
+        <div class="resize-handle nw" data-handle="nw" :style="{ transform: `scale(${1/zoom})` }" />
+        <div class="resize-handle ne" data-handle="ne" :style="{ transform: `scale(${1/zoom})` }" />
+        <div class="resize-handle sw" data-handle="sw" :style="{ transform: `scale(${1/zoom})` }" />
+        <div class="resize-handle se" data-handle="se" :style="{ transform: `scale(${1/zoom})` }" />
+      </template>
+    </div>
+
+    <!-- Text Annotations (filtered by layer visibility) -->
+    <div
+      v-for="text in visibleTextAnnotations"
+      :key="text.id"
+      class="pid-text-annotation"
+      :class="{
+        selected: store.pidSelectedIds.textAnnotationIds.includes(text.id)
+      }"
+      :style="{
+        left: `${text.x}px`,
+        top: `${text.y}px`,
+        fontSize: `${text.fontSize}px`,
+        fontWeight: text.fontWeight || 'normal',
+        color: text.color || '#333',
+        backgroundColor: text.backgroundColor || 'transparent',
+        transform: text.rotation ? `rotate(${text.rotation}deg)` : undefined,
+        textAlign: text.textAlign || 'left',
+        zIndex: String(text.zIndex || 2),
+        border: text.border ? `1px solid ${text.borderColor || '#888'}` : 'none',
+        padding: text.border ? '2px 6px' : undefined
+      }"
+      @mousedown.stop="onTextAnnotationMouseDown($event, text)"
+      @dblclick.stop="onTextAnnotationDblClick($event, text)"
+    >{{ text.text }}</div>
+
+    </div><!-- /pid-viewport -->
+
+    <!-- Minimap (edit-mode only) -->
+    <div v-if="editMode && showMinimap" class="pid-minimap" @mousedown.stop="onMinimapMouseDown">
+      <svg :viewBox="minimapViewBox" preserveAspectRatio="xMidYMid meet" width="100%" height="100%">
+        <!-- Symbol rectangles -->
+        <rect
+          v-for="sym in pidLayer.symbols"
+          :key="'mm-' + sym.id"
+          :x="sym.x" :y="sym.y" :width="sym.width" :height="sym.height"
+          :fill="sym.color || '#60a5fa'" fill-opacity="0.6" stroke="none" rx="2"
+        />
+        <!-- Pipe polylines -->
+        <polyline
+          v-for="pipe in pidLayer.pipes"
+          :key="'mm-' + pipe.id"
+          :points="pipe.points.map(p => `${p.x},${p.y}`).join(' ')"
+          fill="none" :stroke="pipe.color || '#94a3b8'" stroke-width="2" stroke-opacity="0.6"
+        />
+        <!-- Viewport rectangle -->
+        <rect
+          :x="minimapViewport.x" :y="minimapViewport.y"
+          :width="minimapViewport.w" :height="minimapViewport.h"
+          fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="2" rx="1"
+        />
+      </svg>
     </div>
 
     <!-- Drawing mode indicator -->
@@ -2060,6 +3423,31 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
       v-if="isMarqueeSelecting && marqueeStyle"
       class="marquee-selection"
       :style="marqueeStyle"
+    />
+
+    <!-- Inline Label Edit Overlay -->
+    <Teleport to="body">
+      <input
+        v-if="inlineEditTarget"
+        ref="inlineEditInput"
+        v-model="inlineEditValue"
+        class="pid-inline-edit-input"
+        :style="{ left: `${inlineEditPos.x}px`, top: `${inlineEditPos.y}px` }"
+        @keydown.enter.prevent="commitInlineEdit"
+        @keydown.escape.prevent="cancelInlineEdit"
+        @blur="commitInlineEdit"
+      />
+    </Teleport>
+
+    <!-- Context Menu (Edit Mode) -->
+    <PidContextMenu
+      v-if="contextMenu"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      :target="contextMenu.target"
+      :hasStyleClipboard="!!store.pidStyleClipboard"
+      @action="handleContextMenuAction"
+      @close="contextMenu = null"
     />
 
     <!-- Faceplate Popup (Runtime Mode) -->
@@ -2264,6 +3652,7 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   height: 100%;
   pointer-events: none;
   outline: none;
+  overflow: hidden;
 }
 
 .pid-canvas.edit-mode {
@@ -2272,6 +3661,23 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
 
 .pid-canvas.drawing-mode {
   cursor: crosshair;
+}
+
+.pid-canvas.panning {
+  cursor: grab;
+}
+
+.pid-canvas.panning:active {
+  cursor: grabbing;
+}
+
+.pid-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  will-change: transform;
 }
 
 /* Marquee (rubber-band) selection rectangle */
@@ -2381,6 +3787,25 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   fill: #22c55e;
 }
 
+.pipe-label-text {
+  pointer-events: none;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: 500;
+}
+
+.pipe-label-bg {
+  pointer-events: none;
+}
+
+.pipe-label-group.editable {
+  cursor: text;
+}
+
+.pipe-label-group.editable .pipe-label-bg,
+.pipe-label-group.editable .pipe-label-text {
+  pointer-events: auto;
+}
+
 .drawing-preview {
   pointer-events: none;
 }
@@ -2392,6 +3817,67 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   stroke-width: 2;
   pointer-events: none;
   transition: all 0.15s;
+}
+
+/* Nozzle stubs on equipment symbols */
+.nozzle-stub-line,
+.nozzle-stub-cap {
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* Rulers */
+.ruler {
+  position: absolute;
+  z-index: 50;
+  overflow: hidden;
+}
+
+.ruler-h {
+  top: 0;
+  left: 24px;
+  right: 0;
+  height: 24px;
+  cursor: row-resize;
+}
+
+.ruler-v {
+  top: 24px;
+  left: 0;
+  bottom: 0;
+  width: 24px;
+  cursor: col-resize;
+}
+
+.ruler-corner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  background: #1e293b;
+  z-index: 51;
+  border-right: 1px solid #334155;
+  border-bottom: 1px solid #334155;
+}
+
+/* Guide lines */
+.guide-line {
+  stroke: #06b6d4;
+  pointer-events: stroke;
+  cursor: move;
+  opacity: 0.6;
+}
+
+.guide-line:hover {
+  opacity: 1;
+  stroke: #22d3ee;
+}
+
+.guide-line.dragging {
+  stroke: #22d3ee;
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .port-indicator.snap-active {
@@ -2408,6 +3894,27 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   stroke-dasharray: 4,2;
   pointer-events: none;
   animation: snap-pulse 0.5s ease-in-out infinite alternate;
+}
+
+.alignment-guide {
+  stroke: #f472b6;
+  stroke-dasharray: 4,3;
+  pointer-events: none;
+}
+
+.pid-minimap {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 200px;
+  height: 150px;
+  background: rgba(15, 15, 26, 0.85);
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  z-index: 60;
+  cursor: pointer;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 @keyframes snap-pulse {
@@ -2435,6 +3942,32 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
 @keyframes group-pulse {
   from { opacity: 0.6; }
   to { opacity: 1; }
+}
+
+/* Text Annotations */
+.pid-text-annotation {
+  position: absolute;
+  white-space: pre-wrap;
+  pointer-events: none;
+  cursor: default;
+  line-height: 1.3;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  border-radius: 1px;
+}
+
+.edit-mode .pid-text-annotation {
+  pointer-events: auto;
+  cursor: move;
+}
+
+.edit-mode .pid-text-annotation.selected {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.edit-mode .pid-text-annotation:hover:not(.selected) {
+  outline: 1px dashed rgba(96, 165, 250, 0.5);
+  outline-offset: 2px;
 }
 
 /* Background image */
@@ -2514,6 +4047,29 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   font-size: 10px;
   color: #888;
   white-space: nowrap;
+}
+
+.offpage-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #333;
+  text-transform: uppercase;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 20% 0 8%;
+  letter-spacing: 0.5px;
+}
+
+.offpage-label.not-linked {
+  color: #999;
+  font-style: italic;
 }
 
 .symbol-value {
@@ -2850,9 +4406,34 @@ function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: n
   background: #16a34a;
 }
 
+/* Hover port indicator (subtle blue, shown on symbol hover in edit mode) */
+.port-indicator.hover-port {
+  fill: rgba(59, 130, 246, 0.4);
+  stroke: rgba(59, 130, 246, 0.8);
+}
+
 /* Custom port indicator styling in pipe drawing mode */
 .port-indicator.custom-port {
   fill: rgba(34, 197, 94, 0.3);
   stroke: #22c55e;
+}
+</style>
+
+<style>
+/* Teleported inline edit input — must be unscoped */
+.pid-inline-edit-input {
+  position: fixed;
+  z-index: 100000;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 2px solid #60a5fa;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-family: system-ui, -apple-system, sans-serif;
+  min-width: 80px;
+  outline: none;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 </style>

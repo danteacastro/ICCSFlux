@@ -784,6 +784,11 @@ export function useMqtt(prefix: string = 'nisystem') {
           // Thermocouple-specific
           thermocouple_type: ch.thermocouple_type,
           cjc_source: ch.cjc_source,
+          cjc_value: ch.cjc_value,
+          // RTD-specific
+          rtd_type: ch.rtd_type,
+          rtd_wiring: ch.rtd_wiring,
+          rtd_current: ch.rtd_current,
           // Ranges
           voltage_range: ch.voltage_range,
           current_range_ma: ch.current_range_ma,

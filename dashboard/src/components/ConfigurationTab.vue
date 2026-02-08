@@ -52,6 +52,7 @@ interface ModuleTypeInfo {
   alt_channel_type?: string  // For combo modules: alternative type based on channel name
   alt_category?: string      // For combo modules: alternative category
   alt_prefix?: string        // For combo modules: channel prefix that uses alt type (e.g., "ci" for current)
+  alt_index_start?: number   // For combo modules: channel index where alt type starts (e.g., 8 for NI 9207 ai8+)
 }
 
 const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
@@ -151,13 +152,13 @@ const NI_MODULE_TYPES: Record<string, ModuleTypeInfo> = {
   'NI 9361': { channel_type: 'counter_input', category: 'counter' },   // 8-ch counter
 
   // ===== COMBO MODULES =====
-  // NI 9207: 8 voltage + 8 current inputs (ai0-ai7 = voltage, ci0-ci7 = current)
+  // NI 9207: 8 voltage + 8 current inputs (ai0-ai7 = voltage, ai8-ai15 = current)
   'NI 9207': {
     channel_type: 'voltage_input',
     category: 'voltage',
     alt_channel_type: 'current_input',
     alt_category: 'current',
-    alt_prefix: 'ci'
+    alt_index_start: 8
   },
 }
 
@@ -180,13 +181,25 @@ function getModuleChannelType(productType: string, channelName?: string): { chan
   if (!moduleInfo) return null
 
   // Check if this is a combo module with alternate type
-  if (moduleInfo.alt_prefix && channelName) {
-    // Extract channel prefix (e.g., "ci" from "Mod1/ci0")
-    const channelMatch = channelName.match(/\/([a-z]+)\d+$/i)
-    if (channelMatch && channelMatch[1]!.toLowerCase() === moduleInfo.alt_prefix.toLowerCase()) {
-      return {
-        channel_type: moduleInfo.alt_channel_type || moduleInfo.channel_type,
-        category: moduleInfo.alt_category || moduleInfo.category
+  if (channelName) {
+    // Method 1: Split by channel prefix (e.g., "ai" vs "ci")
+    if (moduleInfo.alt_prefix) {
+      const channelMatch = channelName.match(/\/([a-z]+)\d+$/i)
+      if (channelMatch && channelMatch[1]!.toLowerCase() === moduleInfo.alt_prefix.toLowerCase()) {
+        return {
+          channel_type: moduleInfo.alt_channel_type || moduleInfo.channel_type,
+          category: moduleInfo.alt_category || moduleInfo.category
+        }
+      }
+    }
+    // Method 2: Split by channel index (e.g., NI 9207: ai0-ai7 = voltage, ai8-ai15 = current)
+    if (moduleInfo.alt_index_start != null) {
+      const indexMatch = channelName.match(/(\d+)$/)
+      if (indexMatch && parseInt(indexMatch[1]!) >= moduleInfo.alt_index_start) {
+        return {
+          channel_type: moduleInfo.alt_channel_type || moduleInfo.channel_type,
+          category: moduleInfo.alt_category || moduleInfo.category
+        }
       }
     }
   }
@@ -733,6 +746,10 @@ const systemSettingsForm = ref({
     frequency_hz: 1.0
   },
   confirm_output_changes: false,
+  alarm_flood: {
+    threshold: 10,
+    window_s: 60
+  },
   notifications: getDefaultNotificationSettings()
 })
 
@@ -1374,9 +1391,9 @@ function renameChannel(oldName: string, newName: string) {
     showFeedback('error', `Tag "${newName}" already exists`)
     return false
   }
-  // Validate tag name format (alphanumeric + underscore, starts with letter)
-  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
-    showFeedback('error', 'Tag name must start with a letter and contain only letters, numbers, and underscores')
+  // Validate tag name format (alphanumeric + underscore/hyphen, starts with letter)
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(newName)) {
+    showFeedback('error', 'Tag name must start with a letter and contain only letters, numbers, underscores, and hyphens')
     return false
   }
 
@@ -1479,13 +1496,13 @@ function validateConfiguration() {
       }
 
       // Check 2: Tag name format
-      if (tagName && !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tagName)) {
+      if (tagName && !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(tagName)) {
         issues.push({
           channel: tagName,
           severity: 'error',
           category: 'Naming',
-          message: 'Tag name must start with a letter and contain only letters, numbers, and underscores',
-          fix: 'Click the tag name cell to rename it (e.g., "temp_boiler_01")'
+          message: 'Tag name must start with a letter and contain only letters, numbers, underscores, and hyphens',
+          fix: 'Click the tag name cell to rename it (e.g., "TT-101" or "temp_boiler_01")'
         })
       }
 
@@ -1651,6 +1668,7 @@ function openSystemSettings() {
       frequency_hz: wd?.frequency_hz || 1.0
     },
     confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false,
+    alarm_flood: (projectFiles.currentProjectData.value?.safety as any)?.alarmFlood ?? { threshold: 10, window_s: 60 },
     notifications: (projectFiles.currentProjectData.value?.system as any)?.notifications ?? getDefaultNotificationSettings()
   }
   showSystemSettings.value = true
@@ -1678,6 +1696,11 @@ function saveSystemSettings() {
     (projectFiles.currentProjectData.value.system as any).project_mode = newMode
     ;(projectFiles.currentProjectData.value.system as any).confirm_output_changes = systemSettingsForm.value.confirm_output_changes
     ;(projectFiles.currentProjectData.value.system as any).notifications = systemSettingsForm.value.notifications
+    // Persist alarm flood settings in safety section
+    if (!(projectFiles.currentProjectData.value as any).safety) {
+      ;(projectFiles.currentProjectData.value as any).safety = {}
+    }
+    ;(projectFiles.currentProjectData.value as any).safety.alarmFlood = systemSettingsForm.value.alarm_flood
     projectFiles.markDirty()
   }
 
@@ -1698,7 +1721,8 @@ function saveSystemSettings() {
     scan_rate_hz: systemSettingsForm.value.scan_rate_hz,
     publish_rate_hz: systemSettingsForm.value.publish_rate_hz,
     project_mode: systemSettingsForm.value.project_mode,
-    watchdog_output: systemSettingsForm.value.watchdog_output
+    watchdog_output: systemSettingsForm.value.watchdog_output,
+    alarm_flood: systemSettingsForm.value.alarm_flood
   })
   showFeedback('info', 'Updating system settings...')
   showSystemSettings.value = false
@@ -2846,8 +2870,8 @@ function getChannelErrors(tagName: string, config: ChannelConfig): string[] {
   }
 
   // Invalid tag name format
-  if (tagName && !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tagName)) {
-    errors.push('Tag name must start with a letter and contain only letters, numbers, and underscores')
+  if (tagName && !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(tagName)) {
+    errors.push('Tag name must start with a letter and contain only letters, numbers, underscores, and hyphens')
   }
 
   // Range inversion (min > max)
@@ -3037,11 +3061,19 @@ function openChannelConfig(channelName: string) {
         // Load existing thermocouple config from backend
         tc_type: config.thermocouple_type || '',
         cjc_source: config.cjc_source || '',
+        cjc_value: config.cjc_value ?? 25.0,
         units: config.unit || 'degC',
       }
       break
     case 'rtd':
-      moduleConfig = { ...DEFAULT_RTD_CONFIG }
+      moduleConfig = {
+        ...DEFAULT_RTD_CONFIG,
+        // Load existing RTD config from backend
+        rtd_type: config.rtd_type || DEFAULT_RTD_CONFIG.rtd_type,
+        wiring: config.rtd_wiring || DEFAULT_RTD_CONFIG.wiring,
+        excitation_current: config.rtd_current ? config.rtd_current * 1e6 : DEFAULT_RTD_CONFIG.excitation_current,
+        units: config.unit || 'C',
+      }
       break
     case 'voltage_input':
     case 'voltage':  // Legacy
@@ -3196,6 +3228,16 @@ function saveChannelConfig() {
   if (channelType === 'thermocouple') {
     config.thermocouple_type = mc.tc_type
     config.cjc_source = mc.cjc_source
+    if (mc.cjc_source === 'constant') {
+      config.cjc_value = mc.cjc_value ?? 25.0
+    }
+  }
+
+  // Add RTD-specific settings
+  if (channelType === 'rtd') {
+    config.rtd_type = mc.rtd_type
+    config.rtd_wiring = mc.wiring
+    config.rtd_current = (mc.excitation_current || 1000) / 1e6  // µA to A
   }
 
   // Add voltage input settings
@@ -6493,6 +6535,35 @@ watch(
               </div>
             </div>
 
+            <div class="settings-section">
+              <h4>Alarm Flood Detection (ISA-18.2)</h4>
+              <span class="form-hint" style="margin-bottom: 8px; display: block;">
+                Suppresses non-critical alarms when the alarm rate exceeds the threshold within the time window.
+              </span>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Flood Threshold</label>
+                  <input
+                    type="number"
+                    v-model.number="systemSettingsForm.alarm_flood.threshold"
+                    min="2"
+                    max="100"
+                  />
+                  <span class="form-hint">Alarms to trigger flood</span>
+                </div>
+                <div class="form-row half">
+                  <label>Time Window (s)</label>
+                  <input
+                    type="number"
+                    v-model.number="systemSettingsForm.alarm_flood.window_s"
+                    min="10"
+                    max="600"
+                  />
+                  <span class="form-hint">Detection window (seconds)</span>
+                </div>
+              </div>
+            </div>
+
             <!-- ============================================ -->
             <!-- SMS Notifications (Twilio) -->
             <!-- ============================================ -->
@@ -7548,14 +7619,32 @@ watch(
   overflow: hidden;
 }
 
-/* Table Container */
+/* Table Container — scrollable wrapper with sticky header */
 .table-container {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0 16px;
   transition: flex 0.3s;
-  display: flex;
-  flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a #0a0a14;
+}
+
+.table-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.table-container::-webkit-scrollbar-track {
+  background: #0a0a14;
+}
+
+.table-container::-webkit-scrollbar-thumb {
+  background: #2a2a4a;
+  border-radius: 4px;
+}
+
+.table-container::-webkit-scrollbar-thumb:hover {
+  background: #3a3a5a;
 }
 
 .table-container.with-panel {
@@ -7567,48 +7656,23 @@ watch(
   border-collapse: separate;
   border-spacing: 0;
   font-size: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.channel-table thead {
-  flex-shrink: 0;
-  display: table;
-  width: 100%;
   table-layout: fixed;
 }
 
-.channel-table tbody {
-  flex: 1;
-  display: block;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: #2a2a4a #0a0a14;
+.channel-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
-.channel-table tbody::-webkit-scrollbar {
-  width: 8px;
+/* Signal type header row sticks at top */
+.channel-table thead .signal-type-row th {
+  z-index: 3;
 }
 
-.channel-table tbody::-webkit-scrollbar-track {
-  background: #0a0a14;
-}
-
-.channel-table tbody::-webkit-scrollbar-thumb {
-  background: #2a2a4a;
-  border-radius: 4px;
-}
-
-.channel-table tbody::-webkit-scrollbar-thumb:hover {
-  background: #3a3a5a;
-}
-
-.channel-table tbody tr {
-  display: table;
-  width: 100%;
-  table-layout: fixed;
+/* Column headers offset below signal-type-row when it's present */
+.channel-table thead .column-headers-row.has-signal-row th {
+  top: 25px;
 }
 
 /* Column headers */
@@ -7622,10 +7686,7 @@ watch(
   white-space: nowrap;
 }
 
-/* When signal type row is present, show it above column headers */
-.column-headers-row.has-signal-row th {
-  /* No longer needs sticky offset since thead is not scrollable */
-}
+/* When signal type row is present, column headers are offset via sticky top (see above) */
 
 /* CONFIG column - normal column like the others */
 .column-headers-row th.col-actions {
@@ -7657,7 +7718,7 @@ watch(
 }
 
 .channel-row.even-row td {
-  background: #162236;
+  background: #131d2e;
 }
 
 .channel-row:hover td {

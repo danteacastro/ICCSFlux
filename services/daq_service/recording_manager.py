@@ -113,6 +113,9 @@ class RecordingConfig:
     buffer_size: int = 100  # samples to buffer before flush
     flush_interval_s: float = 5.0  # Max time before flush (seconds)
 
+    # File Reuse
+    reuse_file: bool = False  # If True, stop/start appends to the same file instead of creating new
+
     # ALCOA+ Data Integrity Settings
     append_only: bool = False  # If True, files become read-only once recording stops
     verify_on_close: bool = True  # Compute and store checksum when file closes
@@ -379,6 +382,7 @@ class RecordingManager:
 
         # Recording state
         self.recording = False
+        self._resuming_file = False  # True when reopening a file in append mode
         self.recording_start_time: Optional[datetime] = None
         self.current_file: Optional[Path] = None
         self.current_file_handle = None
@@ -480,17 +484,32 @@ class RecordingManager:
             except OSError as e:
                 logger.warning(f"Could not check disk space: {e}")
 
-            # Generate filename
-            if not filename:
-                filename = self._generate_filename()
-
-            self.current_file = output_dir / filename
+            # Determine file: reuse previous or generate new
+            reuse_existing = False
+            if self.config.reuse_file and self.current_file and self.current_file.exists():
+                # Reopen previous file in append mode
+                reuse_existing = True
+                logger.info(f"Reusing existing recording file: {self.current_file.name}")
+            else:
+                if not filename:
+                    filename = self._generate_filename()
+                self.current_file = output_dir / filename
 
             try:
-                self.current_file_handle = open(self.current_file, 'w', newline='')
-                _lock_file(self.current_file_handle)
-                self.csv_writer = None  # Will be initialized on first write
-                self.column_order = []
+                if reuse_existing:
+                    self.current_file_handle = open(self.current_file, 'a', newline='')
+                    _lock_file(self.current_file_handle)
+                    # Write a resume marker so the file shows stop/start boundaries
+                    self.current_file_handle.write(f"# Resumed: {datetime.now().isoformat()}\n")
+                    # Keep existing column_order — skip header rewrite on next write_sample
+                    self._resuming_file = True
+                    self.csv_writer = None
+                else:
+                    self.current_file_handle = open(self.current_file, 'w', newline='')
+                    _lock_file(self.current_file_handle)
+                    self._resuming_file = False
+                    self.csv_writer = None  # Will be initialized on first write
+                    self.column_order = []
 
                 self.recording = True
                 self.recording_start_time = datetime.now()
@@ -762,7 +781,16 @@ class RecordingManager:
     def _init_csv_writer(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Initialize CSV writer with headers"""
         # Build column order: timestamp first, then channels sorted
-        self.column_order = ['timestamp'] + sorted(values.keys())
+        new_columns = ['timestamp'] + sorted(values.keys())
+
+        # If resuming an existing file, reuse previous column order and skip headers
+        if self._resuming_file and self.column_order:
+            # Column order already set from previous session — just create writer
+            self.csv_writer = csv.writer(self.current_file_handle)
+            self._resuming_file = False
+            return
+
+        self.column_order = new_columns
 
         # Add units row as comment
         header_row = ['timestamp']
@@ -1021,7 +1049,8 @@ class RecordingManager:
                 self._create_integrity_file(self.current_file)
 
             # ALCOA+ Data Integrity: Make file read-only if append_only is enabled
-            if self.config.append_only and self.current_file:
+            # Skip if reuse_file is active — file needs to remain writable for next start
+            if self.config.append_only and not self.config.reuse_file and self.current_file:
                 self._make_file_readonly(self.current_file)
 
     def _create_integrity_file(self, data_file: Path):

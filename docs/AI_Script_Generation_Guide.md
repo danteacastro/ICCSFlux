@@ -111,6 +111,8 @@ These objects and functions are available immediately without any import stateme
 
 ### Helper Classes
 
+**Core Helpers (DAQ + cRIO):**
+
 | Class | Description |
 |-------|-------------|
 | `Counter(target, window, debounce, auto_reset, mode)` | Universal counter: totalizing, targets, duty cycle, run hours, cycles |
@@ -119,6 +121,27 @@ These objects and functions are available immediately without any import stateme
 | `EdgeDetector(threshold=0.5)` | Detect rising/falling edges |
 | `RollingStats(window_size)` | Calculate running statistics |
 | `Scheduler()` | Schedule recurring tasks |
+| `StateMachine(states, transitions)` | State machine with transitions |
+
+**Signal Processing Helpers (DAQ + cRIO):**
+
+| Class | Description |
+|-------|-------------|
+| `SignalFilter(alpha=0.1)` or `SignalFilter(tau=5.0, dt=0.1)` | Exponential moving average / low-pass filter |
+| `LookupTable([(x1,y1), (x2,y2), ...])` | Linear interpolation from calibration points |
+| `RampSoak([{type, target, rate}, {type, duration}])` | Time-based setpoint profiles for thermal processes |
+| `TrendLine(window=100)` | Online linear regression with slope, R², prediction |
+| `RingBuffer(size=100)` | Circular buffer with mean, min, max, std properties |
+| `PeakDetector(min_height, min_distance, threshold)` | Detect peaks in signals with filtering |
+
+**Advanced Helpers (DAQ-only, not available on cRIO):**
+
+| Class | Description |
+|-------|-------------|
+| `SpectralAnalysis(window_size=256, sample_rate=10.0)` | FFT-based frequency analysis with dominant frequency, THD |
+| `SPCChart(subgroup_size=5, num_subgroups=25)` | Statistical Process Control with Xbar/R charts, Western Electric rules, Cp/Cpk |
+| `BiquadFilter.lowpass(cutoff_hz, sample_rate)` | IIR digital filter (also `.highpass()`, `.bandpass()`, `.notch()`) |
+| `DataLog(name)` | Structured custom data logging via publish mechanism |
 
 ### Pre-imported Libraries
 
@@ -862,6 +885,299 @@ while session.active:
 - `is_paused(name)` - Check if paused
 - `get_jobs()` - Get all job statuses
 - `tick()` - Check and run due jobs (MUST call in loop)
+
+### SignalFilter
+
+Exponential Moving Average (EMA) / first-order low-pass filter for smoothing noisy signals.
+
+```python
+# Create filter with alpha (lower = smoother, 0.01-0.5 typical)
+filt = SignalFilter(alpha=0.1)
+
+# Or specify time constant tau and sample period dt
+# alpha = dt / (tau + dt)
+filt = SignalFilter(tau=5.0, dt=0.25)  # 5 sec time constant, 4 Hz sample rate
+
+while session.active:
+    raw = tags.NoisySensor
+    smooth = filt.update(raw)
+    publish('SmoothedValue', smooth)
+    await next_scan()
+```
+
+**Properties:** `value` (current filtered value), `alpha` (filter coefficient)
+**Methods:** `update(value)` (feed sample, returns filtered), `reset()` (clear state)
+
+### LookupTable
+
+Linear interpolation from calibration points. Useful for non-linear sensor calibration.
+
+```python
+# Create table from (input, output) pairs
+# Automatically sorts by input value
+cal = LookupTable([
+    (0, 0),       # 0V = 0 PSI
+    (2.5, 50),    # 2.5V = 50 PSI
+    (5.0, 100),   # 5V = 100 PSI
+    (10.0, 250),  # 10V = 250 PSI
+])
+
+while session.active:
+    raw_voltage = tags.PressureSensor_Raw
+    pressure = cal.lookup(raw_voltage)  # or cal(raw_voltage)
+    publish('Pressure', pressure, units='PSI')
+    await next_scan()
+```
+
+**Properties:** `points` (sorted calibration points)
+**Methods:** `lookup(x)` or `__call__(x)` (interpolate, clamps at endpoints)
+
+### RampSoak
+
+Time-based setpoint profiles for thermal processes (furnaces, ovens, autoclaves).
+
+```python
+# Define profile segments
+profile = RampSoak([
+    {'type': 'ramp', 'target': 500, 'rate': 10},   # Ramp to 500°C at 10°C/min
+    {'type': 'soak', 'duration': 3600},            # Hold for 1 hour
+    {'type': 'ramp', 'target': 800, 'rate': 5},    # Ramp to 800°C at 5°C/min
+    {'type': 'soak', 'duration': 1800},            # Hold for 30 min
+    {'type': 'ramp', 'target': 25, 'rate': 2},     # Cool to 25°C at 2°C/min
+])
+
+profile.start(initial_value=25.0)  # Start from current temp
+
+while session.active:
+    setpoint = profile.tick()  # Get current setpoint
+    outputs.set('FurnaceSetpoint', setpoint)
+
+    publish('ProfileSetpoint', setpoint)
+    publish('ProfileSegment', profile.segment_index)
+    publish('ProfileProgress', profile.progress * 100, units='%')
+
+    if profile.done:
+        print("Profile complete!")
+        break
+
+    await next_scan()
+```
+
+**Properties:** `setpoint`, `segment_index`, `done`, `elapsed`, `progress` (0.0-1.0)
+**Methods:** `start(initial_value)`, `tick()` (returns setpoint), `reset()`
+
+### TrendLine
+
+Online linear regression over a sliding window. Predicts future values and estimates time to reach targets.
+
+```python
+# Create with 300-sample window (5 min at 1 Hz)
+trend = TrendLine(window=300)
+
+while session.active:
+    temp = tags.ReactorTemp
+    result = trend.update(temp)
+
+    publish('TempSlope', result['slope'] * 60, units='degC/min')  # Convert to per-minute
+    publish('TempR2', result['r_squared'])
+
+    # Predict temperature in 5 minutes
+    if result['r_squared'] > 0.8:  # Only trust strong correlations
+        predicted = trend.predict(steps_ahead=300)
+        publish('TempPredicted5min', predicted)
+
+        # Estimate time to reach limit
+        steps_to_limit = trend.time_to_value(target=100.0)
+        if not math.isnan(steps_to_limit):
+            publish('MinutesToLimit', steps_to_limit / 60)
+
+    await next_scan()
+```
+
+**Methods:**
+- `update(value)` → `{'slope', 'intercept', 'r_squared', 'count'}`
+- `predict(steps_ahead)` → predicted value
+- `time_to_value(target)` → steps until target (or `nan` if unreachable)
+
+### RingBuffer
+
+Fixed-size circular buffer with computed statistics. Efficient for rolling calculations.
+
+```python
+# Create 100-sample buffer
+buf = RingBuffer(size=100)
+
+while session.active:
+    buf.append(tags.Vibration)
+
+    if buf.full:  # Wait until buffer is filled
+        publish('VibrationMean', buf.mean)
+        publish('VibrationMin', buf.min)
+        publish('VibrationMax', buf.max)
+        publish('VibrationStd', buf.std)
+
+        # Check for excessive range
+        if buf.max - buf.min > threshold:
+            outputs.set('VibrationAlarm', True)
+
+    await next_scan()
+```
+
+**Properties:** `count`, `full`, `mean`, `min`, `max`, `std`, `first`, `last`, `values` (list)
+**Methods:** `append(value)`, `clear()`
+
+### PeakDetector
+
+Detect peaks in signals with height and distance filtering. Useful for chromatography, spectroscopy, and vibration analysis.
+
+```python
+# Detect peaks > 0.5 units, at least 10 samples apart
+peaks = PeakDetector(min_height=0.5, min_distance=10, threshold=0.0)
+
+while session.active:
+    signal = tags.DetectorOutput
+    result = peaks.update(signal)
+
+    if result:  # Peak detected
+        publish('PeakHeight', result['height'])
+        publish('PeakPosition', result['position'])
+        publish('PeakArea', result['area'])
+        print(f"Peak #{peaks.count} at {result['position']}")
+
+    publish('TotalPeaks', peaks.count)
+    await next_scan()
+```
+
+**Properties:** `count`, `last_peak` (dict), `peaks` (list, max 1000)
+**Methods:** `update(value)` → peak dict or None
+
+### SpectralAnalysis (DAQ-only)
+
+FFT-based frequency domain analysis. Uses numpy if available, falls back to pure-Python FFT.
+
+```python
+# 256-point FFT at 100 Hz sample rate
+spec = SpectralAnalysis(window_size=256, sample_rate=100.0)
+
+while session.active:
+    spec.update(tags.Vibration)
+
+    if spec.ready:  # Buffer filled
+        result = spec.analyze()
+
+        publish('DominantFreq', result['dominant_freq'], units='Hz')
+        publish('DominantMag', result['dominant_mag'])
+        publish('THD', result['thd'] * 100, units='%')
+
+        # Check for bearing fault (typically 6-8x shaft speed)
+        if 25 < result['dominant_freq'] < 35:
+            publish('BearingFaultWarning', 1)
+
+    await next_scan()
+```
+
+**Properties:** `ready` (True when buffer full)
+**Methods:** `update(value)`, `analyze()` → `{'frequencies', 'magnitudes', 'dominant_freq', 'dominant_mag', 'thd'}`
+
+> **Note:** Not available on cRIO. Use `SignalFilter` or `RollingStats` for cRIO scripts.
+
+### SPCChart (DAQ-only)
+
+Statistical Process Control with Xbar/R charts and Western Electric rules.
+
+```python
+# Subgroups of 5, keep 25 subgroups for control limits
+spc = SPCChart(subgroup_size=5, num_subgroups=25)
+spc.set_spec_limits(lsl=9.5, usl=10.5)  # For Cp/Cpk
+
+while session.active:
+    spc.add_sample(tags.PartDimension)
+
+    publish('SPC_Xbar', spc.x_bar)
+    publish('SPC_UCL', spc.ucl)
+    publish('SPC_LCL', spc.lcl)
+    publish('SPC_Cpk', spc.cpk)
+
+    if not spc.in_control:
+        violations = spc.check_rules()
+        print(f"SPC violation: {violations[0]}")
+        outputs.set('QualityAlarm', True)
+
+    await next_scan()
+```
+
+**Properties:** `x_bar`, `r_bar`, `ucl`, `lcl`, `sigma`, `cp`, `cpk`, `in_control`
+**Methods:** `add_sample(value)`, `add_subgroup(values)`, `set_spec_limits(lsl, usl)`, `check_rules()` → list
+
+> **Note:** Not available on cRIO.
+
+### BiquadFilter (DAQ-only)
+
+Second-order IIR digital filter. Use factory methods to create specific filter types.
+
+```python
+# Low-pass filter: 5 Hz cutoff at 100 Hz sample rate
+lp = BiquadFilter.lowpass(cutoff_hz=5.0, sample_rate=100.0)
+
+# High-pass filter: remove DC offset
+hp = BiquadFilter.highpass(cutoff_hz=0.1, sample_rate=100.0)
+
+# Band-pass filter: isolate specific frequency
+bp = BiquadFilter.bandpass(center_hz=60.0, sample_rate=1000.0, q=10.0)
+
+# Notch filter: remove 60 Hz noise
+notch = BiquadFilter.notch(center_hz=60.0, sample_rate=1000.0)
+
+# Cascade multiple filters
+filt = BiquadFilter.cascade([
+    BiquadFilter.highpass(0.5, 100.0),  # Remove DC
+    BiquadFilter.lowpass(20.0, 100.0),  # Anti-alias
+])
+
+while session.active:
+    raw = tags.Accelerometer
+    filtered = filt.process(raw)
+    publish('FilteredAccel', filtered)
+    await next_scan()
+```
+
+**Factory Methods:** `lowpass()`, `highpass()`, `bandpass()`, `notch()`, `cascade()`
+**Methods:** `process(sample)`, `reset()`
+
+> **Note:** Not available on cRIO. Use `SignalFilter` (EMA) for cRIO scripts.
+
+### DataLog (DAQ-only)
+
+Structured custom data logging via the publish mechanism.
+
+```python
+# Create named log
+log = DataLog('experiment')
+
+while session.active:
+    # Log individual values
+    log.log(tags.Temperature, label='temp_c')
+    log.log(tags.Pressure, label='pressure_kpa')
+
+    # Log multiple values at once
+    log.log_dict({
+        'flow': tags.FlowRate,
+        'power': tags.PowerInput,
+        'efficiency': calculated_eff
+    })
+
+    # Mark significant events
+    if tags.Temperature > 100:
+        log.mark('overtemp_event')
+
+    publish('LogCount', log.count)
+    await next_scan()
+```
+
+**Properties:** `count`, `marks` (list of event dicts)
+**Methods:** `log(value, label)`, `log_dict(dict)`, `mark(event_name)`
+
+> **Note:** Not available on cRIO.
 
 ---
 

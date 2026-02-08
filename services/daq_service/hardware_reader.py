@@ -57,6 +57,7 @@ try:
         Edge,
         Level,
         CountDirection,
+        CounterFrequencyMethod,
         FrequencyUnits,
         READ_ALL_AVAILABLE,
         SampleTimingType
@@ -114,9 +115,9 @@ def get_terminal_config(config_str: str):
 
     config_upper = config_str.upper().strip()
     if config_upper not in config_map:
-        logger.warning(f"Unknown terminal config '{config_str}', defaulting to RSE. "
-                      f"Valid options: RSE, DIFF, NRSE, PSEUDO_DIFF, DEFAULT")
-        return TerminalConfiguration.RSE
+        logger.warning(f"Unknown terminal config '{config_str}', defaulting to DEFAULT. "
+                      f"Valid options: DEFAULT, RSE, DIFF, NRSE, PSEUDO_DIFF")
+        return TerminalConfiguration.DEFAULT
 
     return config_map[config_upper]
 
@@ -463,12 +464,14 @@ class HardwareReader:
                         tc_type_str = TC_TYPE_MAP.get(channel.thermocouple_type, 'K')
                         tc_type = getattr(NI_TCType, tc_type_str, NI_TCType.K)
                     cjc = get_cjc_source(channel.cjc_source)
+                    cjc_val = getattr(channel, 'cjc_value', 25.0)
 
                     ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         thermocouple_type=tc_type,
-                        cjc_source=cjc
+                        cjc_source=cjc,
+                        cjc_val=cjc_val
                     )
 
                     # Enable open thermocouple detection
@@ -476,7 +479,7 @@ class HardwareReader:
                     # which our validation layer will detect and convert to NaN
                     try:
                         ai_chan.ai_open_thrmcpl_detect_enable = True
-                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (open TC detection enabled)")
+                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (cjc={channel.cjc_source}, open TC detection enabled)")
                     except Exception as e:
                         logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
                         logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
@@ -527,8 +530,8 @@ class HardwareReader:
                         '4Wire': ResistanceConfiguration.FOUR_WIRE,
                     }
                     rtd_type = rtd_type_map.get(channel.rtd_type, RTDType.PT_3851)
-                    wiring = wiring_map.get(channel.resistance_config or channel.rtd_wiring,
-                                           ResistanceConfiguration.THREE_WIRE)
+                    wiring = wiring_map.get(channel.rtd_wiring,
+                                           ResistanceConfiguration.FOUR_WIRE)
 
                     task.ai_channels.add_ai_rtd_chan(
                         phys_chan,
@@ -536,7 +539,7 @@ class HardwareReader:
                         rtd_type=rtd_type,
                         resistance_config=wiring,
                         current_excit_source=ExcitationSource.INTERNAL,
-                        current_excit_val=channel.excitation_current or channel.rtd_current or 0.001,
+                        current_excit_val=channel.rtd_current or 0.001,
                         r_0=channel.rtd_resistance or 100.0
                     )
                     logger.info(f"Added RTD: {channel.name} -> {phys_chan}")
@@ -643,12 +646,14 @@ class HardwareReader:
 
                 # Map CJC source from config
                 cjc = get_cjc_source(channel.cjc_source)
+                cjc_val = getattr(channel, 'cjc_value', 25.0)
 
                 ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                     phys_chan,
                     name_to_assign_to_channel=channel.name,
                     thermocouple_type=tc_type,
-                    cjc_source=cjc
+                    cjc_source=cjc,
+                    cjc_val=cjc_val
                 )
                 channel_names.append(channel.name)
 
@@ -1172,15 +1177,29 @@ class HardwareReader:
                 edge = Edge.RISING if channel.counter_edge == "rising" else Edge.FALLING
 
                 if channel.counter_mode == "frequency":
-                    # Frequency measurement
-                    task.ci_channels.add_ci_freq_chan(
-                        phys_chan,
-                        name_to_assign_to_channel=channel.name,
-                        min_val=min_freq,
-                        max_val=max_freq,
-                        units=FrequencyUnits.HZ,
-                        edge=edge
-                    )
+                    # Frequency measurement - try default method, fall back to DynAvg
+                    try:
+                        task.ci_channels.add_ci_freq_chan(
+                            phys_chan,
+                            name_to_assign_to_channel=channel.name,
+                            min_val=min_freq,
+                            max_val=max_freq,
+                            units=FrequencyUnits.HZ,
+                            edge=edge
+                        )
+                    except Exception:
+                        task.close()
+                        task = nidaqmx.Task(f"CTR_{channel.name}")
+                        task.ci_channels.add_ci_freq_chan(
+                            phys_chan,
+                            name_to_assign_to_channel=channel.name,
+                            min_val=min_freq,
+                            max_val=max_freq,
+                            units=FrequencyUnits.HZ,
+                            edge=edge,
+                            meas_method=CounterFrequencyMethod.DYNAMIC_AVERAGING
+                        )
+                        logger.info(f"Counter {channel.name}: using DynAvg measurement method")
                 elif channel.counter_mode == "count":
                     # Edge counting
                     task.ci_channels.add_ci_count_edges_chan(

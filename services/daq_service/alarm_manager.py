@@ -429,9 +429,9 @@ class AlarmManager:
             'total_shelved': 0
         }
 
-        # Alarm flood detection (ISA-18.2)
+        # Alarm flood detection (ISA-18.2) — configurable per project
         self.FLOOD_THRESHOLD = 10       # Alarms within window to trigger flood
-        self.FLOOD_WINDOW_S = 60.0      # Time window for flood detection
+        self.FLOOD_WINDOW_S = 60.0      # Time window for flood detection (seconds)
         self._flood_active = False
         self._flood_start_time: Optional[float] = None
         self._flood_alarm_times: List[float] = []   # timestamps of recent alarm triggers
@@ -454,6 +454,18 @@ class AlarmManager:
         self._load_active_alarms()
         self._load_history()
         self._load_correlation_rules()
+
+    def configure_flood(self, threshold: int = 10, window_s: float = 60.0):
+        """Update alarm flood detection parameters at runtime (ISA-18.2).
+
+        Args:
+            threshold: Number of alarms within window to trigger flood (min 2, max 100)
+            window_s: Time window in seconds for flood detection (min 10, max 600)
+        """
+        with self.lock:
+            self.FLOOD_THRESHOLD = max(2, min(100, int(threshold)))
+            self.FLOOD_WINDOW_S = max(10.0, min(600.0, float(window_s)))
+            logger.info(f"Flood detection updated: threshold={self.FLOOD_THRESHOLD}, window={self.FLOOD_WINDOW_S}s")
 
     def add_alarm_config(self, config: AlarmConfig):
         """Add or update an alarm configuration"""

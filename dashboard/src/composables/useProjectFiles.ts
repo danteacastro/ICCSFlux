@@ -21,6 +21,7 @@ import { usePythonScripts } from './usePythonScripts'
 import { useBackendScripts } from './useBackendScripts'
 import { useSafety } from './useSafety'
 import { usePlayground } from './usePlayground'
+import { useScripts } from './useScripts'
 import type { ChannelConfig, ChannelType } from '../types'
 
 // Channel config as stored in the project JSON file
@@ -201,6 +202,14 @@ export function useProjectFiles() {
   const mqtt = useMqtt()
   const store = useDashboardStore()
   const safety = useSafety()
+  const scripts = useScripts()
+
+  // Helper to set error and show notification
+  function setError(message: string, title: string = 'Project Error') {
+    error.value = message
+    scripts.addNotification('error', title, message)
+    console.error(`[PROJECT] ${title}: ${message}`)
+  }
 
   // Subscribe to MQTT responses
   // NOTE: Backend uses node-prefixed topics: nisystem/nodes/{node_id}/project/...
@@ -237,12 +246,15 @@ export function useProjectFiles() {
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
         } catch (err) {
           console.error('[PROJECT LOADING] ❌ Error applying project data:', err)
-          error.value = `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`
+          setError(
+            `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`,
+            'Project Load Failed'
+          )
         }
       } else {
         console.error('[PROJECT LOADING] ❌ Project load failed or missing data')
         if (!payload.success) {
-          error.value = payload.message || 'Project load failed'
+          setError(payload.message || 'Project load failed', 'Project Load Failed')
         }
       }
       isLoading.value = false
@@ -251,7 +263,7 @@ export function useProjectFiles() {
     mqtt.subscribe(`${nodePrefix}/project/response`, (payload: any) => {
       isLoading.value = false
       if (!payload.success) {
-        error.value = payload.message
+        setError(payload.message || 'Operation failed', 'Project Error')
       } else {
         error.value = null
       }
@@ -275,7 +287,10 @@ export function useProjectFiles() {
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
         } catch (err) {
           console.error('[PROJECT LOADING] ❌ Error applying current project:', err)
-          error.value = `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`
+          setError(
+            `Failed to apply project: ${err instanceof Error ? err.message : String(err)}`,
+            'Project Load Failed'
+          )
         }
       } else {
         console.debug('[PROJECT LOADING] No current project to apply')
@@ -319,7 +334,7 @@ export function useProjectFiles() {
 
       const timeout = setTimeout(() => {
         isLoading.value = false
-        error.value = 'Load timeout'
+        setError('Load timeout - backend did not respond', 'Project Load Failed')
         resolve(false)
       }, 10000)
 
@@ -345,7 +360,7 @@ export function useProjectFiles() {
 
       const timeout = setTimeout(() => {
         isLoading.value = false
-        error.value = 'Save timeout'
+        setError('Save timeout - backend did not respond', 'Project Save Failed')
         resolve(false)
       }, 10000)
 
@@ -371,6 +386,7 @@ export function useProjectFiles() {
 
       const timeout = setTimeout(() => {
         isLoading.value = false
+        setError('Delete timeout - backend did not respond', 'Project Delete Failed')
         resolve(false)
       }, 5000)
 
@@ -447,6 +463,7 @@ export function useProjectFiles() {
       // Fetch the autosave file content by requesting it from backend
       const timeout = setTimeout(() => {
         isLoading.value = false
+        setError('Autosave recovery timeout - backend did not respond', 'Recovery Failed')
         resolve(false)
       }, 10000)
 

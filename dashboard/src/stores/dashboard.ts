@@ -19,7 +19,8 @@ import type {
   PidTextAnnotation,
   PidCommand,
   PidGroup,
-  PidTemplate
+  PidTemplate,
+  PidLayerInfo
 } from '../types'
 
 // Recording configuration interface
@@ -61,6 +62,9 @@ export interface RecordingConfig {
 
   // CSV file recording toggle
   csvEnabled: boolean
+
+  // File Reuse
+  reuseFile: boolean            // Stop/start appends to same file instead of creating new
 
   // ALCOA+ Data Integrity Settings
   appendOnly: boolean           // Make files read-only after recording stops
@@ -117,6 +121,9 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
 
   // CSV file recording (enabled by default for new projects)
   csvEnabled: true,
+
+  // File Reuse
+  reuseFile: false,            // Off by default — each start creates a new file
 
   // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11 compliance)
   appendOnly: false,           // Off by default for development flexibility
@@ -201,6 +208,50 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const pidShowGrid = ref(true)  // Show grid overlay (default ON)
   const pidColorScheme = ref<'standard' | 'isa101'>('standard')  // ISA-101 grayscale mode
   const pidOrthogonalPipes = ref(true)  // Draw pipes at 90-degree angles only (Shift to disable)
+  // Pipe drawing defaults (shared between toolbar and canvas)
+  const pidPipeColor = ref('#60a5fa')
+  const pidPipeDashed = ref(false)
+  const pidPipeAnimated = ref(false)
+  // Style clipboard for copy/paste style between pipes
+  const pidStyleClipboard = ref<Partial<PidPipe> | null>(null)
+
+  function pidCopyStyle(pipeId: string) {
+    const pipe = pidLayer.value.pipes.find(p => p.id === pipeId)
+    if (!pipe) return
+    pidStyleClipboard.value = {
+      color: pipe.color,
+      strokeWidth: pipe.strokeWidth,
+      dashed: pipe.dashed,
+      dashPattern: pipe.dashPattern,
+      opacity: pipe.opacity,
+      animated: pipe.animated,
+      startArrow: pipe.startArrow,
+      endArrow: pipe.endArrow,
+      rounded: pipe.rounded,
+      cornerRadius: pipe.cornerRadius,
+      medium: pipe.medium,
+      lineCode: pipe.lineCode,
+      jumpStyle: pipe.jumpStyle,
+      jumpSize: pipe.jumpSize,
+    }
+  }
+
+  function pidPasteStyle(pipeId: string) {
+    if (!pidStyleClipboard.value) return
+    const beforeState = createPidStateSnapshot()
+    updatePidPipe(pipeId, { ...pidStyleClipboard.value })
+    pushPidCommand('modify', 'Paste pipe style', beforeState)
+  }
+
+  // P&ID Zoom/Pan (edit-mode only)
+  const pidZoom = ref(1)
+  const pidPanX = ref(0)
+  const pidPanY = ref(0)
+  const pidSymbolPanelOpen = ref(true)  // Symbol panel sidebar
+  const pidShowMinimap = ref(true)      // Minimap overlay
+  const pidShowRulers = ref(true)       // Ruler overlays on canvas edges
+  const pidAutoRoute = ref(false)       // Auto-route pipes around obstacles
+  const pidPropertiesPanelOpen = ref(true) // Properties panel sidebar
 
   // ========================================================================
   // P&ID TEMPLATE LIBRARY
@@ -922,6 +973,52 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidColorScheme.value = scheme
   }
 
+  function setPidZoom(zoom: number) {
+    pidZoom.value = Math.max(0.1, Math.min(5, zoom))
+  }
+
+  function setPidPan(x: number, y: number) {
+    pidPanX.value = x
+    pidPanY.value = y
+  }
+
+  function pidResetZoom() {
+    pidZoom.value = 1
+    pidPanX.value = 0
+    pidPanY.value = 0
+  }
+
+  function pidFitToContent(canvasWidth: number, canvasHeight: number) {
+    const symbols = pidLayer.value.symbols
+    const pipes = pidLayer.value.pipes
+    if (symbols.length === 0 && pipes.length === 0) {
+      pidResetZoom()
+      return
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const sym of symbols) {
+      minX = Math.min(minX, sym.x)
+      minY = Math.min(minY, sym.y)
+      maxX = Math.max(maxX, sym.x + sym.width)
+      maxY = Math.max(maxY, sym.y + sym.height)
+    }
+    for (const pipe of pipes) {
+      for (const pt of pipe.points) {
+        minX = Math.min(minX, pt.x)
+        minY = Math.min(minY, pt.y)
+        maxX = Math.max(maxX, pt.x)
+        maxY = Math.max(maxY, pt.y)
+      }
+    }
+    const pad = 40
+    const contentW = maxX - minX + pad * 2
+    const contentH = maxY - minY + pad * 2
+    const newZoom = Math.max(0.1, Math.min(5, Math.min(canvasWidth / contentW, canvasHeight / contentH)))
+    pidZoom.value = newZoom
+    pidPanX.value = (canvasWidth - contentW * newZoom) / 2 - (minX - pad) * newZoom
+    pidPanY.value = (canvasHeight - contentH * newZoom) / 2 - (minY - pad) * newZoom
+  }
+
   function addPidSymbol(symbol: Omit<PidSymbol, 'id'>): string {
     const id = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     const newSymbol: PidSymbol = { ...symbol, id }
@@ -944,9 +1041,29 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function removePidSymbol(id: string) {
+    // Clean up pipe connections that reference this symbol
+    const cleanedPipes = pidLayer.value.pipes.map(pipe => {
+      let updated = pipe
+      if (pipe.startConnection?.symbolId === id) {
+        const { startConnection, ...rest } = updated
+        updated = { ...rest, startSymbolId: undefined, startPortId: undefined } as typeof pipe
+      }
+      if (pipe.endConnection?.symbolId === id) {
+        const { endConnection, ...rest } = updated
+        updated = { ...rest, endSymbolId: undefined, endPortId: undefined } as typeof pipe
+      }
+      if (pipe.startSymbolId === id) {
+        updated = { ...updated, startSymbolId: undefined, startPortId: undefined }
+      }
+      if (pipe.endSymbolId === id) {
+        updated = { ...updated, endSymbolId: undefined, endPortId: undefined }
+      }
+      return updated
+    })
     pidLayer.value = {
       ...pidLayer.value,
-      symbols: pidLayer.value.symbols.filter(s => s.id !== id)
+      symbols: pidLayer.value.symbols.filter(s => s.id !== id),
+      pipes: cleanedPipes
     }
   }
 
@@ -983,7 +1100,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function clearPidLayer() {
-    pidLayer.value = { symbols: [], pipes: [], visible: true, opacity: 1 }
+    const beforeState = createPidStateSnapshot()
+    pidLayer.value = { symbols: [], pipes: [], textAnnotations: [], groups: [], visible: true, opacity: 1 }
+    pushPidCommand('batch', 'Clear all P&ID elements', beforeState)
+    saveLayoutToStorage()
   }
 
   /**
@@ -1385,11 +1505,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     const beforeState = createPidStateSnapshot()
 
-    // Remove selected symbols
-    if (pidSelectedIds.value.symbolIds.length > 0) {
+    // Remove selected symbols (skip locked ones)
+    const unlockedSymbolIds = pidSelectedIds.value.symbolIds.filter(
+      id => !pidLayer.value.symbols.find(s => s.id === id)?.locked
+    )
+    if (unlockedSymbolIds.length > 0) {
       pidLayer.value = {
         ...pidLayer.value,
-        symbols: pidLayer.value.symbols.filter(s => !pidSelectedIds.value.symbolIds.includes(s.id))
+        symbols: pidLayer.value.symbols.filter(s => !unlockedSymbolIds.includes(s.id))
       }
     }
 
@@ -1410,7 +1533,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
 
     const deletedCount =
-      pidSelectedIds.value.symbolIds.length +
+      unlockedSymbolIds.length +
       pidSelectedIds.value.pipeIds.length +
       pidSelectedIds.value.textAnnotationIds.length
 
@@ -2178,11 +2301,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     const beforeState = createPidStateSnapshot()
 
-    // Move symbols
+    // Move symbols (skip locked ones)
     pidLayer.value = {
       ...pidLayer.value,
       symbols: pidLayer.value.symbols.map(s =>
-        pidSelectedIds.value.symbolIds.includes(s.id)
+        pidSelectedIds.value.symbolIds.includes(s.id) && !s.locked
           ? { ...s, x: s.x + dx, y: s.y + dy }
           : s
       )
@@ -2267,6 +2390,128 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     pushPidCommand('delete', 'Delete text annotation', beforeState)
     saveLayoutToStorage()
+  }
+
+  // ========================================================================
+  // P&ID GUIDE LINES (dragged from rulers)
+  // ========================================================================
+
+  function addPidGuide(axis: 'h' | 'v', position: number) {
+    const id = `guide-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`
+    const guides = [...(pidLayer.value.guides || []), { id, axis, position }]
+    pidLayer.value = { ...pidLayer.value, guides }
+  }
+
+  function removePidGuide(id: string) {
+    const guides = (pidLayer.value.guides || []).filter(g => g.id !== id)
+    pidLayer.value = { ...pidLayer.value, guides }
+  }
+
+  function updatePidGuide(id: string, position: number) {
+    const guides = (pidLayer.value.guides || []).map(g =>
+      g.id === id ? { ...g, position } : g
+    )
+    pidLayer.value = { ...pidLayer.value, guides }
+  }
+
+  // ========================================================================
+  // P&ID NAMED LAYERS
+  // ========================================================================
+
+  const pidActiveLayerId = ref('main')
+
+  function ensureLayerInfos(): PidLayerInfo[] {
+    if (!pidLayer.value.layerInfos || pidLayer.value.layerInfos.length === 0) {
+      return [{ id: 'main', name: 'Main', visible: true, locked: false, opacity: 1, order: 0 }]
+    }
+    return pidLayer.value.layerInfos
+  }
+
+  function pidAddLayer(name: string): string {
+    const infos = ensureLayerInfos()
+    const id = `layer-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`
+    const newInfo: PidLayerInfo = { id, name, visible: true, locked: false, opacity: 1, order: infos.length }
+    pidLayer.value = { ...pidLayer.value, layerInfos: [...infos, newInfo] }
+    pidActiveLayerId.value = id
+    return id
+  }
+
+  function pidRemoveLayer(layerId: string) {
+    const infos = ensureLayerInfos()
+    if (infos.length <= 1) return // Can't remove last layer
+    const mainId = infos[0]!.id
+    // Move elements from removed layer to first layer
+    const symbols = pidLayer.value.symbols.map(s =>
+      s.layerId === layerId ? { ...s, layerId: mainId } : s
+    )
+    const pipes = pidLayer.value.pipes.map(p =>
+      p.layerId === layerId ? { ...p, layerId: mainId } : p
+    )
+    const textAnnotations = (pidLayer.value.textAnnotations || []).map(t =>
+      t.layerId === layerId ? { ...t, layerId: mainId } : t
+    )
+    const newInfos = infos.filter(l => l.id !== layerId).map((l, i) => ({ ...l, order: i }))
+    pidLayer.value = { ...pidLayer.value, layerInfos: newInfos, symbols, pipes, textAnnotations }
+    if (pidActiveLayerId.value === layerId) {
+      pidActiveLayerId.value = newInfos[0]?.id || 'main'
+    }
+  }
+
+  function pidRenameLayer(layerId: string, name: string) {
+    const infos = ensureLayerInfos()
+    pidLayer.value = {
+      ...pidLayer.value,
+      layerInfos: infos.map(l => l.id === layerId ? { ...l, name } : l)
+    }
+  }
+
+  function pidToggleLayerVisibility(layerId: string) {
+    const infos = ensureLayerInfos()
+    pidLayer.value = {
+      ...pidLayer.value,
+      layerInfos: infos.map(l => l.id === layerId ? { ...l, visible: !l.visible } : l)
+    }
+  }
+
+  function pidToggleLayerLock(layerId: string) {
+    const infos = ensureLayerInfos()
+    pidLayer.value = {
+      ...pidLayer.value,
+      layerInfos: infos.map(l => l.id === layerId ? { ...l, locked: !l.locked } : l)
+    }
+  }
+
+  function pidSetLayerOpacity(layerId: string, opacity: number) {
+    const infos = ensureLayerInfos()
+    pidLayer.value = {
+      ...pidLayer.value,
+      layerInfos: infos.map(l => l.id === layerId ? { ...l, opacity } : l)
+    }
+  }
+
+  function pidMoveToLayer(targetLayerId: string) {
+    const symbolIds = pidSelectedIds.value.symbolIds
+    const pipeIds = pidSelectedIds.value.pipeIds
+    const textIds = pidSelectedIds.value.textAnnotationIds
+    if (symbolIds.length === 0 && pipeIds.length === 0 && textIds.length === 0) return
+
+    const symbols = pidLayer.value.symbols.map(s =>
+      symbolIds.includes(s.id) ? { ...s, layerId: targetLayerId } : s
+    )
+    const pipes = pidLayer.value.pipes.map(p =>
+      pipeIds.includes(p.id) ? { ...p, layerId: targetLayerId } : p
+    )
+    const textAnnotations = (pidLayer.value.textAnnotations || []).map(t =>
+      textIds.includes(t.id) ? { ...t, layerId: targetLayerId } : t
+    )
+    pidLayer.value = { ...pidLayer.value, symbols, pipes, textAnnotations }
+  }
+
+  function isLayerLocked(layerId: string | undefined): boolean {
+    const infos = pidLayer.value.layerInfos
+    if (!infos || infos.length === 0) return false
+    const info = infos.find(l => l.id === (layerId || 'main'))
+    return info?.locked ?? false
   }
 
   // ========================================================================
@@ -2707,7 +2952,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
       value_table: { w: 6, h: 8 },
       script_monitor: { w: 6, h: 8 },
       crio_status: { w: 4, h: 4 },
-      latch_switch: { w: 2, h: 2 }
+      latch_switch: { w: 2, h: 2 },
+      heater_zone: { w: 4, h: 4 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }
@@ -3035,6 +3281,18 @@ export const useDashboardStore = defineStore('dashboard', () => {
     togglePidColorScheme,
     setPidColorScheme,
     pidOrthogonalPipes,
+    pidZoom,
+    pidPanX,
+    pidPanY,
+    pidSymbolPanelOpen,
+    pidShowMinimap,
+    pidShowRulers,
+    pidAutoRoute,
+    pidPropertiesPanelOpen,
+    setPidZoom,
+    setPidPan,
+    pidFitToContent,
+    pidResetZoom,
     addPidSymbol,
     updatePidSymbol,
     removePidSymbol,
@@ -3101,6 +3359,22 @@ export const useDashboardStore = defineStore('dashboard', () => {
     updatePidTextAnnotation,
     removePidTextAnnotation,
 
+    // P&ID Guide Lines
+    addPidGuide,
+    removePidGuide,
+    updatePidGuide,
+
+    // P&ID Named Layers
+    pidActiveLayerId,
+    pidAddLayer,
+    pidRemoveLayer,
+    pidRenameLayer,
+    pidToggleLayerVisibility,
+    pidToggleLayerLock,
+    pidSetLayerOpacity,
+    pidMoveToLayer,
+    isLayerLocked,
+
     // P&ID Enhanced Actions (with Undo)
     addPidSymbolWithUndo,
     updatePidSymbolWithUndo,
@@ -3114,6 +3388,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
     createPidTemplate,
     instantiatePidTemplate,
     deletePidTemplate,
+
+    // P&ID Pipe Drawing Defaults
+    pidPipeColor,
+    pidPipeDashed,
+    pidPipeAnimated,
+    pidStyleClipboard,
+    pidCopyStyle,
+    pidPasteStyle,
 
     // Recording configuration (Data tab)
     recordingConfig,
