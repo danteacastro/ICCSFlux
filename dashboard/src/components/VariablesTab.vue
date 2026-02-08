@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, inject, onMounted } from 'vue'
 import { usePlayground } from '../composables/usePlayground'
 import { useScripts } from '../composables/useScripts'
 import { useDashboardStore } from '../stores/dashboard'
@@ -9,6 +9,18 @@ import type { UserVariable, UserVariableType, ResetMode, EdgeType, SourceRateUni
 const playground = usePlayground()
 const scripts = useScripts()
 const store = useDashboardStore()
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(true))
+const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
+
+function requireEditPermission(): boolean {
+  if (!hasEditPermission.value) {
+    showLoginDialog()
+    return false
+  }
+  return true
+}
 
 // UI state
 const showAddModal = ref(false)
@@ -69,6 +81,7 @@ const numericChannels = computed(() => {
 })
 
 function openAddModal() {
+  if (!requireEditPermission()) return
   editingVariable.value = null
   newVariable.value = {
     name: '',
@@ -91,6 +104,7 @@ function openAddModal() {
 }
 
 function openEditModal(variable: UserVariable) {
+  if (!requireEditPermission()) return
   editingVariable.value = variable
   newVariable.value = {
     name: variable.name,
@@ -113,6 +127,7 @@ function openEditModal(variable: UserVariable) {
 }
 
 function saveVariable() {
+  if (!requireEditPermission()) return
   if (!newVariable.value.name.trim()) {
     alert('Name (TAG) is required')
     return
@@ -165,6 +180,7 @@ function saveVariable() {
 }
 
 function deleteVariable(variable: UserVariable) {
+  if (!requireEditPermission()) return
   if (confirm(`Delete variable "${variable.displayName}"?`)) {
     playground.deleteVariable(variable.id)
   }
@@ -206,6 +222,7 @@ function openConfigModal() {
 }
 
 function saveSessionConfig() {
+  if (!requireEditPermission()) return
   playground.updateSessionConfig(sessionConfig.value)
   showConfigModal.value = false
 }
@@ -226,6 +243,7 @@ const allChannelNames = computed(() => Object.keys(store.channels))
 const allVariableNames = computed(() => playground.variablesList.value.map(v => v.name))
 
 function openNewFormulaBlock() {
+  if (!requireEditPermission()) return
   editingFormulaBlock.value = null
   showFormulaEditor.value = true
 }
@@ -236,6 +254,7 @@ function openEditFormulaBlock(block: FormulaBlock) {
 }
 
 function saveFormulaBlock(block: FormulaBlock) {
+  if (!requireEditPermission()) return
   if (editingFormulaBlock.value) {
     playground.updateFormulaBlock(block.id, block)
   } else {
@@ -246,12 +265,14 @@ function saveFormulaBlock(block: FormulaBlock) {
 }
 
 function deleteFormulaBlock(block: FormulaBlock) {
+  if (!requireEditPermission()) return
   if (confirm(`Delete formula block "${block.name}"?\n\nThis will remove all output variables:\n${Object.keys(block.outputs).join(', ')}`)) {
     playground.deleteFormulaBlock(block.id)
   }
 }
 
 function toggleFormulaBlockEnabled(block: FormulaBlock) {
+  if (!requireEditPermission()) return
   playground.updateFormulaBlock(block.id, { enabled: !block.enabled })
 }
 

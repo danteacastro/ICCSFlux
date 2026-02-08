@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import path from 'path'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [vue()],
   server: {
     fs: {
@@ -20,6 +20,14 @@ export default defineConfig({
     alias: {
       '/config': path.resolve(__dirname, '../config')
     }
+  },
+  esbuild: {
+    // Strip console.log and console.debug from production builds
+    // Keeps console.warn and console.error for real issues
+    ...(mode === 'production' ? {
+      pure: ['console.log', 'console.debug'],
+      drop: ['debugger'],
+    } : {}),
   },
   build: {
     // Monaco editor creates large chunks (~3-4MB) - this is expected
@@ -47,4 +55,4 @@ export default defineConfig({
     // Don't pre-bundle pyodide - it loads dynamically
     exclude: ['pyodide']
   }
-})
+}))

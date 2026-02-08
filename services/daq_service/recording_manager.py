@@ -316,8 +316,8 @@ class PostgreSQLWriter:
             logger.error(f"PostgreSQL flush error: {e}")
             try:
                 self._conn.rollback()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"PostgreSQL rollback failed: {e}")
 
     def close(self):
         """Flush remaining data and close connection."""
@@ -834,8 +834,8 @@ class RecordingManager:
             self.current_file_handle.flush()
             try:
                 os.fsync(self.current_file_handle.fileno())
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning(f"fsync failed during buffer flush: {e}")
             self.write_buffer = []
             self.last_flush_time = datetime.now()
         except IOError as e:
@@ -1037,8 +1037,8 @@ class RecordingManager:
             self.current_file_handle.flush()
             try:
                 os.fsync(self.current_file_handle.fileno())
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning(f"fsync failed during file close: {e}")
             _unlock_file(self.current_file_handle)
             self.current_file_handle.close()
             self.current_file_handle = None

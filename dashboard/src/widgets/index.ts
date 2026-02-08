@@ -34,8 +34,6 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   variable_input: defineAsyncComponent(() => import('./VariableInputWidget.vue')),
   pid_loop: defineAsyncComponent(() => import('./PidLoopWidget.vue')),
   heater_zone: defineAsyncComponent(() => import('./HeaterZoneWidget.vue')),
-  // Placeholders for future widgets
-  table: defineAsyncComponent(() => import('./NumericDisplay.vue')), // fallback
 }
 
 export function getWidgetComponent(type: WidgetType | string) {

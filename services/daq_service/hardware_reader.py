@@ -347,7 +347,10 @@ class HardwareReader:
         # Analog input types that can share a continuous task
         ANALOG_INPUT_TYPES = {
             ChannelType.THERMOCOUPLE, ChannelType.VOLTAGE_INPUT, ChannelType.CURRENT_INPUT,
-            ChannelType.RTD, ChannelType.STRAIN, ChannelType.IEPE, ChannelType.RESISTANCE
+            ChannelType.RTD,
+            ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT,
+            ChannelType.IEPE, ChannelType.IEPE_INPUT,
+            ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT,
         }
 
         for name, channel in self.config.channels.items():
@@ -392,7 +395,8 @@ class HardwareReader:
             digital_out_channels = [c for c in channels if c.channel_type == ChannelType.DIGITAL_OUTPUT]
             voltage_out_channels = [c for c in channels if c.channel_type == ChannelType.VOLTAGE_OUTPUT]
             current_out_channels = [c for c in channels if c.channel_type == ChannelType.CURRENT_OUTPUT]
-            counter_channels = [c for c in channels if c.channel_type == ChannelType.COUNTER]
+            counter_channels = [c for c in channels if c.channel_type in (
+                ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT)]
             pulse_out_channels = [c for c in channels if c.channel_type in (
                 ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT)]
 
@@ -544,7 +548,7 @@ class HardwareReader:
                     )
                     logger.info(f"Added RTD: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type == ChannelType.STRAIN:
+                elif channel.channel_type in (ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT):
                     # Strain gauge
                     bridge_map = {
                         'full-bridge': BridgeConfiguration.FULL_BRIDGE,
@@ -564,7 +568,7 @@ class HardwareReader:
                     )
                     logger.info(f"Added strain: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type == ChannelType.IEPE:
+                elif channel.channel_type in (ChannelType.IEPE, ChannelType.IEPE_INPUT):
                     # IEPE accelerometer
                     coupling = Coupling.AC if (channel.iepe_coupling or 'AC').upper() == 'AC' else Coupling.DC
 
@@ -578,7 +582,7 @@ class HardwareReader:
                     task.ai_channels[channel.name].ai_coupling = coupling
                     logger.info(f"Added IEPE: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type == ChannelType.RESISTANCE:
+                elif channel.channel_type in (ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT):
                     # Resistance
                     wiring_map = {
                         '2-wire': ResistanceConfiguration.TWO_WIRE,
@@ -1357,8 +1361,8 @@ class HardwareReader:
                             "message": "Watchdog set outputs to safe state",
                             "output_count": len(self.output_tasks)
                         })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Watchdog error callback failed: {e}")
 
         logger.info("Watchdog thread stopped")
 
@@ -1549,8 +1553,8 @@ class HardwareReader:
                                 "error_count": self._error_count,
                                 "message": "Maximum recovery attempts exceeded"
                             })
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Recovery error callback failed: {e}")
                     break
 
                 # Small sleep to prevent CPU spinning (10Hz effective read rate)

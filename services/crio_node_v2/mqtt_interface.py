@@ -165,8 +165,8 @@ class MQTTInterface:
                     qos=1,
                     retain=True
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not publish offline status during disconnect: {e}")
 
             self._client.loop_stop()
             self._client.disconnect()

@@ -159,6 +159,7 @@ const scheduleForm = ref({
 const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function openScheduleEditor(schedule?: Schedule) {
+  if (!requireEditPermission()) return
   if (schedule) {
     selectedSchedule.value = schedule.id
     scheduleForm.value = {
@@ -199,6 +200,7 @@ function closeScheduleEditor() {
 }
 
 function saveSchedule() {
+  if (!requireEditPermission()) return
   const data = {
     name: scheduleForm.value.name,
     description: scheduleForm.value.description,
@@ -407,6 +409,7 @@ const flowChannels = computed(() => {
 
 // Draw Pattern CRUD
 function openDrawPatternEditor(patternId?: string) {
+  if (!requireEditPermission()) return
   if (patternId) {
     const pattern = scripts.drawPatterns.value.find(p => p.id === patternId)
     if (pattern) {
@@ -443,6 +446,7 @@ function closeDrawPatternEditor() {
 }
 
 function saveDrawPattern() {
+  if (!requireEditPermission()) return
   if (editingDrawPatternId.value) {
     scripts.updateDrawPattern(editingDrawPatternId.value, drawPatternForm.value)
   } else {
@@ -453,6 +457,7 @@ function saveDrawPattern() {
 }
 
 function deleteDrawPattern(patternId: string) {
+  if (!requireEditPermission()) return
   const pattern = scripts.drawPatterns.value.find(p => p.id === patternId)
   if (pattern && confirm(`Delete "${pattern.name}"?`)) {
     scripts.deleteDrawPattern(patternId)
@@ -464,6 +469,7 @@ function deleteDrawPattern(patternId: string) {
 
 // Draw CRUD within a pattern
 function openDrawEditor(index?: number) {
+  if (!requireEditPermission()) return
   const pattern = activeDrawPattern.value
   if (!pattern) return
 
@@ -498,6 +504,7 @@ function closeDrawEditor() {
 }
 
 function saveDraw() {
+  if (!requireEditPermission()) return
   const pattern = activeDrawPattern.value
   if (!pattern) return
 
@@ -513,6 +520,7 @@ function saveDraw() {
 }
 
 function deleteDraw(index: number) {
+  if (!requireEditPermission()) return
   const pattern = activeDrawPattern.value
   if (!pattern) return
   const draw = pattern.draws[index]
@@ -590,6 +598,7 @@ const inputChannels = computed(() => {
 // =============================================================================
 
 function createFormula() {
+  if (!requireEditPermission()) return
   formulaForm.value = {
     id: `calc-${Date.now()}`,
     name: '',
@@ -602,6 +611,7 @@ function createFormula() {
 }
 
 function editFormula(param: CalculatedParam) {
+  if (!requireEditPermission()) return
   formulaForm.value = {
     id: param.id,
     name: param.name,
@@ -614,6 +624,7 @@ function editFormula(param: CalculatedParam) {
 }
 
 function saveFormula() {
+  if (!requireEditPermission()) return
   const existing = scripts.calculatedParams.value.find(p => p.id === formulaForm.value.id)
 
   if (existing) {
@@ -637,6 +648,7 @@ function saveFormula() {
 }
 
 function deleteFormula(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this calculated parameter?')) {
     scripts.deleteCalculatedParam(id)
     if (selectedFormula.value === id) {
@@ -647,6 +659,7 @@ function deleteFormula(id: string) {
 }
 
 function toggleFormula(id: string) {
+  if (!requireEditPermission()) return
   const param = scripts.calculatedParams.value.find(p => p.id === id)
   if (param) {
     scripts.updateCalculatedParam(id, { enabled: !param.enabled })
@@ -662,6 +675,7 @@ function insertVariable(variable: string) {
 // =============================================================================
 
 function createSequence() {
+  if (!requireEditPermission()) return
   sequenceForm.value = {
     name: '',
     description: '',
@@ -673,12 +687,14 @@ function createSequence() {
 }
 
 function editSequence(seq: Sequence) {
+  if (!requireEditPermission()) return
   sequenceForm.value = { ...seq, steps: [...seq.steps] }
   selectedSequence.value = seq.id
   showSequenceEditor.value = true
 }
 
 function saveSequence() {
+  if (!requireEditPermission()) return
   if (selectedSequence.value) {
     scripts.updateSequence(selectedSequence.value, sequenceForm.value)
   } else {
@@ -688,6 +704,7 @@ function saveSequence() {
 }
 
 function deleteSequence(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this sequence?')) {
     scripts.deleteSequence(id)
     if (selectedSequence.value === id) {
@@ -699,6 +716,7 @@ function deleteSequence(id: string) {
 
 // Template creation
 function createFromTemplate(templateId: string) {
+  if (!requireEditPermission()) return
   const name = newSequenceName.value || undefined
   const newId = scripts.createSequenceFromTemplate(templateId, name || '')
   if (newId) {
@@ -712,6 +730,7 @@ function createFromTemplate(templateId: string) {
 
 // Import/Export
 function triggerImportSequence() {
+  if (!requireEditPermission()) return
   importFileInput.value?.click()
 }
 
@@ -990,6 +1009,7 @@ function getStepDescription(step: SequenceStep): string {
 // =============================================================================
 
 function createAlarm() {
+  if (!requireEditPermission()) return
   alarmForm.value = {
     name: '',
     description: '',
@@ -1006,12 +1026,14 @@ function createAlarm() {
 }
 
 function editAlarm(alarm: Alarm) {
+  if (!requireEditPermission()) return
   alarmForm.value = { ...alarm, conditions: [...alarm.conditions], actions: [...alarm.actions] }
   selectedAlarm.value = alarm.id
   showAlarmEditor.value = true
 }
 
 function saveAlarm() {
+  if (!requireEditPermission()) return
   if (selectedAlarm.value) {
     scripts.updateAlarm(selectedAlarm.value, alarmForm.value)
   } else {
@@ -1021,6 +1043,7 @@ function saveAlarm() {
 }
 
 function deleteAlarm(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this alarm?')) {
     scripts.deleteAlarm(id)
     if (selectedAlarm.value === id) {
@@ -1053,6 +1076,7 @@ function removeAction(index: number) {
 }
 
 function toggleAlarmWithConfirmation(id: string) {
+  if (!requireEditPermission()) return
   const alarm = scripts.alarms.value.find(a => a.id === id)
   if (!alarm) return
 
@@ -1074,6 +1098,7 @@ function toggleAlarmWithConfirmation(id: string) {
 // =============================================================================
 
 function createTransform() {
+  if (!requireEditPermission()) return
   transformForm.value = {
     name: '',
     displayName: '',
@@ -1087,12 +1112,14 @@ function createTransform() {
 }
 
 function editTransform(transform: Transformation) {
+  if (!requireEditPermission()) return
   transformForm.value = { ...transform }
   selectedTransform.value = transform.id
   showTransformEditor.value = true
 }
 
 function saveTransform() {
+  if (!requireEditPermission()) return
   // Add type-specific defaults
   const baseTransform = {
     ...transformForm.value,
@@ -1160,6 +1187,7 @@ function saveTransform() {
 }
 
 function deleteTransform(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this transformation?')) {
     scripts.deleteTransformation(id)
     if (selectedTransform.value === id) {
@@ -1174,6 +1202,7 @@ function deleteTransform(id: string) {
 // =============================================================================
 
 function createTrigger() {
+  if (!requireEditPermission()) return
   triggerForm.value = {
     name: '',
     description: '',
@@ -1200,12 +1229,14 @@ function createTrigger() {
 }
 
 function editTrigger(trigger: AutomationTrigger) {
+  if (!requireEditPermission()) return
   triggerForm.value = { ...trigger, actions: [...trigger.actions] }
   selectedTrigger.value = trigger.id
   showTriggerEditor.value = true
 }
 
 function saveTrigger() {
+  if (!requireEditPermission()) return
   if (selectedTrigger.value) {
     scripts.updateTrigger(selectedTrigger.value, triggerForm.value)
   } else {
@@ -1215,6 +1246,7 @@ function saveTrigger() {
 }
 
 function deleteTrigger(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this trigger?')) {
     scripts.deleteTrigger(id)
     if (selectedTrigger.value === id) {
@@ -1282,6 +1314,7 @@ function selectBlockTemplate(template: FunctionBlockTemplate) {
 }
 
 function createBlock() {
+  if (!requireEditPermission()) return
   if (!selectedBlockTemplate.value || !newBlockName.value.trim()) return
 
   const blockId = scripts.createFunctionBlockFromTemplate(
@@ -1309,6 +1342,7 @@ function closeBlockEditor() {
 }
 
 function deleteBlock(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this function block?')) {
     scripts.deleteFunctionBlock(id)
     if (selectedBlock.value === id) {
@@ -1318,6 +1352,7 @@ function deleteBlock(id: string) {
 }
 
 function toggleBlock(id: string) {
+  if (!requireEditPermission()) return
   const block = scripts.functionBlocks.value.find(b => b.id === id)
   if (block) {
     scripts.updateFunctionBlock(id, { enabled: !block.enabled })
@@ -1443,6 +1478,7 @@ const watchdogForm = ref<Partial<Watchdog>>({
 })
 
 function createWatchdog() {
+  if (!requireEditPermission()) return
   watchdogForm.value = {
     name: 'New Watchdog',
     description: '',
@@ -1461,6 +1497,7 @@ function createWatchdog() {
 }
 
 function editWatchdog(wd: Watchdog) {
+  if (!requireEditPermission()) return
   watchdogForm.value = {
     name: wd.name,
     description: wd.description,
@@ -1476,6 +1513,7 @@ function editWatchdog(wd: Watchdog) {
 }
 
 function saveWatchdog() {
+  if (!requireEditPermission()) return
   if (selectedWatchdog.value) {
     // Update existing
     const index = scripts.watchdogs.value.findIndex(wd => wd.id === selectedWatchdog.value)
@@ -1547,6 +1585,7 @@ function clearWatchdogTrigger(wd: Watchdog) {
 }
 
 function deleteWatchdog(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this watchdog?')) {
     scripts.watchdogs.value = scripts.watchdogs.value.filter(wd => wd.id !== id)
     saveWatchdogs()
@@ -1580,12 +1619,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 <template>
   <div class="scripts-tab">
-    <!-- View-only notice DISABLED during development -->
-    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
-      <span>View Only - Engineer access required to edit</span>
+      <span>View Only - Supervisor access required to edit scripts</span>
       <button class="login-link" @click="showLoginDialog">Login</button>
-    </div> -->
+    </div>
 
     <!-- Sub-tab Navigation -->
     <div class="sub-tabs">

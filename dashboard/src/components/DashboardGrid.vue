@@ -375,13 +375,11 @@ function handlePidLayerUpdate(layer: PidLayerData) {
 }
 
 function handlePidSymbolSelect(id: string | null) {
-  // Could be used for property editing
-  console.log('[PID] Symbol selected:', id)
+  // Could be used for property editing in future
 }
 
 function handlePidPipeSelect(id: string | null) {
-  // Could be used for property editing
-  console.log('[PID] Pipe selected:', id)
+  // Could be used for property editing in future
 }
 </script>
 

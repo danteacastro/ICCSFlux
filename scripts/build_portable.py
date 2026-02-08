@@ -150,7 +150,7 @@ def build_dashboard():
     if vendor_available['dashboard']:
         try:
             subprocess.run("npm --version", shell=True, capture_output=True, check=True)
-        except:
+        except (subprocess.SubprocessError, OSError):
             log("npm not found, using pre-built dashboard from vendor/")
             return VENDOR_DIR / "dashboard-dist"
 
@@ -832,10 +832,10 @@ def cleanup(signum=None, frame=None):
         try:
             proc.terminate()
             proc.wait(timeout=3)
-        except:
+        except (OSError, subprocess.TimeoutExpired):
             try:
                 proc.kill()
-            except:
+            except OSError:
                 pass
 
     print("[  OK ] Shutdown complete")
@@ -1278,7 +1278,7 @@ def main():
         try:
             result = subprocess.run("npm --version", shell=True, capture_output=True, check=True)
             log(f"  npm: v{result.stdout.decode().strip()}")
-        except:
+        except (subprocess.SubprocessError, OSError):
             if vendor['dashboard']:
                 log("  npm: not found (using pre-built dashboard)")
             else:

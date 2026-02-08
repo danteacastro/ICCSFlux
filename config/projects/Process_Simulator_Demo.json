@@ -1,0 +1,272 @@
+{
+  "type": "nisystem-project",
+  "version": "2.0",
+  "name": "Process Simulator Demo",
+  "created": "2026-02-08T00:00:00",
+  "modified": "2026-02-08T00:00:00",
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 10,
+    "publish_rate_hz": 4,
+    "simulation_mode": true,
+    "log_directory": "./logs",
+    "system_name": "Process Simulator Demo",
+    "system_id": "SIM-DEMO-001"
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "HeaterPower": {
+      "name": "HeaterPower",
+      "physical_channel": "Mod1/ao0",
+      "channel_type": "voltage_output",
+      "unit": "W",
+      "group": "Furnace",
+      "description": "Furnace heater power output (0-5000W)",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "FurnaceTemp": {
+      "name": "FurnaceTemp",
+      "physical_channel": "Mod2/ai0",
+      "channel_type": "thermocouple",
+      "unit": "degC",
+      "group": "Furnace",
+      "description": "Furnace temperature (driven by ThermalMass model)",
+      "visible": true,
+      "high_limit": 500,
+      "high_warning": 400,
+      "chartable": true,
+      "thermocouple_type": "K",
+      "scale_type": "none",
+      "log": true
+    },
+    "CoolantValve": {
+      "name": "CoolantValve",
+      "physical_channel": "Mod1/ao1",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Cooling",
+      "description": "Coolant valve position (0-100%)",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "CoolantFlow": {
+      "name": "CoolantFlow",
+      "physical_channel": "Mod2/ai1",
+      "channel_type": "voltage_input",
+      "unit": "L/min",
+      "group": "Cooling",
+      "description": "Coolant flow rate (driven by FlowLoop model)",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "voltage_range": 10,
+      "log": true
+    },
+    "InletFlow": {
+      "name": "InletFlow",
+      "physical_channel": "Mod1/ao2",
+      "channel_type": "voltage_output",
+      "unit": "m3/s",
+      "group": "Tank",
+      "description": "Tank inlet flow setpoint",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "OutletFlow": {
+      "name": "OutletFlow",
+      "physical_channel": "Mod1/ao3",
+      "channel_type": "voltage_output",
+      "unit": "m3/s",
+      "group": "Tank",
+      "description": "Tank outlet flow setpoint",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "TankLevel": {
+      "name": "TankLevel",
+      "physical_channel": "Mod2/ai2",
+      "channel_type": "voltage_input",
+      "unit": "m",
+      "group": "Tank",
+      "description": "Tank level (driven by LevelTank model)",
+      "visible": true,
+      "high_limit": 9.5,
+      "high_warning": 8.0,
+      "low_warning": 1.0,
+      "chartable": true,
+      "scale_type": "none",
+      "voltage_range": 10,
+      "log": true
+    },
+    "PressureSetpoint": {
+      "name": "PressureSetpoint",
+      "physical_channel": "Mod1/ao4",
+      "channel_type": "voltage_output",
+      "unit": "Pa",
+      "group": "Vessel",
+      "description": "Pressure vessel inlet flow",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "VesselPressure": {
+      "name": "VesselPressure",
+      "physical_channel": "Mod2/ai3",
+      "channel_type": "voltage_input",
+      "unit": "kPa",
+      "group": "Vessel",
+      "description": "Vessel pressure (driven by PressureVessel model)",
+      "visible": true,
+      "high_limit": 500,
+      "high_warning": 400,
+      "chartable": true,
+      "scale_type": "none",
+      "voltage_range": 10,
+      "log": true
+    }
+  },
+  "simulation": {
+    "processModels": [
+      {
+        "type": "thermalMass",
+        "name": "Furnace",
+        "inputChannels": {
+          "heater_power": "HeaterPower"
+        },
+        "outputChannels": {
+          "temperature": "FurnaceTemp"
+        },
+        "params": {
+          "mass": 50,
+          "Cp": 500,
+          "UA": 10,
+          "T_ambient": 25,
+          "T_initial": 25
+        }
+      },
+      {
+        "type": "flowLoop",
+        "name": "CoolantLoop",
+        "inputChannels": {
+          "valve_position": "CoolantValve"
+        },
+        "outputChannels": {
+          "flow_rate": "CoolantFlow"
+        },
+        "params": {
+          "Cv": 5,
+          "upstream_pressure": 200,
+          "downstream_pressure": 0
+        }
+      },
+      {
+        "type": "levelTank",
+        "name": "StorageTank",
+        "inputChannels": {
+          "flow_in": "InletFlow",
+          "flow_out": "OutletFlow"
+        },
+        "outputChannels": {
+          "level": "TankLevel"
+        },
+        "params": {
+          "area": 2.0,
+          "max_level": 10.0,
+          "L_initial": 5.0
+        }
+      },
+      {
+        "type": "pressureVessel",
+        "name": "ProcessVessel",
+        "inputChannels": {
+          "flow_in": "PressureSetpoint"
+        },
+        "outputChannels": {
+          "pressure": "VesselPressure"
+        },
+        "params": {
+          "volume": 0.5,
+          "temperature": 300,
+          "R": 8.314,
+          "P_initial": 101325
+        }
+      }
+    ]
+  },
+  "pidControllers": {
+    "FurnacePID": {
+      "name": "Furnace Temperature PID",
+      "inputChannel": "FurnaceTemp",
+      "outputChannel": "HeaterPower",
+      "setpoint": 200,
+      "Kp": 50,
+      "Ki": 0.5,
+      "Kd": 5,
+      "outputMin": 0,
+      "outputMax": 5000,
+      "enabled": false
+    }
+  },
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [],
+    "schedules": [],
+    "pythonScripts": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": []
+  },
+  "recording": {
+    "config": {},
+    "selectedChannels": [
+      "FurnaceTemp",
+      "HeaterPower",
+      "CoolantFlow",
+      "CoolantValve",
+      "TankLevel",
+      "VesselPressure"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": {
+      "FurnaceTemp": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 5
+      },
+      "TankLevel": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "VesselPressure": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 10
+      }
+    },
+    "interlocks": []
+  }
+}

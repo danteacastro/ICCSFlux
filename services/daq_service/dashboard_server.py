@@ -72,8 +72,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     health_data['acquiring'] = metrics.get('acquiring', False)
                     health_data['uptime_seconds'] = metrics.get('uptime_seconds', 0)
                     health_data['channel_count'] = metrics.get('channel_count', 0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Health check metrics error: {e}")
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()

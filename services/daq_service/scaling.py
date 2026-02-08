@@ -139,7 +139,7 @@ def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:
         return raw_value
 
     # For counter channels - convert pulses/frequency to engineering units
-    if channel.channel_type == ChannelType.COUNTER:
+    if channel.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
         return scale_counter(raw_value, channel.pulses_per_unit, channel.counter_mode)
 
     # For 4-20mA current inputs with scaling enabled

@@ -68,6 +68,26 @@ const canEditData = computed(() => auth.isOperator.value)
 const canEditSafety = computed(() => auth.isSupervisor.value)
 const canEditAdmin = computed(() => auth.isSupervisor.value)
 
+// Tab-level ACCESS control — all roles can VIEW all tabs (safety principle: everyone sees system state)
+// Actions/edits within each tab are gated by permission (buttons disabled + lock icons)
+// Admin tab is the exception: only supervisors+ can access it (user management, audit trail)
+const tabAccess = {
+  overview: computed(() => true),
+  configuration: computed(() => true),
+  scripts: computed(() => true),
+  data: computed(() => true),
+  safety: computed(() => true),
+  notebook: computed(() => true),
+  admin: computed(() => auth.isSupervisor.value),   // Supervisor+ only
+}
+
+function switchTab(tab: string) {
+  const access = tabAccess[tab as keyof typeof tabAccess]
+  if (access && access.value) {
+    activeTab.value = tab
+  }
+}
+
 // Provide edit permissions to child components
 provide('canEditConfig', canEditConfig)
 provide('canEditScripts', canEditScripts)
@@ -113,6 +133,14 @@ if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'noteb
 // Watch for view (activeTab) changes and update URL
 watch(activeTab, (newView) => {
   updateUrlNavigation(newView, store.currentPageId)
+})
+
+// Bounce to overview if user loses access to current tab (e.g., logout, role downgrade)
+watch(() => auth.currentUser.value?.role, () => {
+  const access = tabAccess[activeTab.value as keyof typeof tabAccess]
+  if (access && !access.value) {
+    activeTab.value = 'overview'
+  }
 })
 
 // Watch for page changes and update URL + track window position
@@ -338,21 +366,6 @@ onMounted(() => {
     store.setStatus(status)
   })
 
-  // One-time migration: Clear corrupted showLabel/showUnit from localStorage
-  // TODO: Remove this after January 2026
-  const MIGRATION_KEY = 'nisystem-migration-v1-showlabel-fix'
-  if (!localStorage.getItem(MIGRATION_KEY)) {
-    console.log('[APP] Running one-time localStorage migration...')
-    // Clear all nisystem layout data to force fresh load from project
-    Object.keys(localStorage).forEach(key => {
-      if (key.startsWith('nisystem-layout-')) {
-        localStorage.removeItem(key)
-        console.log('[APP] Cleared corrupted layout:', key)
-      }
-    })
-    localStorage.setItem(MIGRATION_KEY, Date.now().toString())
-  }
-
   // When a project is loaded from backend, apply it
   projectFiles.onProjectLoaded((data) => {
     console.log('[APP] Project loaded from backend:', data.name)
@@ -571,7 +584,7 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'overview' }"
-            @click="activeTab = 'overview'"
+            @click="switchTab('overview')"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
@@ -585,7 +598,7 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'configuration' }"
-            @click="activeTab = 'configuration'"
+            @click="switchTab('configuration')"
             title="Configuration"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -597,7 +610,7 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'scripts' }"
-            @click="activeTab = 'scripts'"
+            @click="switchTab('scripts')"
             title="Scripts"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -610,7 +623,7 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'data' }"
-            @click="activeTab = 'data'"
+            @click="switchTab('data')"
             title="Data Recording"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -622,7 +635,7 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'safety' }"
-            @click="activeTab = 'safety'"
+            @click="switchTab('safety')"
             title="Safety System"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -634,7 +647,8 @@ async function handleManualSave() {
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'notebook' }"
-            @click="activeTab = 'notebook'"
+            @click="switchTab('notebook')"
+            title="Notes"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
@@ -646,9 +660,10 @@ async function handleManualSave() {
           </button>
           <button
             class="tab-btn"
-            :class="{ active: activeTab === 'admin' }"
-            @click="activeTab = 'admin'"
-            title="Admin Panel"
+            :class="{ active: activeTab === 'admin', locked: !tabAccess.admin.value }"
+            :disabled="!tabAccess.admin.value"
+            @click="switchTab('admin')"
+            :title="tabAccess.admin.value ? 'Admin Panel' : 'Requires Supervisor or higher'"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
@@ -656,6 +671,7 @@ async function handleManualSave() {
               <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
             </svg>
             Admin
+            <span v-if="!tabAccess.admin.value" class="tab-lock">🔒</span>
           </button>
         </nav>
       </div>
@@ -1002,6 +1018,21 @@ async function handleManualSave() {
 .tab-btn.active {
   background: #1e3a5f;
   color: #60a5fa;
+}
+
+.tab-btn.locked {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tab-btn.locked:hover {
+  background: transparent;
+  color: #888;
+}
+
+.tab-lock {
+  font-size: 0.7rem;
+  margin-left: 2px;
 }
 
 .header-right {

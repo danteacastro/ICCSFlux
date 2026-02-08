@@ -353,10 +353,10 @@ def cleanup(signum=None, frame=None):
         try:
             proc.terminate()
             proc.wait(timeout=3)
-        except:
+        except (OSError, subprocess.TimeoutExpired):
             try:
                 proc.kill()
-            except:
+            except OSError:
                 pass
 
     # Release single instance lock

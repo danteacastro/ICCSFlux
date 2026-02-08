@@ -38,6 +38,7 @@ data/*.json
 data/*.jsonl
 data/*.parquet
 data/*.tdms
+data/*.txt
 data/audit/*.jsonl
 !data/.gitkeep
 

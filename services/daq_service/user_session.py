@@ -286,9 +286,10 @@ class UserSessionManager:
                     f"Admin password written to: {cred_file}"
                 )
             except OSError:
-                # Fall back to logging if file write fails (e.g. read-only filesystem)
-                logger.warning(
-                    f"Created default users. Initial admin password: {admin_pw} — CHANGE IMMEDIATELY"
+                # File write failed — do NOT log password to avoid plaintext in logs
+                logger.error(
+                    "Created default users but FAILED to write password file. "
+                    "Delete data/users.json and restart to regenerate credentials."
                 )
             logger.info("All default accounts require password change on first login")
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { ref, computed, inject, onMounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { usePlayground } from '../composables/usePlayground'
 import { useBackendScripts } from '../composables/useBackendScripts'
@@ -10,6 +10,9 @@ const playground = usePlayground()
 // Backend scripts - run on the server, not in the browser
 const backendScripts = useBackendScripts()
 const mqtt = useMqtt()
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(true))
 
 // Running Python scripts (from backend)
 const runningScripts = computed(() => backendScripts.runningScripts.value)
@@ -163,6 +166,7 @@ onMounted(() => {
             <button
               class="btn btn-sm btn-danger"
               @click="backendScripts.stopScript(script.id)"
+              :disabled="!hasEditPermission.value"
             >
               Stop
             </button>
@@ -200,7 +204,7 @@ onMounted(() => {
             <button
               class="btn btn-sm btn-success"
               @click="backendScripts.startScript(script.id)"
-              :disabled="!mqtt.connected.value || !script.enabled"
+              :disabled="!mqtt.connected.value || !script.enabled || !hasEditPermission.value"
             >
               Run
             </button>

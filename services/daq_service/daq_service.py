@@ -27,6 +27,19 @@ from config_parser import (
     get_crio_channels, get_local_daq_channels, get_modbus_channels, get_hardware_source_summary
 )
 from simulator import HardwareSimulator
+try:
+    from process_simulator import ProcessSimulator
+    PROCESS_SIMULATOR_AVAILABLE = True
+except ImportError:
+    try:
+        # Try tools/ directory (when running from project root)
+        _tools_dir = str(Path(__file__).parent.parent.parent / "tools")
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
+        from process_simulator import ProcessSimulator
+        PROCESS_SIMULATOR_AVAILABLE = True
+    except ImportError:
+        PROCESS_SIMULATOR_AVAILABLE = False
 from hardware_reader import HardwareReader, NIDAQMX_AVAILABLE as HW_READER_AVAILABLE
 
 # Try to import ModbusReader
@@ -56,7 +69,7 @@ from watchdog_engine import WatchdogEngine
 from device_discovery import DeviceDiscovery
 from recording_manager import RecordingManager, RecordingConfig, PostgreSQLWriter
 from dependency_tracker import DependencyTracker, EntityType
-from scaling import apply_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
+from scaling import apply_scaling, reverse_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
 from user_variables import UserVariableManager
 from alarm_manager import AlarmManager, AlarmConfig, AlarmSeverity, LatchBehavior
 from notification_manager import NotificationManager
@@ -469,11 +482,11 @@ class DAQService:
             # Initialize hardware reader or simulator
             if self.config.system.simulation_mode:
                 logger.info("Simulation mode enabled - using hardware simulator")
-                self.simulator = HardwareSimulator(self.config)
+                self.simulator = self._create_simulator()
                 self.hardware_reader = None
             elif not HW_READER_AVAILABLE:
                 logger.warning("nidaqmx not available - falling back to simulator")
-                self.simulator = HardwareSimulator(self.config)
+                self.simulator = self._create_simulator()
                 self.hardware_reader = None
             else:
                 # Real hardware mode
@@ -486,7 +499,7 @@ class DAQService:
                     logger.error(f"Failed to initialize hardware reader: {e}")
                     logger.warning("Falling back to simulator")
                     self.hardware_reader = None
-                    self.simulator = HardwareSimulator(self.config)
+                    self.simulator = self._create_simulator()
 
             # Initialize Modbus reader if we have Modbus devices configured
             self._init_modbus_reader()
@@ -639,11 +652,11 @@ class DAQService:
             # Reinitialize hardware reader or simulator based on new config
             if self.config.system.simulation_mode:
                 logger.info("Simulation mode enabled - using hardware simulator")
-                self.simulator = HardwareSimulator(self.config)
+                self.simulator = self._create_simulator()
                 self.hardware_reader = None
             elif not HW_READER_AVAILABLE:
                 logger.warning("nidaqmx not available - falling back to simulator")
-                self.simulator = HardwareSimulator(self.config)
+                self.simulator = self._create_simulator()
                 self.hardware_reader = None
             else:
                 # Real hardware mode
@@ -656,7 +669,7 @@ class DAQService:
                     logger.error(f"Failed to initialize hardware reader: {e}")
                     logger.warning("Falling back to simulator")
                     self.hardware_reader = None
-                    self.simulator = HardwareSimulator(self.config)
+                    self.simulator = self._create_simulator()
 
             # Initialize channel values
             for name, channel in self.config.channels.items():
@@ -751,6 +764,19 @@ class DAQService:
             import traceback
             traceback.print_exc()
             return False, error_msg
+
+    def _create_simulator(self) -> HardwareSimulator:
+        """Create the appropriate simulator — ProcessSimulator if process models are configured."""
+        model_configs = None
+        if hasattr(self, 'current_project_data') and self.current_project_data:
+            sim_section = self.current_project_data.get('simulation', {})
+            model_configs = sim_section.get('processModels')
+
+        if model_configs and PROCESS_SIMULATOR_AVAILABLE:
+            logger.info(f"Using ProcessSimulator with {len(model_configs)} process model(s)")
+            return ProcessSimulator(self.config, model_configs=model_configs)
+
+        return HardwareSimulator(self.config)
 
     def _init_modbus_reader(self):
         """Initialize Modbus reader if Modbus devices are configured"""
@@ -1052,6 +1078,7 @@ class DAQService:
             return False
         ch = self.config.channels[channel]
         if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                   ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT,
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
             return False
 
@@ -3009,6 +3036,7 @@ Unit conversions:
 
         ch = self.config.channels[channel]
         if ch.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                   ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT,
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
             return
 
@@ -3685,13 +3713,145 @@ Unit conversions:
             except Exception as e:
                 logger.error(f"[CMD] Handler error for {topic}: {e}", exc_info=True)
 
+    # Centralized permission map: topic suffix -> required Permission
+    # Topics not in this map are either:
+    #   - Read-only (status/list/get) which are allowed for all authenticated users
+    #   - Already have inline permission checks (acquire start/stop, recording start/stop, safe-state)
+    #   - Auth endpoints (login/logout) which are pre-auth
+    _TOPIC_PERMISSIONS = {
+        # Safety & Interlocks (Supervisor+)
+        'safety/latch/arm': Permission.MODIFY_SAFETY,
+        'safety/latch/disarm': Permission.MODIFY_SAFETY,
+        'safety/trip/reset': Permission.MODIFY_SAFETY,
+        'safety/config/update': Permission.MODIFY_SAFETY,
+        'interlocks/add': Permission.MODIFY_SAFETY,
+        'interlocks/update': Permission.MODIFY_SAFETY,
+        'interlocks/remove': Permission.MODIFY_SAFETY,
+        'interlocks/bypass': Permission.BYPASS_SAFETY_LOCK,
+        'interlocks/sync': Permission.MODIFY_SAFETY,
+        # Alarm operations (Operator+)
+        'alarm/acknowledge': Permission.ACK_ALARMS,
+        'alarm/clear': Permission.RESET_ALARMS,
+        'alarm/reset-latched': Permission.RESET_ALARMS,
+        'alarm/reset': Permission.RESET_ALARMS,
+        'alarm/shelve': Permission.SHELVE_ALARMS,
+        'alarm/unshelve': Permission.SHELVE_ALARMS,
+        # Script management (Supervisor+)
+        'scripts/add': Permission.MODIFY_CHANNELS,
+        'scripts/update': Permission.MODIFY_CHANNELS,
+        'scripts/reload': Permission.MODIFY_CHANNELS,
+        'scripts/remove': Permission.MODIFY_CHANNELS,
+        'scripts/clear-all': Permission.MODIFY_CHANNELS,
+        'scripts/start': Permission.CONTROL_OUTPUTS,
+        'scripts/stop': Permission.CONTROL_OUTPUTS,
+        # Console (Supervisor+)
+        'console/execute': Permission.MODIFY_CHANNELS,
+        'console/reset': Permission.MODIFY_CHANNELS,
+        # Config management (Supervisor+)
+        'config/save': Permission.SAVE_PROJECT,
+        'config/load': Permission.LOAD_PROJECT,
+        'config/apply': Permission.MODIFY_CHANNELS,
+        'config/system/update': Permission.MODIFY_SYSTEM,
+        'config/channel/update': Permission.MODIFY_CHANNELS,
+        'config/channel/create': Permission.MODIFY_CHANNELS,
+        'config/channel/delete': Permission.MODIFY_CHANNELS,
+        'config/channel/bulk-create': Permission.MODIFY_CHANNELS,
+        # Discovery (Operator+)
+        'discovery/scan': Permission.MODIFY_CHANNELS,
+        # Output control (Operator+)
+        'output/set': Permission.CONTROL_OUTPUTS,
+        'channel/reset': Permission.CONTROL_OUTPUTS,
+        # Recording config (Operator+)
+        'recording/config': Permission.MODIFY_RECORDING,
+        'recording/delete': Permission.MODIFY_RECORDING,
+        # Notification config (Supervisor+)
+        'notifications/config': Permission.MODIFY_SYSTEM,
+        'notifications/test': Permission.MODIFY_SYSTEM,
+        # Azure config (Supervisor+)
+        'azure/config': Permission.MODIFY_SYSTEM,
+        'azure/start': Permission.MODIFY_SYSTEM,
+        'azure/stop': Permission.MODIFY_SYSTEM,
+        # Project management
+        'project/import': Permission.LOAD_PROJECT,
+        'project/import-json': Permission.LOAD_PROJECT,
+        'project/close': Permission.LOAD_PROJECT,
+        'project/delete': Permission.SAVE_PROJECT,
+        'project/autosave': Permission.SAVE_PROJECT,
+        'project/autosave/discard': Permission.SAVE_PROJECT,
+        # PID control (Operator+ for setpoints, Supervisor+ for config)
+        'pid/add': Permission.MODIFY_CHANNELS,
+        'pid/remove': Permission.MODIFY_CHANNELS,
+        # Sequence control (Operator+)
+        'sequence/start': Permission.CONTROL_OUTPUTS,
+        'sequence/pause': Permission.CONTROL_OUTPUTS,
+        'sequence/resume': Permission.CONTROL_OUTPUTS,
+        'sequence/abort': Permission.CONTROL_OUTPUTS,
+        'sequence/add': Permission.MODIFY_CHANNELS,
+        'sequence/remove': Permission.MODIFY_CHANNELS,
+        # Schedule (Operator+)
+        'schedule/set': Permission.CONTROL_OUTPUTS,
+        'schedule/enable': Permission.CONTROL_OUTPUTS,
+        'schedule/disable': Permission.CONTROL_OUTPUTS,
+        # Variables (Operator+)
+        'variables/create': Permission.CONTROL_OUTPUTS,
+        'variables/update': Permission.CONTROL_OUTPUTS,
+        'variables/delete': Permission.CONTROL_OUTPUTS,
+        'variables/set': Permission.CONTROL_OUTPUTS,
+        'variables/reset': Permission.CONTROL_OUTPUTS,
+        'variables/reset-all': Permission.CONTROL_OUTPUTS,
+        'timer/start': Permission.CONTROL_OUTPUTS,
+        'timer/stop': Permission.CONTROL_OUTPUTS,
+        # Formulas (Supervisor+)
+        'formulas/create': Permission.MODIFY_CHANNELS,
+        'formulas/update': Permission.MODIFY_CHANNELS,
+        'formulas/delete': Permission.MODIFY_CHANNELS,
+        # User management (Admin)
+        'users/create': Permission.MANAGE_USERS,
+        'users/update': Permission.MANAGE_USERS,
+        'users/delete': Permission.MANAGE_USERS,
+        # Chassis/datasource management (Supervisor+)
+        'chassis/add': Permission.MODIFY_CHANNELS,
+        'chassis/update': Permission.MODIFY_CHANNELS,
+        'chassis/delete': Permission.MODIFY_CHANNELS,
+        'datasource/add': Permission.MODIFY_CHANNELS,
+        'datasource/update': Permission.MODIFY_CHANNELS,
+        'datasource/delete': Permission.MODIFY_CHANNELS,
+        # Modbus write (Operator+)
+        'modbus/write-register': Permission.CONTROL_OUTPUTS,
+        # Notebook (Operator+)
+        'notebook/save': Permission.SAVE_PROJECT,
+        # cRIO config push (Supervisor+)
+        'crio/push-config': Permission.MODIFY_CHANNELS,
+    }
+
     def _route_message(self, topic: str, base: str, payload, request_id):
         """Route MQTT message to appropriate handler.
 
         Critical commands are primarily handled by per-topic callbacks
         (message_callback_add). However, as a safety fallback, this method
         also handles them in case the per-topic callback didn't intercept.
+
+        Centralized permission enforcement: checks _TOPIC_PERMISSIONS map
+        before routing to handler. This provides defense-in-depth even if
+        individual handlers forget to check permissions.
         """
+        # === CENTRALIZED PERMISSION CHECK ===
+        # Strip base prefix to get the topic suffix for permission lookup
+        topic_suffix = topic[len(base) + 1:] if topic.startswith(base + '/') else topic.rsplit('/', 1)[-1] if '/' in topic else topic
+        # Check for exact match first, then handle PID loop topics (dynamic path)
+        required_perm = self._TOPIC_PERMISSIONS.get(topic_suffix)
+        if required_perm is None and topic_suffix.startswith('pid/loop/'):
+            # PID loop sub-commands: pid/loop/{id}/setpoint, /mode, /output, /tuning, /config
+            pid_action = topic_suffix.rsplit('/', 1)[-1] if '/' in topic_suffix else ''
+            if pid_action in ('setpoint', 'mode', 'output'):
+                required_perm = Permission.CONTROL_OUTPUTS
+            elif pid_action in ('config', 'tuning'):
+                required_perm = Permission.MODIFY_CHANNELS
+        if required_perm is not None:
+            if not self._has_permission(required_perm):
+                logger.warning(f"[SECURITY] Permission denied for {topic_suffix} (requires {required_perm.value})")
+                return
+
         # === CRITICAL COMMAND FALLBACK ===
         # These are normally intercepted by message_callback_add() and never
         # reach the queue. But if they do (e.g., paho routing edge case),
@@ -4166,7 +4326,8 @@ Unit conversions:
         channel = self.config.channels[channel_name]
 
         # Check if this is an output channel
-        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                        ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
             logger.warning(f"Cannot write to input channel: {channel_name}")
             return
 
@@ -6404,10 +6565,10 @@ Unit conversions:
         # Reinitialize based on current config
         if self.config.system.simulation_mode:
             logger.info("Reinitializing simulator with current config")
-            self.simulator = HardwareSimulator(self.config)
+            self.simulator = self._create_simulator()
         elif not HW_READER_AVAILABLE:
             logger.warning("nidaqmx not available - using simulator")
-            self.simulator = HardwareSimulator(self.config)
+            self.simulator = self._create_simulator()
         else:
             logger.info("Reinitializing hardware reader with current config")
             try:
@@ -6418,7 +6579,7 @@ Unit conversions:
             except Exception as e:
                 logger.error(f"Failed to reinitialize hardware reader: {e}")
                 logger.warning("Falling back to simulator")
-                self.simulator = HardwareSimulator(self.config)
+                self.simulator = self._create_simulator()
 
         # Reinitialize Modbus reader if configured
         self._init_modbus_reader()
@@ -10618,6 +10779,15 @@ Unit conversions:
         Pings remote cRIO nodes and waits for responses before returning results.
         Scans local hardware first, then waits for cRIO responses.
         """
+        # PERMISSION CHECK
+        if not self._has_permission(Permission.MODIFY_CHANNELS):
+            logger.warning("[SECURITY] Discovery scan denied - insufficient permissions")
+            base = self.get_topic_base()
+            self.mqtt_client.publish(f"{base}/discovery/result", json.dumps({
+                "success": False, "error": "Permission denied", "total_channels": 0
+            }))
+            return
+
         # Get mode from payload
         mode = 'all'
         if isinstance(payload, dict):
@@ -12474,7 +12644,8 @@ Unit conversions:
         channel = self.config.channels[channel_name]
 
         # Check if this is an output channel
-        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                        ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
             self._publish_output_response(False, channel=channel_name,
                                           error=f"Channel {channel_name} is not an output channel (type: {channel.channel_type.value})")
             return
@@ -12487,8 +12658,13 @@ Unit conversions:
                                               error=f"Safety interlock active: {channel.safety_interlock}")
                 return
 
+        # Reverse-scale: user sends engineering units, hardware expects raw values
+        # e.g., user sets 50% valve → reverse_scaling converts to 5V raw for hardware
+        eng_value = value  # Preserve engineering value for cache/display
+        raw_value = reverse_scaling(channel, float(value)) if isinstance(value, (int, float)) else value
+
         # Write the value
-        logger.info(f"Setting output {channel_name} = {value}")
+        logger.info(f"Setting output {channel_name} = {value} (raw: {raw_value})")
 
         try:
             # Determine which backend handles this channel
@@ -12523,34 +12699,34 @@ Unit conversions:
                     crio_topic = f"{mqtt_base}/nodes/{source_node_id}/commands/output"
                     cmd_payload = {
                         "channel": channel_name,  # Use TAG name
-                        "value": value,
+                        "value": raw_value,
                         "physical_channel": physical_ch  # Fallback for when config not pushed
                     }
                     self.mqtt_client.publish(crio_topic, json.dumps(cmd_payload), qos=1)
-                    logger.info(f"Forwarded output command to cRIO: {source_node_id} {channel_name} ({physical_ch}) = {value}")
+                    logger.info(f"Forwarded output command to cRIO: {source_node_id} {channel_name} ({physical_ch}) = {raw_value}")
                 else:
                     logger.error(f"Cannot forward to cRIO - missing node_id or MQTT client")
                     self._publish_output_response(False, channel=channel_name, error="cRIO node not available")
                     return
             elif is_modbus and self.modbus_reader:
-                self.modbus_reader.write_channel(channel_name, value)
+                self.modbus_reader.write_channel(channel_name, raw_value)
             elif self.simulator:
-                self.simulator.write_channel(channel_name, value)
+                self.simulator.write_channel(channel_name, raw_value)
             elif self.hardware_reader:
-                self.hardware_reader.write_channel(channel_name, value)
+                self.hardware_reader.write_channel(channel_name, raw_value)
 
-            # Update cache
+            # Update cache with engineering value (for display)
             with self.values_lock:
-                self.channel_values[channel_name] = value
+                self.channel_values[channel_name] = eng_value
                 self.channel_timestamps[channel_name] = time.time()
 
-            # Publish acknowledgment
-            self._publish_channel_value(channel_name, value)
+            # Publish engineering value for dashboard display
+            self._publish_channel_value(channel_name, eng_value)
 
-            # Publish success response
-            self._publish_output_response(True, channel=channel_name, value=value)
+            # Publish success response with engineering value
+            self._publish_output_response(True, channel=channel_name, value=eng_value)
 
-            logger.info(f"Output {channel_name} set to {value}")
+            logger.info(f"Output {channel_name} set to {eng_value} (raw: {raw_value})")
 
         except Exception as e:
             logger.error(f"Failed to set output {channel_name}: {e}")
@@ -12570,7 +12746,7 @@ Unit conversions:
         channel = self.config.channels[channel_name]
 
         # Check if this is a counter channel
-        if channel.channel_type == ChannelType.COUNTER:
+        if channel.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
             logger.info(f"Resetting counter channel: {channel_name}")
 
             # Reset in simulator if running
@@ -12820,7 +12996,8 @@ Unit conversions:
                             if name in self.config.channels:
                                 channel = self.config.channels[name]
                                 # Don't apply scaling to output channels - they store engineering units directly
-                                if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+                                if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                                                               ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
                                     self.channel_values[name] = raw_value
                                     if is_valid_value(raw_value):
                                         valid_channels.add(name)

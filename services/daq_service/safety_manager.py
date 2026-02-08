@@ -627,8 +627,8 @@ class SafetyManager:
                 elapsed = time.time() - bypass_time
                 if elapsed >= interlock.max_bypass_duration:
                     self.bypass_interlock(interlock.id, False, 'system', 'Bypass time expired')
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Bypass expiration check failed for interlock {interlock.id}: {e}")
 
         if interlock.bypassed:
             return InterlockStatus(

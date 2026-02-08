@@ -33,6 +33,15 @@ const dbTestStatus = ref<{ testing: boolean, result: string | null, success: boo
 const hasEditPermission = inject<{ value: boolean }>('canEditData', ref(true))
 const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
 
+// Check permission before allowing edits (Operator+)
+function requireEditPermission(): boolean {
+  if (!hasEditPermission.value) {
+    showLoginDialogFn()
+    return false
+  }
+  return true
+}
+
 // Use store's recording config (auto-persisted to localStorage)
 const recordingConfig = computed(() => store.recordingConfig)
 const selectedChannels = computed({
@@ -422,6 +431,7 @@ const estimatedSizePerHour = computed(() => {
 
 // Start Recording
 function startRecording() {
+  if (!requireEditPermission()) return
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
@@ -516,6 +526,7 @@ function startRecording() {
 
 // Stop Recording
 function stopRecording() {
+  if (!requireEditPermission()) return
   mqtt.stopRecording()
   showFeedback('info', 'Stopping recording...')
 }
@@ -528,6 +539,7 @@ function loadRecordedFiles() {
 
 // Delete recorded file
 function deleteFile(filename: string) {
+  if (!requireEditPermission()) return
   if (confirm(`Delete ${filename}?`)) {
     mqtt.deleteRecordedFile(filename)
     showFeedback('info', `Deleting ${filename}...`)
@@ -553,6 +565,7 @@ function openAzureConfig() {
 }
 
 function saveAzureConfig() {
+  if (!requireEditPermission()) return
   const config: Record<string, unknown> = {
     channels: azureChannels.value,
     batch_size: azureBatchSize.value,
@@ -572,6 +585,7 @@ function saveAzureConfig() {
 }
 
 function toggleAzureStreaming() {
+  if (!requireEditPermission()) return
   if (azureIot.isEnabled.value) {
     azureIot.stop()
     showFeedback('info', 'Stopping Azure IoT streaming...')
@@ -626,6 +640,7 @@ function testPostgresConnection() {
 }
 
 function togglePostgresEnabled() {
+  if (!requireEditPermission()) return
   store.setRecordingConfig({ dbEnabled: !recordingConfig.value.dbEnabled })
 }
 
@@ -720,12 +735,11 @@ const scheduleDayLabels = [
 
 <template>
   <div class="data-tab">
-    <!-- View-only notice DISABLED during development -->
-    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <div v-if="!hasEditPermission.value" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Operator access required to manage recordings</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
-    </div> -->
+    </div>
 
     <!-- Recording Status Bar -->
     <div class="status-bar" :class="{ recording: isRecording }">

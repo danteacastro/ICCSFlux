@@ -2934,7 +2934,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
       gauge: { w: 4, h: 4 },        // 2 old cells = 4 new units
       led: { w: 2, h: 2 },          // 1 old cell
       chart: { w: 8, h: 6 },        // 4 old cells wide
-      table: { w: 6, h: 4 },        // 3 old cells wide
+      pid_loop: { w: 4, h: 6 },      // 2 old cells wide
       setpoint: { w: 3, h: 2 },     // 1.5 old cells - the sweet spot!
       toggle: { w: 2, h: 2 },       // 1 old cell
       title: { w: 4, h: 2 },        // 2 old cells
@@ -2953,7 +2953,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
       script_monitor: { w: 6, h: 8 },
       crio_status: { w: 4, h: 4 },
       latch_switch: { w: 2, h: 2 },
-      heater_zone: { w: 4, h: 4 }
+      heater_zone: { w: 4, h: 4 },
+      python_console: { w: 8, h: 6 },
+      script_output: { w: 8, h: 6 },
+      variable_explorer: { w: 6, h: 8 },
+      variable_input: { w: 4, h: 6 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }

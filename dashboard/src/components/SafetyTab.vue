@@ -4,6 +4,7 @@ import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
 import { usePlayground } from '../composables/usePlayground'
+import { useAuth } from '../composables/useAuth'
 import AlarmConfigModal from './AlarmConfigModal.vue'
 import SafetyActionsPanel from './SafetyActionsPanel.vue'
 import CorrelationRuleModal from './CorrelationRuleModal.vue'
@@ -31,6 +32,27 @@ const soe = mqtt.soe  // SOE & Correlation composable
 // Permission-based edit control (injected from App.vue)
 const hasEditPermission = inject<{ value: boolean }>('canEditSafety', ref(true))
 const showLoginDialogFn = inject<() => void>('showLoginDialog', () => {})
+const auth = useAuth()
+// Operator+ can perform operational actions (ACK, shelve, reset, bypass)
+const canOperate = computed(() => auth.isOperator.value)
+
+// Check permission before allowing config edits (Supervisor+)
+function requireEditPermission(): boolean {
+  if (!hasEditPermission.value) {
+    showLoginDialogFn()
+    return false
+  }
+  return true
+}
+
+// Check permission before allowing operational actions (Operator+)
+function requireOperatePermission(): boolean {
+  if (!canOperate.value) {
+    showLoginDialogFn()
+    return false
+  }
+  return true
+}
 
 // ============================================
 // Alarm Configuration State (from composable)
@@ -229,10 +251,12 @@ onUnmounted(() => {
 // ============================================
 
 function acknowledgeAlarm(alarmId: string) {
+  if (!requireOperatePermission()) return
   safety.acknowledgeAlarm(alarmId)
 }
 
 function acknowledgeAll() {
+  if (!requireOperatePermission()) return
   safety.acknowledgeAll()
 }
 
@@ -241,6 +265,7 @@ function clearAlarm(alarmId: string) {
 }
 
 function clearAllAlarms() {
+  if (!requireOperatePermission()) return
   const count = safety.activeAlarms.value.length
   if (count > 0 && !confirm(`Clear all ${count} active alarm(s)? This cannot be undone.`)) {
     return
@@ -249,10 +274,12 @@ function clearAllAlarms() {
 }
 
 function resetAlarm(alarmId: string) {
+  if (!requireOperatePermission()) return
   safety.resetAlarm(alarmId)
 }
 
 function resetAllLatched() {
+  if (!requireOperatePermission()) return
   safety.resetAllLatched()
 }
 
@@ -324,6 +351,7 @@ function openShelveModal(alarm: { id: string; channel: string; name?: string }) 
 }
 
 function confirmShelve() {
+  if (!requireOperatePermission()) return
   if (!shelveTarget.value) return
   safety.shelveAlarm(shelveTarget.value.id, 'User', shelveReason.value, shelveDuration.value)
   showShelveModal.value = false
@@ -372,6 +400,7 @@ function validateAlarmThresholds(config: AlarmConfig): string | null {
 }
 
 function saveAlarmConfig(config: AlarmConfig) {
+  if (!requireEditPermission()) return
   // Validate threshold order before saving
   const validationError = validateAlarmThresholds(config)
   if (validationError) {
@@ -421,6 +450,7 @@ const showCorrelationRuleModal = ref(false)
 const editingCorrelationRule = ref<CorrelationRule | null>(null)
 
 function openNewCorrelationRuleModal() {
+  if (!requireEditPermission()) return
   editingCorrelationRule.value = null
   showCorrelationRuleModal.value = true
 }
@@ -436,6 +466,7 @@ function closeCorrelationRuleModal() {
 }
 
 function saveCorrelationRule(ruleData: Omit<CorrelationRule, 'id'>) {
+  if (!requireEditPermission()) return
   if (editingCorrelationRule.value) {
     // Update existing rule - would need to add update method to soe
     soe.removeCorrelationRule(editingCorrelationRule.value.id)
@@ -798,6 +829,7 @@ const analogOutputChannels = computed(() => {
 })
 
 function openNewInterlockModal() {
+  if (!requireEditPermission()) return
   editingInterlock.value = null
   newInterlock.value = {
     name: '',
@@ -814,6 +846,7 @@ function openNewInterlockModal() {
 }
 
 function openEditInterlockModal(interlockId: string) {
+  if (!requireEditPermission()) return
   const interlock = safety.interlocks.value.find(i => i.id === interlockId)
   if (!interlock) return
 
@@ -856,6 +889,7 @@ function removeControl(index: number) {
 }
 
 function saveInterlock() {
+  if (!requireEditPermission()) return
   if (!newInterlock.value.name.trim()) return
   if (newInterlock.value.conditions.length === 0) return
   if (newInterlock.value.controls.length === 0) return
@@ -894,12 +928,14 @@ function saveInterlock() {
 }
 
 function deleteInterlock(id: string) {
+  if (!requireEditPermission()) return
   if (confirm('Delete this interlock?')) {
     safety.removeInterlock(id)
   }
 }
 
 function toggleInterlockEnabled(id: string) {
+  if (!requireEditPermission()) return
   const interlock = safety.interlocks.value.find(i => i.id === id)
   if (interlock) {
     safety.updateInterlock(id, { enabled: !interlock.enabled })
@@ -907,6 +943,7 @@ function toggleInterlockEnabled(id: string) {
 }
 
 function toggleInterlockBypass(id: string) {
+  if (!requireOperatePermission()) return
   const interlock = safety.interlocks.value.find(i => i.id === id)
   if (interlock) {
     safety.bypassInterlock(id, !interlock.bypassed)
@@ -967,12 +1004,11 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 <template>
   <div class="safety-tab">
-    <!-- View-only notice DISABLED during development -->
-    <!-- <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <div v-if="!canOperate" class="view-only-notice">
       <span class="lock-icon">🔒</span>
-      <span>View Only - Engineer access required to edit safety configuration</span>
+      <span>View Only - Operator access required for safety actions</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
-    </div> -->
+    </div>
 
     <!-- Header with section tabs and summary -->
     <div class="safety-header">

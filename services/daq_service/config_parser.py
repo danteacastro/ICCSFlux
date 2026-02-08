@@ -19,13 +19,13 @@ class ChannelType(Enum):
     VOLTAGE_INPUT = "voltage_input"
     CURRENT_INPUT = "current_input"
     RTD = "rtd"                      # Resistance Temperature Detector
-    STRAIN = "strain"                # Strain gauge / bridge (legacy)
-    STRAIN_INPUT = "strain_input"    # Explicit strain input
-    BRIDGE_INPUT = "bridge_input"    # Bridge/universal input
-    IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones (legacy)
-    IEPE_INPUT = "iepe_input"        # Explicit IEPE input
-    RESISTANCE = "resistance"        # Resistance measurement (legacy)
-    RESISTANCE_INPUT = "resistance_input"  # Explicit resistance input
+    STRAIN = "strain"                # Strain gauge / bridge (short form)
+    STRAIN_INPUT = "strain_input"    # Strain gauge / bridge (explicit form)
+    BRIDGE_INPUT = "bridge_input"    # Wheatstone bridge / universal bridge input
+    IEPE = "iepe"                    # IEPE/ICP accelerometers/microphones (short form)
+    IEPE_INPUT = "iepe_input"        # IEPE/ICP (explicit form)
+    RESISTANCE = "resistance"        # Resistance measurement (short form)
+    RESISTANCE_INPUT = "resistance_input"  # Resistance measurement (explicit form)
 
     # Analog Outputs
     VOLTAGE_OUTPUT = "voltage_output"
@@ -36,8 +36,8 @@ class ChannelType(Enum):
     DIGITAL_OUTPUT = "digital_output"
 
     # Counter/Timer
-    COUNTER = "counter"              # Pulse/frequency counter (legacy)
-    COUNTER_INPUT = "counter_input"  # Explicit counter input
+    COUNTER = "counter"              # Pulse/frequency counter (short form)
+    COUNTER_INPUT = "counter_input"  # Pulse/frequency counter (explicit form)
     COUNTER_OUTPUT = "counter_output"
     FREQUENCY_INPUT = "frequency_input"
     PULSE_OUTPUT = "pulse_output"
@@ -48,16 +48,15 @@ class ChannelType(Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Handle backwards compatibility for old channel type names."""
-        # Map old names to new names
-        legacy_map = {
+        """Handle alternate short names for channel types."""
+        alt_map = {
             "voltage": cls.VOLTAGE_INPUT,
             "current": cls.CURRENT_INPUT,
             "analog_output": cls.VOLTAGE_OUTPUT,
             "analog_input": cls.VOLTAGE_INPUT,
         }
-        if value in legacy_map:
-            return legacy_map[value]
+        if value in alt_map:
+            return alt_map[value]
         return None
 
 
@@ -150,7 +149,7 @@ class SystemConfig:
     mqtt_base_topic: str = "nisystem"
     scan_rate_hz: float = 4.0      # Scan rate (capped at 100Hz)
     publish_rate_hz: float = 4.0   # Publish rate (capped at 10Hz)
-    simulation_mode: bool = True
+    simulation_mode: bool = False
     log_directory: str = "./logs"
     config_reload_topic: str = "nisystem/config/reload"
     # Multi-node support
@@ -725,10 +724,10 @@ def get_input_channels(config: NISystemConfig) -> List[ChannelConfig]:
         ChannelType.VOLTAGE_INPUT,
         ChannelType.CURRENT_INPUT,
         ChannelType.RTD,
-        ChannelType.STRAIN,
-        ChannelType.IEPE,
-        ChannelType.RESISTANCE,
-        ChannelType.COUNTER,
+        ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT,
+        ChannelType.IEPE, ChannelType.IEPE_INPUT,
+        ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT,
+        ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT,
         ChannelType.DIGITAL_INPUT,
         ChannelType.MODBUS_REGISTER,
         ChannelType.MODBUS_COIL,
@@ -742,6 +741,8 @@ def get_output_channels(config: NISystemConfig) -> List[ChannelConfig]:
         ChannelType.DIGITAL_OUTPUT,
         ChannelType.VOLTAGE_OUTPUT,
         ChannelType.CURRENT_OUTPUT,
+        ChannelType.COUNTER_OUTPUT,
+        ChannelType.PULSE_OUTPUT,
     ]
     return [ch for ch in config.channels.values() if ch.channel_type in output_types]
 

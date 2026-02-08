@@ -398,8 +398,8 @@ class ProjectManager:
                             with open(last_backup.backup_path, 'r') as f:
                                 old_data = json.load(f)
                             old_hash = last_backup.file_hash
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Could not read previous backup for comparison: {e}")
 
             # Generate backup filename with timestamp
             timestamp = datetime.now()

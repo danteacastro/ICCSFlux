@@ -3843,7 +3843,7 @@ watch(
     <div class="actions-bar">
       <div class="left-actions">
         <!-- Auto Discovery button -->
-        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning" title="Auto-discover hardware devices">
+        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Auto-discover hardware devices'" :class="{ 'no-permission': !hasEditPermission.value }">
           <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             <path d="M8 11h6M11 8v6"/>
@@ -3868,14 +3868,15 @@ watch(
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
-        <button class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
+        <button class="action-btn" @click="openSystemSettings" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'System settings (scan rate, publish rate)'" :class="{ 'no-permission': !hasEditPermission.value }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
           </svg>
           Settings
+          <span v-if="!hasEditPermission.value" class="lock-badge">🔒</span>
         </button>
-        <button class="action-btn accent" @click="autoGenerateWidgets" title="Auto-generate widgets for all channels based on channel type">
+        <button class="action-btn accent" @click="autoGenerateWidgets" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission.value }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7"/>
             <rect x="14" y="3" width="7" height="7"/>
@@ -3917,12 +3918,12 @@ watch(
         <!-- Group 3: File Operations -->
         <button
           class="action-btn primary"
-          :class="{ dirty: configDirty }"
+          :class="{ dirty: configDirty, 'no-permission': !hasEditPermission.value }"
           @click="saveToFile()"
-          :disabled="isSaving"
-          :title="projectFiles.currentProject.value
+          :disabled="isSaving || !hasEditPermission.value"
+          :title="!hasEditPermission.value ? 'Requires Operator or higher' : (projectFiles.currentProject.value
             ? `Save to project: ${projectFiles.currentProject.value}`
-            : 'Create new project and save'"
+            : 'Create new project and save')"
         >
           <svg v-if="!isSaving" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
@@ -3933,21 +3934,21 @@ watch(
           {{ isSaving ? 'Saving...' : 'Save' }}
           <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
-        <button class="action-btn icon-btn" @click="reloadConfig" :disabled="isReloading || !mqtt.connected.value" title="Reload configuration from disk (discard unsaved changes)">
+        <button class="action-btn icon-btn" @click="reloadConfig" :disabled="isReloading || !mqtt.connected.value || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Reload configuration from disk (discard unsaved changes)'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="23 4 23 10 17 10"/>
             <polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
           </svg>
         </button>
-        <button class="action-btn icon-btn" @click="exportProject" :disabled="isExporting" title="Export: save a timestamped copy to config/projects/">
+        <button class="action-btn icon-btn" @click="exportProject" :disabled="isExporting || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Export: save a timestamped copy to config/projects/'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/>
             <polyline points="12 15 12 22"/>
             <polyline points="9 19 12 22 15 19"/>
           </svg>
         </button>
-        <button class="action-btn icon-btn" @click="triggerImport" title="Import a project file">
+        <button class="action-btn icon-btn" @click="triggerImport" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Import a project file'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -3973,10 +3974,10 @@ watch(
         <!-- Group 5: Push (blue - sends to hardware) -->
         <button
           class="action-btn accent"
-          :class="{ 'out-of-sync': hasCrioOutOfSync }"
+          :class="{ 'out-of-sync': hasCrioOutOfSync, 'no-permission': !hasEditPermission.value }"
           @click="applyConfigChanges"
-          :disabled="!mqtt.connected.value"
-          :title="hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware'"
+          :disabled="!mqtt.connected.value || !hasEditPermission.value"
+          :title="!hasEditPermission.value ? 'Requires Operator or higher' : (hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware')"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>

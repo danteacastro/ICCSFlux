@@ -77,17 +77,17 @@ class ChannelSimulator:
             self.state.target = 25.0
             self.state.noise_level = 0.3  # RTDs are typically more stable
 
-        elif ch.channel_type == ChannelType.STRAIN:
+        elif ch.channel_type in (ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT):
             # Strain gauge starts near zero (no load)
             self.state.value = random.uniform(-50, 50)  # microstrain
             self.state.noise_level = 5.0
 
-        elif ch.channel_type == ChannelType.IEPE:
+        elif ch.channel_type in (ChannelType.IEPE, ChannelType.IEPE_INPUT):
             # IEPE accelerometer starts near zero
             self.state.value = 0.0
             self.state.noise_level = 0.1  # g
 
-        elif ch.channel_type == ChannelType.RESISTANCE:
+        elif ch.channel_type in (ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT):
             # Start at mid-range resistance
             mid = ch.resistance_range / 2
             self.state.value = mid + random.uniform(-mid * 0.1, mid * 0.1)
@@ -121,16 +121,16 @@ class ChannelSimulator:
         elif ch.channel_type == ChannelType.RTD:
             return self._simulate_rtd(dt)
 
-        elif ch.channel_type == ChannelType.STRAIN:
+        elif ch.channel_type in (ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT):
             return self._simulate_strain(dt)
 
-        elif ch.channel_type == ChannelType.IEPE:
+        elif ch.channel_type in (ChannelType.IEPE, ChannelType.IEPE_INPUT):
             return self._simulate_iepe(dt)
 
-        elif ch.channel_type == ChannelType.RESISTANCE:
+        elif ch.channel_type in (ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT):
             return self._simulate_resistance(dt)
 
-        elif ch.channel_type == ChannelType.COUNTER:
+        elif ch.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
             return self._simulate_counter(dt)
 
         elif ch.channel_type == ChannelType.DIGITAL_INPUT:
@@ -463,10 +463,10 @@ class HardwareSimulator:
                 ChannelType.VOLTAGE_INPUT,
                 ChannelType.CURRENT_INPUT,
                 ChannelType.RTD,
-                ChannelType.STRAIN,
-                ChannelType.IEPE,
-                ChannelType.RESISTANCE,
-                ChannelType.COUNTER,
+                ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT,
+                ChannelType.IEPE, ChannelType.IEPE_INPUT,
+                ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT,
+                ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT,
                 ChannelType.DIGITAL_INPUT
             ):
                 values[name] = sim.read()
@@ -479,7 +479,9 @@ class HardwareSimulator:
             if sim.channel.channel_type in (
                 ChannelType.DIGITAL_OUTPUT,
                 ChannelType.VOLTAGE_OUTPUT,
-                ChannelType.CURRENT_OUTPUT
+                ChannelType.CURRENT_OUTPUT,
+                ChannelType.COUNTER_OUTPUT,
+                ChannelType.PULSE_OUTPUT,
             ):
                 values[name] = sim.read()
         return values
@@ -534,7 +536,7 @@ class HardwareSimulator:
         """Reset a counter channel to zero"""
         if channel_name in self.channel_simulators:
             sim = self.channel_simulators[channel_name]
-            if sim.channel.channel_type == ChannelType.COUNTER:
+            if sim.channel.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
                 sim.state.value = 0.0
                 sim.state.last_update = time.time()
                 logger.info(f"Simulator: Reset counter {channel_name} to 0")

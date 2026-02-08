@@ -56,7 +56,6 @@ export type WidgetType =
   | 'gauge'
   | 'led'
   | 'chart'
-  | 'table'
   | 'setpoint'
   | 'toggle'
   | 'title'
@@ -76,6 +75,11 @@ export type WidgetType =
   | 'latch_switch'
   | 'script_monitor'
   | 'heater_zone'
+  | 'python_console'
+  | 'script_output'
+  | 'variable_explorer'
+  | 'variable_input'
+  | 'pid_loop'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -1090,7 +1094,6 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   gauge: { w: 2, h: 2, minW: 2, minH: 2 },
   led: { w: 1, h: 1, minW: 1, minH: 1 },
   chart: { w: 4, h: 3, minW: 2, minH: 2, timeRange: 300 },
-  table: { w: 3, h: 2, minW: 2, minH: 2 },
   setpoint: { w: 2, h: 1, minW: 1, minH: 1 },
   toggle: { w: 1, h: 1, minW: 1, minH: 1 },
   title: { w: 2, h: 1, minW: 1, minH: 1 },
@@ -1109,7 +1112,12 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   crio_status: { w: 2, h: 2, minW: 2, minH: 2 },
   latch_switch: { w: 1, h: 1, minW: 1, minH: 1 },
   script_monitor: { w: 3, h: 4, minW: 2, minH: 2 },
-  heater_zone: { w: 2, h: 2, minW: 2, minH: 2 }
+  heater_zone: { w: 2, h: 2, minW: 2, minH: 2 },
+  python_console: { w: 4, h: 3, minW: 2, minH: 2 },
+  script_output: { w: 4, h: 3, minW: 2, minH: 2 },
+  variable_explorer: { w: 3, h: 4, minW: 2, minH: 2 },
+  variable_input: { w: 2, h: 3, minW: 1, minH: 2 },
+  pid_loop: { w: 2, h: 3, minW: 2, minH: 2 }
 }
 
 // Preset colors for widgets (expanded palette)

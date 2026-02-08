@@ -1465,8 +1465,8 @@ class CRIONodeV2:
                                 'physical_channel': str(ch.name),
                                 'channel_type': ch_type
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Could not enumerate AI channels for {device.name}: {e}")
 
                     try:
                         for ch in device.ao_physical_chans:
@@ -1476,8 +1476,8 @@ class CRIONodeV2:
                                 'physical_channel': str(ch.name),
                                 'channel_type': ch_type
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Could not enumerate AO channels for {device.name}: {e}")
 
                     try:
                         for ch in device.di_lines:
@@ -1486,8 +1486,8 @@ class CRIONodeV2:
                                 'physical_channel': str(ch.name),
                                 'channel_type': 'digital_input'
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Could not enumerate DI channels for {device.name}: {e}")
 
                     try:
                         for ch in device.do_lines:
@@ -1496,8 +1496,8 @@ class CRIONodeV2:
                                 'physical_channel': str(ch.name),
                                 'channel_type': 'digital_output'
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Could not enumerate DO channels for {device.name}: {e}")
 
                     modules.append({
                         'name': device.name,

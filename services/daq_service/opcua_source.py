@@ -415,8 +415,8 @@ class OpcUaDataSource(DataSource):
                             if dv.Value:
                                 node_info['data_type'] = dv.Value.VariantType.name
                                 node_info['value'] = dv.Value.Value
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Could not read OPC-UA node value: {e}")
 
                     result.append(node_info)
                 except Exception as e:

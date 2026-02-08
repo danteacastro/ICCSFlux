@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
@@ -9,6 +9,19 @@ import type { PythonScript, ScriptOutput } from '../types/python-scripts'
 import { SCRIPT_TEMPLATES, DEFAULT_SCRIPT_CODE } from '../types/python-scripts'
 
 const store = useDashboardStore()
+
+// Permission-based edit control (injected from App.vue)
+const hasEditPermission = inject<{ value: boolean }>('canEditScripts', ref(true))
+const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
+
+function requireEditPermission(): boolean {
+  if (!hasEditPermission.value) {
+    showLoginDialog()
+    return false
+  }
+  return true
+}
+
 // Pyodide is still used for syntax validation
 const pythonScripts = usePythonScripts()
 // Backend scripts - actual execution happens server-side
@@ -439,12 +452,14 @@ function selectScript(id: string) {
 // =============================================================================
 
 function openNewScriptModal() {
+  if (!requireEditPermission()) return
   newScriptName.value = ''
   newScriptDescription.value = ''
   showNewScriptModal.value = true
 }
 
 function createNewScript() {
+  if (!requireEditPermission()) return
   if (!newScriptName.value.trim()) return
 
   // Send to backend via MQTT
@@ -475,6 +490,7 @@ function createNewScript() {
 }
 
 function createFromTemplate(templateId: string) {
+  if (!requireEditPermission()) return
   const template = SCRIPT_TEMPLATES.find(t => t.id === templateId)
   if (!template) return
 
@@ -506,6 +522,7 @@ function createFromTemplate(templateId: string) {
 }
 
 async function saveScript() {
+  if (!requireEditPermission()) return
   if (!selectedScriptId.value || !editor) return
 
   const code = editor.getValue()
@@ -532,6 +549,7 @@ async function saveScript() {
 }
 
 async function deleteScript() {
+  if (!requireEditPermission()) return
   if (!selectedScriptId.value) return
 
   if (!confirm('Delete this script? This cannot be undone.')) {
