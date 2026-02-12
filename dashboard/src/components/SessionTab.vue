@@ -166,7 +166,7 @@ onMounted(() => {
             <button
               class="btn btn-sm btn-danger"
               @click="backendScripts.stopScript(script.id)"
-              :disabled="!hasEditPermission.value"
+              :disabled="!hasEditPermission"
             >
               Stop
             </button>
@@ -204,7 +204,7 @@ onMounted(() => {
             <button
               class="btn btn-sm btn-success"
               @click="backendScripts.startScript(script.id)"
-              :disabled="!mqtt.connected.value || !script.enabled || !hasEditPermission.value"
+              :disabled="!mqtt.connected.value || !script.enabled || !hasEditPermission"
             >
               Run
             </button>
@@ -351,7 +351,7 @@ onMounted(() => {
 }
 
 .count-badge {
-  background: var(--color-primary);
+  background: var(--color-accent);
   color: white;
   font-size: 0.75rem;
   padding: 0.15rem 0.5rem;
@@ -365,7 +365,7 @@ onMounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #666;
+  background: var(--text-muted);
 }
 
 .status-dot.active {
@@ -374,7 +374,7 @@ onMounted(() => {
 }
 
 .status-dot.recording.active {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .status-dot.session.active {
@@ -454,8 +454,8 @@ onMounted(() => {
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
-  background: #666;
-  color: #ccc;
+  background: var(--text-muted);
+  color: var(--text-bright);
 }
 
 .script-enabled.enabled {
@@ -530,13 +530,13 @@ onMounted(() => {
   overflow-y: auto;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
   font-size: 0.85rem;
-  background: #0a0a14;
+  background: var(--bg-primary);
   padding: 0.75rem;
   border-radius: 0 0 8px 8px;
 }
 
 .console-placeholder {
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
   padding: 1rem;
   text-align: center;
@@ -550,7 +550,7 @@ onMounted(() => {
 }
 
 .line-time {
-  color: #555;
+  color: var(--text-dim);
   flex-shrink: 0;
   font-size: 0.8rem;
 }
@@ -562,20 +562,20 @@ onMounted(() => {
 }
 
 .line-message {
-  color: #ccc;
+  color: var(--text-bright);
   word-break: break-all;
 }
 
 .console-line.error .line-message {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .console-line.warning .line-message {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
 }
 
 .console-line.info .line-message {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 /* Empty State */
@@ -621,15 +621,15 @@ onMounted(() => {
 }
 
 .btn-success:hover:not(:disabled) {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .btn-danger {
-  background: var(--color-danger);
+  background: var(--color-error);
   color: white;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #dc2626;
+  background: var(--color-error-dark);
 }
 </style>

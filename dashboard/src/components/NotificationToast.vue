@@ -93,8 +93,8 @@ function formatTime(timestamp: number): string {
   align-items: flex-start;
   gap: 12px;
   padding: 12px 16px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   min-width: 320px;
@@ -102,21 +102,21 @@ function formatTime(timestamp: number): string {
 }
 
 .notification.info {
-  border-left: 4px solid #3b82f6;
+  border-left: 4px solid var(--color-accent);
 }
 
 .notification.success {
-  border-left: 4px solid #22c55e;
+  border-left: 4px solid var(--color-success);
 }
 
 .notification.warning {
-  border-left: 4px solid #f59e0b;
-  background: #1a1a2e;
+  border-left: 4px solid var(--color-warning);
+  background: var(--bg-widget);
 }
 
 .notification.error {
-  border-left: 4px solid #ef4444;
-  background: #1f1a1a;
+  border-left: 4px solid var(--color-error);
+  background: var(--color-error-bg);
 }
 
 .notification.acknowledged {
@@ -136,23 +136,23 @@ function formatTime(timestamp: number): string {
 }
 
 .notification-icon.info {
-  background: #1e3a5f;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
 }
 
 .notification-icon.success {
-  background: #14532d;
-  color: #22c55e;
+  background: var(--color-success-bg);
+  color: var(--color-success);
 }
 
 .notification-icon.warning {
-  background: #78350f;
-  color: #fbbf24;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 .notification-icon.error {
-  background: #7f1d1d;
-  color: #ef4444;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 .notification-content {
@@ -171,19 +171,19 @@ function formatTime(timestamp: number): string {
 .notification-title {
   font-weight: 600;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .notification-time {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 .notification-message {
   margin: 0;
   font-size: 0.8rem;
-  color: #999;
+  color: var(--text-dim);
   line-height: 1.4;
   word-wrap: break-word;
 }
@@ -201,7 +201,7 @@ function formatTime(timestamp: number): string {
   padding: 0;
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
@@ -210,15 +210,15 @@ function formatTime(timestamp: number): string {
 }
 
 .dismiss-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--border-color);
+  color: var(--text-primary);
 }
 
 .ack-btn {
   padding: 2px 6px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.65rem;
   font-weight: 600;
   cursor: pointer;
@@ -227,15 +227,15 @@ function formatTime(timestamp: number): string {
 }
 
 .ack-btn:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .clear-all-btn {
   align-self: flex-end;
   padding: 6px 12px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.75rem;
   cursor: pointer;
   border-radius: 4px;
@@ -243,7 +243,7 @@ function formatTime(timestamp: number): string {
 }
 
 .clear-all-btn:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 /* Transitions */

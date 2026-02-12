@@ -23,8 +23,10 @@ import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
+import { useTheme } from './composables/useTheme'
 
 const store = useDashboardStore()
+const { theme, toggleTheme } = useTheme()
 const scripts = useScripts()
 const projectFiles = useProjectFiles()
 const auth = useAuth()
@@ -401,8 +403,13 @@ onMounted(() => {
 
       clearInterval(checkMqttReady)
 
-      // Ensure we have at least one empty page for the Overview tab
-      store.ensureDefaultPage()
+      // Restore layout from localStorage (includes P&ID data, widget positions, etc.)
+      // This must happen before ensureDefaultPage() so P&ID work is not lost when
+      // there's no backend project loaded.
+      if (!store.loadLayoutFromStorage()) {
+        // No saved layout — create a blank default page
+        store.ensureDefaultPage()
+      }
 
       // Request current project from backend to sync state
       console.log('[APP] ✅ Boot complete - syncing with backend state...')
@@ -576,8 +583,8 @@ async function handleManualSave() {
 
 <template>
   <div class="app">
-    <!-- Header -->
-    <header class="app-header">
+    <!-- Header (hidden when P&ID edit mode active — PID toolbar replaces it) -->
+    <header v-if="!store.pidEditMode" class="app-header">
       <div class="header-left">
         <!-- Navigation Tabs -->
         <nav class="header-tabs">
@@ -717,6 +724,23 @@ async function handleManualSave() {
           </button>
         </div>
 
+        <!-- Theme Toggle -->
+        <button
+          class="theme-toggle"
+          @click="toggleTheme"
+          :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+        >
+          <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+          </svg>
+        </button>
+
         <!-- User Auth Section -->
         <div class="user-section">
           <template v-if="auth.authenticated.value && auth.currentUser.value">
@@ -768,6 +792,7 @@ async function handleManualSave() {
       :reconnect-attempts="mqtt.reconnectAttempts.value"
       :data-is-stale="mqtt.dataIsStale.value"
       :last-heartbeat-time="mqtt.lastHeartbeatTime.value"
+      :is-acquiring="store.isAcquiring"
       @retry-now="handleRetryConnection"
     />
 
@@ -967,8 +992,8 @@ async function handleManualSave() {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #0a0a14;
-  color: #fff;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 .app-header {
@@ -977,8 +1002,8 @@ async function handleManualSave() {
   align-items: center;
   padding: 0 16px;
   height: 56px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   position: relative;
   z-index: 100;
@@ -1001,7 +1026,7 @@ async function handleManualSave() {
   gap: 6px;
   padding: 8px 16px;
   background: transparent;
-  color: #888;
+  color: var(--text-muted);
   border: none;
   border-radius: 4px;
   font-size: 0.85rem;
@@ -1011,13 +1036,13 @@ async function handleManualSave() {
 }
 
 .tab-btn:hover {
-  background: #1a1a2e;
-  color: #ccc;
+  background: var(--bg-widget);
+  color: var(--text-bright);
 }
 
 .tab-btn.active {
-  background: #1e3a5f;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
 }
 
 .tab-btn.locked {
@@ -1027,7 +1052,7 @@ async function handleManualSave() {
 
 .tab-btn.locked:hover {
   background: transparent;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .tab-lock {
@@ -1045,7 +1070,7 @@ async function handleManualSave() {
 
 .system-name {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -1053,19 +1078,19 @@ async function handleManualSave() {
   font-size: 0.75rem;
   padding: 4px 8px;
   border-radius: 4px;
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--connection-fail-bg);
+  color: var(--connection-fail-text);
 }
 
 .connection-status.connected {
-  background: #14532d;
-  color: #86efac;
+  background: var(--connection-ok-bg);
+  color: var(--connection-ok-text);
 }
 
 .app-main {
-  min-height: 0;  /* Allow flex shrinking for nested scroll containers */
+  min-height: 0;
   flex: 1;
-  overflow-y: auto;  /* Enable scrolling for widgets below viewport */
+  overflow-y: auto;
 }
 
 .tab-placeholder {
@@ -1074,12 +1099,12 @@ async function handleManualSave() {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .tab-placeholder h2 {
   margin: 0 0 8px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .tab-placeholder p {
@@ -1091,7 +1116,7 @@ async function handleManualSave() {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay-light);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1099,8 +1124,8 @@ async function handleManualSave() {
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   min-width: 300px;
@@ -1111,7 +1136,7 @@ async function handleManualSave() {
 
 .modal h3 {
   margin: 0 0 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
@@ -1132,24 +1157,24 @@ async function handleManualSave() {
   align-items: center;
   gap: 4px;
   padding: 12px 8px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .widget-type-btn:hover {
-  background: #1a1a2e;
-  color: #fff;
-  border-color: #3a3a5a;
+  background: var(--bg-widget);
+  color: var(--text-primary);
+  border-color: var(--border-light);
 }
 
 .widget-type-btn.selected {
-  background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .widget-icon {
@@ -1168,28 +1193,28 @@ async function handleManualSave() {
 .channel-select label {
   display: block;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
 .channel-select select {
   width: 100%;
   padding: 8px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .channel-select select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .widget-desc {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-muted);
   margin: 0 0 16px;
 }
 
@@ -1214,21 +1239,21 @@ async function handleManualSave() {
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-primary {
-  background: #3b82f6;
+  background: var(--color-accent);
   color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 /* Project Status / Save Indicator */
@@ -1237,13 +1262,13 @@ async function handleManualSave() {
   align-items: center;
   gap: 8px;
   padding: 0 12px;
-  border-left: 1px solid #2a2a4a;
+  border-left: 1px solid var(--border-color);
   margin-left: 8px;
 }
 
 .project-status .project-name {
   font-size: 0.7rem;
-  color: #9ca3af;
+  color: var(--text-muted);
   max-width: 100px;
   overflow: hidden;
   display: -webkit-box;
@@ -1258,8 +1283,8 @@ async function handleManualSave() {
   align-items: center;
   gap: 4px;
   font-size: 0.7rem;
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.1);
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -1268,7 +1293,7 @@ async function handleManualSave() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #fbbf24;
+  background: var(--color-warning);
   animation: pulse 1.5s infinite;
 }
 
@@ -1283,9 +1308,9 @@ async function handleManualSave() {
   justify-content: center;
   padding: 4px;
   background: transparent;
-  border: 1px solid #fbbf24;
+  border: 1px solid var(--color-warning);
   border-radius: 4px;
-  color: #fbbf24;
+  color: var(--color-warning);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -1295,8 +1320,8 @@ async function handleManualSave() {
 }
 
 .btn-save.save-denied {
-  border-color: #ef4444;
-  color: #ef4444;
+  border-color: var(--color-error);
+  color: var(--color-error);
   box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
   animation: shake 0.4s ease-in-out;
 }
@@ -1309,13 +1334,34 @@ async function handleManualSave() {
   80% { transform: translateX(2px); }
 }
 
+/* Theme Toggle */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
 /* User Auth Section */
 .user-section {
   display: flex;
   align-items: center;
   gap: 12px;
   padding-left: 16px;
-  border-left: 1px solid #2a2a4a;
+  border-left: 1px solid var(--border-color);
   margin-left: 8px;
 }
 
@@ -1329,7 +1375,7 @@ async function handleManualSave() {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: var(--color-accent);
   color: white;
   display: flex;
   align-items: center;
@@ -1340,15 +1386,15 @@ async function handleManualSave() {
 
 .user-name {
   font-size: 0.85rem;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .user-role {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: capitalize;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -1360,9 +1406,9 @@ async function handleManualSave() {
   gap: 6px;
   padding: 6px 12px;
   background: transparent;
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--color-accent);
   border-radius: 4px;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.8rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -1370,19 +1416,19 @@ async function handleManualSave() {
 
 .btn-login:hover,
 .btn-logout:hover {
-  background: #1e3a5f;
+  background: var(--color-accent-bg);
 }
 
 .btn-logout {
   padding: 6px;
-  border-color: #4b5563;
-  color: #888;
+  border-color: var(--border-heavy);
+  color: var(--text-secondary);
 }
 
 .btn-logout:hover {
-  border-color: #ef4444;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--color-error);
+  color: var(--color-error);
+  background: var(--color-error-bg);
 }
 
 /* Startup Dialog */
@@ -1392,7 +1438,7 @@ async function handleManualSave() {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.85);
+  background: var(--bg-overlay);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
@@ -1402,10 +1448,10 @@ async function handleManualSave() {
 }
 
 .startup-dialog {
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-  border: 2px solid #3b82f6;
+  background: linear-gradient(135deg, var(--bg-widget) 0%, var(--bg-elevated) 100%);
+  border: 2px solid var(--color-accent);
   border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-xl);
   max-width: 600px;
   width: 100%;
   overflow: hidden;
@@ -1426,25 +1472,25 @@ async function handleManualSave() {
 .startup-header {
   text-align: center;
   padding: 40px 40px 32px;
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.1) 0%, transparent 100%);
-  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+  background: linear-gradient(180deg, var(--color-accent-bg) 0%, transparent 100%);
+  border-bottom: 1px solid var(--color-accent-border);
 }
 
 .startup-header svg {
-  color: #3b82f6;
+  color: var(--color-accent);
   margin-bottom: 20px;
 }
 
 .startup-header h2 {
   font-size: 1.75rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
   margin: 0 0 12px;
 }
 
 .startup-header p {
   font-size: 1rem;
-  color: #9ca3af;
+  color: var(--text-muted);
   margin: 0;
 }
 
@@ -1452,20 +1498,20 @@ async function handleManualSave() {
 .last-project-info {
   text-align: center;
   padding: 16px 40px;
-  background: rgba(59, 130, 246, 0.1);
-  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+  background: var(--color-accent-bg);
+  border-bottom: 1px solid var(--color-accent-border);
 }
 
 .project-name {
   font-size: 1.25rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   margin-bottom: 4px;
 }
 
 .project-modified {
   font-size: 0.85rem;
-  color: #9ca3af;
+  color: var(--text-muted);
 }
 
 .startup-actions {
@@ -1480,8 +1526,8 @@ async function handleManualSave() {
   align-items: center;
   gap: 16px;
   padding: 20px;
-  background: #1a1a2e;
-  border: 2px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 2px solid var(--border-color);
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s;
@@ -1490,32 +1536,32 @@ async function handleManualSave() {
 }
 
 .startup-btn:hover {
-  background: #242442;
-  border-color: #3b82f6;
+  background: var(--bg-elevated);
+  border-color: var(--color-accent);
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 8px 20px var(--color-accent-glow);
 }
 
 .startup-btn svg {
   flex-shrink: 0;
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .startup-btn.primary:hover svg {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .startup-btn.secondary svg {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .startup-btn.secondary:hover {
-  border-color: #22c55e;
-  box-shadow: 0 8px 20px rgba(34, 197, 94, 0.2);
+  border-color: var(--color-success);
+  box-shadow: 0 8px 20px var(--color-success-bg);
 }
 
 .startup-btn.secondary:hover svg {
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .startup-btn div {
@@ -1528,13 +1574,13 @@ async function handleManualSave() {
 .startup-btn strong {
   font-size: 1.1rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   display: block;
 }
 
 .startup-btn span {
   font-size: 0.875rem;
-  color: #9ca3af;
+  color: var(--text-muted);
   display: block;
 }
 
@@ -1545,7 +1591,7 @@ async function handleManualSave() {
 .fresh-message {
   font-size: 0.95rem;
   line-height: 1.6;
-  color: #d1d5db;
+  color: var(--text-bright);
   max-width: 480px;
 }
 
@@ -1553,43 +1599,43 @@ async function handleManualSave() {
   text-align: center;
   padding: 0 40px 32px;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--text-dim);
 }
 
 .startup-hint.warning {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
 }
 
 /* Recovery dialog styles */
 .recovery-header svg {
-  color: #f59e0b !important;
+  color: var(--color-warning-dark) !important;
 }
 
 .recovery-info {
-  background: rgba(245, 158, 11, 0.1) !important;
+  background: var(--color-warning-bg) !important;
   border-color: rgba(245, 158, 11, 0.2) !important;
 }
 
 .recovery-info .project-name {
-  color: #fbbf24 !important;
+  color: var(--color-warning) !important;
 }
 
 .startup-btn.recovery {
-  border-color: #f59e0b;
-  background: rgba(245, 158, 11, 0.1);
+  border-color: var(--color-warning-dark);
+  background: var(--color-warning-bg);
 }
 
 .startup-btn.recovery:hover {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
   background: rgba(245, 158, 11, 0.2);
   box-shadow: 0 8px 20px rgba(245, 158, 11, 0.2);
 }
 
 .startup-btn.recovery svg {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
 }
 
 .startup-btn.recovery:hover svg {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 </style>

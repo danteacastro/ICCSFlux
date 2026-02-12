@@ -1,6 +1,7 @@
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from './useMqtt'
+import { useAuth } from './useAuth'
 import type {
   NotebookEntry,
   Experiment,
@@ -23,6 +24,7 @@ let initialized = false
 
 export function useNotebook() {
   const store = useDashboardStore()
+  const auth = useAuth()
 
   // ============================================
   // Computed
@@ -109,6 +111,7 @@ export function useNotebook() {
       ...entry,
       id: generateId(),
       timestamp: new Date().toISOString(),
+      operator: entry.operator || auth.currentUser.value?.displayName || auth.currentUser.value?.username || undefined,
       amendments: []
     }
 
@@ -173,6 +176,7 @@ export function useNotebook() {
       description,
       startedAt: new Date().toISOString(),
       status: 'active',
+      operator: auth.currentUser.value?.displayName || auth.currentUser.value?.username || undefined,
       tags: []
     }
 
@@ -549,6 +553,14 @@ export function useNotebook() {
   }
 
   initialize()
+
+  // Clean up debounce timeout on unmount
+  onUnmounted(() => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout)
+      saveTimeout = null
+    }
+  })
 
   // ============================================
   // Return

@@ -38,6 +38,8 @@ const isExecuting = ref(false)
 const isPressed = ref(false)           // Currently pressed (for momentary)
 const isLatched = ref(false)           // Latched on (for toggle/latching)
 let momentaryTimeout: ReturnType<typeof setTimeout> | null = null
+let confirmTimeout: ReturnType<typeof setTimeout> | null = null
+let pulseTimeout: ReturnType<typeof setTimeout> | null = null
 
 const displayLabel = computed(() => props.label || 'Action')
 const bgColor = computed(() => props.buttonColor || '#3b82f6')
@@ -113,8 +115,10 @@ function handleClick() {
   if (props.requireConfirmation && !showConfirm.value) {
     showConfirm.value = true
     // Auto-cancel after 3 seconds
-    setTimeout(() => {
+    if (confirmTimeout) clearTimeout(confirmTimeout)
+    confirmTimeout = setTimeout(() => {
       showConfirm.value = false
+      confirmTimeout = null
     }, 3000)
     return
   }
@@ -158,9 +162,9 @@ function resetLatch() {
 
 // Cleanup on unmount
 onUnmounted(() => {
-  if (momentaryTimeout) {
-    clearTimeout(momentaryTimeout)
-  }
+  if (momentaryTimeout) clearTimeout(momentaryTimeout)
+  if (confirmTimeout) clearTimeout(confirmTimeout)
+  if (pulseTimeout) clearTimeout(pulseTimeout)
 })
 
 async function executeAction() {
@@ -187,8 +191,10 @@ async function executeAction() {
 
           // If pulse mode, reset after duration
           if (action.pulseMs && action.pulseMs > 0) {
-            setTimeout(() => {
+            if (pulseTimeout) clearTimeout(pulseTimeout)
+            pulseTimeout = setTimeout(() => {
               mqtt.setOutput(action.channel!, value === 1 ? 0 : 1)
+              pulseTimeout = null
             }, action.pulseMs)
           }
         }
@@ -322,7 +328,7 @@ async function executeAction() {
   flex-direction: column;
   height: 100%;
   padding: 4px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   position: relative;
@@ -336,7 +342,7 @@ async function executeAction() {
   gap: 6px;
   border: none;
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 0.8rem;
   cursor: pointer;
@@ -579,21 +585,21 @@ async function executeAction() {
 }
 
 .confirm-yes {
-  background: #22c55e;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 
 .confirm-yes:hover {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .confirm-no {
-  background: #6b7280;
-  color: #fff;
+  background: var(--text-dim);
+  color: var(--text-primary);
 }
 
 .confirm-no:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 /* Blocked tooltip */

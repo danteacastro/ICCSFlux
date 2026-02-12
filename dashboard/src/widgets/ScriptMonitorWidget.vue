@@ -221,8 +221,8 @@ const formattedTimestamp = computed(() => {
 
 <style scoped>
 .script-monitor {
-  background: var(--bg-secondary, #1e1e1e);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -232,15 +232,15 @@ const formattedTimestamp = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: var(--bg-tertiary, #252525);
-  border-bottom: 1px solid var(--border-color, #333);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .monitor-header h3 {
   margin: 0;
   font-size: 0.9rem;
   font-weight: 600;
-  color: var(--text-primary, #fff);
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -251,7 +251,7 @@ const formattedTimestamp = computed(() => {
 
 .timestamp {
   font-size: 0.75rem;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
 }
 
 .config-btn {
@@ -259,7 +259,7 @@ const formattedTimestamp = computed(() => {
   border: none;
   padding: 4px;
   cursor: pointer;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -267,14 +267,14 @@ const formattedTimestamp = computed(() => {
 }
 
 .config-btn:hover {
-  background: var(--bg-hover, #333);
-  color: var(--text-primary, #fff);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .monitor-grid {
   display: grid;
   gap: 1px;
-  background: var(--border-color, #333);
+  background: var(--border-color);
 }
 
 .monitor-item {
@@ -282,7 +282,7 @@ const formattedTimestamp = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
 }
 
 .compact .monitor-item {
@@ -291,7 +291,7 @@ const formattedTimestamp = computed(() => {
 
 .item-label {
   font-size: 0.8rem;
-  color: var(--text-secondary, #aaa);
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
@@ -315,7 +315,7 @@ const formattedTimestamp = computed(() => {
 .item-unit {
   font-size: 0.75rem;
   font-weight: 400;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
 }
 
 /* Status indicator */
@@ -339,7 +339,7 @@ const formattedTimestamp = computed(() => {
 .empty-state {
   padding: 24px;
   text-align: center;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
 }
 
 .empty-state p {
@@ -347,7 +347,7 @@ const formattedTimestamp = computed(() => {
 }
 
 .add-btn {
-  background: var(--accent-color, #3b82f6);
+  background: var(--color-accent);
   color: white;
   border: none;
   padding: 8px 16px;
@@ -362,7 +362,7 @@ const formattedTimestamp = computed(() => {
 
 /* Hover effect */
 .monitor-item:hover {
-  background: var(--bg-hover, #252525);
+  background: var(--bg-hover);
 }
 
 /* Multi-column layout adjustments */

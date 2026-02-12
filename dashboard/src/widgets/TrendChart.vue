@@ -93,6 +93,8 @@ const timeRangeOptions = [
   { label: '15m', value: 900 },
   { label: '1h', value: 3600 },
   { label: '4h', value: 14400 },
+  { label: '12h', value: 43200 },
+  { label: '24h', value: 86400 },
 ]
 const activeTimeRange = ref(props.timeRange || 300)
 
@@ -108,7 +110,7 @@ const contextMenuY = ref(0)
 
 // Data buffer: [timestamps, ...channelData]
 const dataBuffer = ref<(number | null)[][]>([[]])
-const maxPoints = computed(() => props.historySize || 1024)
+const maxPoints = computed(() => props.historySize || 86400)
 
 // Sweep mode position tracking
 const sweepPosition = ref(0)
@@ -335,7 +337,18 @@ function initChart() {
       }
     }
   } else {
-    scales.x = { time: true }
+    scales.x = {
+      time: true,
+      auto: false,
+      range: (_u: uPlot, _dataMin: number | null, _dataMax: number | null): [number, number] => {
+        if (isPaused.value && viewStart.value !== 0) {
+          return [viewStart.value, viewEnd.value]
+        }
+        const now = Date.now() / 1000
+        const range = activeTimeRange.value || 300
+        return [now - range, now]
+      }
+    }
   }
 
   if (yAxisAuto) {
@@ -544,6 +557,15 @@ function updateData() {
   }
 
   // Time mode: standard behavior
+
+  // Adaptive thinning: once buffer exceeds the visible window, store at ~1 Hz
+  // to keep full resolution in the viewport while enabling 24h scrollback
+  const visibleWindowPoints = (timeRange || 300) * 10  // 10 Hz for visible window
+  if (buffer[0] && buffer[0].length > visibleWindowPoints) {
+    const lastTs = buffer[0][buffer[0].length - 1] ?? 0
+    if (now - lastTs < 1.0) return  // Skip — less than 1s since last stored point
+  }
+
   // Add new point
   buffer[0]?.push(now)
   props.channels.forEach((ch, i) => {
@@ -553,11 +575,9 @@ function updateData() {
 
   // Handle different update modes
   if (mode === 'strip') {
-    // Strip chart: scroll continuously, trim old data
-    const cutoff = now - timeRange
-    while (buffer[0] && buffer[0].length > 0 && (buffer[0][0] ?? 0) < cutoff) {
-      buffer.forEach(arr => arr?.shift())
-    }
+    // Strip mode: keep all data for scrollback history.
+    // Viewport is managed by the X-axis scale range function.
+    // Only the maxPoints hard cap below limits retention.
   } else if (mode === 'scope') {
     // Scope chart: clear when reaching end, restart from left
     if (buffer[0] && buffer[0].length > 0) {
@@ -607,9 +627,13 @@ function updateData() {
     buffer.forEach(arr => arr?.shift())
   }
 
-  // Update chart
-  if (chart && buffer[0] && buffer[0].length > 0) {
-    chart.setData(buffer as AlignedData)
+  // Update chart (guard against destroyed instance)
+  try {
+    if (chart && buffer[0] && buffer[0].length > 0) {
+      chart.setData(buffer as AlignedData)
+    }
+  } catch {
+    // Chart may have been destroyed between check and call
   }
 }
 
@@ -1115,8 +1139,59 @@ onUnmounted(() => {
   if (chart) chart.destroy()
 })
 
-// Reinit chart when config changes
-watch(() => [props.channels, props.plotStyles], () => {
+// Reinit chart when channels change — preserve existing data for kept channels
+watch(() => props.channels, (newChannels, oldChannels) => {
+  if (!chart || !oldChannels) {
+    if (chart) chart.destroy()
+    nextTick(() => initChart())
+    return
+  }
+
+  if (isXYMode.value) {
+    chart.destroy()
+    nextTick(() => initChart())
+    return
+  }
+
+  // Compute channel diff
+  const oldSet = new Set(oldChannels)
+  const keptChannels = newChannels.filter(ch => oldSet.has(ch))
+
+  if (keptChannels.length === 0 && oldChannels.length > 0) {
+    chart.destroy()
+    nextTick(() => initChart())
+    return
+  }
+
+  // Build new data buffer preserving existing channel data
+  const timestamps = dataBuffer.value[0] || []
+  const newBuffer: (number | null)[][] = [timestamps]
+
+  for (const ch of newChannels) {
+    const oldIdx = oldChannels.indexOf(ch)
+    if (oldIdx >= 0) {
+      newBuffer.push(dataBuffer.value[oldIdx + 1] || [])
+    } else {
+      newBuffer.push(new Array(timestamps.length).fill(null))
+    }
+  }
+
+  dataBuffer.value = newBuffer
+
+  // Recreate uPlot with new series config, then restore preserved data
+  chart.destroy()
+  nextTick(() => {
+    const preservedBuffer = dataBuffer.value
+    initChart()
+    dataBuffer.value = preservedBuffer
+    if (chart) {
+      chart.setData(preservedBuffer as AlignedData)
+    }
+  })
+}, { deep: true })
+
+// Reinit chart when plot styles change (no data preservation needed)
+watch(() => props.plotStyles, () => {
   if (chart) {
     chart.destroy()
     nextTick(() => initChart())
@@ -1585,7 +1660,7 @@ function toggleChannelVisibility(channel: string) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   overflow: hidden;
@@ -1619,8 +1694,8 @@ function toggleChannelVisibility(channel: string) {
   font-size: 0.6rem;
   padding: 1px 4px;
   border-radius: 2px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .mode-badge.xy {
@@ -1659,8 +1734,8 @@ function toggleChannelVisibility(channel: string) {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 2px;
 }
@@ -1668,7 +1743,7 @@ function toggleChannelVisibility(channel: string) {
 .tool-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -1679,19 +1754,19 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .tool-btn:hover {
-  color: #fff;
-  background: #333;
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .tool-btn.active {
-  color: #3b82f6;
-  background: rgba(59, 130, 246, 0.2);
+  color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .tool-separator {
   width: 1px;
   height: 16px;
-  background: #2a2a4a;
+  background: var(--border-color);
   margin: 0 2px;
 }
 
@@ -1708,8 +1783,8 @@ function toggleChannelVisibility(channel: string) {
 
 .time-range-btn {
   background: transparent;
-  border: 1px solid #333;
-  color: #888;
+  border: 1px solid var(--bg-hover);
+  color: var(--text-secondary);
   font-size: 0.6rem;
   padding: 2px 6px;
   border-radius: 2px;
@@ -1719,19 +1794,19 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .time-range-btn:hover {
-  background: #333;
-  color: #fff;
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .time-range-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .time-range-btn.live-btn.active {
-  background: #22c55e;
-  border-color: #22c55e;
+  background: var(--color-success);
+  border-color: var(--color-success);
 }
 
 .time-range-spacer {
@@ -1760,10 +1835,10 @@ function toggleChannelVisibility(channel: string) {
 
 .custom-time-input {
   width: 60px;
-  background: #0f0f1a;
-  border: 1px solid #3b82f6;
+  background: var(--bg-input);
+  border: 1px solid var(--color-accent);
   border-radius: 2px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.6rem;
   font-family: 'JetBrains Mono', monospace;
   padding: 2px 4px;
@@ -1776,7 +1851,7 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .custom-time-input.error {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   animation: shake 0.3s ease-in-out;
 }
 
@@ -1787,10 +1862,10 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .custom-time-apply {
-  background: #22c55e;
+  background: var(--color-success);
   border: none;
   border-radius: 2px;
-  color: #fff;
+  color: var(--text-primary);
   cursor: pointer;
   padding: 3px 4px;
   display: flex;
@@ -1799,7 +1874,7 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .custom-time-apply:hover {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 /* Chart Wrapper with Y-Axis Zone */
@@ -1832,12 +1907,12 @@ function toggleChannelVisibility(channel: string) {
   text-orientation: mixed;
   transform: rotate(180deg);
   font-size: 0.6rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .auto-badge {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   padding: 2px 4px;
   border-radius: 2px;
   font-size: 0.55rem;
@@ -1867,8 +1942,8 @@ function toggleChannelVisibility(channel: string) {
   top: 50%;
   left: 50px;
   transform: translateY(-50%);
-  background: #1a1a2e;
-  border: 1px solid #3b82f6;
+  background: var(--bg-widget);
+  border: 1px solid var(--color-accent);
   border-radius: 6px;
   padding: 10px;
   z-index: 100;
@@ -1879,7 +1954,7 @@ function toggleChannelVisibility(channel: string) {
 .y-axis-editor-title {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #3b82f6;
+  color: var(--color-accent);
   margin-bottom: 8px;
   text-transform: uppercase;
 }
@@ -1893,16 +1968,16 @@ function toggleChannelVisibility(channel: string) {
 
 .y-axis-editor-row label {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   width: 30px;
 }
 
 .y-axis-editor-row input {
   flex: 1;
-  background: #0f0f1a;
-  border: 1px solid #333;
+  background: var(--bg-input);
+  border: 1px solid var(--bg-hover);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   padding: 4px 6px;
   font-size: 0.75rem;
   font-family: 'JetBrains Mono', monospace;
@@ -1911,7 +1986,7 @@ function toggleChannelVisibility(channel: string) {
 
 .y-axis-editor-row input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .y-axis-editor-actions {
@@ -1931,37 +2006,37 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .y-axis-btn.auto {
-  background: #1e3a5f;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
 }
 
 .y-axis-btn.auto:hover {
-  background: #2563eb;
-  color: #fff;
+  background: var(--color-accent-dark);
+  color: var(--text-primary);
 }
 
 .y-axis-btn.cancel {
-  background: #333;
-  color: #888;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
 }
 
 .y-axis-btn.cancel:hover {
-  background: #444;
-  color: #fff;
+  background: var(--bg-active);
+  color: var(--text-primary);
 }
 
 .y-axis-btn.apply {
-  background: #22c55e;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 
 .y-axis-btn.apply:hover {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .y-axis-editor-hint {
   font-size: 0.55rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 6px;
   text-align: center;
 }
@@ -1969,8 +2044,8 @@ function toggleChannelVisibility(channel: string) {
 /* Context Menu */
 .context-menu {
   position: absolute;
-  background: #1a1a2e;
-  border: 1px solid #3b82f6;
+  background: var(--bg-widget);
+  border: 1px solid var(--color-accent);
   border-radius: 6px;
   padding: 4px 0;
   z-index: 200;
@@ -1986,7 +2061,7 @@ function toggleChannelVisibility(channel: string) {
   padding: 8px 12px;
   background: none;
   border: none;
-  color: #e2e8f0;
+  color: var(--text-bright);
   font-size: 0.75rem;
   cursor: pointer;
   text-align: left;
@@ -1994,21 +2069,21 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .context-menu-item:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: var(--color-accent-bg);
 }
 
 .context-menu-item svg {
   flex-shrink: 0;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .context-menu-item:hover svg {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .context-menu-divider {
   height: 1px;
-  background: #2a2a4a;
+  background: var(--border-color);
   margin: 4px 0;
 }
 
@@ -2033,7 +2108,7 @@ function toggleChannelVisibility(channel: string) {
   height: 6px;
   -webkit-appearance: none;
   appearance: none;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 3px;
   cursor: pointer;
 }
@@ -2042,7 +2117,7 @@ function toggleChannelVisibility(channel: string) {
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border-radius: 50%;
   cursor: pointer;
 }
@@ -2050,7 +2125,7 @@ function toggleChannelVisibility(channel: string) {
 .scroll-label {
   font-size: 0.6rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   min-width: 45px;
   text-align: right;
 }
@@ -2124,7 +2199,7 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .legend-name {
-  color: #999;
+  color: var(--text-secondary);
   max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2132,17 +2207,17 @@ function toggleChannelVisibility(channel: string) {
 
 .legend-value {
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .legend-value.no-data {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .legend-unit {
   font-size: 0.6rem;
-  color: #666;
+  color: var(--text-muted);
   margin-left: 2px;
 }
 
@@ -2151,7 +2226,7 @@ function toggleChannelVisibility(channel: string) {
   align-items: center;
   justify-content: center;
   flex: 1;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.8rem;
   text-align: center;
   padding: 16px;
@@ -2261,7 +2336,7 @@ function toggleChannelVisibility(channel: string) {
 
 .hist-action-btn:hover {
   background: #5b21b6;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* Recording Selector Panel */
@@ -2271,7 +2346,7 @@ function toggleChannelVisibility(channel: string) {
   left: 8px;
   width: 320px;
   max-height: 300px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border: 1px solid #5b21b6;
   border-radius: 8px;
   z-index: 300;
@@ -2295,21 +2370,21 @@ function toggleChannelVisibility(channel: string) {
 .close-selector {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1.2rem;
   cursor: pointer;
   padding: 0 4px;
 }
 
 .close-selector:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .recording-loading,
 .no-recordings {
   padding: 20px;
   text-align: center;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
 }
 
@@ -2349,7 +2424,7 @@ function toggleChannelVisibility(channel: string) {
 
 .rec-name {
   font-size: 0.75rem;
-  color: #e2e8f0;
+  color: var(--text-bright);
   font-family: 'JetBrains Mono', monospace;
   margin-bottom: 4px;
   overflow: hidden;
@@ -2361,7 +2436,7 @@ function toggleChannelVisibility(channel: string) {
   display: flex;
   gap: 12px;
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .rec-meta span {

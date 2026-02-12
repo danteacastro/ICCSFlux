@@ -235,7 +235,7 @@ async function writeAddress() {
 }
 
 .modal.address-changer {
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   width: 90%;
   max-width: 480px;
@@ -248,7 +248,7 @@ async function writeAddress() {
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -276,7 +276,7 @@ async function writeAddress() {
   justify-content: flex-end;
   gap: 0.5rem;
   padding: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .warning-box {
@@ -315,7 +315,7 @@ async function writeAddress() {
 .form-group {
   margin-bottom: 1rem;
   padding: 0.75rem;
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
   border-radius: 6px;
 }
 
@@ -340,8 +340,8 @@ async function writeAddress() {
 .form-row select {
   width: 100%;
   padding: 0.5rem;
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: white;
 }

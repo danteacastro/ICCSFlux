@@ -100,14 +100,14 @@ const recordingMode = computed(() => {
   flex-direction: column;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 6px;
 }
 
 .recording-status-widget.recording {
-  border-color: #dc2626;
+  border-color: var(--color-error-dark);
 }
 
 .recording-header {
@@ -130,7 +130,7 @@ const recordingMode = computed(() => {
 }
 
 .indicator.active .dot {
-  background: #ef4444;
+  background: var(--color-error);
   animation: pulse-dot 1s infinite;
 }
 
@@ -142,14 +142,14 @@ const recordingMode = computed(() => {
 }
 
 .indicator.active .text {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .duration {
   font-size: 0.9rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .filename {
@@ -160,7 +160,7 @@ const recordingMode = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   padding: 4px 6px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
 }
 
@@ -181,7 +181,7 @@ const recordingMode = computed(() => {
   font-size: 0.8rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .stat .label {
@@ -193,7 +193,7 @@ const recordingMode = computed(() => {
 .stat.mode .value {
   font-size: 0.6rem;
   padding: 2px 6px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border-radius: 3px;
   text-transform: uppercase;
 }

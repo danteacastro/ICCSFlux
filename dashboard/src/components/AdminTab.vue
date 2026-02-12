@@ -479,14 +479,21 @@ function editUser(user: User) {
   }
 }
 
+const isDeletingUser = ref(false)
+
 function confirmDeleteUser(user: User) {
+  if (isDeletingUser.value) return
   userToDelete.value = user
 }
 
 function performDeleteUser() {
+  if (isDeletingUser.value) return
   if (userToDelete.value) {
-    deleteUser(userToDelete.value.username)
+    isDeletingUser.value = true
+    const username = userToDelete.value.username
     userToDelete.value = null
+    deleteUser(username)
+    setTimeout(() => { isDeletingUser.value = false }, 2000)
   }
 }
 
@@ -635,7 +642,7 @@ function formatBytes(bytes: number): string {
   align-items: center;
   justify-content: center;
   text-align: center;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
 }
 
 .denied-icon {
@@ -645,13 +652,13 @@ function formatBytes(bytes: number): string {
 
 .access-denied h2 {
   margin: 0 0 0.5rem;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
 }
 
 .current-role {
   margin-top: 1rem;
   padding: 0.5rem 1rem;
-  background: var(--color-background-soft, #2a2a2a);
+  background: var(--bg-hover);
   border-radius: 4px;
 }
 
@@ -668,8 +675,8 @@ function formatBytes(bytes: number): string {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
-  background: var(--color-background-soft, #2a2a2a);
-  border-bottom: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border-color);
   position: relative;
   z-index: 2;
   flex-shrink: 0;
@@ -680,7 +687,7 @@ function formatBytes(bytes: number): string {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
   font-size: 0.875rem;
   cursor: pointer;
   display: flex;
@@ -690,14 +697,14 @@ function formatBytes(bytes: number): string {
 }
 
 .section-btn:hover {
-  background: var(--color-background, #1e1e1e);
-  color: var(--color-text, #fff);
+  background: var(--bg-widget);
+  color: var(--text-primary);
 }
 
 .section-btn.active {
-  background: var(--color-primary, #007acc);
+  background: var(--color-accent);
   color: white;
-  border-color: var(--color-primary, #007acc);
+  border-color: var(--color-accent);
 }
 
 .section-icon {
@@ -733,7 +740,7 @@ function formatBytes(bytes: number): string {
 /* Buttons */
 .btn-primary {
   padding: 8px 16px;
-  background: var(--color-primary, #007acc);
+  background: var(--color-accent);
   border: none;
   border-radius: 6px;
   color: white;
@@ -743,23 +750,23 @@ function formatBytes(bytes: number): string {
 }
 
 .btn-primary:hover {
-  background: var(--color-primary-hover, #0098ff);
+  background: var(--color-accent-light);
 }
 
 .btn-secondary {
   padding: 8px 16px;
-  background: var(--color-background-soft, #2a2a2a);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
   font-size: 0.875rem;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .btn-secondary:hover {
-  background: var(--color-background, #333);
-  border-color: var(--color-text-muted, #666);
+  background: var(--bg-active);
+  border-color: var(--text-muted);
 }
 
 .btn-icon {
@@ -782,7 +789,7 @@ function formatBytes(bytes: number): string {
 }
 
 .btn-danger {
-  background: #dc3545;
+  background: var(--color-error-dark);
   color: white;
   border: none;
   padding: 8px 16px;
@@ -791,15 +798,15 @@ function formatBytes(bytes: number): string {
 }
 
 .btn-danger:hover {
-  background: #c82333;
+  background: #b91c1c;
 }
 
 .btn-cancel {
   padding: 8px 16px;
   background: transparent;
-  border: 1px solid var(--color-border, #3e3e3e);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
   cursor: pointer;
 }
 
@@ -807,7 +814,7 @@ function formatBytes(bytes: number): string {
   background: none;
   border: none;
   font-size: 1.5rem;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
   cursor: pointer;
   line-height: 1;
 }
@@ -818,7 +825,7 @@ function formatBytes(bytes: number): string {
 .archives-table-wrapper {
   flex: 1;
   overflow: auto;
-  border: 1px solid var(--color-border, #3e3e3e);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
 }
 
@@ -832,18 +839,18 @@ function formatBytes(bytes: number): string {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--color-background-soft, #2a2a2a);
+  background: var(--bg-hover);
   padding: 12px;
   text-align: left;
   font-weight: 600;
-  color: var(--color-text-muted, #888);
-  border-bottom: 1px solid var(--color-border, #3e3e3e);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .data-table td {
   padding: 12px;
-  border-bottom: 1px solid var(--color-border, #3e3e3e);
-  color: var(--color-text, #fff);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
 }
 
 .data-table tr:last-child td {
@@ -851,13 +858,13 @@ function formatBytes(bytes: number): string {
 }
 
 .data-table tr:hover td {
-  background: var(--color-background-soft, #2a2a2a);
+  background: var(--bg-hover);
 }
 
 .loading-row,
 .empty-row {
   text-align: center;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -865,8 +872,8 @@ function formatBytes(bytes: number): string {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 2px solid var(--color-border, #3e3e3e);
-  border-top-color: var(--color-primary, #007acc);
+  border: 2px solid var(--border-color);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-right: 8px;
@@ -887,7 +894,7 @@ function formatBytes(bytes: number): string {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--color-primary, #007acc);
+  background: var(--color-accent);
   color: white;
   display: flex;
   align-items: center;
@@ -935,16 +942,16 @@ function formatBytes(bytes: number): string {
 
 .filter-group label {
   font-size: 0.75rem;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
 }
 
 .filter-group input,
 .filter-group select {
   padding: 8px;
-  background: var(--color-background-soft, #2a2a2a);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
   font-size: 0.875rem;
 }
 
@@ -971,7 +978,7 @@ function formatBytes(bytes: number): string {
 
 .details-preview {
   cursor: pointer;
-  color: var(--color-primary, #007acc);
+  color: var(--color-accent);
 }
 
 .details-preview:hover {
@@ -981,7 +988,7 @@ function formatBytes(bytes: number): string {
 .checksum-cell code,
 .id-cell code {
   font-size: 0.75rem;
-  background: var(--color-background-soft, #2a2a2a);
+  background: var(--bg-hover);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -998,8 +1005,8 @@ function formatBytes(bytes: number): string {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: var(--color-background-soft, #2a2a2a);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   flex: 1;
 }
@@ -1016,12 +1023,12 @@ function formatBytes(bytes: number): string {
 .info-value {
   font-size: 1.5rem;
   font-weight: 600;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
 }
 
 .info-label {
   font-size: 0.75rem;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
 }
 
 .type-badge {
@@ -1048,8 +1055,8 @@ function formatBytes(bytes: number): string {
 }
 
 .modal-dialog {
-  background: var(--color-background, #1e1e1e);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   width: 100%;
   max-width: 480px;
@@ -1066,7 +1073,7 @@ function formatBytes(bytes: number): string {
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--color-border, #3e3e3e);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -1083,7 +1090,7 @@ function formatBytes(bytes: number): string {
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 20px;
-  border-top: 1px solid var(--color-border, #3e3e3e);
+  border-top: 1px solid var(--border-color);
 }
 
 /* Form Groups */
@@ -1096,17 +1103,17 @@ function formatBytes(bytes: number): string {
   margin-bottom: 6px;
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
 }
 
 .form-group input,
 .form-group select {
   width: 100%;
   padding: 10px 12px;
-  background: var(--color-background-soft, #2a2a2a);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  color: var(--color-text, #fff);
+  color: var(--text-primary);
   font-size: 0.875rem;
   box-sizing: border-box;
 }
@@ -1114,7 +1121,7 @@ function formatBytes(bytes: number): string {
 .form-group input:focus,
 .form-group select:focus {
   outline: none;
-  border-color: var(--color-primary, #007acc);
+  border-color: var(--color-accent);
 }
 
 .checkbox-group label {
@@ -1142,7 +1149,7 @@ function formatBytes(bytes: number): string {
 .detail-label {
   width: 100px;
   flex-shrink: 0;
-  color: var(--color-text-muted, #888);
+  color: var(--text-muted);
 }
 
 .detail-section {
@@ -1160,7 +1167,7 @@ function formatBytes(bytes: number): string {
 }
 
 .details-json {
-  background: var(--color-background-soft, #2a2a2a);
+  background: var(--bg-hover);
   padding: 12px;
   border-radius: 6px;
   overflow: auto;
@@ -1176,7 +1183,7 @@ function formatBytes(bytes: number): string {
 
 .confirm-warning {
   margin: 0;
-  color: #ff6b6b;
+  color: var(--color-error-light);
   font-size: 0.875rem;
 }
 </style>

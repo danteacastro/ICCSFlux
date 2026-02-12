@@ -34,6 +34,8 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   variable_input: defineAsyncComponent(() => import('./VariableInputWidget.vue')),
   pid_loop: defineAsyncComponent(() => import('./PidLoopWidget.vue')),
   heater_zone: defineAsyncComponent(() => import('./HeaterZoneWidget.vue')),
+  status_messages: defineAsyncComponent(() => import('./StatusMessages.vue')),
+  image: defineAsyncComponent(() => import('./ImageWidget.vue')),
 }
 
 export function getWidgetComponent(type: WidgetType | string) {
@@ -285,6 +287,22 @@ export const availableWidgets: WidgetTypeInfo[] = [
     name: 'P&ID Symbol',
     icon: '⚙',
     description: 'SCADA equipment symbol (use dedicated P&ID system instead)',
+    needsChannel: false,
+    defaultSize: { w: 2, h: 2 }
+  },
+  {
+    type: 'status_messages',
+    name: 'Status Messages',
+    icon: '💬',
+    description: 'Scrolling system status and event messages',
+    needsChannel: false,
+    defaultSize: { w: 3, h: 2 }
+  },
+  {
+    type: 'image',
+    name: 'Image / Logo',
+    icon: '🖼',
+    description: 'Static image from URL (logos, photos, diagrams)',
     needsChannel: false,
     defaultSize: { w: 2, h: 2 }
   }

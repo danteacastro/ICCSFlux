@@ -148,8 +148,8 @@ function handleOverlayClick() {
 }
 
 .login-dialog {
-  background: var(--color-background, #1e1e1e);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   width: 100%;
   max-width: 400px;
@@ -171,20 +171,20 @@ function handleOverlayClick() {
 .login-header {
   padding: 24px 24px 16px;
   text-align: center;
-  border-bottom: 1px solid var(--color-border, #3e3e3e);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .login-header h2 {
   margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
-  color: var(--color-text, #ffffff);
+  color: var(--text-primary);
 }
 
 .login-subtitle {
   margin: 8px 0 0;
   font-size: 0.875rem;
-  color: var(--color-text-muted, #888888);
+  color: var(--text-muted);
 }
 
 .login-form {
@@ -200,24 +200,24 @@ function handleOverlayClick() {
   margin-bottom: 6px;
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--color-text, #ffffff);
+  color: var(--text-primary);
 }
 
 .form-group input {
   width: 100%;
   padding: 10px 12px;
   font-size: 1rem;
-  background: var(--color-background-soft, #2a2a2a);
-  border: 1px solid var(--color-border, #3e3e3e);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  color: var(--color-text, #ffffff);
+  color: var(--text-primary);
   transition: border-color 0.2s, box-shadow 0.2s;
   box-sizing: border-box;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: var(--color-primary, #007acc);
+  border-color: var(--color-accent);
   box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.2);
 }
 
@@ -227,7 +227,7 @@ function handleOverlayClick() {
 }
 
 .form-group input::placeholder {
-  color: var(--color-text-muted, #666666);
+  color: var(--text-muted);
 }
 
 .password-wrapper {
@@ -295,23 +295,23 @@ function handleOverlayClick() {
 
 .btn-cancel {
   background: transparent;
-  border: 1px solid var(--color-border, #3e3e3e);
-  color: var(--color-text-muted, #888888);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
 }
 
 .btn-cancel:hover:not(:disabled) {
-  background: var(--color-background-soft, #2a2a2a);
-  border-color: var(--color-text-muted, #666666);
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
 }
 
 .btn-login {
-  background: var(--color-primary, #007acc);
+  background: var(--color-accent);
   border: none;
   color: white;
 }
 
 .btn-login:hover:not(:disabled) {
-  background: var(--color-primary-hover, #0098ff);
+  background: var(--color-accent-light);
 }
 
 .btn-login:disabled {
@@ -336,13 +336,13 @@ function handleOverlayClick() {
 
 .login-footer {
   padding: 16px 24px;
-  border-top: 1px solid var(--color-border, #3e3e3e);
+  border-top: 1px solid var(--border-color);
   text-align: center;
 }
 
 .security-notice {
   margin: 0;
   font-size: 0.75rem;
-  color: var(--color-text-muted, #666666);
+  color: var(--text-muted);
 }
 </style>

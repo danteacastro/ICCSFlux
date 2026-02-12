@@ -70,8 +70,8 @@ const alarmState = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -79,12 +79,12 @@ const alarmState = computed(() => {
 }
 
 .hmi-numeric.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-numeric.warning {
-  border-color: #FFD700;
+  border-color: var(--hmi-warning, #FFD700);
   border-width: 2px;
 }
 
@@ -93,8 +93,8 @@ const alarmState = computed(() => {
 }
 
 .hmi-numeric-label {
-  background: #C0C0C0;
-  color: #333;
+  background: var(--hmi-label-bg, #C0C0C0);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(7px, 22%, 11px);
   font-weight: 600;
   text-transform: uppercase;
@@ -118,7 +118,7 @@ const alarmState = computed(() => {
 }
 
 .hmi-numeric-value {
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(10px, 50%, 24px);
   font-weight: 700;
@@ -126,15 +126,15 @@ const alarmState = computed(() => {
 }
 
 .alarm .hmi-numeric-value {
-  color: #FF0000;
+  color: var(--hmi-alarm, #FF0000);
 }
 
 .warning .hmi-numeric-value {
-  color: #FF8C00;
+  color: var(--hmi-warning-text, #FF8C00);
 }
 
 .hmi-numeric-unit {
-  color: #888;
+  color: var(--hmi-muted-text, #888);
   font-size: clamp(7px, 30%, 12px);
   font-weight: 400;
 }

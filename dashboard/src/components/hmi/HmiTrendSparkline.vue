@@ -121,8 +121,8 @@ const alarmState = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -130,18 +130,18 @@ const alarmState = computed(() => {
 }
 
 .hmi-sparkline.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-sparkline.warning {
-  border-color: #FFD700;
+  border-color: var(--hmi-warning, #FFD700);
   border-width: 2px;
 }
 
 .hmi-spark-label {
-  background: #C0C0C0;
-  color: #333;
+  background: var(--hmi-label-bg, #C0C0C0);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(6px, 18%, 9px);
   font-weight: 600;
   text-transform: uppercase;
@@ -173,28 +173,28 @@ const alarmState = computed(() => {
   display: flex;
   align-items: baseline;
   gap: 2px;
-  background: rgba(212, 212, 212, 0.85);
+  background: var(--hmi-spark-value-bg, rgba(212, 212, 212, 0.85));
   padding: 0 3px;
   border-radius: 1px;
 }
 
 .hmi-spark-num {
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(8px, 28%, 12px);
   font-weight: 700;
 }
 
 .alarm .hmi-spark-num {
-  color: #FF0000;
+  color: var(--hmi-alarm, #FF0000);
 }
 
 .warning .hmi-spark-num {
-  color: #FF8C00;
+  color: var(--hmi-warning-text, #FF8C00);
 }
 
 .hmi-spark-unit {
-  color: #888;
+  color: var(--hmi-muted-text, #888);
   font-size: clamp(6px, 18%, 9px);
 }
 </style>

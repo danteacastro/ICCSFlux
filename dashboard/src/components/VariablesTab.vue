@@ -1001,12 +1001,12 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: var(--color-primary);
+  background: var(--color-accent);
   color: white;
 }
 
 .btn-secondary {
-  background: var(--bg-tertiary);
+  background: var(--bg-elevated);
   color: var(--text-primary);
 }
 
@@ -1016,12 +1016,12 @@ onMounted(() => {
 }
 
 .btn-danger {
-  background: var(--color-danger);
+  background: var(--color-error);
   color: white;
 }
 
 .required {
-  color: var(--color-danger);
+  color: var(--color-error);
 }
 
 .btn-sm {
@@ -1106,11 +1106,11 @@ onMounted(() => {
 }
 
 .checkbox-grid .checkbox-label:hover {
-  border-color: var(--color-primary);
+  border-color: var(--color-accent);
 }
 
 .checkbox-grid .checkbox-label input:checked + span {
-  color: var(--color-primary);
+  color: var(--color-accent);
   font-weight: 500;
 }
 
@@ -1159,7 +1159,7 @@ onMounted(() => {
 }
 
 .formula-block-card.error {
-  border-color: var(--color-danger);
+  border-color: var(--color-error);
 }
 
 .block-header {
@@ -1206,7 +1206,7 @@ onMounted(() => {
 }
 
 .toggle-off {
-  background: #666;
+  background: var(--text-muted);
 }
 
 .toggle-on::after,
@@ -1235,7 +1235,7 @@ onMounted(() => {
   justify-content: center;
   width: 18px;
   height: 18px;
-  background: var(--color-danger);
+  background: var(--color-error);
   color: white;
   border-radius: 50%;
   font-weight: bold;
@@ -1255,11 +1255,11 @@ onMounted(() => {
 
 .block-error {
   background: rgba(239, 68, 68, 0.15);
-  border: 1px solid var(--color-danger);
+  border: 1px solid var(--color-error);
   border-radius: 4px;
   padding: 0.5rem;
   font-size: 0.8rem;
-  color: var(--color-danger);
+  color: var(--color-error);
   margin-bottom: 0.75rem;
 }
 
@@ -1287,7 +1287,7 @@ onMounted(() => {
 .output-name {
   font-family: 'JetBrains Mono', 'Consolas', monospace;
   font-size: 0.85rem;
-  color: var(--color-primary);
+  color: var(--color-accent);
 }
 
 .output-value {

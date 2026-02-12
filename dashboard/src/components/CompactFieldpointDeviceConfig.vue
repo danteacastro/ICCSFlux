@@ -945,7 +945,7 @@ onMounted(() => {
 <style scoped>
 .cfp-config {
   padding: 1rem;
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   margin-bottom: 1rem;
 }
@@ -988,7 +988,7 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-header h3 {
@@ -1058,8 +1058,8 @@ onMounted(() => {
 }
 
 .device-card {
-  background: var(--bg-tertiary, #252525);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 0.75rem;
   cursor: pointer;
@@ -1141,7 +1141,7 @@ onMounted(() => {
 .device-details {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 /* Slots Section */
@@ -1158,8 +1158,8 @@ onMounted(() => {
 }
 
 .slot-card {
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 0.5rem;
 }
@@ -1202,8 +1202,8 @@ onMounted(() => {
 .module-select {
   width: 100%;
   padding: 0.35rem;
-  background: var(--bg-secondary, #1e1e1e);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
   color: white;
   font-size: 0.75rem;
@@ -1232,8 +1232,8 @@ onMounted(() => {
 .prefix-input {
   flex: 1;
   padding: 0.25rem 0.4rem;
-  background: var(--bg-secondary, #1e1e1e);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
   color: white;
   font-size: 0.7rem;
@@ -1311,7 +1311,7 @@ onMounted(() => {
 }
 
 .modal {
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   width: 90%;
   max-width: 500px;
@@ -1324,7 +1324,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -1362,13 +1362,13 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 0.5rem;
   padding: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .form-group {
   margin-bottom: 1rem;
   padding: 0.75rem;
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
   border-radius: 6px;
 }
 
@@ -1393,8 +1393,8 @@ onMounted(() => {
 .form-row select {
   width: 100%;
   padding: 0.5rem;
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: white;
 }

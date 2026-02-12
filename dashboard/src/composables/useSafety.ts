@@ -126,11 +126,19 @@ export function useSafety() {
     }
   }
 
-  // Initialize configs from channel configs
+  // Initialize configs from channel configs and propagate limit changes
   function initializeAlarmConfigs() {
     Object.keys(store.channels).forEach(name => {
       if (!alarmConfigs.value[name]) {
         alarmConfigs.value[name] = createDefaultAlarmConfig(name)
+      } else {
+        // Propagate updated channel limits to existing alarm config
+        const channelConfig = store.channels[name]
+        const cfg = alarmConfigs.value[name]
+        if (channelConfig?.high_limit !== undefined) cfg.high_high = channelConfig.high_limit
+        if (channelConfig?.high_warning !== undefined) cfg.high = channelConfig.high_warning
+        if (channelConfig?.low_warning !== undefined) cfg.low = channelConfig.low_warning
+        if (channelConfig?.low_limit !== undefined) cfg.low_low = channelConfig.low_limit
       }
     })
   }
@@ -358,6 +366,9 @@ export function useSafety() {
 
     // Reset auto-execute flag to default
     autoExecuteSafetyActions.value = true
+
+    // Reset condition delay tracking (prevents stale delay timers across projects)
+    conditionDelayState.value = {}
 
     // Reset first-out tracking
     firstOutAlarmId.value = null
@@ -721,7 +732,12 @@ export function useSafety() {
         channel: c.channel,
         operator: c.operator,
         value: c.value,
-        delay_s: c.delay_s
+        invert: c.invert,
+        delay_s: c.delay_s,
+        alarmId: c.alarmId,
+        alarmState: c.alarmState,
+        variableId: c.variableId,
+        expression: c.expression
       })),
       controls: interlock.controls
     }
@@ -731,6 +747,43 @@ export function useSafety() {
 
   function syncAllInterlocksToBackend() {
     interlocks.value.forEach(syncInterlockToBackend)
+  }
+
+  function syncAlarmConfigsToBackend() {
+    if (!mqtt.connected.value) return
+    const configs = Object.values(alarmConfigs.value).map(cfg => ({
+      id: cfg.id,
+      channel: cfg.channel,
+      name: cfg.name,
+      enabled: cfg.enabled,
+      severity: cfg.severity,
+      high_high: cfg.high_high,
+      high: cfg.high,
+      low: cfg.low,
+      low_low: cfg.low_low,
+      deadband: cfg.deadband,
+      on_delay_s: cfg.on_delay_s,
+      off_delay_s: cfg.off_delay_s,
+      behavior: cfg.behavior,
+      group: cfg.group,
+    }))
+    mqtt.sendCommand('alarms/config/sync', { configs })
+  }
+
+  function acknowledgeTrip(interlockId: string, reason: string = '') {
+    if (!mqtt.connected.value) return
+    const auth = useAuth()
+    const user = auth.currentUser.value?.username || 'operator'
+    mqtt.sendCommand('interlocks/acknowledge_trip', {
+      id: interlockId,
+      user,
+      reason
+    })
+    // Record in local history
+    const interlock = interlocks.value.find(i => i.id === interlockId)
+    if (interlock) {
+      recordInterlockEvent(interlock, 'trip_acknowledged', user, reason)
+    }
   }
 
   // ============================================
@@ -1141,7 +1194,10 @@ export function useSafety() {
         enabled: false,
         failedConditions: [],
         controls: interlock.controls,
-        conditionsWithDelay: []
+        conditionsWithDelay: [],
+        priority: interlock.priority,
+        silRating: interlock.silRating,
+        requiresAcknowledgment: interlock.requiresAcknowledgment,
       }
     }
 
@@ -1164,7 +1220,10 @@ export function useSafety() {
         enabled: true,
         failedConditions: [],
         controls: interlock.controls,
-        conditionsWithDelay: []
+        conditionsWithDelay: [],
+        priority: interlock.priority,
+        silRating: interlock.silRating,
+        requiresAcknowledgment: interlock.requiresAcknowledgment,
       }
     }
 
@@ -1243,7 +1302,10 @@ export function useSafety() {
       enabled: true,
       failedConditions,
       controls: interlock.controls,
-      conditionsWithDelay
+      conditionsWithDelay,
+      priority: interlock.priority,
+      silRating: interlock.silRating,
+      requiresAcknowledgment: interlock.requiresAcknowledgment,
     }
   }
 
@@ -1901,6 +1963,15 @@ export function useSafety() {
     // Auto-save alarm configs on change
     watch(alarmConfigs, saveAlarmConfigs, { deep: true })
 
+    // Debounced auto-sync alarm configs to backend when changed
+    let alarmSyncTimer: ReturnType<typeof setTimeout> | null = null
+    watch(alarmConfigs, () => {
+      if (alarmSyncTimer) clearTimeout(alarmSyncTimer)
+      alarmSyncTimer = setTimeout(() => {
+        syncAlarmConfigsToBackend()
+      }, 2000)  // 2 second debounce
+    }, { deep: true })
+
     // Auto-save history periodically
     watch(alarmHistory, () => {
       if (alarmHistory.value.length % 10 === 0) {
@@ -2290,6 +2361,10 @@ export function useSafety() {
     // Backend sync
     syncInterlockToBackend,
     syncAllInterlocksToBackend,
+    syncAlarmConfigsToBackend,
+
+    // Trip acknowledgment (IEC 61511)
+    acknowledgeTrip,
 
     // Interlock trip system
     hasFailedInterlocks,

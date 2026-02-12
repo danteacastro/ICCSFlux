@@ -164,7 +164,7 @@ onUnmounted(() => clearConfirmTimer())
   justify-content: center;
   height: 100%;
   padding: 4px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   container-type: size;
@@ -218,7 +218,7 @@ onUnmounted(() => clearConfirmTimer())
 .label {
   font-size: 0.65rem;
   font-weight: 500;
-  color: #aaa;
+  color: var(--text-secondary);
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -262,7 +262,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .toggle-switch.blocked {
-  border: 2px solid #dc2626;
+  border: 2px solid var(--color-error-dark);
   animation: pulse-blocked 2s ease-in-out infinite;
 }
 
@@ -307,7 +307,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .confirm-btn.yes {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .confirm-btn.no {

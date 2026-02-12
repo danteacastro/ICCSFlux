@@ -97,7 +97,7 @@ const customStyles = computed(() => {
   const styles: Record<string, string> = {}
   const bgColor = props.style?.backgroundColor || props.backgroundColor
   if (bgColor) {
-    styles['--widget-bg'] = bgColor
+    styles['--bg-widget'] = bgColor
   }
   const textColor = props.style?.textColor || props.valueColor
   if (textColor) {
@@ -136,7 +136,7 @@ const customStyles = computed(() => {
   justify-content: center;
   height: 100%;
   padding: 4px 6px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   box-sizing: border-box;
@@ -195,7 +195,7 @@ const customStyles = computed(() => {
 .label {
   font-size: 0.65rem;
   font-weight: 500;
-  color: #aaa;
+  color: var(--text-secondary);
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -220,7 +220,7 @@ const customStyles = computed(() => {
 
 .unit {
   font-size: 0.55rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .normal .value {
@@ -228,7 +228,7 @@ const customStyles = computed(() => {
 }
 
 .stale .value {
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Disconnected - hardware not connected (amber/orange) */
@@ -275,7 +275,7 @@ const customStyles = computed(() => {
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background-color: var(--widget-bg, #1a1a2e); }
+  0%, 100% { background-color: var(--bg-widget); }
   50% { background-color: #3f1515; }
 }
 

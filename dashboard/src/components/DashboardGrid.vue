@@ -223,6 +223,10 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   // General title prop (for widgets that support it like alarm_summary, interlock_status)
   if (widget.title !== undefined && widget.type !== 'title') props.title = widget.title
 
+  // Image widget props
+  if (widget.imageUrl) props.imageUrl = widget.imageUrl
+  if (widget.imageFit) props.imageFit = widget.imageFit
+
   // HeaterZone props
   if (widget.pvChannel) props.pvChannel = widget.pvChannel
   if (widget.spChannel) props.spChannel = widget.spChannel
@@ -237,6 +241,7 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
 }
 
 function removeWidget(id: string) {
+  selectedWidgets.value.delete(id)
   store.removeWidget(id)
 }
 
@@ -364,6 +369,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('symbol-port-click', handleSymbolPortClick as EventListener)
+  // Safety: reset drag state on unmount to prevent stuck state
+  isDragging.value = false
+  draggingWidgetId.value = null
 })
 
 // ========================================================================
@@ -438,7 +446,7 @@ function handlePidPipeSelect(id: string | null) {
     >
       <GridItem
         v-for="item in layoutItems"
-        :key="`${store.layoutVersion}-${item.i}-${item.label || ''}-${item.channel || ''}`"
+        :key="`${store.layoutVersion}-${item.i}`"
         :x="item.x"
         :y="item.y"
         :w="item.w"
@@ -533,8 +541,8 @@ function handlePidPipeSelect(id: string | null) {
   top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(59, 130, 246, 0.9);
-  color: white;
+  background: var(--color-accent);
+  color: var(--text-primary);
   padding: 4px 12px;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -549,7 +557,7 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .widget-wrapper.edit-mode {
-  outline: 1px dashed #4a5568;
+  outline: 1px dashed var(--border-color);
   outline-offset: -1px;
   cursor: move;
   user-select: none;
@@ -557,11 +565,11 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .widget-wrapper.edit-mode:hover {
-  outline-color: #60a5fa;
+  outline-color: var(--color-accent-light);
 }
 
 .widget-wrapper.selected {
-  outline: 2px solid #3b82f6 !important;
+  outline: 2px solid var(--color-accent) !important;
   outline-offset: -1px;
 }
 
@@ -587,10 +595,10 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .config-btn {
-  background: rgba(30, 58, 95, 0.9);
-  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
-  color: #93c5fd;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 3px 5px;
   display: flex;
@@ -599,15 +607,15 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .config-btn:hover {
-  background: rgba(59, 130, 246, 0.95);
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .remove-btn {
-  background: rgba(116, 42, 42, 0.9);
-  border: 1px solid rgba(155, 44, 44, 0.5);
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-dark);
   border-radius: 3px;
-  color: #feb2b2;
+  color: var(--color-error-light);
   cursor: pointer;
   padding: 3px 5px;
   display: flex;
@@ -616,8 +624,8 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .remove-btn:hover {
-  background: rgba(155, 44, 44, 0.95);
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .widget-content {
@@ -635,7 +643,7 @@ function handlePidPipeSelect(id: string | null) {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -643,8 +651,8 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   min-width: 300px;
@@ -655,7 +663,7 @@ function handlePidPipeSelect(id: string | null) {
 
 .modal h3 {
   margin: 0 0 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
@@ -675,25 +683,25 @@ function handlePidPipeSelect(id: string | null) {
   padding: 4px;
   border-radius: 4px;
   cursor: pointer;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .channel-option:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .channel-option .unit {
   margin-left: auto;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 
 .close-btn {
   width: 100%;
   padding: 8px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -701,6 +709,6 @@ function handlePidPipeSelect(id: string | null) {
 }
 
 .close-btn:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 </style>

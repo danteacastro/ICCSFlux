@@ -68,6 +68,7 @@ export interface SequenceStepBase {
   enabled: boolean
   label?: string
   notes?: string              // Documentation/comments for the step
+  symbolRef?: string          // P&ID symbol ID for procedure overlay (#6.5)
 }
 
 export interface RampStep extends SequenceStepBase {

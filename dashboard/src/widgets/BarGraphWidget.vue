@@ -184,7 +184,7 @@ const statusClass = computed(() => {
   flex-direction: column;
   height: 100%;
   padding: 6px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   container-type: size;
@@ -192,7 +192,7 @@ const statusClass = computed(() => {
 
 .label {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   text-align: center;
   margin-bottom: 4px;
@@ -280,7 +280,7 @@ const statusClass = computed(() => {
 
 .bar-track {
   flex: 1;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 4px;
   overflow: visible;
   position: relative;
@@ -337,19 +337,19 @@ const statusClass = computed(() => {
   font-size: 0.9rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .unit {
   font-size: 0.6rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .range-labels {
   display: flex;
   justify-content: space-between;
   font-size: 0.5rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 2px;
 }
 
@@ -383,11 +383,11 @@ const statusClass = computed(() => {
 }
 
 .stale .value {
-  color: #666;
+  color: var(--text-muted);
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background-color: #1a1a2e; }
+  0%, 100% { background-color: var(--bg-widget); }
   50% { background-color: #3f1515; }
 }
 
@@ -409,7 +409,7 @@ const statusClass = computed(() => {
   max-width: 60px;
   background: linear-gradient(90deg, #1a1a2e 0%, #252540 50%, #1a1a2e 100%);
   border-radius: 6px 6px 12px 12px;
-  border: 2px solid #3a3a5a;
+  border: 2px solid var(--border-light);
   position: relative;
   overflow: hidden;
 }
@@ -460,13 +460,13 @@ const statusClass = computed(() => {
   content: '';
   width: 6px;
   height: 1px;
-  background: #666;
+  background: var(--text-muted);
   margin-right: 2px;
 }
 
 .tank-graduations .grad-label {
   font-size: 0.5rem;
-  color: #666;
+  color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -480,12 +480,12 @@ const statusClass = computed(() => {
   font-size: 0.9rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .tank-value .unit {
   font-size: 0.6rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* ========== THERMOMETER STYLE ========== */
@@ -507,7 +507,7 @@ const statusClass = computed(() => {
   max-width: 20px;
   background: linear-gradient(90deg, #1a1a2e 0%, #252540 50%, #1a1a2e 100%);
   border-radius: 8px 8px 0 0;
-  border: 2px solid #3a3a5a;
+  border: 2px solid var(--border-light);
   border-bottom: none;
   position: relative;
   overflow: hidden;
@@ -542,7 +542,7 @@ const statusClass = computed(() => {
   max-width: 32px;
   max-height: 32px;
   border-radius: 50%;
-  border: 2px solid #3a3a5a;
+  border: 2px solid var(--border-light);
   position: relative;
   z-index: 2;
   box-shadow: inset 0 -4px 8px rgba(0,0,0,0.3);
@@ -579,13 +579,13 @@ const statusClass = computed(() => {
   content: '';
   width: 4px;
   height: 1px;
-  background: #666;
+  background: var(--text-muted);
   margin-right: 2px;
 }
 
 .thermo-graduations .grad-label {
   font-size: 0.45rem;
-  color: #666;
+  color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -600,12 +600,12 @@ const statusClass = computed(() => {
   font-size: 0.85rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .thermo-value .unit {
   font-size: 0.55rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* Status colors for tank/thermometer */
@@ -628,6 +628,6 @@ const statusClass = computed(() => {
 
 .bar-graph-widget.tank.stale .tank-value .value,
 .bar-graph-widget.thermometer.stale .thermo-value .value {
-  color: #666;
+  color: var(--text-muted);
 }
 </style>

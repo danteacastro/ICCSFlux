@@ -67,9 +67,14 @@ const hasActiveAlarms = computed(() => activeAlarmCount.value > 0)
 
 // Calculate data freshness
 const lastUpdate = computed(() => {
-  const firstValue = Object.values(store.values)[0]
-  if (!firstValue?.timestamp) return null
-  return firstValue.timestamp
+  const values = Object.values(store.values)
+  if (values.length === 0) return null
+  let maxTs = 0
+  for (const v of values) {
+    if (!v) continue
+    if (v.timestamp && v.timestamp > maxTs) maxTs = v.timestamp
+  }
+  return maxTs > 0 ? maxTs : null
 })
 
 const dataAge = computed(() => {
@@ -183,7 +188,7 @@ const isDataStale = computed(() => {
   justify-content: center;
   height: 100%;
   padding: 4px 6px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 4px;
@@ -202,7 +207,7 @@ const isDataStale = computed(() => {
   align-items: center;
   gap: 3px;
   padding: 2px 6px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
 }
 
@@ -210,27 +215,27 @@ const isDataStale = computed(() => {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   flex-shrink: 0;
 }
 
 .status-item.ok .dot {
-  background: #22c55e;
-  box-shadow: 0 0 4px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
 }
 
 .status-item.error .dot {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .status-item.inactive .dot {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .status-item .label {
   font-size: 0.55rem;
   font-weight: 600;
-  color: #9ca3af;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
@@ -283,12 +288,12 @@ const isDataStale = computed(() => {
   font-size: 0.75rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .stat .label {
   font-size: 0.5rem;
-  color: #6b7280;
+  color: var(--text-dim);
   text-transform: uppercase;
 }
 
@@ -296,7 +301,7 @@ const isDataStale = computed(() => {
   font-size: 0.5rem;
   padding: 1px 4px;
   background: #7c3aed;
-  color: #fff;
+  color: var(--text-primary);
   border-radius: 2px;
   font-weight: 700;
 }
@@ -330,14 +335,14 @@ const isDataStale = computed(() => {
 }
 
 .activity-item.sequence-running {
-  background: #1e3a5f;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
   animation: pulse-seq 2s infinite;
 }
 
 .activity-item.idle {
-  background: #1a1a2e;
-  color: #6b7280;
+  background: var(--bg-widget);
+  color: var(--text-dim);
 }
 
 .activity-item.alarms-active {
@@ -367,7 +372,7 @@ const isDataStale = computed(() => {
 .health-label {
   font-size: 0.5rem;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--text-dim);
   width: 28px;
   flex-shrink: 0;
 }
@@ -375,14 +380,14 @@ const isDataStale = computed(() => {
 .health-bar {
   flex: 1;
   height: 4px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .health-fill {
   height: 100%;
-  background: #22c55e;
+  background: var(--color-success);
   border-radius: 2px;
   transition: width 0.3s ease;
 }
@@ -392,14 +397,14 @@ const isDataStale = computed(() => {
 }
 
 .health-item.critical .health-fill {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .health-value {
   font-size: 0.5rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
-  color: #9ca3af;
+  color: var(--text-muted);
   width: 32px;
   text-align: right;
   flex-shrink: 0;

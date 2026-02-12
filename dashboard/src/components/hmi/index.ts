@@ -18,6 +18,7 @@ const registry: Record<string, Component> = {
   hmi_annunciator: defineAsyncComponent(() => import('./HmiAlarmAnnunciator.vue')),
   hmi_sparkline: defineAsyncComponent(() => import('./HmiTrendSparkline.vue')),
   hmi_valve_pos: defineAsyncComponent(() => import('./HmiValvePosition.vue')),
+  hmi_interlock: defineAsyncComponent(() => import('./HmiInterlockBlock.vue')),
 }
 
 export function getHmiComponent(type: string): Component | null {

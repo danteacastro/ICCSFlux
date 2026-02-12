@@ -60,7 +60,7 @@ const lineStyle = computed(() => props.style?.lineStyle || 'solid')
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   padding: 0 8px;
   font-size: 0.7rem;
   font-weight: 600;

@@ -325,8 +325,8 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -339,7 +339,7 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 .section-label {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   margin-right: 4px;
 }
 
@@ -348,10 +348,10 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
   align-items: center;
   gap: 5px;
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #aaa;
+  color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
@@ -359,19 +359,19 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 }
 
 .action-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
-  border-color: #3a3a5a;
+  background: var(--border-color);
+  color: var(--text-primary);
+  border-color: var(--border-light);
 }
 
 .action-btn.dirty {
-  border-color: #f59e0b;
+  border-color: var(--color-warning);
 }
 
 .dirty-dot {
   width: 6px;
   height: 6px;
-  background: #f59e0b;
+  background: var(--color-warning);
   border-radius: 50%;
   margin-left: 2px;
 }
@@ -385,28 +385,28 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 
 .current-project-info .project-name {
   font-size: 0.85rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-weight: 500;
 }
 
 .current-project-info.no-project .project-name {
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .config-badge {
   font-size: 0.7rem;
   padding: 2px 8px;
-  background: #1e3a5f;
+  background: var(--color-accent-bg);
   border-radius: 3px;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Modal styles */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -414,8 +414,8 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 20px;
   min-width: 360px;
@@ -424,18 +424,18 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 
 .modal h3 {
   margin: 0 0 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1.1rem;
 }
 
 .modal-desc {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin: 0 0 16px;
 }
 
 .modal p {
-  color: #aaa;
+  color: var(--text-muted);
   margin: 0 0 16px;
   font-size: 0.9rem;
 }
@@ -443,17 +443,17 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 .modal input {
   width: 100%;
   padding: 10px 12px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
   margin-bottom: 16px;
 }
 
 .modal input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .modal-actions {
@@ -478,30 +478,30 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-warning {
-  background: #d97706;
-  color: #fff;
+  background: var(--color-warning-dark);
+  color: var(--text-primary);
 }
 
 .btn-warning:hover:not(:disabled) {
-  background: #b45309;
+  background: var(--color-warning-dark);
 }
 
 /* Open modal */
@@ -515,14 +515,14 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 .loading, .empty {
   padding: 32px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .project-list {
   max-height: 320px;
   overflow-y: auto;
   margin-bottom: 16px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -531,7 +531,7 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -541,11 +541,11 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 }
 
 .project-item:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .project-item.active {
-  background: #1e3a5f;
+  background: var(--color-accent-bg);
 }
 
 .project-info {
@@ -555,7 +555,7 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 
 .project-info .project-name {
   display: block;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
   margin-bottom: 4px;
 }
@@ -568,29 +568,29 @@ const hasChanges = computed(() => projectFiles.hasUnsavedChanges())
 }
 
 .project-meta .date {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .config-ref {
-  background: #0f0f1a;
+  background: var(--bg-input);
   padding: 2px 6px;
   border-radius: 2px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .delete-btn {
   padding: 6px;
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.15s;
 }
 
 .delete-btn:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 .confirm-modal {

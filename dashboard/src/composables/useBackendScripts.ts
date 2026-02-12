@@ -364,6 +364,10 @@ export function useBackendScripts() {
   // SCRIPT CRUD (send to backend)
   // ===========================================================================
 
+  // Backend limits: script name max 256 chars, code max 256 KB
+  const MAX_SCRIPT_NAME_LENGTH = 256
+  const MAX_SCRIPT_CODE_LENGTH = 256 * 1024
+
   function addScript(script: {
     id?: string  // Allow passing existing ID to preserve identity
     name: string
@@ -373,6 +377,18 @@ export function useBackendScripts() {
     enabled?: boolean
     autoRestart?: boolean
   }): string {
+    // Validate limits before sending to backend
+    if (script.name.length > MAX_SCRIPT_NAME_LENGTH) {
+      const scriptsComposable = useScripts()
+      scriptsComposable.addNotification('error', 'Script Name Too Long', `Name must be ${MAX_SCRIPT_NAME_LENGTH} characters or fewer`)
+      return ''
+    }
+    if (script.code.length > MAX_SCRIPT_CODE_LENGTH) {
+      const scriptsComposable = useScripts()
+      scriptsComposable.addNotification('error', 'Script Code Too Large', `Code must be ${MAX_SCRIPT_CODE_LENGTH / 1024} KB or smaller`)
+      return ''
+    }
+
     // Use provided ID or generate new one
     const id = script.id || `script_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
     const now = new Date().toISOString()
@@ -418,6 +434,18 @@ export function useBackendScripts() {
     enabled: boolean
     autoRestart: boolean
   }>) {
+    // Validate limits before sending to backend
+    if (updates.name !== undefined && updates.name.length > MAX_SCRIPT_NAME_LENGTH) {
+      const scriptsComposable = useScripts()
+      scriptsComposable.addNotification('error', 'Script Name Too Long', `Name must be ${MAX_SCRIPT_NAME_LENGTH} characters or fewer`)
+      return
+    }
+    if (updates.code !== undefined && updates.code.length > MAX_SCRIPT_CODE_LENGTH) {
+      const scriptsComposable = useScripts()
+      scriptsComposable.addNotification('error', 'Script Code Too Large', `Code must be ${MAX_SCRIPT_CODE_LENGTH / 1024} KB or smaller`)
+      return
+    }
+
     // OPTIMISTIC UPDATE: Update local state immediately so projectFiles.saveNow()
     // has the latest data before the MQTT round-trip completes
     const existingScript = scripts.value[id]

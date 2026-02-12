@@ -120,8 +120,8 @@ const alarmState = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -130,17 +130,17 @@ const alarmState = computed(() => {
 }
 
 .hmi-bar.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-bar.warning {
-  border-color: #FFD700;
+  border-color: var(--hmi-warning, #FFD700);
   border-width: 2px;
 }
 
 .hmi-bar-label {
-  color: #555;
+  color: var(--hmi-subtle-text, #555);
   font-size: clamp(6px, 18%, 9px);
   font-weight: 600;
   text-transform: uppercase;
@@ -156,8 +156,8 @@ const alarmState = computed(() => {
   position: relative;
   flex: 1;
   min-height: 8px;
-  background: #E8E8E8;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-inactive-bg, #E8E8E8);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 1px;
 }
 
@@ -168,11 +168,11 @@ const alarmState = computed(() => {
 }
 
 .zone-alarm-low, .zone-alarm-high {
-  background: rgba(255, 0, 0, 0.15);
+  background: var(--hmi-alarm-zone, rgba(255, 0, 0, 0.15));
 }
 
 .zone-warning-low, .zone-warning-high {
-  background: rgba(255, 215, 0, 0.10);
+  background: var(--hmi-warning-zone, rgba(255, 215, 0, 0.10));
 }
 
 .hmi-bar-pointer {
@@ -193,22 +193,22 @@ const alarmState = computed(() => {
 }
 
 .hmi-bar-num {
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(7px, 24%, 12px);
   font-weight: 700;
 }
 
 .alarm .hmi-bar-num {
-  color: #FF0000;
+  color: var(--hmi-alarm, #FF0000);
 }
 
 .warning .hmi-bar-num {
-  color: #FF8C00;
+  color: var(--hmi-warning-text, #FF8C00);
 }
 
 .hmi-bar-unit {
-  color: #888;
+  color: var(--hmi-muted-text, #888);
   font-size: clamp(6px, 18%, 9px);
 }
 </style>

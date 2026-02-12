@@ -222,7 +222,7 @@ watch(() => props.text, (newText) => {
   align-items: center;
   height: 100%;
   padding: 4px 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 600;
   position: relative;
   border-radius: 4px;
@@ -250,10 +250,10 @@ watch(() => props.text, (newText) => {
 }
 
 .edit-input {
-  background: #1a1a2e;
-  border: 1px solid #3b82f6;
+  background: var(--bg-widget);
+  border: 1px solid var(--color-accent);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: inherit;
   font-weight: inherit;
   padding: 2px 6px;
@@ -283,7 +283,7 @@ watch(() => props.text, (newText) => {
 
 .settings-btn:hover {
   background: #4a5568;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* Modal styles */
@@ -298,8 +298,8 @@ watch(() => props.text, (newText) => {
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   min-width: 280px;
@@ -307,7 +307,7 @@ watch(() => props.text, (newText) => {
 
 .modal h3 {
   margin: 0 0 16px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
@@ -331,8 +331,8 @@ watch(() => props.text, (newText) => {
 .btn-group button {
   flex: 1;
   padding: 6px 8px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.75rem;
@@ -342,14 +342,14 @@ watch(() => props.text, (newText) => {
 }
 
 .btn-group button:hover {
-  background: #1a1a2e;
-  color: #fff;
+  background: var(--bg-widget);
+  color: var(--text-primary);
 }
 
 .btn-group button.active {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #fff;
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .color-swatches {
@@ -361,7 +361,7 @@ watch(() => props.text, (newText) => {
 .color-swatch {
   width: 28px;
   height: 28px;
-  border: 2px solid #2a2a4a;
+  border: 2px solid var(--border-color);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
@@ -376,12 +376,12 @@ watch(() => props.text, (newText) => {
 }
 
 .color-swatch.active {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
 }
 
 .color-swatch.transparent {
-  background: repeating-conic-gradient(#333 0% 25%, #1a1a2e 0% 50%) 50% / 10px 10px;
+  background: repeating-conic-gradient(#333 0% 25%, var(--bg-widget) 0% 50%) 50% / 10px 10px;
 }
 
 .transparent-x {
@@ -393,8 +393,8 @@ watch(() => props.text, (newText) => {
 .close-btn {
   width: 100%;
   padding: 8px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -403,6 +403,6 @@ watch(() => props.text, (newText) => {
 }
 
 .close-btn:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 </style>

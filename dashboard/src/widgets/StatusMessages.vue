@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
@@ -21,9 +21,9 @@ const mqtt = useMqtt('nisystem')
 const safety = useSafety()
 const messages = ref<StatusMessage[]>([])
 const isMinimized = ref(false)
+const unsubscribeFns: (() => void)[] = []
 
 // Track previous state for change detection
-let prevAcquiring = false
 let prevAcquisitionState = 'stopped'
 let prevRecording = false
 let prevConnected = false
@@ -99,9 +99,6 @@ watch(() => store.status, (status) => {
     }
     prevAcquisitionState = acquisitionState
   }
-  // Also track the acquiring boolean for backward compatibility
-  prevAcquiring = status.acquiring
-
   // Recording status
   if (status.recording !== prevRecording) {
     if (status.recording) {
@@ -206,28 +203,32 @@ onMounted(() => {
 
   // Set initial states
   if (store.status) {
-    prevAcquiring = store.status.acquiring
+    prevAcquisitionState = store.status.acquisition_state || (store.status.acquiring ? 'running' : 'stopped')
     prevRecording = store.status.recording
     prevConnected = store.status.status === 'online'
     prevSchedulerEnabled = store.status.scheduler_enabled
   }
 
   // Subscribe to alarms/cleared to clear stale alarm messages
-  mqtt.subscribe('nisystem/nodes/+/alarms/cleared', () => {
+  unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/alarms/cleared', () => {
     // Clear all error and warning messages (alarms) from the log
     messages.value = messages.value.filter(m => m.type !== 'error' && m.type !== 'warning')
     // Reset alarm state tracking so new alarms can be logged
     prevAlarmState.clear()
     addMessage('info', 'System', 'Alarms cleared')
-  })
+  }))
 
   // Also subscribe to project/loaded to clear the log when a new project loads
-  mqtt.subscribe('nisystem/nodes/+/project/loaded', () => {
+  unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/project/loaded', () => {
     messages.value = []
     // Reset alarm state tracking for the new project
     prevAlarmState.clear()
     addMessage('info', 'System', 'Project loaded')
-  })
+  }))
+})
+
+onUnmounted(() => {
+  unsubscribeFns.forEach(fn => fn())
 })
 
 const messageTypeIcon = {
@@ -356,7 +357,7 @@ const hasError = computed(() => {
   max-height: 280px;
   background: rgba(15, 15, 26, 0.95);
   backdrop-filter: blur(8px);
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -371,7 +372,7 @@ const hasError = computed(() => {
 }
 
 .status-messages.has-error {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.3);
 }
 
@@ -380,7 +381,7 @@ const hasError = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   cursor: pointer;
   user-select: none;
 }
@@ -401,12 +402,12 @@ const hasError = computed(() => {
 }
 
 .title svg {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .unread-badge {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
   font-size: 0.65rem;
   padding: 1px 5px;
   border-radius: 8px;
@@ -432,8 +433,8 @@ const hasError = computed(() => {
 }
 
 .action-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--border-color);
+  color: var(--text-primary);
 }
 
 .messages-container {
@@ -454,7 +455,7 @@ const hasError = computed(() => {
 }
 
 .messages-container::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 2px;
 }
 
@@ -470,21 +471,21 @@ const hasError = computed(() => {
 }
 
 .message.info {
-  border-left-color: #60a5fa;
+  border-left-color: var(--color-accent-light);
 }
 
 .message.success {
-  border-left-color: #22c55e;
+  border-left-color: var(--color-success);
 }
 
 .message.warning {
-  border-left-color: #fbbf24;
-  background: rgba(251, 191, 36, 0.1);
+  border-left-color: var(--color-warning);
+  background: var(--color-warning-bg);
 }
 
 .message.error {
-  border-left-color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
+  border-left-color: var(--color-error);
+  background: var(--color-error-bg);
 }
 
 .message .icon {
@@ -494,10 +495,10 @@ const hasError = computed(() => {
   flex-shrink: 0;
 }
 
-.message.info .icon { color: #60a5fa; }
-.message.success .icon { color: #22c55e; }
-.message.warning .icon { color: #fbbf24; }
-.message.error .icon { color: #ef4444; }
+.message.info .icon { color: var(--color-accent-light); }
+.message.success .icon { color: var(--color-success); }
+.message.warning .icon { color: var(--color-warning); }
+.message.error .icon { color: var(--color-error); }
 
 .message .time {
   color: #555;
@@ -585,15 +586,15 @@ const hasError = computed(() => {
   color: #86efac;
 }
 .status-item.active .dot {
-  background: #22c55e;
-  box-shadow: 0 0 4px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
 }
 
 .status-item.error {
   color: #fca5a5;
 }
 .status-item.error .dot {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .status-item.inactive {
@@ -615,7 +616,7 @@ const hasError = computed(() => {
 }
 
 .status-badge.sim {
-  color: #fbbf24;
+  color: var(--color-warning);
   background: #451a03;
 }
 
@@ -643,7 +644,7 @@ const hasError = computed(() => {
 
 .safety-indicator.blocked {
   background: #78350f;
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .safety-indicator.alarm {

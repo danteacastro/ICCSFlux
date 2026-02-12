@@ -227,7 +227,7 @@ function formatValue(value: number, units?: string): string {
   flex-direction: column;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   overflow: hidden;
@@ -325,7 +325,7 @@ function formatValue(value: number, units?: string): string {
 .value-text {
   font-size: 0.85rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -346,9 +346,9 @@ function formatValue(value: number, units?: string): string {
   width: 80px;
   padding: 4px 6px;
   background: #1f2937;
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--color-accent);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   font-family: 'JetBrains Mono', monospace;
   text-align: right;
@@ -356,7 +356,7 @@ function formatValue(value: number, units?: string): string {
 
 .var-edit input:focus {
   outline: none;
-  border-color: #60a5fa;
+  border-color: var(--color-accent-light);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
@@ -377,21 +377,21 @@ function formatValue(value: number, units?: string): string {
 }
 
 .btn-ok {
-  background: #22c55e;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 
 .btn-ok:hover {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .btn-cancel {
   background: #6b7280;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .btn-cancel:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .empty-state {

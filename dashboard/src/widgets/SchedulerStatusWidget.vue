@@ -122,7 +122,7 @@ function toggleScheduler() {
   flex-direction: column;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
 }

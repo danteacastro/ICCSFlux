@@ -67,35 +67,35 @@ const alarmState = computed(() => {
   aspect-ratio: 1;
   max-width: 36px;
   border-radius: 50%;
-  background: #808080;
-  border: 1px solid #666;
+  background: var(--hmi-led-off, #808080);
+  border: 1px solid var(--hmi-led-off-border, #666);
   transition: background-color 0.2s;
 }
 
 .hmi-led-circle.on {
-  background: #2D862D;
-  border-color: #1A6B1A;
+  background: var(--hmi-led-on, #2D862D);
+  border-color: var(--hmi-led-on-border, #1A6B1A);
 }
 
 .hmi-led-circle.off {
-  background: #808080;
-  border-color: #666;
+  background: var(--hmi-led-off, #808080);
+  border-color: var(--hmi-led-off-border, #666);
 }
 
 .hmi-led-circle.alarm {
-  background: #FF0000;
-  border-color: #CC0000;
+  background: var(--hmi-alarm, #FF0000);
+  border-color: var(--hmi-alarm-dark, #CC0000);
   animation: hmi-flash 1s step-end infinite;
 }
 
 .hmi-led-circle.warning {
-  background: #FFD700;
-  border-color: #CCA600;
+  background: var(--hmi-warning, #FFD700);
+  border-color: var(--hmi-warning-border, #CCA600);
 }
 
 .hmi-led-circle.disconnected {
-  background: #555;
-  border-color: #444;
+  background: var(--hmi-disconnected-bg, #555);
+  border-color: var(--hmi-disconnected-border, #444);
 }
 
 @keyframes hmi-flash {
@@ -104,7 +104,7 @@ const alarmState = computed(() => {
 }
 
 .hmi-led-label {
-  color: #555;
+  color: var(--hmi-subtle-text, #555);
   font-family: 'Segoe UI', Arial, sans-serif;
   font-size: clamp(7px, 24%, 10px);
   font-weight: 600;

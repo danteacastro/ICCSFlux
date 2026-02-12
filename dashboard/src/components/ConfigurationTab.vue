@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, inject } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import type { ChannelType, ChannelConfig, NotificationSettings, NotificationTriggerRules, AlarmSeverityLevel } from '../types'
 import {
@@ -225,6 +225,7 @@ const projectFiles = useProjectFiles()
 const isExporting = ref(false)
 const isReloading = ref(false)
 const isSaving = ref(false)
+const isPopulating = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
 
 // Permission-based edit control (injected from App.vue)
@@ -967,10 +968,13 @@ function deleteSelectedChannels() {
   )
   if (!confirmed) return
 
-  selectedTableChannels.value.forEach(name => {
+  // Capture and clear selection immediately to prevent re-entrancy
+  const channelsToDelete = Array.from(selectedTableChannels.value)
+  selectedTableChannels.value.clear()
+
+  channelsToDelete.forEach(name => {
     deleteChannel(name)
   })
-  selectedTableChannels.value.clear()
   showFeedback('success', `Deleted ${count} channel(s)`)
 }
 
@@ -1196,17 +1200,18 @@ function openAddChannelModal() {
     const tabToType: Record<string, ChannelType> = {
       'thermocouple': 'thermocouple',
       'rtd': 'rtd',
-      'voltage': 'voltage_input',
-      'current': 'current_input',
+      'voltage_input': 'voltage_input',
+      'current_input': 'current_input',
       'voltage_output': 'voltage_output',
       'current_output': 'current_output',
       'digital_input': 'digital_input',
       'digital_output': 'digital_output',
-      'counter': 'counter',
-      'strain': 'strain',
-      'iepe': 'iepe',
-      'modbus': 'modbus_register',  // Default to register for Modbus tab
-      'rest_api': 'voltage'  // REST API doesn't have a specific type, default to voltage
+      'counter': 'counter_input',
+      'pulse_output': 'pulse_output',
+      'strain': 'strain_input',
+      'iepe': 'iepe_input',
+      'modbus': 'modbus_register',
+      'rest_api': 'voltage_input'
     }
     defaultChannelType = tabToType[activeTypeTab.value] || 'thermocouple'
   }
@@ -1302,8 +1307,12 @@ function addNewChannel() {
   mqtt.updateChannelConfig(tagName, config)
   showFeedback('success', `Adding channel: ${tagName}`)
   channelEnabled.value[tagName] = true
-  showAddChannelModal.value = false
+  closeAddChannelModal()
   markDirty()
+}
+
+function closeAddChannelModal() {
+  showAddChannelModal.value = false
 }
 
 function getDefaultUnit(channelType: ChannelType): string {
@@ -1940,6 +1949,10 @@ function scanDevices() {
     return
   }
 
+  // Close any conflicting panels before opening discovery
+  if (showConfigPanel.value) closeConfigPanel()
+  if (showAddChannelModal.value) showAddChannelModal.value = false
+
   // Clear all local discovery state before starting new scan
   // This ensures subsequent scans show fresh results without stale selections
   selectedDiscoveryChannels.value = []
@@ -1951,19 +1964,30 @@ function scanDevices() {
   const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
   const modeLabel = mode === 'cdaq' ? 'cDAQ' : mode === 'crio' ? 'cRIO' : 'Opto22'
   showFeedback('info', `Discovering ${modeLabel} devices...`)
+  userClosedDiscovery.value = false
   mqtt.scanDevices(mode)
   showDiscoveryPanel.value = true
 }
 
+// Track whether the user explicitly closed the discovery panel
+// so that a late-arriving backend result doesn't reopen it
+const userClosedDiscovery = ref(false)
+
 // Close discovery panel and cancel any pending scan
 function closeDiscoveryPanel() {
   showDiscoveryPanel.value = false
+  userClosedDiscovery.value = true
   mqtt.cancelScan()
 }
 
 // Handle discovery result
 mqtt.onDiscovery((result) => {
   console.log('[ConfigTab] onDiscovery callback fired:', result?.success, result?.total_channels)
+  // If user explicitly closed the panel, don't process late-arriving results
+  if (userClosedDiscovery.value) {
+    console.debug('[ConfigTab] Ignoring discovery result - user closed panel')
+    return
+  }
   if (result.success) {
     const totalChannels = result.total_channels || 0
     const chassisCount = result.chassis?.length || 0
@@ -2170,7 +2194,7 @@ function getDefaultLimits(channelType: string): { low: number, high: number, low
     current: { low: 0, high: 20, lowWarn: 4, highWarn: 20 },
     strain: { low: -5000, high: 5000 },
     iepe: { low: -50, high: 50 },
-    counter: { low: 0, high: 1000000 },
+    counter: { low: 0, high: 4294967295 },
     digital_input: { low: 0, high: 1 },
     digital_output: { low: 0, high: 1 },
     voltage_output: { low: -10, high: 10 },
@@ -2367,13 +2391,33 @@ function addSelectedChannels() {
     channelEnabled.value[tagName] = true
   })
 
+  // Show populating indicator
+  isPopulating.value = true
+  const channelCount = selectedChannels.length
+
   // Use bulk create for efficiency (sends all at once)
   mqtt.bulkCreateChannels(channelsToCreate)
 
-  showFeedback('success', `Added ${selectedChannels.length} channel(s) as tag_${startTagNum} through tag_${tagNum - 1}`)
+  showFeedback('info', `Populating ${channelCount} channels...`)
   selectedDiscoveryChannels.value = []
   closeDiscoveryPanel()
-  markDirty()
+
+  // Listen for the bulk create response to clear the indicator
+  const unsubscribe = mqtt.onChannelCreated((created) => {
+    isPopulating.value = false
+    showFeedback('success', `${created.length} channel(s) populated and ready`)
+    unsubscribe()
+    markDirty()
+  })
+
+  // Safety timeout in case response never arrives
+  setTimeout(() => {
+    if (isPopulating.value) {
+      isPopulating.value = false
+      showFeedback('warning', 'Populate timed out — check channel list')
+      unsubscribe()
+    }
+  }, 15000)
 }
 
 // Map physical channels to existing tag names (for discovery panel "in use" indicators)
@@ -2501,6 +2545,10 @@ function quickPopulateAllChannels() {
 function applyConfigChanges() {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  if (store.isAcquiring) {
+    showFeedback('error', 'Cannot apply config changes while acquisition is running')
     return
   }
 
@@ -2631,6 +2679,26 @@ const filteredChannels = computed(() => {
       // mA-IN: current_input channels (or legacy 'current')
       channels = channels.filter(([_, ch]) =>
         ch.channel_type === 'current_input' || ch.channel_type === 'current'
+      )
+    } else if (activeTypeTab.value === 'counter') {
+      // CTR: counter and counter_input are aliases
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'counter' || ch.channel_type === 'counter_input'
+      )
+    } else if (activeTypeTab.value === 'strain') {
+      // STR: strain, strain_input, and bridge_input
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'strain' || ch.channel_type === 'strain_input' || ch.channel_type === 'bridge_input'
+      )
+    } else if (activeTypeTab.value === 'iepe') {
+      // IEPE: iepe and iepe_input are aliases
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'iepe' || ch.channel_type === 'iepe_input'
+      )
+    } else if (activeTypeTab.value === 'pulse_output') {
+      // PLS: pulse_output and frequency_input
+      channels = channels.filter(([_, ch]) =>
+        ch.channel_type === 'pulse_output' || ch.channel_type === 'frequency_input'
       )
     } else {
       channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
@@ -3049,6 +3117,9 @@ function openChannelConfig(channelName: string) {
   const config = store.channels[channelName]
   if (!config) return
 
+  // Close conflicting modals
+  if (showAddChannelModal.value) showAddChannelModal.value = false
+
   selectedChannel.value = channelName
   showConfigPanel.value = true
 
@@ -3187,6 +3258,18 @@ function closeConfigPanel() {
   selectedChannel.value = null
   editingConfig.value = null
 }
+
+// Close config panel when switching tabs if selected channel isn't in the new tab's filter
+watch(() => activeTypeTab.value, () => {
+  if (showConfigPanel.value && selectedChannel.value) {
+    const stillVisible = filteredChannels.value.some(([name]) => name === selectedChannel.value)
+    if (!stillVisible) {
+      closeConfigPanel()
+    }
+  }
+  // Clear table selections when switching tabs
+  selectedTableChannels.value.clear()
+})
 
 function saveChannelConfig() {
   if (!editingConfig.value) return
@@ -3452,6 +3535,7 @@ function updateStorageArrayReferences(key: string, oldName: string, newName: str
 
 // Save configuration - to project if one is loaded, otherwise prompt to create one
 async function saveToFile() {
+  if (isSaving.value) return  // Guard against double-click
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
@@ -3517,6 +3601,7 @@ async function createAndSaveProject() {
 
 // Reload config from disk (re-reads the INI file)
 function reloadConfig() {
+  if (isReloading.value) return  // Guard against double-click
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
@@ -3639,8 +3724,8 @@ const tableColumns = computed(() => {
     { key: 'enable', label: 'EN', width: '40px' },
     { key: 'type', label: 'TYPE', width: '50px' },
     { key: 'tag', label: 'TAG', width: '100px' },
-    { key: 'channel', label: 'CHANNEL', width: '200px' },
-    { key: 'description', label: 'DESCRIPTION', width: '350px' },
+    { key: 'channel', label: 'CHANNEL', width: '150px' },
+    { key: 'description', label: 'DESCRIPTION', width: '200px' },
   ]
 
   switch (activeTypeTab.value) {
@@ -3785,6 +3870,14 @@ onMounted(() => {
   })
 })
 
+// Cleanup on unmount: cancel any in-progress discovery scan
+onBeforeUnmount(() => {
+  if (mqtt.isScanning.value) {
+    mqtt.cancelScan()
+  }
+  showDiscoveryPanel.value = false
+})
+
 watch(() => Object.keys(store.channels), () => {
   initializeEnableStates()
 })
@@ -3843,7 +3936,7 @@ watch(
     <div class="actions-bar">
       <div class="left-actions">
         <!-- Auto Discovery button -->
-        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Auto-discover hardware devices'" :class="{ 'no-permission': !hasEditPermission.value }">
+        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning || !hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-discover hardware devices'" :class="{ 'no-permission': !hasEditPermission }">
           <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             <path d="M8 11h6M11 8v6"/>
@@ -3868,15 +3961,15 @@ watch(
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
-        <button class="action-btn" @click="openSystemSettings" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'System settings (scan rate, publish rate)'" :class="{ 'no-permission': !hasEditPermission.value }">
+        <button class="action-btn" @click="openSystemSettings" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'System settings (scan rate, publish rate)'" :class="{ 'no-permission': !hasEditPermission }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
           </svg>
           Settings
-          <span v-if="!hasEditPermission.value" class="lock-badge">🔒</span>
+          <span v-if="!hasEditPermission" class="lock-badge">🔒</span>
         </button>
-        <button class="action-btn accent" @click="autoGenerateWidgets" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission.value }">
+        <button class="action-btn accent" @click="autoGenerateWidgets" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7"/>
             <rect x="14" y="3" width="7" height="7"/>
@@ -3887,17 +3980,17 @@ watch(
         </button>
         <button
           class="action-btn"
-          :class="{ active: editMode, 'no-permission': !hasEditPermission.value }"
+          :class="{ active: editMode, 'no-permission': !hasEditPermission }"
           @click="toggleEditMode"
           :disabled="store.isAcquiring"
-          :title="!hasEditPermission.value ? 'Login required to edit (Operator+)' : (store.isAcquiring ? 'Stop acquisition to edit' : (editMode ? 'Exit edit mode' : 'Enter edit mode'))"
+          :title="!hasEditPermission ? 'Login required to edit (Operator+)' : (store.isAcquiring ? 'Stop acquisition to edit' : (editMode ? 'Exit edit mode' : 'Enter edit mode'))"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
           {{ editMode ? 'EDITING' : 'Edit' }}
-          <span v-if="!hasEditPermission.value" class="lock-badge">🔒</span>
+          <span v-if="!hasEditPermission" class="lock-badge">🔒</span>
         </button>
         <button
           class="action-btn"
@@ -3918,10 +4011,10 @@ watch(
         <!-- Group 3: File Operations -->
         <button
           class="action-btn primary"
-          :class="{ dirty: configDirty, 'no-permission': !hasEditPermission.value }"
+          :class="{ dirty: configDirty, 'no-permission': !hasEditPermission }"
           @click="saveToFile()"
-          :disabled="isSaving || !hasEditPermission.value"
-          :title="!hasEditPermission.value ? 'Requires Operator or higher' : (projectFiles.currentProject.value
+          :disabled="isSaving || !hasEditPermission"
+          :title="!hasEditPermission ? 'Requires Operator or higher' : (projectFiles.currentProject.value
             ? `Save to project: ${projectFiles.currentProject.value}`
             : 'Create new project and save')"
         >
@@ -3934,21 +4027,21 @@ watch(
           {{ isSaving ? 'Saving...' : 'Save' }}
           <span v-if="configDirty && !isSaving" class="dirty-indicator">*</span>
         </button>
-        <button class="action-btn icon-btn" @click="reloadConfig" :disabled="isReloading || !mqtt.connected.value || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Reload configuration from disk (discard unsaved changes)'">
+        <button class="action-btn icon-btn" @click="reloadConfig" :disabled="isReloading || !mqtt.connected.value || !hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Reload configuration from disk (discard unsaved changes)'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="23 4 23 10 17 10"/>
             <polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
           </svg>
         </button>
-        <button class="action-btn icon-btn" @click="exportProject" :disabled="isExporting || !hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Export: save a timestamped copy to config/projects/'">
+        <button class="action-btn icon-btn" @click="exportProject" :disabled="isExporting || !hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Export: save a timestamped copy to config/projects/'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/>
             <polyline points="12 15 12 22"/>
             <polyline points="9 19 12 22 15 19"/>
           </svg>
         </button>
-        <button class="action-btn icon-btn" @click="triggerImport" :disabled="!hasEditPermission.value" :title="!hasEditPermission.value ? 'Requires Operator or higher' : 'Import a project file'">
+        <button class="action-btn icon-btn" @click="triggerImport" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Import a project file'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -3974,10 +4067,10 @@ watch(
         <!-- Group 5: Push (blue - sends to hardware) -->
         <button
           class="action-btn accent"
-          :class="{ 'out-of-sync': hasCrioOutOfSync, 'no-permission': !hasEditPermission.value }"
+          :class="{ 'out-of-sync': hasCrioOutOfSync, 'no-permission': !hasEditPermission }"
           @click="applyConfigChanges"
-          :disabled="!mqtt.connected.value || !hasEditPermission.value"
-          :title="!hasEditPermission.value ? 'Requires Operator or higher' : (hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware')"
+          :disabled="!mqtt.connected.value || !hasEditPermission"
+          :title="!hasEditPermission ? 'Requires Operator or higher' : (hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware')"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -4047,6 +4140,14 @@ watch(
     <Transition name="fade">
       <div v-if="feedbackMessage" class="feedback-message" :class="feedbackMessage.type">
         {{ feedbackMessage.text }}
+      </div>
+    </Transition>
+
+    <!-- Populating Channels Indicator -->
+    <Transition name="fade">
+      <div v-if="isPopulating" class="populating-banner">
+        <span class="spinner"></span>
+        Populating channels — configuring hardware...
       </div>
     </Transition>
 
@@ -5838,6 +5939,7 @@ watch(
               <div class="scanning-state">
                 <div class="spinner large"></div>
                 <p>Discovering hardware devices...</p>
+                <button class="btn btn-secondary" @click="closeDiscoveryPanel" style="margin-top: 1rem;">Cancel</button>
               </div>
             </template>
 
@@ -6239,11 +6341,11 @@ watch(
 
     <!-- Add Channel Modal -->
     <Transition name="modal">
-      <div v-if="showAddChannelModal" class="discovery-overlay" @click.self="showAddChannelModal = false">
+      <div v-if="showAddChannelModal" class="discovery-overlay" @click.self="closeAddChannelModal">
         <div class="add-channel-dialog">
           <div class="discovery-header">
             <h3>Add New Channel</h3>
-            <button class="close-btn" @click="showAddChannelModal = false">
+            <button class="close-btn" @click="closeAddChannelModal">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
@@ -6395,7 +6497,7 @@ watch(
           </div>
 
           <div class="discovery-footer">
-            <button class="btn btn-secondary" @click="showAddChannelModal = false">Cancel</button>
+            <button class="btn btn-secondary" @click="closeAddChannelModal">Cancel</button>
             <button
               class="btn btn-primary"
               @click="addNewChannel"
@@ -7468,7 +7570,7 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0a0a14;
+  background: var(--bg-primary);
 }
 
 /* Signal Type Header Row - spans all columns, fixed in thead */
@@ -7478,10 +7580,10 @@ watch(
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: #666;
-  background: #0f0f1a;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
   padding: 6px 8px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
 }
 
 /* Channel Type Tabs Row (tabs + status) */
@@ -7490,8 +7592,8 @@ watch(
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .type-tabs {
@@ -7515,8 +7617,8 @@ watch(
 }
 
 .status-item.channels {
-  background: #1e293b;
-  color: #94a3b8;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
 }
 
 .status-item.mqtt {
@@ -7535,17 +7637,17 @@ watch(
   justify-content: center;
   width: 26px;
   height: 26px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-hover);
   border-radius: 4px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .theme-toggle-small:hover {
-  background: #334155;
-  color: #e2e8f0;
+  background: var(--bg-hover);
+  color: var(--text-bright);
 }
 
 .type-tab {
@@ -7556,7 +7658,7 @@ watch(
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.7rem;
   font-weight: 600;
   cursor: pointer;
@@ -7565,14 +7667,14 @@ watch(
 }
 
 .type-tab:hover {
-  background: #1a1a2e;
-  color: #888;
+  background: var(--bg-widget);
+  color: var(--text-secondary);
 }
 
 .type-tab.active {
-  background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+  color: var(--color-accent-light);
 }
 
 .tab-icon {
@@ -7585,8 +7687,8 @@ watch(
   justify-content: space-between;
   align-items: center;
   padding: 8px 16px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .search-box {
@@ -7594,23 +7696,23 @@ watch(
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .search-input {
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   width: 200px;
   outline: none;
 }
 
 .search-input::placeholder {
-  color: #555;
+  color: var(--text-dim);
 }
 
 /* Main Content */
@@ -7628,7 +7730,7 @@ watch(
   padding: 0 16px;
   transition: flex 0.3s;
   scrollbar-width: thin;
-  scrollbar-color: #2a2a4a #0a0a14;
+  scrollbar-color: var(--border-color) var(--bg-primary);
 }
 
 .table-container::-webkit-scrollbar {
@@ -7636,16 +7738,16 @@ watch(
 }
 
 .table-container::-webkit-scrollbar-track {
-  background: #0a0a14;
+  background: var(--bg-primary);
 }
 
 .table-container::-webkit-scrollbar-thumb {
-  background: #2a2a4a;
+  background: var(--border-color);
   border-radius: 4px;
 }
 
 .table-container::-webkit-scrollbar-thumb:hover {
-  background: #3a3a5a;
+  background: var(--border-light);
 }
 
 .table-container.with-panel {
@@ -7678,12 +7780,12 @@ watch(
 
 /* Column headers */
 .column-headers-row th {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   padding: 8px 6px;
   text-align: left;
   font-weight: 600;
-  color: #888;
-  border-bottom: 2px solid #2a2a4a;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
   white-space: nowrap;
 }
 
@@ -7698,8 +7800,11 @@ watch(
 
 .channel-table td {
   padding: 6px;
-  border-bottom: 1px solid #1a1a2e;
-  color: #ccc;
+  border-bottom: 1px solid var(--bg-widget);
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* CONFIG data cells - normal column like the others */
@@ -7714,20 +7819,20 @@ watch(
 }
 
 .channel-row td {
-  background: #0b1018;
+  background: var(--bg-secondary);
   transition: background 0.15s;
 }
 
 .channel-row.even-row td {
-  background: #131d2e;
+  background: var(--bg-widget);
 }
 
 .channel-row:hover td {
-  background: #1f3050;
+  background: var(--bg-hover);
 }
 
 .channel-row.selected td {
-  background: #1e3a5f;
+  background: var(--color-accent-bg);
 }
 
 .channel-row.warning td {
@@ -7759,7 +7864,7 @@ watch(
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--surface-2, #1e293b);
+  background: var(--bg-surface);
   border: 1px solid var(--border, #334155);
   border-radius: 6px;
   margin-bottom: 8px;
@@ -7768,7 +7873,7 @@ watch(
 .batch-count {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--accent, #60a5fa);
+  color: var(--color-accent-light);
   margin-right: 8px;
 }
 
@@ -7776,7 +7881,7 @@ watch(
   padding: 4px 10px;
   font-size: 0.75rem;
   border-radius: 4px;
-  background: var(--surface-3, #334155);
+  background: var(--bg-hover);
   border: 1px solid var(--border, #475569);
   color: var(--text-secondary, #94a3b8);
   cursor: pointer;
@@ -7784,12 +7889,12 @@ watch(
 }
 
 .btn-sm:hover:not(:disabled) {
-  background: var(--surface-hover, #475569);
+  background: var(--border-heavy);
   color: var(--text-primary, #e2e8f0);
 }
 
 .btn-sm.btn-danger {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .btn-sm.btn-danger:hover:not(:disabled) {
@@ -7815,13 +7920,13 @@ watch(
 
 .source-badge.crio {
   background: rgba(34, 197, 94, 0.2);
-  color: #22c55e;
+  color: var(--color-success);
   border: 1px solid rgba(34, 197, 94, 0.3);
 }
 
 .source-badge.opto22 {
   background: rgba(251, 191, 36, 0.2);
-  color: #fbbf24;
+  color: var(--color-warning);
   border: 1px solid rgba(251, 191, 36, 0.3);
 }
 
@@ -7840,7 +7945,7 @@ watch(
 .type-badge.current { background: #4c1d95; color: #c4b5fd; }        /* Violet */
 .type-badge.strain { background: #701a75; color: #f0abfc; }         /* Fuchsia */
 .type-badge.iepe { background: #831843; color: #f9a8d4; }           /* Pink */
-.type-badge.counter { background: #1e293b; color: #94a3b8; }        /* Slate */
+.type-badge.counter { background: var(--bg-surface); color: var(--text-secondary); }        /* Slate */
 .type-badge.resistance { background: #3f3f46; color: #d4d4d8; }     /* Zinc */
 .type-badge.digital_input { background: #14532d; color: #86efac; }  /* Green */
 .type-badge.digital_output { background: #064e3b; color: #6ee7b7; } /* Emerald */
@@ -7871,46 +7976,46 @@ watch(
 .col-value .unit {
   margin-left: 4px;
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .col-value.warning .value { color: #fbbf24; }
-.col-value.alarm .value { color: #ef4444; }
+.col-value.alarm .value { color: var(--color-error); }
 
 /* Raw/Scaled value columns */
 .col-value.raw {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
-  color: #9ca3af;
+  color: var(--text-secondary);
 }
 
 .col-value.scaled {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .col-value.scaled.warning { color: #fbbf24; }
-.col-value.scaled.alarm { color: #ef4444; }
+.col-value.scaled.alarm { color: var(--color-error); }
 
 /* Error status styles for channel values */
 .col-value.stale .value {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .col-value.disconnected .value {
-  color: #f97316;
+  color: var(--color-warning);
   font-style: italic;
 }
 
 .col-value.open-tc .value {
-  color: #dc2626;
+  color: var(--color-error-dark);
   font-style: italic;
 }
 
 .col-value.overflow .value {
-  color: #a855f7;
+  color: var(--color-accent-light);
   font-style: italic;
 }
 
@@ -7924,7 +8029,7 @@ watch(
 }
 
 .channel-row.disconnected {
-  border-left: 3px solid #f97316;
+  border-left: 3px solid var(--color-warning);
 }
 
 .channel-row.open-tc td {
@@ -7932,7 +8037,7 @@ watch(
 }
 
 .channel-row.open-tc {
-  border-left: 3px solid #dc2626;
+  border-left: 3px solid var(--color-error-dark);
 }
 
 .channel-row.overflow td {
@@ -7940,7 +8045,7 @@ watch(
 }
 
 .channel-row.overflow {
-  border-left: 3px solid #a855f7;
+  border-left: 3px solid var(--color-accent-light);
 }
 
 .digital-state {
@@ -7948,28 +8053,28 @@ watch(
   border-radius: 3px;
   font-weight: 600;
   font-size: 0.7rem;
-  background: #374151;
-  color: #9ca3af;
+  background: var(--btn-secondary-bg);
+  color: var(--text-secondary);
 }
 
 .digital-state.on {
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 /* Config Button */
 .config-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
 }
 
 .config-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--border-color);
+  color: var(--text-primary);
 }
 
 /* Inline Editable Cells */
@@ -7978,10 +8083,10 @@ watch(
 }
 
 .editable-cell select {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border: 1px solid transparent;
   border-radius: 3px;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.75rem;
   padding: 2px 4px;
   cursor: pointer;
@@ -7989,13 +8094,13 @@ watch(
 }
 
 .editable-cell select:hover:not(:disabled) {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .editable-cell select:focus {
   outline: none;
-  border-color: #3b82f6;
-  background: #1a1a2e;
+  border-color: var(--color-accent);
+  background: var(--bg-widget);
 }
 
 .editable-cell select:disabled {
@@ -8004,10 +8109,10 @@ watch(
 }
 
 .inline-input {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border: 1px solid transparent;
   border-radius: 3px;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.75rem;
   padding: 2px 4px;
   width: 100%;
@@ -8019,13 +8124,13 @@ watch(
 }
 
 .inline-input:hover:not(:disabled) {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .inline-input:focus {
   outline: none;
-  border-color: #3b82f6;
-  background: #1a1a2e;
+  border-color: var(--color-accent);
+  background: var(--bg-widget);
 }
 
 .inline-input:disabled {
@@ -8038,10 +8143,10 @@ watch(
 }
 
 .inline-select {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border: 1px solid transparent;
   border-radius: 3px;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.75rem;
   padding: 2px 4px;
   width: 100%;
@@ -8049,13 +8154,13 @@ watch(
 }
 
 .inline-select:hover:not(:disabled) {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .inline-select:focus {
   outline: none;
-  border-color: #3b82f6;
-  background: #1a1a2e;
+  border-color: var(--color-accent);
+  background: var(--bg-widget);
 }
 
 .inline-select:disabled {
@@ -8064,13 +8169,13 @@ watch(
 }
 
 .inline-select option {
-  background: #1a1a2e;
-  color: #ccc;
+  background: var(--bg-widget);
+  color: var(--text-bright);
 }
 
 .inline-select option:disabled,
 .inline-select option.option-in-use {
-  color: #555;
+  color: var(--text-dim);
   font-style: italic;
 }
 
@@ -8096,11 +8201,11 @@ watch(
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .col-tag .inline-input:focus {
-  color: #93c5fd;
+  color: var(--color-accent-light);
 }
 
 .editable-cell input[type="checkbox"] {
@@ -8117,21 +8222,21 @@ watch(
   border-radius: 3px;
   font-size: 0.65rem;
   font-weight: 600;
-  background: #1e3a8a;
-  color: #93c5fd;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
 }
 
 .scaling-badge.off {
-  background: #374151;
-  color: #9ca3af;
+  background: var(--btn-secondary-bg);
+  color: var(--text-secondary);
 }
 
 /* Config Panel */
 .config-panel {
   width: 0;
   overflow: hidden;
-  background: #0f0f1a;
-  border-left: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   transition: width 0.3s;
@@ -8146,25 +8251,25 @@ watch(
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .panel-header h3 {
   margin: 0;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .close-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
 }
 
 .close-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .panel-content {
@@ -8180,9 +8285,9 @@ watch(
 .config-section h4 {
   margin: 0 0 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   font-size: 0.8rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   text-transform: uppercase;
 }
 
@@ -8193,7 +8298,7 @@ watch(
 .form-row label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -8201,17 +8306,17 @@ watch(
 .form-row select {
   width: 100%;
   padding: 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .form-row input:focus,
 .form-row select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .input-disabled {
@@ -8237,30 +8342,30 @@ watch(
 
 .checkbox-row input[type="checkbox"] {
   width: auto;
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .scaling-info {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-bottom: 12px;
   padding: 8px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
 .scaling-preview {
   margin-top: 12px;
   padding: 12px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
 .scaling-preview h5 {
   margin: 0 0 8px 0;
   font-size: 0.75rem;
-  color: #3b82f6;
+  color: var(--color-accent);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -8270,7 +8375,7 @@ watch(
   justify-content: space-between;
   padding: 4px 0;
   font-size: 0.8rem;
-  border-bottom: 1px dashed #2a2a4a;
+  border-bottom: 1px dashed var(--border-color);
 }
 
 .preview-row:last-of-type {
@@ -8278,12 +8383,12 @@ watch(
 }
 
 .preview-label {
-  color: #888;
+  color: var(--text-secondary);
   font-family: 'Fira Code', monospace;
 }
 
 .preview-value {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 600;
   font-family: 'Fira Code', monospace;
 }
@@ -8291,9 +8396,9 @@ watch(
 .preview-formula {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   font-family: 'Fira Code', monospace;
 }
 
@@ -8302,7 +8407,7 @@ watch(
   gap: 8px;
   justify-content: flex-end;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .btn {
@@ -8315,21 +8420,21 @@ watch(
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 /* Empty State */
@@ -8339,7 +8444,7 @@ watch(
 
 .empty-state {
   text-align: center;
-  color: #555;
+  color: var(--text-dim);
 }
 
 /* Add Channel Row */
@@ -8349,7 +8454,7 @@ watch(
 }
 
 .add-channel-row:hover {
-  background: #1a2a3a;
+  background: var(--bg-hover);
 }
 
 .add-channel-row td {
@@ -8361,7 +8466,7 @@ watch(
   align-items: center;
   gap: 8px;
   padding: 10px 0;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.8rem;
 }
 
@@ -8370,7 +8475,7 @@ watch(
 }
 
 .add-channel-row:hover .add-channel-cell {
-  color: #93c5fd;
+  color: var(--color-accent-light);
 }
 
 .add-channel-row:hover .add-channel-cell svg {
@@ -8384,7 +8489,7 @@ watch(
 
 .add-channel-hint {
   padding: 10px 0;
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.8rem;
   font-style: italic;
   text-align: center;
@@ -8398,7 +8503,7 @@ watch(
   gap: 8px;
   padding: 6px 16px;
   background: #451a03;
-  color: #fbbf24;
+  color: var(--color-warning);
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -8409,7 +8514,7 @@ watch(
 
 /* Checkbox styling */
 input[type="checkbox"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 /* Actions Bar Enhanced */
@@ -8418,8 +8523,8 @@ input[type="checkbox"] {
   justify-content: space-between;
   align-items: center;
   padding: 8px 16px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .left-actions {
@@ -8440,10 +8545,10 @@ input[type="checkbox"] {
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.7rem;
   font-weight: 500;
   cursor: pointer;
@@ -8460,9 +8565,9 @@ input[type="checkbox"] {
 }
 
 .action-btn:hover:not(:disabled) {
-  background: #2a2a4a;
-  color: #fff;
-  border-color: #3b82f6;
+  background: var(--border-color);
+  color: var(--text-primary);
+  border-color: var(--color-accent);
 }
 
 .action-btn:disabled {
@@ -8473,8 +8578,8 @@ input[type="checkbox"] {
 /* Primary buttons (green) - constructive actions: Add, Save */
 .action-btn.primary {
   background: #166534;
-  border-color: #22c55e;
-  color: #fff;
+  border-color: var(--color-success);
+  color: var(--text-primary);
 }
 
 .action-btn.primary:hover:not(:disabled) {
@@ -8494,30 +8599,30 @@ input[type="checkbox"] {
 /* Accent buttons (blue) - send to hardware: Apply */
 .action-btn.accent {
   background: #1e40af;
-  border-color: #3b82f6;
-  color: #fff;
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .action-btn.accent:hover:not(:disabled) {
   background: #1d4ed8;
-  border-color: #60a5fa;
+  border-color: var(--color-accent-light);
 }
 
 /* Out-of-sync indicator for Push button when cRIO config doesn't match */
 .action-btn.out-of-sync {
-  border-color: #f59e0b;
+  border-color: var(--color-warning-dark);
   animation: pulse-warning 2s infinite;
 }
 
 .action-btn.out-of-sync:hover:not(:disabled) {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
 }
 
 .sync-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #f59e0b;
+  background: var(--color-warning-dark);
   color: #000;
   border-radius: 50%;
   width: 14px;
@@ -8535,36 +8640,36 @@ input[type="checkbox"] {
 /* Warning buttons (orange) - safety/attention: Safety */
 .action-btn.warning {
   background: #78350f;
-  border-color: #f59e0b;
-  color: #fbbf24;
+  border-color: var(--color-warning-dark);
+  color: var(--color-warning);
 }
 
 .action-btn.warning:hover:not(:disabled) {
   background: #92400e;
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
   color: #fef3c7;
 }
 
 /* Active state for toggle buttons */
 .action-btn.active {
-  background: #3b82f6;
-  color: #fff;
-  border-color: #60a5fa;
+  background: var(--color-accent);
+  color: var(--text-primary);
+  border-color: var(--color-accent-light);
 }
 
 .action-btn.active:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 /* No permission state */
 .action-btn.no-permission {
   opacity: 0.6;
-  border-color: #6b7280;
+  border-color: var(--text-muted);
 }
 
 .action-btn.no-permission:hover {
-  border-color: #f59e0b;
-  color: #f59e0b;
+  border-color: var(--color-warning-dark);
+  color: var(--color-warning-dark);
 }
 
 .lock-badge {
@@ -8581,7 +8686,7 @@ input[type="checkbox"] {
   padding: 4px 8px;
   border-radius: 3px;
   background: #78350f;
-  color: #fbbf24;
+  color: var(--color-warning);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -8611,12 +8716,12 @@ input[type="checkbox"] {
 
 .crio-status-indicator.out-of-sync {
   background: #78350f;
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .crio-status-indicator.offline {
   background: #7f1d1d;
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .crio-status-indicator svg {
@@ -8629,8 +8734,8 @@ input[type="checkbox"] {
 .spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid #2a2a4a;
-  border-top-color: #3b82f6;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -8655,7 +8760,7 @@ input[type="checkbox"] {
 
 .feedback-message.success {
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .feedback-message.error {
@@ -8664,8 +8769,36 @@ input[type="checkbox"] {
 }
 
 .feedback-message.info {
-  background: #1e3a5f;
-  color: #60a5fa;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
+}
+
+.feedback-message.warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
+.populating-banner {
+  padding: 10px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-align: center;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
+  border-bottom: 1px solid var(--color-accent-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.populating-banner .spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-accent-border);
+  border-top-color: var(--color-accent-light);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .fade-enter-active, .fade-leave-active {
@@ -8693,8 +8826,8 @@ input[type="checkbox"] {
 .discovery-panel {
   width: 600px;
   max-height: 80vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -8705,13 +8838,13 @@ input[type="checkbox"] {
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .discovery-header h3 {
   margin: 0;
   font-size: 1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .discovery-content {
@@ -8730,7 +8863,7 @@ input[type="checkbox"] {
 
 .discovery-count {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .discovery-actions {
@@ -8741,7 +8874,7 @@ input[type="checkbox"] {
 .btn-link {
   background: none;
   border: none;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.75rem;
   cursor: pointer;
 }
@@ -8756,19 +8889,19 @@ input[type="checkbox"] {
   justify-content: space-between;
   align-items: center;
   background: linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%);
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--color-accent);
   border-radius: 8px;
   padding: 12px 16px;
   margin-bottom: 12px;
 }
 
 .quick-populate-banner .banner-text {
-  color: #e0e0e0;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .quick-populate-banner .banner-text strong {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .btn-success {
@@ -8808,7 +8941,7 @@ input[type="checkbox"] {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
@@ -8816,12 +8949,12 @@ input[type="checkbox"] {
 }
 
 .discovery-item:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .discovery-item.selected {
-  border-color: #3b82f6;
-  background: #1e3a5f;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .discovery-item input[type="checkbox"] {
@@ -8836,7 +8969,7 @@ input[type="checkbox"] {
 .channel-physical {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
-  color: #fff;
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
@@ -8848,7 +8981,7 @@ input[type="checkbox"] {
 
 .module-name {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .discovery-footer {
@@ -8856,7 +8989,7 @@ input[type="checkbox"] {
   gap: 8px;
   justify-content: flex-end;
   padding: 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .scanning-state {
@@ -8866,7 +8999,7 @@ input[type="checkbox"] {
   justify-content: center;
   padding: 40px;
   gap: 16px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .empty-discovery {
@@ -8876,12 +9009,12 @@ input[type="checkbox"] {
   justify-content: center;
   padding: 40px;
   gap: 8px;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .empty-discovery .hint {
   font-size: 0.75rem;
-  color: #444;
+  color: var(--text-dim);
 }
 
 /* Simulation Mode Banner */
@@ -8893,7 +9026,7 @@ input[type="checkbox"] {
   background: rgba(251, 191, 36, 0.15);
   border: 1px solid rgba(251, 191, 36, 0.3);
   border-radius: 4px;
-  color: #fbbf24;
+  color: var(--color-warning);
   font-size: 0.8rem;
   margin-bottom: 12px;
 }
@@ -8906,19 +9039,19 @@ input[type="checkbox"] {
 }
 
 .tree-chassis {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .tree-module {
-  background: #1e1e32;
+  background: var(--bg-elevated);
   border-radius: 4px;
   margin: 2px 0;
 }
 
 .tree-module.standalone {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 6px;
 }
 
@@ -8936,7 +9069,7 @@ input[type="checkbox"] {
 }
 
 .chassis-header {
-  background: #252540;
+  background: var(--bg-elevated);
 }
 
 /* cRIO node styling - distinct from cDAQ chassis */
@@ -8971,7 +9104,7 @@ input[type="checkbox"] {
 
 .device-badge.cdaq {
   background: #1e40af;
-  color: #93c5fd;
+  color: var(--color-accent-light);
 }
 
 .crio-status {
@@ -9002,21 +9135,21 @@ input[type="checkbox"] {
   padding: 6px 12px 6px 44px;
   background: #1a2a1a;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   border-top: 1px solid #2a4a2a;
 }
 
 .crio-ip {
   font-family: monospace;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .crio-serial {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .crio-last-seen {
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Opto22 node styling - distinct orange/amber theme */
@@ -9068,21 +9201,21 @@ input[type="checkbox"] {
   padding: 6px 12px 6px 44px;
   background: #2a261a;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   border-top: 1px solid #4a3a2a;
 }
 
 .opto22-ip {
   font-family: monospace;
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .opto22-serial {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .opto22-last-seen {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .btn-push-config {
@@ -9091,7 +9224,7 @@ input[type="checkbox"] {
   gap: 4px;
   padding: 4px 10px;
   background: #166534;
-  color: #fff;
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -9106,8 +9239,8 @@ input[type="checkbox"] {
 }
 
 .btn-push-config:disabled {
-  background: #374151;
-  color: #6b7280;
+  background: var(--btn-secondary-bg);
+  color: var(--text-muted);
   cursor: not-allowed;
 }
 
@@ -9116,7 +9249,7 @@ input[type="checkbox"] {
 }
 
 .tree-arrow {
-  color: #666;
+  color: var(--text-muted);
   transition: transform 0.2s;
   flex-shrink: 0;
 }
@@ -9126,34 +9259,34 @@ input[type="checkbox"] {
 }
 
 .tree-icon {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   flex-shrink: 0;
 }
 
 .tree-name {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .tree-type {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   padding: 2px 6px;
-  background: #2a2a4a;
+  background: var(--border-color);
   border-radius: 3px;
 }
 
 .tree-desc {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
   flex: 1;
 }
 
 .tree-count {
   font-size: 0.7rem;
-  color: #888;
-  background: #2a2a4a;
+  color: var(--text-secondary);
+  background: var(--border-color);
   padding: 2px 6px;
   border-radius: 3px;
   margin-left: auto;
@@ -9187,7 +9320,7 @@ input[type="checkbox"] {
 
 .tree-channel.selected {
   background: rgba(59, 130, 246, 0.15);
-  border-left: 2px solid #3b82f6;
+  border-left: 2px solid var(--color-accent);
 }
 
 .tree-channel.in-use {
@@ -9201,7 +9334,7 @@ input[type="checkbox"] {
   padding: 1px 5px;
   border-radius: 3px;
   background: rgba(234, 179, 8, 0.2);
-  color: #eab308;
+  color: var(--color-warning-dark);
   border: 1px solid rgba(234, 179, 8, 0.3);
   white-space: nowrap;
 }
@@ -9215,13 +9348,13 @@ input[type="checkbox"] {
 .tree-channel .channel-name {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
-  color: #ddd;
+  color: var(--text-bright);
   min-width: 140px;
 }
 
 .tree-channel .channel-desc {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   flex: 1;
 }
 
@@ -9232,25 +9365,25 @@ input[type="checkbox"] {
 }
 
 /* Type badge colors by category */
-.type-badge.thermocouple { background: #2563eb; color: #fff; }     /* Blue */
-.type-badge.rtd { background: #0d9488; color: #fff; }              /* Teal */
-.type-badge.voltage { background: #4f46e5; color: #fff; }          /* Indigo */
-.type-badge.current { background: #7c3aed; color: #fff; }          /* Violet */
-.type-badge.strain { background: #c026d3; color: #fff; }           /* Fuchsia */
-.type-badge.iepe { background: #db2777; color: #fff; }             /* Pink */
-.type-badge.digital_input { background: #16a34a; color: #fff; }    /* Green */
-.type-badge.digital_output { background: #059669; color: #fff; }   /* Emerald */
-.type-badge.voltage_output { background: #0284c7; color: #fff; }   /* Sky */
-.type-badge.current_output { background: #9333ea; color: #fff; }   /* Purple */
-.type-badge.analog_output { background: #0284c7; color: #fff; }    /* Sky (legacy) */
-.type-badge.counter { background: #475569; color: #fff; }          /* Slate */
-.type-badge.analog_input { background: #4f46e5; color: #fff; }     /* Indigo (same as voltage) */
-.type-badge.voltage_input { background: #4f46e5; color: #fff; }    /* Indigo (same as voltage) */
-.type-badge.current_input { background: #7c3aed; color: #fff; }    /* Violet (same as current) */
+.type-badge.thermocouple { background: var(--color-accent-dark); color: var(--text-primary); }     /* Blue */
+.type-badge.rtd { background: #0d9488; color: var(--text-primary); }              /* Teal */
+.type-badge.voltage { background: #4f46e5; color: var(--text-primary); }          /* Indigo */
+.type-badge.current { background: #7c3aed; color: var(--text-primary); }          /* Violet */
+.type-badge.strain { background: #c026d3; color: var(--text-primary); }           /* Fuchsia */
+.type-badge.iepe { background: #db2777; color: var(--text-primary); }             /* Pink */
+.type-badge.digital_input { background: #16a34a; color: var(--text-primary); }    /* Green */
+.type-badge.digital_output { background: #059669; color: var(--text-primary); }   /* Emerald */
+.type-badge.voltage_output { background: #0284c7; color: var(--text-primary); }   /* Sky */
+.type-badge.current_output { background: #9333ea; color: var(--text-primary); }   /* Purple */
+.type-badge.analog_output { background: #0284c7; color: var(--text-primary); }    /* Sky (legacy) */
+.type-badge.counter { background: #475569; color: var(--text-primary); }          /* Slate */
+.type-badge.analog_input { background: #4f46e5; color: var(--text-primary); }     /* Indigo (same as voltage) */
+.type-badge.voltage_input { background: #4f46e5; color: var(--text-primary); }    /* Indigo (same as voltage) */
+.type-badge.current_input { background: #7c3aed; color: var(--text-primary); }    /* Violet (same as current) */
 
 /* Toolbar separator */
 .discovery-actions .separator {
-  color: #444;
+  color: var(--text-dim);
   margin: 0 4px;
 }
 
@@ -9275,16 +9408,16 @@ input[type="checkbox"] {
 
 /* Load Button */
 .load-btn:hover:not(:disabled) {
-  border-color: #a855f7;
-  color: #a855f7;
+  border-color: var(--color-accent-light);
+  color: var(--color-accent-light);
 }
 
 /* Load Dialog */
 .load-dialog {
   width: 400px;
   max-height: 60vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -9300,7 +9433,7 @@ input[type="checkbox"] {
 .load-hint {
   margin: 0 0 12px;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .config-list {
@@ -9314,31 +9447,31 @@ input[type="checkbox"] {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.85rem;
   transition: all 0.2s;
 }
 
 .config-item:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .config-item.selected {
-  border-color: #3b82f6;
-  background: #1e3a5f;
-  color: #fff;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--text-primary);
 }
 
 .config-item svg {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .config-item.selected svg {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Delete Button in table - only for data cells, not header */
@@ -9350,7 +9483,7 @@ input[type="checkbox"] {
 .delete-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -9369,7 +9502,7 @@ input[type="checkbox"] {
 }
 
 .channel-table th.col-alarm {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
 }
 
 /* Inline error/warning status indicators */
@@ -9381,7 +9514,7 @@ input[type="checkbox"] {
 }
 
 .channel-table th.col-status-indicators {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
 }
 
 .status-indicator-icon {
@@ -9395,7 +9528,7 @@ input[type="checkbox"] {
 }
 
 .status-indicator-icon.error-icon {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .status-indicator-icon.error-icon:hover {
@@ -9403,7 +9536,7 @@ input[type="checkbox"] {
 }
 
 .status-indicator-icon.warning-icon {
-  color: #eab308;
+  color: var(--color-warning-dark);
 }
 
 .status-indicator-icon.warning-icon:hover {
@@ -9412,9 +9545,9 @@ input[type="checkbox"] {
 
 /* Dropdown error/warning states for missing required values */
 select.select-error {
-  border-color: #ef4444 !important;
+  border-color: var(--color-error) !important;
   background-color: rgba(239, 68, 68, 0.1) !important;
-  color: #ef4444 !important;
+  color: var(--color-error) !important;
 }
 
 select.select-warning {
@@ -9425,22 +9558,22 @@ select.select-warning {
 
 /* Limit cells with inverted ranges (low > high) */
 td.limit-error {
-  color: #ef4444 !important;
+  color: var(--color-error) !important;
   background-color: rgba(239, 68, 68, 0.1) !important;
 }
 
 /* Config panel inputs with invalid values */
 input.input-error {
-  border-color: #ef4444 !important;
+  border-color: var(--color-error) !important;
   background-color: rgba(239, 68, 68, 0.1) !important;
-  color: #ef4444 !important;
+  color: var(--color-error) !important;
 }
 
 .alarm-btn {
   position: relative;
   background: transparent;
   border: 1px solid transparent;
-  color: #555;
+  color: var(--text-dim);
   cursor: pointer;
   padding: 4px 6px;
   border-radius: 4px;
@@ -9448,24 +9581,24 @@ input.input-error {
 }
 
 .alarm-btn:hover {
-  background: #1a1a2e;
-  color: #888;
+  background: var(--bg-widget);
+  color: var(--text-secondary);
 }
 
 /* Alarm disabled state */
 .alarm-btn.disabled {
-  color: #444;
+  color: var(--text-dim);
 }
 
 .alarm-btn.disabled:hover {
-  border-color: #666;
-  color: #888;
+  border-color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 /* Alarm enabled state - green glow */
 .alarm-btn.enabled {
-  color: #22c55e;
-  border-color: #16a34a;
+  color: var(--color-success);
+  border-color: var(--color-success-dark);
   background: rgba(22, 163, 74, 0.1);
 }
 
@@ -9475,16 +9608,16 @@ input.input-error {
 
 /* Active warning - yellow */
 .alarm-btn.active-warning {
-  color: #eab308;
-  border-color: #ca8a04;
+  color: var(--color-warning-dark);
+  border-color: var(--color-warning-dark);
   background: rgba(234, 179, 8, 0.15);
   animation: pulse-warning 1.5s infinite;
 }
 
 /* Active alarm - red */
 .alarm-btn.active-alarm {
-  color: #ef4444;
-  border-color: #dc2626;
+  color: var(--color-error);
+  border-color: var(--color-error-dark);
   background: rgba(239, 68, 68, 0.15);
   animation: pulse-alarm 1s infinite;
 }
@@ -9506,16 +9639,16 @@ input.input-error {
   right: 2px;
   width: 6px;
   height: 6px;
-  background: #22c55e;
+  background: var(--color-success);
   border-radius: 50%;
 }
 
 .alarm-btn.active-warning .alarm-indicator {
-  background: #eab308;
+  background: var(--color-warning-dark);
 }
 
 .alarm-btn.active-alarm .alarm-indicator {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 /* Reset counter button */
@@ -9527,9 +9660,9 @@ input.input-error {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: #1e3a5f;
-  border: 1px solid #3b82f6;
-  color: #93c5fd;
+  background: var(--color-accent-bg);
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent-light);
   cursor: pointer;
   padding: 3px 8px;
   border-radius: 4px;
@@ -9539,8 +9672,8 @@ input.input-error {
 }
 
 .reset-btn:hover:not(:disabled) {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .reset-btn:disabled {
@@ -9554,15 +9687,15 @@ input.input-error {
 }
 
 .channel-row.disabled td {
-  color: #555;
+  color: var(--text-dim);
 }
 
 /* Add Channel Dialog */
 .add-channel-dialog {
   width: 500px;
   max-height: 80vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -9575,13 +9708,13 @@ input.input-error {
 }
 
 .required {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .form-hint {
   display: block;
   font-size: 0.7rem;
-  color: #555;
+  color: var(--text-dim);
   margin-top: 4px;
 }
 
@@ -9591,13 +9724,13 @@ input.input-error {
   padding: 4px 8px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* Physical Channel Select in Add Channel Modal */
 .scanning-indicator {
   font-size: 0.75rem;
-  color: #3b82f6;
+  color: var(--color-accent);
   font-weight: normal;
   margin-left: 6px;
 }
@@ -9605,15 +9738,15 @@ input.input-error {
 .physical-channel-select {
   width: 100%;
   padding: 8px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e2e8f0;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .physical-channel-select:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   outline: none;
 }
 
@@ -9624,7 +9757,7 @@ option.option-in-use {
 }
 
 select option:disabled {
-  color: #555;
+  color: var(--text-dim);
   font-style: italic;
 }
 
@@ -9632,22 +9765,22 @@ select option:disabled {
   margin-top: 8px;
   width: 100%;
   padding: 8px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e2e8f0;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .manual-channel-input:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   outline: none;
 }
 
 .form-hint .btn-link {
   background: none;
   border: none;
-  color: #3b82f6;
+  color: var(--color-accent);
   cursor: pointer;
   padding: 0;
   font-size: inherit;
@@ -9655,7 +9788,7 @@ select option:disabled {
 }
 
 .form-hint .btn-link:hover {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Type hint banner in Add Channel modal */
@@ -9666,19 +9799,19 @@ select option:disabled {
   padding: 8px 12px;
   margin-bottom: 12px;
   font-size: 0.85rem;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .type-hint-banner strong {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 /* Settings Dialog */
 .settings-dialog {
   width: 450px;
   max-height: 80vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -9697,9 +9830,9 @@ select option:disabled {
 .settings-section h4 {
   margin: 0 0 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   font-size: 0.8rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   text-transform: uppercase;
 }
 
@@ -9715,7 +9848,7 @@ select option:disabled {
 }
 
 .auto-gen-info strong {
-  color: var(--accent, #60a5fa);
+  color: var(--color-accent-light);
   font-size: 1.1em;
 }
 
@@ -9739,7 +9872,7 @@ select option:disabled {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--surface-2, #1e293b);
+  background: var(--bg-surface);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.8rem;
@@ -9747,7 +9880,7 @@ select option:disabled {
 }
 
 .type-checkbox:hover {
-  background: var(--surface-3, #334155);
+  background: var(--bg-hover);
 }
 
 .type-checkbox input {
@@ -9759,7 +9892,7 @@ select option:disabled {
 }
 
 .settings-info {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   padding: 12px;
 }
@@ -9776,15 +9909,15 @@ select option:disabled {
 }
 
 .info-row .info-label {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .info-row .info-value {
-  color: #ccc;
+  color: var(--text-bright);
 }
 
 .info-row .info-value.online {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .info-row .info-value.mono {
@@ -9796,23 +9929,23 @@ select option:disabled {
 }
 
 .info-row .info-value.mode-crio {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
   font-weight: 500;
 }
 
 .mode-select {
   width: 100%;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e5e5e5;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .mode-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 /* Source and Node selectors in Add Channel modal */
@@ -9820,21 +9953,21 @@ select option:disabled {
 .node-select {
   width: 100%;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e5e5e5;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
 .source-select:focus,
 .node-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .node-select option.offline {
-  color: #888;
+  color: var(--text-secondary);
   font-style: italic;
 }
 
@@ -9842,8 +9975,8 @@ select option:disabled {
 .safety-actions-dialog {
   width: 550px;
   max-height: 85vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -9856,8 +9989,8 @@ select option:disabled {
 }
 
 .safety-auto-execute {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 12px;
   margin-bottom: 16px;
@@ -9867,7 +10000,7 @@ select option:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
@@ -9884,7 +10017,7 @@ select option:disabled {
 
 .safety-actions-header h4 {
   margin: 0;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.85rem;
   text-transform: uppercase;
 }
@@ -9899,8 +10032,8 @@ select option:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 12px;
 }
@@ -9916,19 +10049,19 @@ select option:disabled {
 }
 
 .action-name {
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
   font-size: 0.9rem;
 }
 
 .action-type {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.75rem;
   font-family: 'JetBrains Mono', monospace;
 }
 
 .action-desc {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
@@ -9941,7 +10074,7 @@ select option:disabled {
   width: 32px;
   height: 32px;
   border-radius: 4px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   background: transparent;
   cursor: pointer;
   display: flex;
@@ -9950,28 +10083,28 @@ select option:disabled {
 }
 
 .btn-icon:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .btn-icon.btn-danger:hover {
-  background: #dc2626;
-  border-color: #dc2626;
+  background: var(--color-error-dark);
+  border-color: var(--color-error-dark);
 }
 
 .safety-action-form {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 16px;
 }
 
 .safety-action-form h4 {
   margin: 0 0 16px;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.85rem;
   text-transform: uppercase;
   padding-bottom: 8px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .checkbox-list {
@@ -9980,7 +10113,7 @@ select option:disabled {
   gap: 8px;
   max-height: 150px;
   overflow-y: auto;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   padding: 8px;
   border-radius: 4px;
 }
@@ -9989,7 +10122,7 @@ select option:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
@@ -9999,15 +10132,15 @@ select option:disabled {
   gap: 8px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .empty-state {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   text-align: center;
   padding: 24px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
@@ -10022,26 +10155,26 @@ select option:disabled {
   width: 40px;
   height: 32px;
   padding: 2px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   cursor: pointer;
 }
 
 .color-text {
   flex: 1;
   padding: 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
 }
 
 /* Dirty indicator */
 .dirty-indicator {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
   font-weight: bold;
   margin-left: 2px;
 }
@@ -10050,15 +10183,15 @@ select option:disabled {
 .toolbar-divider {
   width: 1px;
   height: 24px;
-  background: #2a2a4a;
+  background: var(--border-color);
   margin: 0 8px;
 }
 
 /* Save As Dialog */
 .save-as-dialog {
   width: 400px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -10069,7 +10202,7 @@ select option:disabled {
 }
 
 .dialog-message {
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin-bottom: 16px;
   line-height: 1.5;
@@ -10078,8 +10211,8 @@ select option:disabled {
 .filename-input {
   display: flex;
   align-items: center;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -10089,7 +10222,7 @@ select option:disabled {
   padding: 8px 12px;
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
@@ -10099,16 +10232,16 @@ select option:disabled {
 
 .filename-input .extension {
   padding: 8px 12px;
-  background: #2a2a4a;
-  color: #888;
+  background: var(--border-color);
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
 /* Unsaved Changes Dialog */
 .unsaved-dialog {
   width: 400px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -10125,12 +10258,12 @@ select option:disabled {
 
 .unsaved-content p {
   margin: 0 0 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.95rem;
 }
 
 .unsaved-content .hint {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -10138,7 +10271,7 @@ select option:disabled {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   justify-content: flex-end;
 }
 
@@ -10147,8 +10280,8 @@ select option:disabled {
   width: 800px;
   max-width: 90vw;
   max-height: 85vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -10179,7 +10312,7 @@ select option:disabled {
 
 .stat-label {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -10187,15 +10320,15 @@ select option:disabled {
 .stat-value {
   font-size: 1.5rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .stat-value.success {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .stat-value.warning {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
 }
 
 .issue-breakdown {
@@ -10216,15 +10349,15 @@ select option:disabled {
 }
 
 .breakdown-stat.error {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .breakdown-stat.warning {
-  color: #f59e0b;
+  color: var(--color-warning-dark);
 }
 
 .breakdown-stat.info {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .no-issues {
@@ -10238,12 +10371,12 @@ select option:disabled {
 
 .no-issues p {
   margin: 0 0 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
 .no-issues .hint {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -10263,17 +10396,17 @@ select option:disabled {
 }
 
 .issue-item.error {
-  border-left-color: #ef4444;
+  border-left-color: var(--color-error);
   background: rgba(239, 68, 68, 0.05);
 }
 
 .issue-item.warning {
-  border-left-color: #f59e0b;
+  border-left-color: var(--color-warning-dark);
   background: rgba(245, 158, 11, 0.05);
 }
 
 .issue-item.info {
-  border-left-color: #3b82f6;
+  border-left-color: var(--color-accent);
   background: rgba(59, 130, 246, 0.05);
 }
 
@@ -10283,15 +10416,15 @@ select option:disabled {
 }
 
 .issue-item.error .issue-icon svg {
-  stroke: #ef4444;
+  stroke: var(--color-error);
 }
 
 .issue-item.warning .issue-icon svg {
-  stroke: #f59e0b;
+  stroke: var(--color-warning-dark);
 }
 
 .issue-item.info .issue-icon svg {
-  stroke: #3b82f6;
+  stroke: var(--color-accent);
 }
 
 .issue-details {
@@ -10308,14 +10441,14 @@ select option:disabled {
 
 .issue-channel {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-family: 'Courier New', monospace;
   font-size: 0.85rem;
 }
 
 .issue-category {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 2px 6px;
@@ -10324,7 +10457,7 @@ select option:disabled {
 }
 
 .issue-message {
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.85rem;
   line-height: 1.4;
 }
@@ -10341,7 +10474,7 @@ select option:disabled {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   justify-content: flex-end;
 }
 
@@ -10350,8 +10483,8 @@ select option:disabled {
   width: 700px;
   max-width: 90vw;
   max-height: 85vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -10387,13 +10520,13 @@ select option:disabled {
   margin: 0 0 4px;
   font-size: 1.1rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .summary-hint {
   margin: 0;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .import-stats {
@@ -10413,19 +10546,19 @@ select option:disabled {
 
 .import-stat.new {
   background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  color: var(--color-success);
   border: 1px solid rgba(34, 197, 94, 0.2);
 }
 
 .import-stat.overwrite {
   background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
+  color: var(--color-warning-dark);
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
 .import-stat.conflict {
   background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
+  color: var(--color-error);
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
@@ -10453,12 +10586,12 @@ select option:disabled {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  color: #f59e0b;
+  color: var(--color-warning-dark);
   font-size: 0.9rem;
 }
 
 .warning-section.conflict .warning-header {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .channel-list {
@@ -10474,13 +10607,13 @@ select option:disabled {
   border-radius: 3px;
   font-size: 0.75rem;
   font-family: 'Courier New', monospace;
-  color: #ccc;
+  color: var(--text-bright);
 }
 
 .channel-tag.more {
   background: rgba(59, 130, 246, 0.1);
   border-color: rgba(59, 130, 246, 0.2);
-  color: #3b82f6;
+  color: var(--color-accent);
   font-family: inherit;
 }
 
@@ -10492,25 +10625,25 @@ select option:disabled {
 
 .conflict-item {
   font-size: 0.85rem;
-  color: #ccc;
+  color: var(--text-bright);
   line-height: 1.5;
 }
 
 .conflict-channel {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-family: 'Courier New', monospace;
 }
 
 .conflict-physical {
   font-weight: 500;
-  color: #fbbf24;
+  color: var(--color-warning);
   font-family: 'Courier New', monospace;
 }
 
 .conflict-existing {
   font-weight: 500;
-  color: #ef4444;
+  color: var(--color-error);
   font-family: 'Courier New', monospace;
 }
 
@@ -10523,21 +10656,21 @@ select option:disabled {
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: 6px;
   font-size: 0.85rem;
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .import-preview-footer {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   justify-content: flex-end;
 }
 
 .btn-danger {
   background: #7f1d1d !important;
-  border-color: #ef4444 !important;
-  color: #ef4444 !important;
+  border-color: var(--color-error) !important;
+  color: var(--color-error) !important;
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -10552,7 +10685,7 @@ select option:disabled {
   gap: 12px;
   padding: 12px 16px;
   background: rgba(34, 197, 94, 0.1);
-  border: 1px solid #22c55e;
+  border: 1px solid var(--color-success);
   border-radius: 6px;
   color: #4ade80;
   margin-bottom: 24px;
@@ -10560,7 +10693,7 @@ select option:disabled {
 
 .current-project-banner.no-project {
   background: rgba(251, 191, 36, 0.1);
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
   color: #fcd34d;
 }
 
@@ -10571,7 +10704,7 @@ select option:disabled {
 .no-projects-message {
   padding: 24px;
   text-align: center;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   background: rgba(75, 85, 99, 0.1);
   border-radius: 6px;
@@ -10591,20 +10724,20 @@ select option:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   transition: all 0.2s;
 }
 
 .project-item:hover {
-  background: #242442;
-  border-color: #3a3a5a;
+  background: var(--bg-hover);
+  border-color: var(--border-light);
 }
 
 .project-item.active {
   background: rgba(59, 130, 246, 0.1);
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .project-info {
@@ -10614,14 +10747,14 @@ select option:disabled {
 
 .project-name {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.95rem;
   margin-bottom: 4px;
 }
 
 .project-meta {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .btn-sm {
@@ -10648,7 +10781,7 @@ select option:disabled {
   margin: 0;
 }
 
-.sev-critical { color: #ef4444; font-weight: 600; }
+.sev-critical { color: var(--color-error); font-weight: 600; }
 .sev-high { color: #f97316; font-weight: 600; }
 .sev-medium { color: #eab308; }
 .sev-low { color: #22c55e; }
@@ -10674,6 +10807,6 @@ select option:disabled {
 .alarm-select-meta {
   margin-left: 8px;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 </style>

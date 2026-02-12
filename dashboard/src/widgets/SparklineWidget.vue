@@ -158,7 +158,7 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100%;
   padding: 6px 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 4px;
@@ -190,7 +190,7 @@ onUnmounted(() => {
 
 .unit {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   font-weight: 400;
 }
 
@@ -208,7 +208,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   font-size: 0.6rem;
-  color: #666;
+  color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -241,7 +241,7 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background-color: #1a1a2e; }
+  0%, 100% { background-color: var(--bg-widget); }
   50% { background-color: #3f1515; }
 }
 </style>

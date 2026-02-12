@@ -13,7 +13,7 @@
  * - Session stops
  * - All outputs go to safe state (configurable)
  */
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
 import { useMqtt } from '../composables/useMqtt'
@@ -39,6 +39,7 @@ const mqtt = useMqtt('nisystem')
 // Latch state
 const isArmed = ref(false)
 const showConfirm = ref(false)
+let confirmTimer: ReturnType<typeof setTimeout> | null = null
 
 // Persistence key
 const storageKey = computed(() => `latch_${props.latchId || props.widgetId}`)
@@ -152,7 +153,8 @@ function handleClick() {
     // Arm - may require confirmation
     if (props.confirmArm && !showConfirm.value) {
       showConfirm.value = true
-      setTimeout(() => showConfirm.value = false, 3000)
+      if (confirmTimer) clearTimeout(confirmTimer)
+      confirmTimer = setTimeout(() => { showConfirm.value = false; confirmTimer = null }, 3000)
     } else {
       arm()
     }
@@ -187,6 +189,10 @@ function disarm() {
 function cancelConfirm() {
   showConfirm.value = false
 }
+
+onUnmounted(() => {
+  if (confirmTimer) clearTimeout(confirmTimer)
+})
 
 // Expose armed state for parent components
 defineExpose({
@@ -254,14 +260,14 @@ defineExpose({
   justify-content: center;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 6px;
-  border: 2px solid #4b5563;
+  border: 2px solid var(--btn-secondary-hover);
   transition: all 0.3s ease;
 }
 
 .latch-switch-widget.armed {
-  border-color: #22c55e;
+  border-color: var(--color-success);
   background: linear-gradient(135deg, #1a2e1a 0%, #1a1a2e 100%);
 }
 
@@ -271,14 +277,14 @@ defineExpose({
 }
 
 .latch-switch-widget.tripped {
-  border-color: #dc2626;
+  border-color: var(--color-error-dark);
   background: linear-gradient(135deg, #2e1a1a 0%, #1a1a2e 100%);
   animation: pulse-red 1s infinite;
 }
 
 @keyframes pulse-red {
-  0%, 100% { border-color: #dc2626; }
-  50% { border-color: #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.5); }
+  0%, 100% { border-color: var(--color-error-dark); }
+  50% { border-color: var(--color-error); box-shadow: 0 0 10px rgba(239, 68, 68, 0.5); }
 }
 
 .latch-switch-widget.compact {
@@ -307,14 +313,14 @@ defineExpose({
   padding: 8px 16px;
   border: none;
   border-radius: 8px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   cursor: pointer;
   transition: all 0.2s ease;
   min-width: 80px;
 }
 
 .latch-button:hover:not(:disabled) {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   transform: scale(1.02);
 }
 
@@ -324,18 +330,18 @@ defineExpose({
 }
 
 .latch-button.armed {
-  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-dark) 100%);
   box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
 }
 
 .latch-button.tripped {
-  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  background: linear-gradient(135deg, var(--color-error-dark) 0%, #b91c1c 100%);
   box-shadow: 0 0 12px rgba(220, 38, 38, 0.5);
   cursor: pointer;
 }
 
 .latch-button.tripped:hover {
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  background: linear-gradient(135deg, var(--color-error) 0%, var(--color-error-dark) 100%);
 }
 
 .latch-icon {
@@ -358,7 +364,7 @@ defineExpose({
 
 .latch-button.armed .latch-status,
 .latch-button.tripped .latch-status {
-  color: white;
+  color: var(--text-primary);
 }
 
 .reset-hint {
@@ -380,7 +386,7 @@ defineExpose({
 
 .trip-reason {
   font-size: 0.55rem;
-  color: #ef4444;
+  color: var(--color-error);
   margin-top: 4px;
   text-align: center;
   max-width: 100%;
@@ -397,7 +403,7 @@ defineExpose({
 
 .confirm-text {
   font-size: 0.7rem;
-  color: #fbbf24;
+  color: var(--color-warning);
   font-weight: 600;
 }
 
@@ -414,20 +420,20 @@ defineExpose({
 }
 
 .confirm-btn.yes {
-  background: #22c55e;
-  color: white;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 
 .confirm-btn.yes:hover {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .confirm-btn.no {
   background: #6b7280;
-  color: white;
+  color: var(--text-primary);
 }
 
 .confirm-btn.no:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 </style>

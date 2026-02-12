@@ -333,8 +333,8 @@ defineExpose({
 .page-tabs-container.drag-mode {
   transform: translateY(0);
   opacity: 1;
-  background: rgba(59, 130, 246, 0.1);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  background: var(--color-accent-bg);
+  box-shadow: 0 2px 8px var(--color-accent-border);
   border-radius: 0 0 4px 4px;
 }
 
@@ -344,11 +344,11 @@ defineExpose({
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-top: none;
   border-radius: 0 0 4px 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.7rem;
   cursor: pointer;
   transition: all 0.15s;
@@ -357,27 +357,27 @@ defineExpose({
 }
 
 .page-tab:hover {
-  background: #252540;
-  color: #ccc;
+  background: var(--bg-surface);
+  color: var(--text-bright);
 }
 
 .page-tab.active {
-  background: #0f0f1a;
-  border-color: #3b82f6;
-  border-bottom: 2px solid #3b82f6;
-  color: #fff;
+  background: var(--bg-input);
+  border-color: var(--color-accent);
+  border-bottom: 2px solid var(--color-accent);
+  color: var(--text-primary);
   z-index: 1;
 }
 
 .page-tab.drop-target {
-  border: 1px dashed rgba(59, 130, 246, 0.5);
+  border: 1px dashed var(--border-color);
   border-top: none;
 }
 
 .page-tab.hover-active {
-  background: rgba(59, 130, 246, 0.3) !important;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--color-accent-border) !important;
+  border-color: var(--color-accent);
+  color: var(--text-primary);
   transform: translateY(4px);
 }
 
@@ -394,8 +394,8 @@ defineExpose({
 }
 
 .page-tab.active .tab-number {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .tab-name {
@@ -417,7 +417,7 @@ defineExpose({
   background: transparent;
   border: none;
   border-radius: 2px;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   opacity: 0;
   transition: all 0.15s;
@@ -428,8 +428,8 @@ defineExpose({
 }
 
 .tab-delete-btn:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 /* Hover progress indicator - horizontal */
@@ -438,7 +438,7 @@ defineExpose({
   left: 0;
   bottom: 0;
   height: 3px;
-  background: #3b82f6;
+  background: var(--color-accent);
   animation: progress-fill-horizontal 0.6s linear forwards;
   border-radius: 0 0 6px 6px;
 }
@@ -457,18 +457,18 @@ defineExpose({
   height: 20px;
   margin-left: 2px;
   background: transparent;
-  border: 1px dashed #444;
+  border: 1px dashed var(--border-color);
   border-top: none;
   border-radius: 0 0 3px 3px;
-  color: #555;
+  color: var(--border-heavy);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .add-tab-btn:hover {
-  background: rgba(59, 130, 246, 0.2);
-  border-color: #3b82f6;
-  color: #3b82f6;
+  background: var(--color-accent-border);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 /* Context menu styles */
@@ -482,8 +482,8 @@ defineExpose({
   position: fixed;
   top: 80px;
   left: 20px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   min-width: 180px;
   padding: 4px 0;
@@ -499,7 +499,7 @@ defineExpose({
   padding: 8px 12px;
   background: transparent;
   border: none;
-  color: #ccc;
+  color: var(--text-bright);
   font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.15s;
@@ -507,32 +507,32 @@ defineExpose({
 }
 
 .context-item:hover {
-  background: #252540;
-  color: #fff;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .context-item.delete {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .context-item.delete:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 .context-divider {
   height: 1px;
-  background: #2a2a4a;
+  background: var(--border-color);
   margin: 4px 0;
 }
 
 /* Inline rename input */
 .rename-input {
   padding: 2px 6px;
-  background: #0f0f1a;
-  border: 1px solid #3b82f6;
+  background: var(--bg-input);
+  border: 1px solid var(--color-accent);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.7rem;
   outline: none;
   width: 60px;

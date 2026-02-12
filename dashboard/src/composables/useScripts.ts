@@ -688,6 +688,11 @@ export function useScripts() {
   }
 
   function onSequenceEvent(listener: SequenceEventListener): () => void {
+    // Safety cap to prevent unbounded listener accumulation
+    if (sequenceEventListeners.length > 100) {
+      console.warn('Too many sequence event listeners — clearing stale entries')
+      sequenceEventListeners.length = 0
+    }
     sequenceEventListeners.push(listener)
     // Return unsubscribe function
     return () => {
@@ -3486,18 +3491,18 @@ export function useScripts() {
           }
         })
 
-        // Run all evaluations
-        updateCalculatedParams()
-        evaluateTransformations()
-        evaluateFunctionBlocks()  // Add function blocks evaluation
-        evaluateAlarms()
-        evaluateTriggers()
-        evaluateSchedules()
-        evaluateWatchdogs()  // Monitor channels for stale data, out of range, etc.
+        // Run all evaluations — each isolated so one failure doesn't crash others
+        try { updateCalculatedParams() } catch (e) { console.error('updateCalculatedParams error:', e) }
+        try { evaluateTransformations() } catch (e) { console.error('evaluateTransformations error:', e) }
+        try { evaluateFunctionBlocks() } catch (e) { console.error('evaluateFunctionBlocks error:', e) }
+        try { evaluateAlarms() } catch (e) { console.error('evaluateAlarms error:', e) }
+        try { evaluateTriggers() } catch (e) { console.error('evaluateTriggers error:', e) }
+        try { evaluateSchedules() } catch (e) { console.error('evaluateSchedules error:', e) }
+        try { evaluateWatchdogs() } catch (e) { console.error('evaluateWatchdogs error:', e) }
 
         // Send script values to recording (if recording)
         if (store.status?.recording) {
-          sendScriptValuesToRecording()
+          try { sendScriptValuesToRecording() } catch (e) { console.error('sendScriptValuesToRecording error:', e) }
         }
 
         // Update last values after evaluation

@@ -711,7 +711,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
 <style scoped>
 .opcua-config {
   padding: 1rem;
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   margin-bottom: 1rem;
 }
@@ -722,7 +722,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
   align-items: center;
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-header h3 {
@@ -794,8 +794,8 @@ function showFeedback(type: 'success' | 'error', message: string) {
 }
 
 .device-card {
-  background: var(--bg-tertiary, #252525);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 0.75rem;
   cursor: pointer;
@@ -862,7 +862,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
 .device-details {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .detail-row {
@@ -935,7 +935,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
 }
 
 .modal {
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   width: 90%;
   max-width: 500px;
@@ -952,7 +952,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -980,13 +980,13 @@ function showFeedback(type: 'success' | 'error', message: string) {
   justify-content: flex-end;
   gap: 0.5rem;
   padding: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .form-group {
   margin-bottom: 1rem;
   padding: 0.75rem;
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
   border-radius: 6px;
 }
 
@@ -1011,8 +1011,8 @@ function showFeedback(type: 'success' | 'error', message: string) {
 .form-row select {
   width: 100%;
   padding: 0.5rem;
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: white;
 }
@@ -1081,7 +1081,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
   gap: 0.5rem;
   margin-bottom: 1rem;
   padding: 0.5rem;
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
   border-radius: 4px;
 }
 
@@ -1112,7 +1112,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
 .node-list {
   max-height: 400px;
   overflow-y: auto;
-  border: 1px solid var(--border-color, #333);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -1132,7 +1132,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
   cursor: pointer;
 }
 
@@ -1141,7 +1141,7 @@ function showFeedback(type: 'success' | 'error', message: string) {
 }
 
 .node-item:hover {
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
 }
 
 .node-item.folder {

@@ -680,7 +680,7 @@ import { computed } from 'vue'
 <style scoped>
 .ethernet-ip-config {
   padding: 1rem;
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   margin-bottom: 1rem;
 }
@@ -691,7 +691,7 @@ import { computed } from 'vue'
   align-items: center;
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-header h3 {
@@ -763,8 +763,8 @@ import { computed } from 'vue'
 }
 
 .device-card {
-  background: var(--bg-tertiary, #252525);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 0.75rem;
   cursor: pointer;
@@ -831,7 +831,7 @@ import { computed } from 'vue'
 .device-details {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .detail-row {
@@ -904,7 +904,7 @@ import { computed } from 'vue'
 }
 
 .modal {
-  background: var(--bg-secondary, #1e1e1e);
+  background: var(--bg-secondary);
   border-radius: 8px;
   width: 90%;
   max-width: 500px;
@@ -921,7 +921,7 @@ import { computed } from 'vue'
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -949,13 +949,13 @@ import { computed } from 'vue'
   justify-content: flex-end;
   gap: 0.5rem;
   padding: 1rem;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 
 .form-group {
   margin-bottom: 1rem;
   padding: 0.75rem;
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
   border-radius: 6px;
 }
 
@@ -980,8 +980,8 @@ import { computed } from 'vue'
 .form-row select {
   width: 100%;
   padding: 0.5rem;
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: white;
 }
@@ -1053,8 +1053,8 @@ import { computed } from 'vue'
 .search-input {
   flex: 1;
   padding: 0.5rem;
-  background: var(--bg-primary, #121212);
-  border: 1px solid var(--border-color, #333);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: white;
 }
@@ -1089,7 +1089,7 @@ import { computed } from 'vue'
 .tag-list {
   max-height: 400px;
   overflow-y: auto;
-  border: 1px solid var(--border-color, #333);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -1109,7 +1109,7 @@ import { computed } from 'vue'
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border-color, #333);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .tag-item:last-child {
@@ -1117,7 +1117,7 @@ import { computed } from 'vue'
 }
 
 .tag-item:hover {
-  background: var(--bg-tertiary, #252525);
+  background: var(--bg-elevated);
 }
 
 .tag-icon {
@@ -1181,6 +1181,6 @@ import { computed } from 'vue'
   text-align: center;
   font-size: 0.8rem;
   color: #888;
-  border-top: 1px solid var(--border-color, #333);
+  border-top: 1px solid var(--border-color);
 }
 </style>

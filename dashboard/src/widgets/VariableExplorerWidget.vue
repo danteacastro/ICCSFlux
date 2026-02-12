@@ -249,7 +249,7 @@ const hasVariables = computed(() => variables.value.length > 0)
   height: 100%;
   background: #0d0d1a;
   border-radius: 4px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
   font-size: 0.7rem;
   overflow: hidden;
@@ -260,8 +260,8 @@ const hasVariables = computed(() => variables.value.length > 0)
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #1a1a2e;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .widget-title {
@@ -295,7 +295,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 
 .action-btn:hover {
   color: #aaa;
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .action-btn:disabled {
@@ -304,7 +304,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .action-btn.danger:hover {
-  color: #f87171;
+  color: var(--color-error-light);
   background: rgba(239, 68, 68, 0.1);
 }
 
@@ -327,7 +327,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 .error-state {
   padding: 16px;
   text-align: center;
-  color: #f87171;
+  color: var(--color-error-light);
   font-size: 0.75rem;
 }
 
@@ -369,7 +369,7 @@ const hasVariables = computed(() => variables.value.length > 0)
   font-weight: 600;
   color: #666;
   text-transform: uppercase;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .variables-table td {
@@ -403,7 +403,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .var-name {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-weight: 500;
 }
 
@@ -419,12 +419,12 @@ const hasVariables = computed(() => variables.value.length > 0)
 
 .type-number {
   background: rgba(74, 222, 128, 0.1);
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .type-string {
-  background: rgba(251, 191, 36, 0.1);
-  color: #fbbf24;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 .type-collection {
@@ -433,8 +433,8 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .type-array {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
 }
 
 .type-bool {
@@ -476,8 +476,8 @@ const hasVariables = computed(() => variables.value.length > 0)
   justify-content: space-between;
   align-items: center;
   padding: 3px 8px;
-  background: #0a0a14;
-  border-top: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
   font-size: 0.6rem;
 }
 
@@ -486,7 +486,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .disconnected {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 /* Scrollbar */
@@ -499,7 +499,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .variables-container::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 3px;
 }
 

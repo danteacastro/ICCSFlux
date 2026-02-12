@@ -126,12 +126,12 @@ const shouldShowStatus = computed(() => props.showStatus === true)
           boxShadow: isOn && !industrial ? `0 0 8px ${ledColor}` : 'none'
         }"
       ></div>
-      <div class="label">{{ displayLabel }}</div>
+      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
     </div>
 
     <!-- Vertical layout (shown when tall enough) -->
     <div class="layout-vertical">
-      <div class="label">{{ displayLabel }}</div>
+      <div v-if="shouldShowLabel" class="label">{{ displayLabel }}</div>
       <div
         class="led"
         :style="{
@@ -205,9 +205,10 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   justify-content: center;
   height: 100%;
   padding: 4px 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
+  box-sizing: border-box;
   position: relative;
   container-type: size;
 }
@@ -223,6 +224,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   gap: 8px;
   width: 100%;
   padding: 0 4px;
+  overflow: hidden;
 }
 
 .layout-horizontal .label {
@@ -237,7 +239,9 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   align-items: center;
   justify-content: center;
   gap: 6px;
+  width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 /* When widget is tall enough (2+ rows ~55px), switch to vertical layout */
@@ -282,7 +286,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .label {
   font-size: 0.65rem;
   font-weight: 500;
-  color: #aaa;
+  color: var(--text-secondary);
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -352,10 +356,10 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   position: absolute;
   top: 2px;
   right: 2px;
-  background: #2d3748;
+  background: var(--bg-surface);
   border: none;
   border-radius: 2px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -370,8 +374,8 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 .settings-btn:hover {
-  background: #4a5568;
-  color: #fff;
+  background: var(--btn-secondary-hover);
+  color: var(--text-primary);
 }
 
 /* ========================================
@@ -388,8 +392,8 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   min-width: 280px;
@@ -397,7 +401,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 
 .modal h3 {
   margin: 0 0 16px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
@@ -408,7 +412,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .setting-group label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 8px;
   text-transform: uppercase;
 }
@@ -422,7 +426,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .color-swatch {
   width: 32px;
   height: 32px;
-  border: 2px solid #2a2a4a;
+  border: 2px solid var(--border-color);
   border-radius: 50%;
   cursor: pointer;
   transition: all 0.2s;
@@ -441,8 +445,8 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .close-btn {
   width: 100%;
   padding: 8px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -451,6 +455,6 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 .close-btn:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 </style>

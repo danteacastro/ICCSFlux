@@ -131,8 +131,8 @@ function cancelEdit() {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -140,12 +140,12 @@ function cancelEdit() {
 }
 
 .hmi-setpoint.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-setpoint.warning {
-  border-color: #FFD700;
+  border-color: var(--hmi-warning, #FFD700);
   border-width: 2px;
 }
 
@@ -154,8 +154,8 @@ function cancelEdit() {
 }
 
 .hmi-sp-label {
-  background: #C0C0C0;
-  color: #333;
+  background: var(--hmi-label-bg, #C0C0C0);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(7px, 18%, 10px);
   font-weight: 600;
   text-transform: uppercase;
@@ -174,25 +174,25 @@ function cancelEdit() {
   justify-content: center;
   gap: 4px;
   padding: 2px 4px;
-  background: white;
+  background: var(--hmi-input-bg, white);
   margin: 3px;
-  border: 1px solid #A0A0A4;
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 1px;
   cursor: pointer;
   min-height: 0;
 }
 
 .hmi-sp-body:hover {
-  border-color: #4169E1;
+  border-color: var(--hmi-accent, #4169E1);
 }
 
 .disabled .hmi-sp-body {
   cursor: default;
-  background: #E8E8E8;
+  background: var(--hmi-inactive-bg, #E8E8E8);
 }
 
 .hmi-sp-value {
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(10px, 40%, 20px);
   font-weight: 700;
@@ -200,15 +200,15 @@ function cancelEdit() {
 }
 
 .alarm .hmi-sp-value {
-  color: #FF0000;
+  color: var(--hmi-alarm, #FF0000);
 }
 
 .warning .hmi-sp-value {
-  color: #FF8C00;
+  color: var(--hmi-warning-text, #FF8C00);
 }
 
 .hmi-sp-unit {
-  color: #888;
+  color: var(--hmi-muted-text, #888);
   font-size: clamp(7px, 24%, 11px);
 }
 
@@ -217,7 +217,7 @@ function cancelEdit() {
   border: none;
   outline: none;
   background: transparent;
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(10px, 40%, 20px);
   font-weight: 700;
@@ -225,7 +225,7 @@ function cancelEdit() {
 }
 
 .hmi-sp-range {
-  color: #888;
+  color: var(--hmi-muted-text, #888);
   font-size: clamp(6px, 14%, 9px);
   text-align: center;
   padding: 1px 4px 2px;

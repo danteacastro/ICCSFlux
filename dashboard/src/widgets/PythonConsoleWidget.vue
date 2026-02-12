@@ -120,11 +120,14 @@ onMounted(() => {
     timestamp: Date.now()
   })
 
-  // Clean up subscription on unmount
-  onUnmounted(() => {
-    unsubscribe1()
-    unsubscribe2()
-  })
+  // Store unsubscribers for cleanup
+  cleanupFns.push(unsubscribe1, unsubscribe2)
+})
+
+// Cleanup subscriptions on unmount (must be at top level, not nested inside onMounted)
+const cleanupFns: (() => void)[] = []
+onUnmounted(() => {
+  cleanupFns.forEach(fn => fn())
 })
 
 function scrollToBottom() {
@@ -357,9 +360,9 @@ const displayLabel = computed(() => props.label || 'Python Console')
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0d0d1a;
+  background: var(--bg-primary);
   border-radius: 4px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
   font-size: 0.75rem;
   overflow: hidden;
@@ -370,13 +373,13 @@ const displayLabel = computed(() => props.label || 'Python Console')
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #1a1a2e;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .console-title {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -384,7 +387,7 @@ const displayLabel = computed(() => props.label || 'Python Console')
 .clear-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -393,8 +396,8 @@ const displayLabel = computed(() => props.label || 'Python Console')
 }
 
 .clear-btn:hover {
-  color: #aaa;
-  background: #2a2a4a;
+  color: var(--text-secondary);
+  background: var(--border-color);
 }
 
 .console-output {
@@ -423,7 +426,7 @@ const displayLabel = computed(() => props.label || 'Python Console')
 }
 
 .output-line.info {
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -452,8 +455,8 @@ const displayLabel = computed(() => props.label || 'Python Console')
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #0a0a14;
-  border-top: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
 }
 
 .prompt {
@@ -472,7 +475,7 @@ const displayLabel = computed(() => props.label || 'Python Console')
   background: transparent;
   border: none;
   outline: none;
-  color: #fff;
+  color: var(--text-primary);
   font-family: inherit;
   font-size: inherit;
   padding: 2px 0;
@@ -494,8 +497,8 @@ const displayLabel = computed(() => props.label || 'Python Console')
   right: 0;
   max-height: 200px;
   overflow-y: auto;
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
   z-index: 100;
@@ -528,8 +531,8 @@ const displayLabel = computed(() => props.label || 'Python Console')
   font-size: 0.6rem;
   padding: 1px 4px;
   border-radius: 3px;
-  background: #2a2a4a;
-  color: #888;
+  background: var(--border-color);
+  color: var(--text-secondary);
 }
 
 /* Completion type colors */
@@ -556,12 +559,12 @@ const displayLabel = computed(() => props.label || 'Python Console')
 
 .console-output::-webkit-scrollbar-track,
 .completions-dropdown::-webkit-scrollbar-track {
-  background: #0d0d1a;
+  background: var(--bg-primary);
 }
 
 .console-output::-webkit-scrollbar-thumb,
 .completions-dropdown::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 3px;
 }
 

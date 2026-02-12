@@ -180,14 +180,14 @@ const statusClass = computed(() => {
   align-items: center;
   height: 100%;
   padding: 4px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
 }
 
 .label {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -213,12 +213,12 @@ const statusClass = computed(() => {
 
 .unit-text {
   font-size: 6px;
-  fill: #888;
+  fill: var(--text-secondary);
 }
 
 .range-text {
   font-size: 5px;
-  fill: #666;
+  fill: var(--text-muted);
 }
 
 /* Status-based styling */
@@ -232,7 +232,7 @@ const statusClass = computed(() => {
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background-color: #1a1a2e; }
+  0%, 100% { background-color: var(--bg-widget); }
   50% { background-color: #3f1515; }
 }
 </style>

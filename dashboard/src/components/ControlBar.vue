@@ -218,82 +218,82 @@ const recordingTime = computed(() => {
 }
 
 .btn-start {
-  background: #22c55e;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 .btn-start:hover:not(:disabled) {
-  background: #16a34a;
+  background: var(--color-success-dark);
 }
 
 .btn-stop {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 .btn-stop:hover {
-  background: #dc2626;
+  background: var(--color-error);
 }
 
 .btn-record {
-  background: #1a1a2e;
-  color: #ef4444;
-  border: 1px solid #ef4444;
+  background: var(--bg-widget);
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
 }
 .btn-record:hover:not(:disabled) {
-  background: #2a1515;
+  background: var(--color-error-dark);
 }
 .btn-record.recording {
-  background: #7f1d1d;
+  background: var(--color-error-bg);
   animation: pulse-record 1s infinite;
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-edit {
-  background: #1a1a2e;
-  color: #60a5fa;
-  border: 1px solid #60a5fa;
+  background: var(--bg-widget);
+  color: var(--color-accent-light);
+  border: 1px solid var(--color-accent-light);
 }
 .btn-edit:hover {
-  background: #1e3a5f;
+  background: var(--color-accent-bg);
 }
 .btn-edit.active {
-  background: #1e40af;
-  color: #fff;
+  background: var(--color-accent-dark);
+  color: var(--text-primary);
 }
 
 .btn-pid {
-  background: #1a1a2e;
-  color: #22c55e;
-  border: 1px solid #22c55e;
+  background: var(--bg-widget);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
 }
 .btn-pid:hover {
-  background: #14532d;
+  background: var(--color-success-bg);
 }
 .btn-pid.active {
-  background: #15803d;
-  color: #fff;
+  background: var(--color-success-dark);
+  color: var(--text-primary);
 }
 
 .btn-add {
-  background: #059669;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 .btn-add:hover {
-  background: #047857;
+  background: var(--color-success-dark);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .session-toggle {
@@ -304,7 +304,7 @@ const recordingTime = computed(() => {
 
 .session-toggle .label {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
@@ -312,7 +312,7 @@ const recordingTime = computed(() => {
   position: relative;
   width: 40px;
   height: 20px;
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   border-radius: 10px;
   border: none;
   cursor: pointer;
@@ -321,7 +321,7 @@ const recordingTime = computed(() => {
 }
 
 .toggle-btn.on {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .toggle-btn .slider {
@@ -347,7 +347,7 @@ const recordingTime = computed(() => {
 }
 
 .btn.locked:hover {
-  background: rgba(127, 29, 29, 0.4);
+  background: var(--bg-hover);
 }
 
 .lock-icon {

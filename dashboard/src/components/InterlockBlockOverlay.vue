@@ -31,7 +31,7 @@ const tooltipText = computed(() => {
 .interlock-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(220, 38, 38, 0.12);
+  background: var(--color-error-bg);
   border-radius: inherit;
   display: flex;
   align-items: center;
@@ -45,7 +45,7 @@ const tooltipText = computed(() => {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .lock-icon {

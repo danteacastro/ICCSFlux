@@ -67,26 +67,31 @@ watch(() => safety.alarmConfigs.value, (configs) => {
   alarmConfigs.value = JSON.parse(JSON.stringify(configs))
 }, { immediate: true, deep: true })
 
-// Sync back to safety composable on changes (with validation)
+// Sync back to safety composable on changes (with validation, debounced)
+let alarmConfigDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
 watch(alarmConfigs, (configs) => {
-  Object.entries(configs).forEach(([channel, config]) => {
-    // Validate threshold order before saving
-    const la = config.low_alarm
-    const lw = config.low_warning
-    const hw = config.high_warning
-    const ha = config.high_alarm
+  if (alarmConfigDebounceTimer) clearTimeout(alarmConfigDebounceTimer)
+  alarmConfigDebounceTimer = setTimeout(() => {
+    Object.entries(configs).forEach(([channel, config]) => {
+      // Validate threshold order before saving
+      const la = config.low_alarm
+      const lw = config.low_warning
+      const hw = config.high_warning
+      const ha = config.high_alarm
 
-    // Check order (only for set values)
-    let valid = true
-    if (la != null && lw != null && la >= lw) valid = false
-    if (lw != null && hw != null && lw >= hw) valid = false
-    if (hw != null && ha != null && hw >= ha) valid = false
+      // Check order (only for set values)
+      let valid = true
+      if (la != null && lw != null && la >= lw) valid = false
+      if (lw != null && hw != null && lw >= hw) valid = false
+      if (hw != null && ha != null && hw >= ha) valid = false
 
-    // Only save if valid (prevents invalid configurations from being applied)
-    if (valid) {
-      safety.updateAlarmConfig(channel, config)
-    }
-  })
+      // Only save if valid (prevents invalid configurations from being applied)
+      if (valid) {
+        safety.updateAlarmConfig(channel, config)
+      }
+    })
+  }, 500)
 }, { deep: true })
 
 // ============================================
@@ -244,6 +249,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (alarmCheckInterval) clearInterval(alarmCheckInterval)
+  if (alarmConfigDebounceTimer) clearTimeout(alarmConfigDebounceTimer)
+  if (highlightTimer) clearTimeout(highlightTimer)
 })
 
 // ============================================
@@ -311,13 +318,20 @@ function getSeverityLabel(severity: string): string {
   }
 }
 
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+
 function scrollToAlarm(alarmId: string | undefined) {
   if (!alarmId) return
   const el = document.getElementById(`alarm-${alarmId}`)
   if (el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     el.classList.add('highlight')
-    setTimeout(() => el.classList.remove('highlight'), 2000)
+    if (highlightTimer) clearTimeout(highlightTimer)
+    highlightTimer = setTimeout(() => {
+      const target = document.getElementById(`alarm-${alarmId}`)
+      if (target) target.classList.remove('highlight')
+      highlightTimer = null
+    }, 2000)
   }
 }
 
@@ -737,6 +751,8 @@ const newInterlock = ref({
   maxBypassDuration: 0,  // 0 = unlimited
   conditionLogic: 'AND' as 'AND' | 'OR',
   silRating: undefined as 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4' | undefined,
+  priority: 'medium' as 'critical' | 'high' | 'medium' | 'low',
+  requiresAcknowledgment: false,
   proofTestInterval: undefined as number | undefined,
   conditions: [] as InterlockCondition[],
   controls: [] as InterlockControl[]
@@ -838,6 +854,8 @@ function openNewInterlockModal() {
     maxBypassDuration: 0,
     conditionLogic: 'AND',
     silRating: undefined,
+    priority: 'medium',
+    requiresAcknowledgment: false,
     proofTestInterval: undefined,
     conditions: [],
     controls: []
@@ -859,6 +877,8 @@ function openEditInterlockModal(interlockId: string) {
     maxBypassDuration: interlock.maxBypassDuration || 0,
     conditionLogic: interlock.conditionLogic || 'AND',
     silRating: interlock.silRating,
+    priority: interlock.priority || 'medium',
+    requiresAcknowledgment: interlock.requiresAcknowledgment || false,
     proofTestInterval: interlock.proofTestInterval,
     conditions: interlock.conditions.map(c => ({ ...c })),
     controls: interlock.controls.map(c => ({ ...c }))
@@ -888,11 +908,16 @@ function removeControl(index: number) {
   newInterlock.value.controls.splice(index, 1)
 }
 
+const isSavingInterlock = ref(false)
+
 function saveInterlock() {
+  if (isSavingInterlock.value) return
   if (!requireEditPermission()) return
   if (!newInterlock.value.name.trim()) return
   if (newInterlock.value.conditions.length === 0) return
   if (newInterlock.value.controls.length === 0) return
+
+  isSavingInterlock.value = true
 
   if (editingInterlock.value) {
     // Update existing
@@ -903,6 +928,8 @@ function saveInterlock() {
       maxBypassDuration: newInterlock.value.maxBypassDuration || undefined,
       conditionLogic: newInterlock.value.conditionLogic,
       silRating: newInterlock.value.silRating,
+      priority: newInterlock.value.priority,
+      requiresAcknowledgment: newInterlock.value.requiresAcknowledgment,
       proofTestInterval: newInterlock.value.proofTestInterval,
       conditions: newInterlock.value.conditions,
       controls: newInterlock.value.controls
@@ -917,6 +944,8 @@ function saveInterlock() {
       maxBypassDuration: newInterlock.value.maxBypassDuration || undefined,
       conditionLogic: newInterlock.value.conditionLogic,
       silRating: newInterlock.value.silRating,
+      priority: newInterlock.value.priority,
+      requiresAcknowledgment: newInterlock.value.requiresAcknowledgment,
       proofTestInterval: newInterlock.value.proofTestInterval,
       bypassed: false,
       conditions: newInterlock.value.conditions,
@@ -925,6 +954,7 @@ function saveInterlock() {
   }
 
   showInterlockModal.value = false
+  isSavingInterlock.value = false
 }
 
 function deleteInterlock(id: string) {
@@ -950,6 +980,21 @@ function toggleInterlockBypass(id: string) {
   }
 }
 
+// Check which channels referenced by an interlock's conditions are not configured
+function getInterlockMissingChannels(interlockId: string): string[] {
+  const interlock = safety.interlocks.value.find(i => i.id === interlockId)
+  if (!interlock) return []
+  const missing: string[] = []
+  for (const cond of interlock.conditions) {
+    if ((cond.type === 'channel_value' || cond.type === 'digital_input') && cond.channel) {
+      if (!store.channels[cond.channel]) {
+        missing.push(cond.channel)
+      }
+    }
+  }
+  return [...new Set(missing)]
+}
+
 // Get human-readable condition description
 function getConditionDescription(cond: InterlockCondition): string {
   const typeInfo = conditionTypes.find(t => t.value === cond.type)
@@ -959,32 +1004,43 @@ function getConditionDescription(cond: InterlockCondition): string {
   const delaySuffix = cond.delay_s && cond.delay_s > 0 ? ` (${cond.delay_s}s delay)` : ''
 
   if (cond.type === 'channel_value' && cond.channel) {
-    return `${cond.channel} ${cond.operator} ${cond.value}${delaySuffix}`
+    const opText: Record<string, string> = { '>': 'above', '>=': 'at or above', '<': 'below', '<=': 'at or below', '==': 'equal to', '!=': 'not equal to' }
+    const readable = opText[cond.operator || ''] || cond.operator
+    return `${cond.channel} must be ${readable} ${cond.value}${delaySuffix}`
   }
 
   if (cond.type === 'digital_input' && cond.channel) {
-    return `${cond.channel} = ${cond.value ? 'ON' : 'OFF'}${delaySuffix}`
+    return `${cond.channel} must be ${cond.value ? 'ON' : 'OFF'}${delaySuffix}`
   }
 
   if (cond.type === 'alarm_active' && cond.alarmId) {
-    return `${cond.alarmId} NOT Active${delaySuffix}`
+    return `Alarm "${cond.alarmId}" must not be active${delaySuffix}`
   }
 
   if (cond.type === 'alarm_state' && cond.alarmId) {
     const stateLabel = alarmStateOptions.find(o => o.value === cond.alarmState)?.label || cond.alarmState
-    return `${cond.alarmId} in ${stateLabel}${delaySuffix}`
+    return `Alarm "${cond.alarmId}" must be in ${stateLabel} state${delaySuffix}`
   }
 
   if (cond.type === 'variable_value' && cond.variableId) {
-    return `${cond.variableId} ${cond.operator} ${cond.value}${delaySuffix}`
+    const opText: Record<string, string> = { '>': 'above', '>=': 'at or above', '<': 'below', '<=': 'at or below', '==': 'equal to', '!=': 'not equal to' }
+    const readable = opText[cond.operator || ''] || cond.operator
+    return `Variable "${cond.variableId}" must be ${readable} ${cond.value}${delaySuffix}`
   }
 
   if (cond.type === 'expression' && cond.expression) {
-    const shortExpr = cond.expression.length > 25
-      ? cond.expression.substring(0, 22) + '...'
+    const shortExpr = cond.expression.length > 40
+      ? cond.expression.substring(0, 37) + '...'
       : cond.expression
-    return `Expr: ${shortExpr}`
+    return `Expression must be true: ${shortExpr}`
   }
+
+  if (cond.type === 'mqtt_connected') return `MQTT broker must be connected${delaySuffix}`
+  if (cond.type === 'daq_connected') return `DAQ service must be online${delaySuffix}`
+  if (cond.type === 'acquiring') return `System must be acquiring data${delaySuffix}`
+  if (cond.type === 'not_recording') return `Recording must not be active${delaySuffix}`
+  if (cond.type === 'no_active_alarms') return `No alarms may be active${delaySuffix}`
+  if (cond.type === 'no_latched_alarms') return `No alarms may be latched${delaySuffix}`
 
   return typeInfo.label + delaySuffix
 }
@@ -995,8 +1051,24 @@ function getControlDescription(ctrl: InterlockControl): string {
   if (!typeInfo) return 'Unknown control'
 
   if (ctrl.type === 'digital_output' && ctrl.channel) {
-    return `Block ${ctrl.channel}`
+    return `Blocks ${ctrl.channel} output`
   }
+  if (ctrl.type === 'analog_output' && ctrl.channel) {
+    return `Blocks ${ctrl.channel} output`
+  }
+  if (ctrl.type === 'set_digital_output' && ctrl.channel) {
+    return `Forces ${ctrl.channel} to ${ctrl.setValue ? 'ON' : 'OFF'}`
+  }
+  if (ctrl.type === 'set_analog_output' && ctrl.channel) {
+    return `Forces ${ctrl.channel} to ${ctrl.setValue}`
+  }
+  if (ctrl.type === 'stop_session') return 'Stops active session'
+  if (ctrl.type === 'stop_acquisition') return 'Stops data acquisition'
+  if (ctrl.type === 'schedule_enable') return 'Blocks schedule from starting'
+  if (ctrl.type === 'recording_start') return 'Blocks recording from starting'
+  if (ctrl.type === 'acquisition_start') return 'Blocks acquisition from starting'
+  if (ctrl.type === 'session_start') return 'Blocks session from starting'
+  if (ctrl.type === 'script_start') return 'Blocks scripts from starting'
 
   return typeInfo.label
 }
@@ -1249,6 +1321,9 @@ function getControlDescription(ctrl: InterlockControl): string {
       <div class="config-panel">
         <div class="panel-header">
           <h3>Alarm Configuration</h3>
+          <button class="btn btn-sm btn-secondary" @click="safety.syncAlarmConfigsToBackend()" title="Push alarm configs to backend service">
+            Sync to Backend
+          </button>
         </div>
 
         <div class="config-table-container">
@@ -1541,6 +1616,28 @@ function getControlDescription(ctrl: InterlockControl): string {
                   EDIT
                 </button>
               </div>
+            </div>
+
+            <!-- Description -->
+            <div
+              v-if="safety.interlocks.value.find(i => i.id === status.id)?.description"
+              class="interlock-description"
+            >
+              {{ safety.interlocks.value.find(i => i.id === status.id)?.description }}
+            </div>
+
+            <!-- Channel not configured warning -->
+            <div
+              v-if="getInterlockMissingChannels(status.id).length > 0"
+              class="interlock-warning"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+              </svg>
+              <span>
+                Channel{{ getInterlockMissingChannels(status.id).length > 1 ? 's' : '' }}
+                not configured: {{ getInterlockMissingChannels(status.id).join(', ') }}
+              </span>
             </div>
 
             <!-- Show conditions -->
@@ -1946,6 +2043,25 @@ function getControlDescription(ctrl: InterlockControl): string {
             </div>
           </div>
 
+          <!-- Priority & Trip Acknowledgment -->
+          <div class="form-row-group">
+            <div class="form-group half">
+              <label>Priority</label>
+              <select v-model="newInterlock.priority">
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="newInterlock.requiresAcknowledgment" />
+                Require trip acknowledgment
+              </label>
+            </div>
+          </div>
+
           <!-- Conditions -->
           <div class="conditions-section">
             <div class="section-header">
@@ -2241,8 +2357,8 @@ function getControlDescription(ctrl: InterlockControl): string {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0a0a14;
-  color: #fff;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 /* View-only notice banner */
@@ -2283,8 +2399,8 @@ function getControlDescription(ctrl: InterlockControl): string {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .safety-header h2 {
@@ -2304,7 +2420,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   align-items: center;
   padding: 8px 16px;
   border-radius: 6px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   min-width: 80px;
 }
 
@@ -2320,39 +2436,39 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .summary-item.alarm {
-  border: 1px solid #ef4444;
+  border: 1px solid var(--color-error);
 }
 .summary-item.alarm .count {
-  color: #ef4444;
+  color: var(--color-error);
 }
 .summary-item.alarm.pulse {
   animation: pulse-alarm 1s infinite;
 }
 
 .summary-item.warning {
-  border: 1px solid #fbbf24;
+  border: 1px solid var(--color-warning);
 }
 .summary-item.warning .count {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 .summary-item.warning.pulse {
   animation: pulse-warning 1s infinite;
 }
 
 .summary-item.acknowledged {
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--color-accent);
 }
 .summary-item.acknowledged .count {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 @keyframes pulse-alarm {
-  0%, 100% { background: #1a1a2e; }
+  0%, 100% { background: var(--bg-widget); }
   50% { background: #3f1515; }
 }
 
 @keyframes pulse-warning {
-  0%, 100% { background: #1a1a2e; }
+  0%, 100% { background: var(--bg-widget); }
   50% { background: #3f3515; }
 }
 
@@ -2367,8 +2483,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 /* Active Alarms Panel */
 .active-alarms-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -2380,7 +2496,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .panel-header h3 {
@@ -2401,7 +2517,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #4ade80;
+  color: var(--color-success-light);
   gap: 8px;
 }
 
@@ -2420,24 +2536,24 @@ function getControlDescription(ctrl: InterlockControl): string {
   display: flex;
   gap: 12px;
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 6px;
   margin-bottom: 8px;
   border-left: 3px solid;
 }
 
 .alarm-item.alarm {
-  border-left-color: #ef4444;
+  border-left-color: var(--color-error);
 }
 .alarm-item.alarm.active {
-  background: linear-gradient(90deg, #3f1515 0%, #1a1a2e 50%);
+  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 50%);
 }
 
 .alarm-item.warning {
-  border-left-color: #fbbf24;
+  border-left-color: var(--color-warning);
 }
 .alarm-item.warning.active {
-  background: linear-gradient(90deg, #3f3515 0%, #1a1a2e 50%);
+  background: linear-gradient(90deg, #3f3515 0%, var(--bg-widget) 50%);
 }
 
 .alarm-item.acknowledged {
@@ -2451,10 +2567,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .alarm-item.alarm .alarm-icon {
-  color: #ef4444;
+  color: var(--color-error);
 }
 .alarm-item.warning .alarm-icon {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .alarm-content {
@@ -2474,7 +2590,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .alarm-tag {
   font-family: monospace;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-weight: 700;
 }
 
@@ -2487,18 +2603,18 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .alarm-badge.alarm {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .alarm-badge.warning {
-  background: #fbbf24;
+  background: var(--color-warning);
   color: #000;
 }
 
 .alarm-badge.ack {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .alarm-message {
@@ -2541,8 +2657,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-edit {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2551,7 +2667,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-edit:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .export-btn {
@@ -2566,26 +2682,26 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-ack {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-ack:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-reset {
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
   font-weight: 700;
 }
 
@@ -2595,17 +2711,17 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .btn-clear {
   background: #6b7280;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .btn-clear:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 /* Config Panel */
 .config-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -2627,23 +2743,23 @@ function getControlDescription(ctrl: InterlockControl): string {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   padding: 10px 8px;
   text-align: left;
   font-weight: 600;
   color: #888;
   font-size: 0.7rem;
   text-transform: uppercase;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .config-table td {
   padding: 8px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
 }
 
 .config-table tr:hover {
-  background: #1a1a2e;
+  background: var(--bg-widget);
 }
 
 .config-table tr.selected {
@@ -2658,7 +2774,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .channel-name .tag {
   font-weight: 600;
   font-family: monospace;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .channel-name .unit {
@@ -2683,7 +2799,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   position: absolute;
   cursor: pointer;
   inset: 0;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border-radius: 20px;
   transition: 0.2s;
 }
@@ -2701,7 +2817,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .toggle-switch input:checked + .slider {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .toggle-switch input:checked + .slider:before {
@@ -2711,10 +2827,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 .threshold-input {
   width: 70px;
   padding: 4px 6px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   text-align: right;
 }
@@ -2728,7 +2844,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .threshold-input.alarm:focus {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   outline: none;
 }
 
@@ -2737,16 +2853,16 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .threshold-input.warning:focus {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
   outline: none;
 }
 
 .behavior-select {
   padding: 4px 6px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.75rem;
 }
 
@@ -2757,10 +2873,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 .small-input {
   width: 50px;
   padding: 4px 6px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   text-align: right;
 }
@@ -2771,8 +2887,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .channel-actions {
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
-  background: #1a1a2e;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-widget);
 }
 
 .channel-actions h4 {
@@ -2797,7 +2913,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .checkbox-label input[type="checkbox"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 /* Right Panel */
@@ -2809,8 +2925,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .health-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
 }
@@ -2841,23 +2957,23 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .health-item.ok .health-indicator {
-  background: #22c55e;
-  box-shadow: 0 0 6px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 6px var(--color-success);
 }
 
 .health-item.warning .health-indicator {
-  background: #fbbf24;
-  box-shadow: 0 0 6px #fbbf24;
+  background: var(--color-warning);
+  box-shadow: 0 0 6px var(--color-warning);
 }
 
 .health-item.error .health-indicator {
-  background: #ef4444;
-  box-shadow: 0 0 6px #ef4444;
+  background: var(--color-error);
+  box-shadow: 0 0 6px var(--color-error);
 }
 
 .history-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   flex: 1;
   display: flex;
@@ -2872,10 +2988,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .filter-select {
   padding: 4px 8px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.7rem;
 }
 
@@ -2887,7 +3003,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .history-item {
   padding: 8px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-bottom: 4px;
   border-left: 2px solid;
@@ -2895,11 +3011,11 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .history-item.alarm {
-  border-left-color: #ef4444;
+  border-left-color: var(--color-error);
 }
 
 .history-item.warning {
-  border-left-color: #fbbf24;
+  border-left-color: var(--color-warning);
 }
 
 .history-time {
@@ -2918,7 +3034,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .history-tag {
   font-family: monospace;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .history-message {
@@ -2961,8 +3077,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .node-select {
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 6px 10px;
   color: #ddd;
@@ -2972,7 +3088,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .node-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .section-tabs {
@@ -2993,13 +3109,13 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .section-tab:hover {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   color: #ccc;
 }
 
 .section-tab.active {
   background: #1e3a5f;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .latch-status {
@@ -3053,8 +3169,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlocks-status-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -3083,25 +3199,25 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlock-card {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 12px;
   margin-bottom: 12px;
 }
 
 .interlock-card.satisfied {
-  border-left: 3px solid #22c55e;
+  border-left: 3px solid var(--color-success);
 }
 
 .interlock-card.blocked {
-  border-left: 3px solid #ef4444;
-  background: linear-gradient(90deg, #3f1515 0%, #1a1a2e 30%);
+  border-left: 3px solid var(--color-error);
+  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 30%);
 }
 
 .interlock-card.bypassed {
-  border-left: 3px solid #fbbf24;
-  background: linear-gradient(90deg, #3f3515 0%, #1a1a2e 30%);
+  border-left: 3px solid var(--color-warning);
+  background: linear-gradient(90deg, #3f3515 0%, var(--bg-widget) 30%);
 }
 
 .interlock-card.disabled {
@@ -3124,11 +3240,11 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-card.satisfied .interlock-status-icon,
 .interlock-card.bypassed .interlock-status-icon {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .interlock-card.blocked .interlock-status-icon {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .interlock-name {
@@ -3143,7 +3259,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .bypass-badge {
   font-size: 0.6rem;
   padding: 2px 6px;
-  background: #fbbf24;
+  background: var(--color-warning);
   color: #000;
   border-radius: 3px;
   font-weight: 700;
@@ -3153,7 +3269,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   font-size: 0.6rem;
   padding: 2px 6px;
   background: #666;
-  color: #fff;
+  color: var(--text-primary);
   border-radius: 3px;
   font-weight: 600;
 }
@@ -3161,6 +3277,26 @@ function getControlDescription(ctrl: InterlockControl): string {
 .interlock-actions {
   display: flex;
   gap: 4px;
+}
+
+.interlock-description {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.interlock-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
 }
 
 .interlock-conditions {
@@ -3209,7 +3345,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-controls {
   padding-top: 8px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .control-tags {
@@ -3221,15 +3357,15 @@ function getControlDescription(ctrl: InterlockControl): string {
 .control-tag {
   font-size: 0.7rem;
   padding: 3px 8px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border-radius: 3px;
   color: #ccc;
 }
 
 /* Blocked Actions Panel */
 .blocked-actions-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -3265,7 +3401,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #4ade80;
+  color: var(--color-success-light);
   gap: 8px;
   padding: 24px;
   text-align: center;
@@ -3281,8 +3417,8 @@ function getControlDescription(ctrl: InterlockControl): string {
    ============================================ */
 
 .interlock-history-panel {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   margin-top: 12px;
   max-height: 300px;
@@ -3291,7 +3427,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlock-history-panel .panel-header {
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .interlock-history-list {
@@ -3302,25 +3438,25 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-history-item {
   padding: 8px 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-bottom: 6px;
   border-left: 3px solid #666;
 }
 
 .interlock-history-item.tripped {
-  border-left-color: #ef4444;
-  background: linear-gradient(90deg, #3f1515 0%, #1a1a2e 30%);
+  border-left-color: var(--color-error);
+  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 30%);
 }
 
 .interlock-history-item.bypassed {
-  border-left-color: #fbbf24;
-  background: linear-gradient(90deg, #3f3515 0%, #1a1a2e 30%);
+  border-left-color: var(--color-warning);
+  background: linear-gradient(90deg, #3f3515 0%, var(--bg-widget) 30%);
 }
 
 .interlock-history-item.cleared,
 .interlock-history-item.enabled {
-  border-left-color: #22c55e;
+  border-left-color: var(--color-success);
 }
 
 .interlock-history-item.disabled {
@@ -3328,7 +3464,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlock-history-item.proof_test {
-  border-left-color: #3b82f6;
+  border-left-color: var(--color-accent);
 }
 
 .interlock-history-item .history-time {
@@ -3396,7 +3532,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlock-history-item .interlock-name {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .interlock-history-item .history-reason {
@@ -3425,7 +3561,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay-light);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3433,8 +3569,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 20px;
 }
@@ -3442,7 +3578,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .modal h3 {
   margin: 0 0 16px;
   font-size: 1.1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .interlock-modal {
@@ -3467,23 +3603,23 @@ function getControlDescription(ctrl: InterlockControl): string {
 .form-group input[type="number"] {
   width: 100%;
   padding: 8px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .conditions-section,
 .controls-section {
   margin: 16px 0;
   padding: 12px;
-  background: #0a0a14;
+  background: var(--bg-primary);
   border-radius: 6px;
 }
 
@@ -3514,10 +3650,10 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex: 1;
   min-width: 140px;
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
 }
 
@@ -3526,10 +3662,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 .condition-operator-select,
 .condition-bool-select {
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
 }
 
@@ -3541,20 +3677,20 @@ function getControlDescription(ctrl: InterlockControl): string {
 .condition-value-input {
   width: 80px;
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   text-align: right;
 }
 
 .control-value-select {
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   min-width: 80px;
 }
@@ -3562,10 +3698,10 @@ function getControlDescription(ctrl: InterlockControl): string {
 .control-value-input {
   width: 80px;
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   text-align: right;
 }
@@ -3575,10 +3711,10 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex: 1;
   min-width: 200px;
   padding: 6px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   font-family: 'Consolas', 'Monaco', monospace;
 }
@@ -3594,8 +3730,8 @@ function getControlDescription(ctrl: InterlockControl): string {
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #1a1a28;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 0.75rem;
 }
@@ -3608,16 +3744,16 @@ function getControlDescription(ctrl: InterlockControl): string {
 .delay-input .delay-value {
   width: 50px;
   padding: 4px 6px;
-  background: #0a0a14;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   text-align: right;
 }
 
 .delay-input .delay-value:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   outline: none;
 }
 
@@ -3643,7 +3779,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .logic-toggle input[type="radio"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 /* SIL rating and proof test styles */
@@ -3670,7 +3806,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   gap: 8px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .modal-actions-right {
@@ -3679,8 +3815,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-danger {
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
 }
 
 .btn-danger:hover {
@@ -3688,8 +3824,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-warning {
-  background: #d97706;
-  color: #fff;
+  background: var(--color-warning-dark);
+  color: var(--text-primary);
 }
 
 .btn-warning:hover {
@@ -3697,12 +3833,12 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn:disabled {
@@ -3721,7 +3857,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   gap: 8px;
   padding: 6px 12px;
   background: #7f1d1d;
-  border: 1px solid #ef4444;
+  border: 1px solid var(--color-error);
   border-radius: 6px;
   color: #fca5a5;
   cursor: pointer;
@@ -3735,7 +3871,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .first-out-label {
   font-size: 0.65rem;
   font-weight: 700;
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .first-out-name {
@@ -3750,18 +3886,18 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 /* Critical severity */
 .summary-item.critical {
-  border: 2px solid #dc2626;
-  background: linear-gradient(135deg, #7f1d1d 0%, #1a1a2e 100%);
+  border: 2px solid var(--color-error-dark);
+  background: linear-gradient(135deg, #7f1d1d 0%, var(--bg-widget) 100%);
 }
 .summary-item.critical .count {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 .summary-item.critical.pulse {
   animation: pulse-critical 0.5s infinite;
 }
 
 @keyframes pulse-critical {
-  0%, 100% { background: linear-gradient(135deg, #7f1d1d 0%, #1a1a2e 100%); }
+  0%, 100% { background: linear-gradient(135deg, #7f1d1d 0%, var(--bg-widget) 100%); }
   50% { background: linear-gradient(135deg, #991b1b 0%, #2a1a2e 100%); }
 }
 
@@ -3785,8 +3921,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 .first-out-badge {
   display: inline-block;
   padding: 2px 6px;
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
   font-size: 0.6rem;
   font-weight: 700;
   border-radius: 3px;
@@ -3811,39 +3947,39 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 @keyframes highlight-flash {
-  0%, 100% { background: #1a1a2e; }
+  0%, 100% { background: var(--bg-widget); }
   50% { background: #2a3a5e; }
 }
 
 /* Severity-specific alarm items */
 .alarm-item.critical {
-  border-left-color: #dc2626;
-  background: linear-gradient(90deg, #450a0a 0%, #1a1a2e 40%);
+  border-left-color: var(--color-error-dark);
+  background: linear-gradient(90deg, #450a0a 0%, var(--bg-widget) 40%);
 }
 .alarm-item.critical.active {
   animation: pulse-critical-item 1s infinite;
 }
 
 @keyframes pulse-critical-item {
-  0%, 100% { background: linear-gradient(90deg, #450a0a 0%, #1a1a2e 40%); }
-  50% { background: linear-gradient(90deg, #7f1d1d 0%, #1a1a2e 40%); }
+  0%, 100% { background: linear-gradient(90deg, #450a0a 0%, var(--bg-widget) 40%); }
+  50% { background: linear-gradient(90deg, #7f1d1d 0%, var(--bg-widget) 40%); }
 }
 
 .alarm-item.critical .alarm-icon {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .alarm-item.medium {
   border-left-color: #f59e0b;
 }
 .alarm-item.medium.active {
-  background: linear-gradient(90deg, #451a03 0%, #1a1a2e 40%);
+  background: linear-gradient(90deg, #451a03 0%, var(--bg-widget) 40%);
 }
 
 /* Severity badges */
 .alarm-badge.critical {
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
 }
 
 .alarm-badge.medium {
@@ -3854,12 +3990,12 @@ function getControlDescription(ctrl: InterlockControl): string {
 /* State badges */
 .alarm-badge.returned {
   background: #6366f1;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .alarm-badge.shelved {
   background: #6b7280;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* Shelve expiry text */
@@ -3871,15 +4007,15 @@ function getControlDescription(ctrl: InterlockControl): string {
 /* Button styles for shelve/unshelve */
 .btn-shelve {
   background: #6b7280;
-  color: #fff;
+  color: var(--text-primary);
 }
 .btn-shelve:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-unshelve {
   background: #6366f1;
-  color: #fff;
+  color: var(--text-primary);
 }
 .btn-unshelve:hover {
   background: #4f46e5;
@@ -3894,36 +4030,36 @@ function getControlDescription(ctrl: InterlockControl): string {
 .shelve-target {
   font-size: 1rem;
   font-weight: 600;
-  color: #fbbf24;
+  color: var(--color-warning);
   margin: 0 0 16px;
   padding: 8px 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
-  border-left: 3px solid #fbbf24;
+  border-left: 3px solid var(--color-warning);
 }
 
 .form-select,
 .form-input {
   width: 100%;
   padding: 10px;
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .form-select:focus,
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .shelve-warning {
   margin: 16px 0;
   padding: 10px 12px;
   background: #451a03;
-  border: 1px solid #d97706;
+  border: 1px solid var(--color-warning-dark);
   border-radius: 4px;
   font-size: 0.8rem;
   color: #fcd34d;
@@ -3941,11 +4077,11 @@ function getControlDescription(ctrl: InterlockControl): string {
   height: 18px;
   padding: 0 5px;
   margin-left: 6px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border-radius: 9px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* ============================================
@@ -3963,7 +4099,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .correlation-panel,
 .rules-panel {
   background: #111827;
-  border: 1px solid #374151;
+  border: 1px solid var(--btn-secondary-bg);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -3975,11 +4111,11 @@ function getControlDescription(ctrl: InterlockControl): string {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #374151;
+  border-bottom: 1px solid var(--btn-secondary-bg);
 }
 
 .count-badge {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   color: #e5e7eb;
   padding: 2px 8px;
   border-radius: 10px;
@@ -4019,7 +4155,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .correlation-card,
 .rule-card {
   background: #1f2937;
-  border: 1px solid #374151;
+  border: 1px solid var(--btn-secondary-bg);
   border-radius: 6px;
   margin-bottom: 8px;
   padding: 12px;
@@ -4027,7 +4163,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .correlation-card:hover,
 .rule-card:hover {
-  border-color: #4b5563;
+  border-color: var(--btn-secondary-hover);
 }
 
 .rule-card.disabled {
@@ -4083,8 +4219,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .alarm-tag {
   display: inline-block;
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -4092,7 +4228,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .alarm-tag.secondary {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   margin-right: 4px;
   margin-bottom: 4px;
 }
@@ -4117,7 +4253,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   align-items: center;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #374151;
+  border-top: 1px solid var(--btn-secondary-bg);
 }
 
 .rule-id {
@@ -4136,12 +4272,12 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-icon:hover {
-  background: #374151;
+  background: var(--btn-secondary-bg);
   color: #e5e7eb;
 }
 
 .btn-icon.active {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .btn-icon.danger:hover {
@@ -4166,7 +4302,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   justify-content: space-between;
   align-items: center;
   background: #111827;
-  border: 1px solid #374151;
+  border: 1px solid var(--btn-secondary-bg);
   border-radius: 8px;
   padding: 12px 16px;
 }
@@ -4203,7 +4339,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   display: flex;
   flex-direction: column;
   background: #111827;
-  border: 1px solid #374151;
+  border: 1px solid var(--btn-secondary-bg);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -4213,7 +4349,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #374151;
+  border-bottom: 1px solid var(--btn-secondary-bg);
 }
 
 .soe-filters {
@@ -4223,7 +4359,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .filter-select {
   background: #1f2937;
-  border: 1px solid #374151;
+  border: 1px solid var(--btn-secondary-bg);
   border-radius: 4px;
   padding: 6px 10px;
   color: #e5e7eb;
@@ -4264,7 +4400,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   text-align: left;
   font-weight: 500;
   color: #9ca3af;
-  border-bottom: 1px solid #374151;
+  border-bottom: 1px solid var(--btn-secondary-bg);
 }
 
 .soe-table td {
@@ -4278,15 +4414,15 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .soe-table tr.row-alarm {
-  background: rgba(220, 38, 38, 0.1);
+  background: var(--color-error-bg);
 }
 
 .soe-table tr.row-cleared {
-  background: rgba(34, 197, 94, 0.1);
+  background: var(--color-success-bg);
 }
 
 .soe-table tr.row-ack {
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--color-accent-bg);
 }
 
 .timestamp-us {
@@ -4340,7 +4476,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .channel {
   font-family: monospace;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .prev-value {
@@ -4350,13 +4486,13 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .correlation-link {
   font-family: monospace;
-  color: #3b82f6;
+  color: var(--color-accent);
   cursor: pointer;
   text-decoration: underline;
 }
 
 .correlation-link:hover {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .no-correlation {
@@ -4368,7 +4504,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   text-align: center;
   font-size: 0.8rem;
   color: #6b7280;
-  border-top: 1px solid #374151;
+  border-top: 1px solid var(--btn-secondary-bg);
   background: #1f2937;
 }
 

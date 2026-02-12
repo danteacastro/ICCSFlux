@@ -34,6 +34,12 @@ const entryTypes: { value: NotebookEntry['type']; label: string; icon: string }[
   { value: 'issue', label: 'Issue', icon: '⚠️' }
 ]
 
+// Filter type label for display
+function getFilterLabel(type: string): string {
+  if (type === 'all') return 'All Types'
+  return entryTypes.find(t => t.value === type)?.label || type
+}
+
 function getTypeIcon(type: NotebookEntry['type']): string {
   return entryTypes.find(t => t.value === type)?.icon || '📝'
 }
@@ -52,6 +58,11 @@ const currentEntries = computed(() => {
       e.title.toLowerCase().includes(q) ||
       e.content.toLowerCase().includes(q)
     )
+  }
+
+  // Apply type filter
+  if (notebook.filterType.value !== 'all') {
+    entries = entries.filter(e => e.type === notebook.filterType.value)
   }
 
   return entries.sort((a, b) =>
@@ -227,6 +238,14 @@ function exportPdf() {
         </div>
 
         <div class="header-right">
+          <select
+            class="filter-type-select"
+            :value="notebook.filterType.value"
+            @change="notebook.filterType.value = ($event.target as HTMLSelectElement).value as any"
+          >
+            <option value="all">All Types</option>
+            <option v-for="t in entryTypes" :key="t.value" :value="t.value">{{ t.icon }} {{ t.label }}</option>
+          </select>
           <input
             type="text"
             placeholder="Search..."
@@ -288,6 +307,8 @@ function exportPdf() {
           </div>
 
           <div v-if="expandedEntryId === entry.id" class="entry-body">
+            <div v-if="entry.operator" class="entry-operator">By: {{ entry.operator }}</div>
+
             <pre v-if="entry.content" class="entry-content">{{ entry.content }}</pre>
 
             <div v-if="entry.tags.length" class="entry-tags">
@@ -301,6 +322,15 @@ function exportPdf() {
                   <span class="ch-name">{{ ch }}</span>
                   <span class="ch-value">{{ val.value.toFixed(2) }} {{ val.unit }}</span>
                 </div>
+              </div>
+            </div>
+
+            <div v-if="entry.amendments && entry.amendments.length" class="amendments-section">
+              <div class="amendments-header">Edit History ({{ entry.amendments.length }})</div>
+              <div v-for="(a, i) in entry.amendments" :key="i" class="amendment-item">
+                <span class="amendment-time">{{ formatTime(a.timestamp) }}</span>
+                <span class="amendment-field">{{ a.field }}</span>
+                <span v-if="a.reason" class="amendment-reason">{{ a.reason }}</span>
               </div>
             </div>
           </div>
@@ -386,15 +416,15 @@ function exportPdf() {
 .notebook-tab {
   display: flex;
   height: 100%;
-  background: #0a0a14;
-  color: #e0e0e0;
+  background: var(--bg-primary);
+  color: var(--text-bright);
 }
 
 /* Sidebar */
 .experiments-sidebar {
   width: 200px;
-  background: #12121e;
-  border-right: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
 }
@@ -406,13 +436,13 @@ function exportPdf() {
   padding: 12px;
   font-weight: 600;
   font-size: 0.85rem;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .add-exp-btn {
   width: 24px;
   height: 24px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border: none;
   border-radius: 4px;
   color: white;
@@ -432,7 +462,7 @@ function exportPdf() {
 
 .exp-section-label {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   padding: 4px 8px;
 }
@@ -446,19 +476,19 @@ function exportPdf() {
   background: transparent;
   border: none;
   border-radius: 4px;
-  color: #a0a0a0;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   text-align: left;
   cursor: pointer;
 }
 
 .exp-tab:hover {
-  background: #1a1a2e;
+  background: var(--bg-widget);
 }
 
 .exp-tab.active {
-  background: #1a1a3e;
-  color: #fff;
+  background: var(--bg-active);
+  color: var(--text-primary);
 }
 
 .exp-icon {
@@ -474,7 +504,7 @@ function exportPdf() {
 
 .exp-count {
   font-size: 0.7rem;
-  background: #2a2a4a;
+  background: var(--border-color);
   padding: 2px 6px;
   border-radius: 8px;
 }
@@ -492,7 +522,7 @@ function exportPdf() {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .header-left {
@@ -510,8 +540,8 @@ function exportPdf() {
 .end-exp-btn {
   padding: 4px 10px;
   background: transparent;
-  border: 1px solid #ef4444;
-  color: #ef4444;
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
   border-radius: 4px;
   font-size: 0.7rem;
   cursor: pointer;
@@ -525,16 +555,16 @@ function exportPdf() {
 .search-input {
   width: 180px;
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e0e0e0;
+  color: var(--text-bright);
   font-size: 0.8rem;
 }
 
 .new-entry-btn {
   padding: 6px 12px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border: none;
   border-radius: 4px;
   color: white;
@@ -550,16 +580,16 @@ function exportPdf() {
 
 .export-btn {
   padding: 6px 12px;
-  background: #2a2a4a;
+  background: var(--border-color);
   border: none;
   border-radius: 4px;
-  color: #a0a0a0;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   cursor: pointer;
 }
 
 .export-btn:hover {
-  background: #3a3a5a;
+  background: var(--border-light);
 }
 
 .export-dropdown {
@@ -567,8 +597,8 @@ function exportPdf() {
   top: 100%;
   right: 0;
   margin-top: 4px;
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   overflow: hidden;
   z-index: 100;
@@ -581,29 +611,29 @@ function exportPdf() {
   padding: 8px 12px;
   background: transparent;
   border: none;
-  color: #e0e0e0;
+  color: var(--text-bright);
   font-size: 0.8rem;
   text-align: left;
   cursor: pointer;
 }
 
 .export-dropdown button:hover {
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 /* Quick Note */
 .quick-note {
   padding: 8px 16px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
 }
 
 .quick-note input {
   width: 100%;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #e0e0e0;
+  color: var(--text-bright);
   font-size: 0.85rem;
 }
 
@@ -617,7 +647,7 @@ function exportPdf() {
 .empty-state {
   text-align: center;
   padding: 40px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .quick-templates {
@@ -629,17 +659,17 @@ function exportPdf() {
 
 .quick-templates button {
   padding: 6px 12px;
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
-  color: #a0a0a0;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
 }
 
 .entry {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   margin-bottom: 8px;
   overflow: hidden;
@@ -654,7 +684,7 @@ function exportPdf() {
 }
 
 .entry-header:hover {
-  background: #1f1f3a;
+  background: var(--bg-hover);
 }
 
 .entry-icon {
@@ -678,7 +708,7 @@ function exportPdf() {
 
 .entry-time {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -688,12 +718,12 @@ function exportPdf() {
 
 .expand-icon {
   font-size: 0.6rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .entry-body {
   padding: 0 12px 12px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .entry-content {
@@ -702,7 +732,7 @@ function exportPdf() {
   font-family: inherit;
   font-size: 0.85rem;
   line-height: 1.5;
-  color: #c0c0c0;
+  color: var(--text-bright);
 }
 
 .entry-tags {
@@ -713,21 +743,21 @@ function exportPdf() {
 
 .tag {
   padding: 2px 8px;
-  background: #2a2a4a;
+  background: var(--border-color);
   border-radius: 10px;
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .data-snapshot {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 10px;
 }
 
 .snapshot-header {
   font-size: 0.7rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   margin-bottom: 8px;
 }
 
@@ -741,18 +771,18 @@ function exportPdf() {
   display: flex;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 3px;
   font-size: 0.75rem;
 }
 
 .ch-name {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .ch-value {
   font-family: 'JetBrains Mono', monospace;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 /* Modal */
@@ -769,8 +799,8 @@ function exportPdf() {
 .modal {
   width: 90%;
   max-width: 500px;
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
 }
 
@@ -783,7 +813,7 @@ function exportPdf() {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
@@ -794,7 +824,7 @@ function exportPdf() {
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1.25rem;
   cursor: pointer;
 }
@@ -810,7 +840,7 @@ function exportPdf() {
 .form-row label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -818,10 +848,10 @@ function exportPdf() {
 .form-row textarea {
   width: 100%;
   padding: 8px 10px;
-  background: #0f0f1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
-  color: #e0e0e0;
+  color: var(--text-bright);
   font-size: 0.85rem;
   resize: vertical;
 }
@@ -833,16 +863,16 @@ function exportPdf() {
 
 .type-btns button {
   padding: 6px 10px;
-  background: #0f0f1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   font-size: 1rem;
   cursor: pointer;
 }
 
 .type-btns button.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .modal-footer {
@@ -850,21 +880,21 @@ function exportPdf() {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .btn-cancel {
   padding: 8px 16px;
-  background: #2a2a4a;
+  background: var(--border-color);
   border: none;
   border-radius: 4px;
-  color: #a0a0a0;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .btn-save {
   padding: 8px 16px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border: none;
   border-radius: 4px;
   color: white;
@@ -873,8 +903,68 @@ function exportPdf() {
 }
 
 .btn-save:disabled {
-  background: #2a2a4a;
-  color: #666;
+  background: var(--border-color);
+  color: var(--text-muted);
   cursor: not-allowed;
+}
+
+/* Filter type select */
+.filter-type-select {
+  padding: 6px 10px;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.filter-type-select option {
+  background: var(--bg-widget);
+  color: var(--text-bright);
+}
+
+/* Operator display */
+.entry-operator {
+  font-size: 0.7rem;
+  color: var(--color-accent-light);
+  padding: 8px 0 0;
+}
+
+/* Amendment history */
+.amendments-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 8px;
+}
+
+.amendments-header {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.amendment-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.75rem;
+}
+
+.amendment-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.amendment-field {
+  color: var(--color-warning-dark);
+}
+
+.amendment-reason {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 </style>

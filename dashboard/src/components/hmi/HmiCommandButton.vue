@@ -170,15 +170,15 @@ const actionHint = computed(() => {
   align-items: center;
   justify-content: center;
   padding: 3px;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   font-family: 'Segoe UI', Arial, sans-serif;
   user-select: none;
 }
 
 .hmi-button.blocked {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
 }
 
 .hmi-button.disabled {
@@ -186,17 +186,17 @@ const actionHint = computed(() => {
 }
 
 .hmi-button.executing .hmi-btn-push {
-  background: #BBB;
-  border-color: #4169E1;
+  background: var(--hmi-pressed-bg, #BBB);
+  border-color: var(--hmi-accent, #4169E1);
 }
 
 .hmi-btn-push {
   width: 100%;
   height: 100%;
-  border: 1px solid #888;
+  border: 1px solid var(--hmi-muted-text, #888);
   border-radius: 2px;
-  background: #E8E8E8;
-  color: #333;
+  background: var(--hmi-inactive-bg, #E8E8E8);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(8px, 30%, 13px);
   font-weight: 700;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -206,13 +206,13 @@ const actionHint = computed(() => {
 }
 
 .hmi-btn-push:not(:disabled):hover {
-  border-color: #4169E1;
-  background: #DDD;
+  border-color: var(--hmi-accent, #4169E1);
+  background: var(--hmi-hover-bg, #DDD);
 }
 
 .hmi-btn-push:not(:disabled):active {
-  background: #BBB;
-  border-color: #4169E1;
+  background: var(--hmi-pressed-bg, #BBB);
+  border-color: var(--hmi-accent, #4169E1);
   transform: scale(0.97);
 }
 

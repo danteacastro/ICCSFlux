@@ -107,7 +107,7 @@ const elapsedTime = computed(() => {
   align-items: center;
   height: 100%;
   padding: 2px 4px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   overflow: hidden;

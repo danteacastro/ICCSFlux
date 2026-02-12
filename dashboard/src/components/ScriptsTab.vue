@@ -623,8 +623,12 @@ function editFormula(param: CalculatedParam) {
   showFormulaEditor.value = true
 }
 
+const isSavingFormula = ref(false)
+
 function saveFormula() {
+  if (isSavingFormula.value) return
   if (!requireEditPermission()) return
+  isSavingFormula.value = true
   const existing = scripts.calculatedParams.value.find(p => p.id === formulaForm.value.id)
 
   if (existing) {
@@ -645,6 +649,7 @@ function saveFormula() {
   }
 
   showFormulaEditor.value = false
+  isSavingFormula.value = false
 }
 
 function deleteFormula(id: string) {
@@ -655,6 +660,8 @@ function deleteFormula(id: string) {
       selectedFormula.value = null
       showFormulaEditor.value = false
     }
+    // Reset form to avoid stale data in next create
+    formulaForm.value = { id: '', name: '', displayName: '', formula: '', unit: '' }
   }
 }
 
@@ -693,14 +700,19 @@ function editSequence(seq: Sequence) {
   showSequenceEditor.value = true
 }
 
+const isSavingSequence = ref(false)
+
 function saveSequence() {
+  if (isSavingSequence.value) return
   if (!requireEditPermission()) return
+  isSavingSequence.value = true
   if (selectedSequence.value) {
     scripts.updateSequence(selectedSequence.value, sequenceForm.value)
   } else {
     scripts.addSequence(sequenceForm.value as Omit<Sequence, 'id' | 'state' | 'currentStepIndex' | 'currentLoopIterations' | 'currentIfResults' | 'variables' | 'createdAt' | 'modifiedAt'>)
   }
   showSequenceEditor.value = false
+  isSavingSequence.value = false
 }
 
 function deleteSequence(id: string) {
@@ -739,16 +751,27 @@ function handleImportFile(event: Event) {
   const file = input.files?.[0]
   if (!file) return
 
+  input.value = '' // Reset input immediately to allow re-importing same file
   const reader = new FileReader()
   reader.onload = (e) => {
-    const content = e.target?.result as string
-    const result = scripts.importSequence(content)
-    if (result.success) {
-      scripts.addNotification('success', 'Import Successful', result.message)
-    } else {
-      scripts.addNotification('error', 'Import Failed', result.message)
+    const content = e.target?.result
+    if (typeof content !== 'string') {
+      scripts.addNotification('error', 'Import Failed', 'Could not read file content')
+      return
     }
-    input.value = ''
+    try {
+      const result = scripts.importSequence(content)
+      if (result.success) {
+        scripts.addNotification('success', 'Import Successful', result.message)
+      } else {
+        scripts.addNotification('error', 'Import Failed', result.message)
+      }
+    } catch (err) {
+      scripts.addNotification('error', 'Import Failed', 'Invalid file format')
+    }
+  }
+  reader.onerror = () => {
+    scripts.addNotification('error', 'Import Failed', 'Failed to read file')
   }
   reader.readAsText(file)
 }
@@ -1619,7 +1642,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 <template>
   <div class="scripts-tab">
-    <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <div v-if="!hasEditPermission" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Supervisor access required to edit scripts</span>
       <button class="login-link" @click="showLoginDialog">Login</button>
@@ -4019,7 +4042,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0a0a14;
+  background: var(--bg-primary);
 }
 
 /* View-only notice banner */
@@ -4060,8 +4083,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: flex;
   gap: 2px;
   padding: 8px 12px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .sub-tab {
@@ -4079,13 +4102,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .sub-tab:hover {
-  background: #1a1a2e;
-  color: #fff;
+  background: var(--bg-widget);
+  color: var(--text-primary);
 }
 
 .sub-tab.active {
   background: #1e3a5f;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .tab-icon {
@@ -4100,12 +4123,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .badge.alarm {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .badge.running {
-  color: #22c55e;
+  color: var(--color-success);
   animation: pulse 1s infinite;
 }
 
@@ -4128,8 +4151,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .count {
@@ -4153,12 +4176,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-primary:disabled {
@@ -4167,12 +4190,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-warning {
@@ -4181,19 +4204,19 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .btn-danger {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .btn-small {
   padding: 4px 10px;
   font-size: 0.75rem;
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-small:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .icon {
@@ -4210,7 +4233,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 /* List Panel */
 .list-panel {
   width: 400px;
-  border-right: 1px solid #2a2a4a;
+  border-right: 1px solid var(--border-color);
   overflow-y: auto;
 }
 
@@ -4219,8 +4242,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   font-size: 0.7rem;
   font-weight: 600;
   color: #666;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
 }
@@ -4230,13 +4253,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
   cursor: pointer;
   transition: background 0.2s;
 }
 
 .list-item:hover {
-  background: #1a1a2e;
+  background: var(--bg-widget);
 }
 
 .list-item.selected {
@@ -4255,7 +4278,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .item-name {
   font-size: 0.85rem;
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4273,12 +4296,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .item-value {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
-  color: #22c55e;
+  color: var(--color-success);
   white-space: nowrap;
 }
 
 .item-value.error {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .item-value .unit {
@@ -4292,7 +4315,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .error-icon {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .item-actions {
@@ -4306,7 +4329,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   position: relative;
   width: 32px;
   height: 16px;
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   border-radius: 8px;
   border: none;
   cursor: pointer;
@@ -4315,7 +4338,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .toggle-btn.on {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .toggle-btn .slider {
@@ -4364,7 +4387,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   opacity: 0.3;
   pointer-events: none;
   transition: opacity 0.2s;
@@ -4385,13 +4408,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .editor-header h3 {
   margin: 0;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -4404,7 +4427,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .close-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .editor-form {
@@ -4431,10 +4454,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .form-group select {
   width: 100%;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   font-family: inherit;
 }
@@ -4452,7 +4475,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .form-group textarea:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-row {
@@ -4471,10 +4494,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .formula-help code {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   padding: 1px 4px;
   border-radius: 2px;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .channel-chips {
@@ -4487,8 +4510,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .channel-chip {
   padding: 4px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.7rem;
@@ -4497,14 +4520,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .channel-chip:hover {
-  background: #2a2a4a;
-  color: #fff;
-  border-color: #3b82f6;
+  background: var(--btn-hover);
+  color: var(--text-primary);
+  border-color: var(--color-accent);
 }
 
 .preview-value {
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
 }
@@ -4512,7 +4535,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .preview-value .value {
   font-size: 1.2rem;
   font-weight: 600;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .preview-value .unit {
@@ -4522,7 +4545,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .preview-value .error {
-  color: #ef4444;
+  color: var(--color-error);
   font-size: 0.85rem;
 }
 
@@ -4531,7 +4554,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   gap: 8px;
   justify-content: flex-end;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 /* State Badges */
@@ -4545,14 +4568,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   margin-left: 8px;
 }
 
-.state-badge.idle { background: #374151; color: #9ca3af; }
-.state-badge.running { background: #166534; color: #22c55e; }
-.state-badge.paused { background: #78350f; color: #fbbf24; }
-.state-badge.completed { background: #1e3a5f; color: #60a5fa; }
+.state-badge.idle { background: var(--btn-secondary-bg); color: #9ca3af; }
+.state-badge.running { background: #166534; color: var(--color-success); }
+.state-badge.paused { background: #78350f; color: var(--color-warning); }
+.state-badge.completed { background: #1e3a5f; color: var(--color-accent-light); }
 .state-badge.aborted { background: #7f1d1d; color: #fca5a5; }
-.state-badge.error { background: #7f1d1d; color: #ef4444; }
-.state-badge.active { background: #7f1d1d; color: #ef4444; animation: pulse 1s infinite; }
-.state-badge.acknowledged { background: #78350f; color: #fbbf24; }
+.state-badge.error { background: #7f1d1d; color: var(--color-error); }
+.state-badge.active { background: #7f1d1d; color: var(--color-error); animation: pulse 1s infinite; }
+.state-badge.acknowledged { background: #78350f; color: var(--color-warning); }
 
 /* Sequence specific */
 .sequence-controls {
@@ -4563,12 +4586,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .running-label {
   font-size: 0.8rem;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .steps-list {
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   max-height: 300px;
   overflow-y: auto;
@@ -4579,7 +4602,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
 }
 
 .step-item.disabled {
@@ -4596,7 +4619,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   border-radius: 50%;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .step-icon {
@@ -4616,7 +4639,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .step-desc {
   font-size: 0.8rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .step-actions {
@@ -4626,8 +4649,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .step-btn {
   padding: 4px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.75rem;
@@ -4635,8 +4658,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .step-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .step-btn.delete:hover {
@@ -4663,7 +4686,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .step-group {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 6px;
   padding: 8px;
 }
@@ -4686,18 +4709,18 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .step-type-btn {
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.7rem;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .step-type-btn:hover {
-  background: #2a2a4a;
-  border-color: #3b82f6;
+  background: var(--btn-hover);
+  border-color: var(--color-accent);
 }
 
 /* Alarm specific */
@@ -4707,9 +4730,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   border-radius: 2px;
 }
 
-.severity-indicator.info { background: #3b82f6; }
+.severity-indicator.info { background: var(--color-accent); }
 .severity-indicator.warning { background: #f59e0b; }
-.severity-indicator.critical { background: #ef4444; }
+.severity-indicator.critical { background: var(--color-error); }
 
 .active-alarms-banner {
   background: #1a0a0a;
@@ -4742,7 +4765,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .alarm-name {
   flex: 1;
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .alarm-time {
@@ -4752,22 +4775,22 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .ack-btn {
   padding: 4px 10px;
-  background: #374151;
+  background: var(--btn-secondary-bg);
   border: none;
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.75rem;
   cursor: pointer;
 }
 
 .ack-btn:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .conditions-list,
 .actions-list {
-  background: #0a0a14;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 8px;
 }
@@ -4831,7 +4854,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay-light);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4839,8 +4862,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .modal {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   width: 500px;
   max-width: 90vw;
@@ -4854,13 +4877,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
   margin: 0;
   font-size: 1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .modal-body {
@@ -4874,7 +4897,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   gap: 8px;
   justify-content: flex-end;
   padding: 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Templates Layout */
@@ -4884,7 +4907,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .templates-list {
   width: 350px;
-  border-right: 1px solid #2a2a4a;
+  border-right: 1px solid var(--border-color);
   overflow-y: auto;
 }
 
@@ -4897,21 +4920,21 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   font-size: 0.7rem;
   font-weight: 600;
   color: #666;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
 }
 
 .template-item {
   padding: 12px 16px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
   cursor: pointer;
   transition: background 0.2s;
 }
 
 .template-item:hover {
-  background: #1a1a2e;
+  background: var(--bg-widget);
 }
 
 .template-item.selected {
@@ -4921,7 +4944,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .template-name {
   font-size: 0.85rem;
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .template-desc {
@@ -4952,7 +4975,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .config-header h3 {
   margin: 0 0 8px 0;
   font-size: 1.1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .config-header p {
@@ -4968,11 +4991,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .formula-preview {
   display: block;
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   word-break: break-all;
 }
 
@@ -4999,8 +5022,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 /* Action button styles */
 .action-btn {
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.8rem;
@@ -5008,12 +5031,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .action-btn.play {
-  color: #22c55e;
+  color: var(--color-success);
   border-color: #166534;
 }
 
@@ -5022,7 +5045,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-btn.pause {
-  color: #fbbf24;
+  color: var(--color-warning);
   border-color: #78350f;
 }
 
@@ -5036,17 +5059,17 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .search-input {
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   width: 200px;
 }
 
 .search-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .blocks-layout {
@@ -5056,15 +5079,15 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .templates-panel {
   width: 280px;
-  background: #0a0a14;
-  border-right: 1px solid #2a2a4a;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border-color);
   overflow-y: auto;
 }
 
 .create-block-form {
   padding: 12px;
-  border-bottom: 1px solid #2a2a4a;
-  background: #0f0f1a;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
 }
 
 .selected-template {
@@ -5085,7 +5108,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   flex: 1;
   font-size: 0.85rem;
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .clear-btn {
@@ -5097,23 +5120,23 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .clear-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .block-name-input {
   width: 100%;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   margin-bottom: 8px;
 }
 
 .block-name-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .btn-full {
@@ -5156,8 +5179,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.75rem;
@@ -5167,8 +5190,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-btn:hover {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #fff;
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .template-btn .t-icon {
@@ -5217,11 +5240,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .block-outputs .value {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .block-outputs .output-value.error .value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .block-editor {
@@ -5252,7 +5275,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .block-info {
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-bottom: 16px;
 }
@@ -5266,7 +5289,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .block-category-badge {
   display: inline-block;
   padding: 2px 8px;
-  background: #2a2a4a;
+  background: var(--btn-hover);
   border-radius: 4px;
   font-size: 0.7rem;
   color: #888;
@@ -5306,7 +5329,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .input-label .required {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .input-unit {
@@ -5320,10 +5343,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .binding-select {
   flex: 1;
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
 }
 
@@ -5331,7 +5354,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .bool-select:focus,
 .binding-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .number-input {
@@ -5343,7 +5366,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: #0a0a14;
+  background: var(--bg-primary);
   border-radius: 4px;
 }
 
@@ -5358,12 +5381,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .output-display .output-value-num {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 500;
 }
 
 .output-display.error .error-text {
-  color: #ef4444;
+  color: var(--color-error);
   font-size: 0.75rem;
 }
 
@@ -5374,7 +5397,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .state-display {
-  background: #0a0a14;
+  background: var(--bg-primary);
   border-radius: 4px;
   padding: 8px;
   font-family: 'JetBrains Mono', monospace;
@@ -5392,7 +5415,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .state-value {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Schedule Tab Styles */
@@ -5404,8 +5427,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-card {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
 }
@@ -5415,7 +5438,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-card.running {
-  border-color: #22c55e;
+  border-color: var(--color-success);
   box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
 }
 
@@ -5428,7 +5451,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .schedule-info h4 {
   margin: 0 0 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
 }
 
@@ -5449,7 +5472,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   gap: 16px;
   margin-bottom: 12px;
   padding: 12px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 6px;
 }
 
@@ -5460,12 +5483,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-timing .value {
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .schedule-timing .value.active {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 600;
 }
 
@@ -5486,12 +5509,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-group .action-count {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.85rem;
 }
 
 .schedule-summary .active-indicator {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 600;
 }
 
@@ -5503,8 +5526,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .day-btn {
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   cursor: pointer;
@@ -5512,13 +5535,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .day-btn:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
 }
 
 .day-btn.selected {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .schedule-editor-modal {
@@ -5544,7 +5567,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .info-box strong {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .info-box code {
@@ -5552,12 +5575,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   padding: 2px 4px;
   border-radius: 2px;
   font-family: monospace;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 /* Run count badge */
 .run-count {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-size: 0.65rem;
 }
 
@@ -5577,15 +5600,15 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: flex;
   gap: 12px;
   padding: 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
 }
 
 .template-card:hover {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   background: #1e2a4a;
 }
 
@@ -5596,7 +5619,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 8px;
 }
 
@@ -5606,7 +5629,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-name {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
@@ -5618,7 +5641,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-category {
   font-size: 0.65rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   text-transform: uppercase;
 }
 
@@ -5636,13 +5659,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .history-item {
   padding: 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 6px;
-  border-left: 3px solid #4b5563;
+  border-left: 3px solid var(--btn-secondary-hover);
 }
 
 .history-item.completed {
-  border-left-color: #22c55e;
+  border-left-color: var(--color-success);
 }
 
 .history-item.aborted {
@@ -5650,7 +5673,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .history-item.error {
-  border-left-color: #ef4444;
+  border-left-color: var(--color-error);
 }
 
 .history-time {
@@ -5670,23 +5693,23 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   text-transform: uppercase;
 }
 
-.history-state.completed { color: #22c55e; }
+.history-state.completed { color: var(--color-success); }
 .history-state.aborted { color: #f59e0b; }
-.history-state.error { color: #ef4444; }
+.history-state.error { color: var(--color-error); }
 
 .history-steps {
   color: #aaa;
 }
 
 .history-duration {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-family: monospace;
 }
 
 .history-error {
   margin-top: 6px;
   font-size: 0.7rem;
-  color: #ef4444;
+  color: var(--color-error);
   padding: 6px;
   background: #7f1d1d30;
   border-radius: 4px;
@@ -5701,14 +5724,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 /* Action buttons */
 .action-btn.export,
 .action-btn.history {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
   font-size: 0.7rem;
 }
 
 .action-btn.export:hover,
 .action-btn.history:hover {
-  background: #3a3a5a;
+  background: var(--bg-active);
 }
 
 /* ============================================
@@ -5723,14 +5746,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .watchdog-card {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
 }
 
 .watchdog-card.triggered {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   background: #1a0f0f;
 }
 
@@ -5748,15 +5771,15 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #374151;
+  background: var(--btn-secondary-bg);
 }
 
 .status-indicator.ok {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .status-indicator.triggered {
-  background: #ef4444;
+  background: var(--color-error);
   animation: pulse 1s infinite;
 }
 
@@ -5777,16 +5800,16 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .detail-value {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .triggered-banner {
   margin-top: 12px;
   padding: 8px 12px;
-  background: #ef4444;
+  background: var(--color-error);
   border-radius: 4px;
   font-size: 0.8rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* Watchdog Editor Styles */
@@ -5803,7 +5826,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   min-height: 32px;
   padding: 8px;
   background: #0d0d1a;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -5812,8 +5835,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   border-radius: 4px;
   font-size: 0.75rem;
 }
@@ -5821,7 +5844,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .channel-tag .remove-tag {
   background: none;
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   cursor: pointer;
   padding: 0 2px;
   font-size: 0.8rem;
@@ -5850,7 +5873,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   padding: 8px;
   background: #0d0d1a;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -5876,8 +5899,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-row .remove-action {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   padding: 4px 8px;
@@ -5886,7 +5909,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-row .remove-action:hover {
-  background: #dc2626;
+  background: var(--color-error-dark);
 }
 
 .btn-small {
@@ -5930,7 +5953,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .card-header h4 {
   margin: 0;
   font-size: 0.95rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .card-actions {
@@ -5956,7 +5979,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .icon-btn:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
   opacity: 1;
 }
 
@@ -5965,7 +5988,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .icon-btn.active {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .toggle-switch.small {
@@ -6031,7 +6054,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .current-valve {
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .cycle-count {
@@ -6042,7 +6065,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .total-volume {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .valve-grid {
@@ -6054,7 +6077,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .valve-table {
   width: 100%;
   border-collapse: collapse;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -6062,12 +6085,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .valve-table th {
   padding: 12px;
   text-align: left;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   font-size: 0.75rem;
   font-weight: 600;
   color: #888;
   text-transform: uppercase;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .valve-table td {
@@ -6086,12 +6109,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .valve-table tr.active .valve-name {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 600;
 }
 
 .valve-table tr.completed {
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--color-accent-bg);
 }
 
 .valve-table tr.disabled {
@@ -6100,7 +6123,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .valve-name {
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .volume-target {
@@ -6121,24 +6144,24 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .valve-status.pending {
-  background: #374151;
+  background: var(--btn-secondary-bg);
   color: #9ca3af;
 }
 
 .valve-status.active {
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
   animation: pulse 1s infinite;
 }
 
 .valve-status.completed {
   background: #1e3a8a;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .valve-status.skipped {
   background: #78350f;
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .valve-status.error {
@@ -6155,14 +6178,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .mini-progress {
   width: 100px;
   height: 6px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
   overflow: hidden;
 }
 
 .mini-progress-fill {
   height: 100%;
-  background: #22c55e;
+  background: var(--color-success);
   border-radius: 3px;
   transition: width 0.3s;
 }
@@ -6181,7 +6204,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .completed-info {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .no-progress {
@@ -6191,9 +6214,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .cycle-settings {
   padding: 16px;
   margin: 16px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
 }
 
 .cycle-settings h4 {
@@ -6219,10 +6242,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .input-sm {
   width: 60px;
   padding: 4px 8px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   text-align: center;
 }
@@ -6261,9 +6284,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .schedule-grid-section {
   padding: 16px;
   margin: 16px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
 }
 
 .schedule-grid-section .section-header {
@@ -6298,10 +6321,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .flow-channel-row select {
   padding: 6px 12px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   min-width: 200px;
 }
@@ -6318,18 +6341,18 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-grid-table th {
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   padding: 10px 8px;
   text-align: left;
   font-weight: 500;
   color: #888;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   white-space: nowrap;
 }
 
 .schedule-grid-table td {
   padding: 8px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
   vertical-align: middle;
 }
 
@@ -6382,10 +6405,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .editable-cell select {
   width: 100%;
   padding: 6px 8px;
-  background: #0a0a14;
+  background: var(--bg-primary);
   border: 2px solid #00d4ff;
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
   outline: none;
 }
@@ -6420,7 +6443,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .entry-status.pending {
-  background: #2a2a4a;
+  background: var(--btn-hover);
   color: #888;
 }
 
@@ -6483,8 +6506,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-grid-table .icon-btn:hover:not(:disabled) {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .schedule-grid-table .icon-btn.danger:hover:not(:disabled) {

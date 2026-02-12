@@ -229,7 +229,7 @@ function getRotatedDirection(dir: 'left' | 'right' | 'top' | 'bottom'): 'left' |
   justify-content: center;
   height: 100%;
   padding: 4px;
-  background: var(--widget-bg, transparent);
+  background: var(--bg-widget);
   border-radius: 4px;
   gap: 2px;
 }

@@ -354,6 +354,8 @@ export function useAuth() {
 
   // Start/stop idle monitor when auth state changes
   watch(authenticated, (isAuth) => {
+    // Sync auth state to useMqtt (gates permission-sensitive commands like safe-state)
+    mqtt.setUserAuthenticated(isAuth)
     if (isAuth) {
       _resetIdleTimer()
       _startIdleMonitor(logout)

@@ -71,8 +71,8 @@ function toggle() {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -80,7 +80,7 @@ function toggle() {
 }
 
 .hmi-toggle.blocked {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
 }
 
 .hmi-toggle.disabled {
@@ -88,8 +88,8 @@ function toggle() {
 }
 
 .hmi-toggle-label {
-  background: #C0C0C0;
-  color: #333;
+  background: var(--hmi-label-bg, #C0C0C0);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(7px, 22%, 10px);
   font-weight: 600;
   text-transform: uppercase;
@@ -111,7 +111,7 @@ function toggle() {
 
 .hmi-toggle-btn {
   flex: 1;
-  border: 1px solid #A0A0A4;
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 1px;
   font-size: clamp(8px, 30%, 12px);
   font-weight: 700;
@@ -125,28 +125,28 @@ function toggle() {
 }
 
 .on-btn {
-  background: #E8E8E8;
-  color: #888;
+  background: var(--hmi-inactive-bg, #E8E8E8);
+  color: var(--hmi-muted-text, #888);
 }
 
 .on-btn.active {
-  background: #2D862D;
-  border-color: #1A6B1A;
-  color: white;
+  background: var(--hmi-led-on, #2D862D);
+  border-color: var(--hmi-led-on-border, #1A6B1A);
+  color: var(--hmi-on-text, white);
 }
 
 .off-btn {
-  background: #E8E8E8;
-  color: #888;
+  background: var(--hmi-inactive-bg, #E8E8E8);
+  color: var(--hmi-muted-text, #888);
 }
 
 .off-btn.active {
-  background: #808080;
-  border-color: #666;
-  color: white;
+  background: var(--hmi-led-off, #808080);
+  border-color: var(--hmi-led-off-border, #666);
+  color: var(--hmi-on-text, white);
 }
 
 .hmi-toggle-btn:not(:disabled):hover {
-  border-color: #4169E1;
+  border-color: var(--hmi-accent, #4169E1);
 }
 </style>

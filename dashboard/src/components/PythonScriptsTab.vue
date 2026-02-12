@@ -1136,16 +1136,16 @@ function getScriptStateClass(id: string): string {
 }
 
 .state-running {
-  color: #22c55e;
+  color: var(--color-success);
   animation: pulse 1s infinite;
 }
 
 .state-error {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .state-idle {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 
 @keyframes pulse {
@@ -1193,7 +1193,7 @@ function getScriptStateClass(id: string): string {
   gap: 8px;
   font-size: 12px;
   padding: 4px 8px;
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   border-radius: 4px;
 }
 
@@ -1204,11 +1204,11 @@ function getScriptStateClass(id: string): string {
 
 .pv-value {
   font-family: monospace;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .pv-units {
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
   font-size: 11px;
 }
 
@@ -1240,7 +1240,7 @@ function getScriptStateClass(id: string): string {
 }
 
 .dirty-indicator {
-  color: #f59e0b;
+  color: var(--color-warning);
   font-size: 20px;
   line-height: 1;
 }
@@ -1254,7 +1254,7 @@ function getScriptStateClass(id: string): string {
 .run-mode-select {
   font-size: 12px;
   color: var(--text-primary, #e2e8f0);
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   border: 1px solid var(--border-color, #333);
   border-radius: 4px;
   padding: 4px 8px;
@@ -1263,13 +1263,13 @@ function getScriptStateClass(id: string): string {
 }
 
 .run-mode-select:hover {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .run-mode-select:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-border);
 }
 
 .run-mode-select option {
@@ -1292,7 +1292,7 @@ function getScriptStateClass(id: string): string {
   width: 14px;
   height: 14px;
   cursor: pointer;
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .auto-restart-label:hover {
@@ -1301,7 +1301,7 @@ function getScriptStateClass(id: string): string {
 
 /* Validation Panel */
 .validation-panel {
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   border-bottom: 1px solid var(--border-color, #333);
   max-height: 150px;
   overflow-y: auto;
@@ -1317,14 +1317,14 @@ function getScriptStateClass(id: string): string {
 
 /* Error panel header (red) */
 .validation-errors-panel .validation-header {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 /* Success panel header (green) */
 .validation-success .validation-header {
-  background: #14532d;
-  color: #86efac;
+  background: var(--color-success-bg);
+  color: var(--color-success);
 }
 
 .validation-errors {
@@ -1341,13 +1341,13 @@ function getScriptStateClass(id: string): string {
 }
 
 .validation-error.error {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 .validation-error.warning {
-  background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 .error-location {
@@ -1372,7 +1372,7 @@ function getScriptStateClass(id: string): string {
   width: 32px;
   height: 32px;
   border: 3px solid var(--border-color, #333);
-  border-top-color: #3b82f6;
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -1384,14 +1384,14 @@ function getScriptStateClass(id: string): string {
 .progress-bar {
   width: 200px;
   height: 4px;
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: #3b82f6;
+  background: var(--color-accent);
   transition: width 0.3s;
 }
 
@@ -1420,7 +1420,7 @@ function getScriptStateClass(id: string): string {
   border-top: 1px solid var(--border-color, #333);
   display: flex;
   flex-direction: column;
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
 }
 
 .console-header {
@@ -1448,7 +1448,7 @@ function getScriptStateClass(id: string): string {
 }
 
 .console-time {
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
 }
 
 .console-type {
@@ -1469,7 +1469,7 @@ function getScriptStateClass(id: string): string {
 .output-error .console-message { color: #ef4444; }
 
 .console-line-num {
-  color: #f59e0b;
+  color: var(--color-warning);
   font-weight: 600;
   cursor: pointer;
   padding: 0 4px;
@@ -1477,11 +1477,11 @@ function getScriptStateClass(id: string): string {
 }
 
 .console-line-num:hover {
-  background: rgba(245, 158, 11, 0.2);
+  background: var(--color-warning-bg);
 }
 
 .console-empty {
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
   font-style: italic;
 }
 
@@ -1501,15 +1501,15 @@ function getScriptStateClass(id: string): string {
 }
 
 .btn-primary {
-  background: #3b82f6;
+  background: var(--color-accent);
   color: white;
 }
 
-.btn-primary:hover { background: #2563eb; }
-.btn-primary:disabled { background: #1e40af; opacity: 0.5; cursor: not-allowed; }
+.btn-primary:hover { background: var(--color-accent-dark); }
+.btn-primary:disabled { background: var(--color-accent-dark); opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
-  background: var(--bg-tertiary, #374151);
+  background: var(--bg-elevated, #374151);
   color: var(--text-primary, #e0e0e0);
 }
 
@@ -1517,21 +1517,21 @@ function getScriptStateClass(id: string): string {
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-success {
-  background: #22c55e;
+  background: var(--color-success);
   color: white;
 }
 
-.btn-success:hover { background: #16a34a; }
+.btn-success:hover { background: var(--color-success-dark); }
 
 .btn-danger {
-  background: #ef4444;
+  background: var(--color-error);
   color: white;
 }
 
-.btn-danger:hover { background: #dc2626; }
+.btn-danger:hover { background: var(--color-error); }
 
 .btn-danger-text {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .btn-ghost {
@@ -1586,14 +1586,14 @@ function getScriptStateClass(id: string): string {
   padding: 8px 12px;
   border: 1px solid var(--border-color, #333);
   border-radius: 4px;
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   color: var(--text-primary, #e0e0e0);
   font-size: 14px;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .modal-actions {
@@ -1621,7 +1621,7 @@ function getScriptStateClass(id: string): string {
 }
 
 .template-card:hover {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
   background: var(--bg-hover, #1f2937);
 }
 
@@ -1640,8 +1640,8 @@ function getScriptStateClass(id: string): string {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: var(--bg-tertiary, #0f172a);
-  color: var(--text-tertiary, #6b7280);
+  background: var(--bg-elevated, #0f172a);
+  color: var(--text-dim);
 }
 
 /* Imported Data Section */
@@ -1669,7 +1669,7 @@ function getScriptStateClass(id: string): string {
   justify-content: space-between;
   font-size: 12px;
   padding: 6px 8px;
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   border-radius: 4px;
 }
 
@@ -1680,12 +1680,12 @@ function getScriptStateClass(id: string): string {
 }
 
 .imported-name {
-  color: #3b82f6;
+  color: var(--color-accent);
   font-family: monospace;
 }
 
 .imported-meta {
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
   font-size: 11px;
 }
 
@@ -1698,12 +1698,12 @@ function getScriptStateClass(id: string): string {
 
 .form-hint {
   font-size: 11px;
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
   margin-top: 4px;
 }
 
 .form-hint code {
-  background: var(--bg-tertiary, #0f172a);
+  background: var(--bg-elevated, #0f172a);
   padding: 2px 4px;
   border-radius: 2px;
   font-family: monospace;
@@ -1719,8 +1719,8 @@ function getScriptStateClass(id: string): string {
 }
 
 .import-dropzone:hover {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.05);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .dropzone-content {
@@ -1742,6 +1742,6 @@ function getScriptStateClass(id: string): string {
 
 .dropzone-hint {
   font-size: 12px;
-  color: var(--text-tertiary, #6b7280);
+  color: var(--text-dim);
 }
 </style>

@@ -247,8 +247,12 @@ function applyValue() {
     return
   }
 
-  // Clamp to limits
-  const clampedVal = Math.max(Number(minVal.value), Math.min(Number(maxVal.value), val))
+  // Clamp to limits (guard against NaN/Infinity in min/max)
+  const minNum = Number(minVal.value)
+  const maxNum = Number(maxVal.value)
+  const safeMin = Number.isFinite(minNum) ? minNum : -Infinity
+  const safeMax = Number.isFinite(maxNum) ? maxNum : Infinity
+  const clampedVal = Math.max(safeMin, Math.min(safeMax, val))
 
   // Send to MQTT
   mqtt.setOutput(props.channel, clampedVal)
@@ -454,7 +458,7 @@ function onKnobMouseUp() {
   justify-content: center;
   height: 100%;
   padding: 4px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   position: relative;
@@ -511,7 +515,7 @@ function onKnobMouseUp() {
 .label {
   font-size: 0.65rem;
   font-weight: 500;
-  color: #aaa;
+  color: var(--text-secondary);
   text-transform: uppercase;
   max-width: 100%;
   overflow: hidden;
@@ -532,8 +536,8 @@ function onKnobMouseUp() {
   height: 16px;
   border: none;
   border-radius: 2px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   font-size: 0.7rem;
   font-weight: 600;
   cursor: pointer;
@@ -547,12 +551,12 @@ function onKnobMouseUp() {
 }
 
 .step-btn:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
   transform: scale(1.05);
 }
 
 .step-btn:disabled {
-  background: #374151;
+  background: var(--btn-secondary-bg);
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -560,8 +564,8 @@ function onKnobMouseUp() {
 .value-container {
   min-width: 36px;
   padding: 2px 4px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 2px;
   cursor: pointer;
   text-align: center;
@@ -576,7 +580,7 @@ function onKnobMouseUp() {
 
 .unit {
   font-size: 0.6rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-left: 2px;
 }
 
@@ -584,7 +588,7 @@ function onKnobMouseUp() {
   width: 40px;
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
@@ -605,11 +609,11 @@ function onKnobMouseUp() {
 }
 
 .disabled .value {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .blocked {
-  border: 2px solid #dc2626;
+  border: 2px solid var(--color-error-dark);
   animation: pulse-blocked 2s ease-in-out infinite;
 }
 
@@ -736,15 +740,15 @@ function onKnobMouseUp() {
 
 .knob-value .unit {
   font-size: 0.55rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .knob-input {
   width: 50px;
   background: transparent;
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--color-accent);
   border-radius: 2px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;

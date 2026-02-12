@@ -254,7 +254,7 @@ const containerStyle = computed(() => {
   flex-direction: column;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 6px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 6px;
@@ -270,7 +270,7 @@ const containerStyle = computed(() => {
 
 .loop-name {
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
@@ -285,8 +285,8 @@ const containerStyle = computed(() => {
 }
 
 .mode-btn.auto {
-  background: #22c55e;
-  color: #fff;
+  background: var(--color-success);
+  color: var(--text-primary);
 }
 
 .mode-btn.manual {
@@ -308,14 +308,14 @@ const containerStyle = computed(() => {
 .pv-bar-container {
   position: relative;
   height: 20px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
   overflow: hidden;
 }
 
 .pv-bar {
   height: 100%;
-  background: linear-gradient(90deg, #22c55e, #3b82f6);
+  background: linear-gradient(90deg, var(--color-success), var(--color-accent));
   transition: width 0.3s ease;
 }
 
@@ -324,9 +324,9 @@ const containerStyle = computed(() => {
   top: 0;
   bottom: 0;
   width: 3px;
-  background: #ef4444;
+  background: var(--color-error);
   transform: translateX(-50%);
-  box-shadow: 0 0 4px #ef4444;
+  box-shadow: 0 0 4px var(--color-error);
 }
 
 .pv-labels {
@@ -337,11 +337,11 @@ const containerStyle = computed(() => {
 }
 
 .pv-value {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .sp-value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 /* Control Rows */
@@ -369,8 +369,8 @@ const containerStyle = computed(() => {
   height: 24px;
   border: none;
   border-radius: 3px;
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
   font-size: 14px;
   cursor: pointer;
   display: flex;
@@ -379,16 +379,16 @@ const containerStyle = computed(() => {
 }
 
 .adj-btn:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .control-input {
   width: 60px;
   padding: 4px 6px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border: 1px solid #3b5998;
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   text-align: center;
@@ -396,7 +396,7 @@ const containerStyle = computed(() => {
 
 .control-input:focus {
   outline: none;
-  border-color: #60a5fa;
+  border-color: var(--color-accent-light);
 }
 
 /* Output Display (Auto mode) */
@@ -404,14 +404,14 @@ const containerStyle = computed(() => {
   position: relative;
   flex: 1;
   height: 24px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
   overflow: hidden;
 }
 
 .output-bar {
   height: 100%;
-  background: #3b82f6;
+  background: var(--color-accent);
   transition: width 0.3s ease;
 }
 
@@ -423,7 +423,7 @@ const containerStyle = computed(() => {
   justify-content: center;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: #fff;
+  color: var(--text-primary);
   text-shadow: 0 0 4px rgba(0,0,0,0.8);
 }
 
@@ -432,7 +432,7 @@ const containerStyle = computed(() => {
   display: flex;
   justify-content: space-between;
   padding: 4px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 3px;
 }
 

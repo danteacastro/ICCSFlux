@@ -109,11 +109,13 @@ const blockedCount = computed(() =>
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  padding: 6px;
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
-  gap: 6px;
+  gap: 3px;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .widget-title {
@@ -122,8 +124,9 @@ const blockedCount = computed(() =>
   color: #888;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #2a2a4a;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .alarm-summary-widget.has-issues {
@@ -135,7 +138,8 @@ const blockedCount = computed(() =>
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   color: #4ade80;
   font-size: 0.85rem;
   font-weight: 600;
@@ -143,20 +147,23 @@ const blockedCount = computed(() =>
 
 .summary-row {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   justify-content: space-around;
+  flex-shrink: 1;
+  min-height: 0;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
+  gap: 1px;
+  padding: 3px 6px;
   border-radius: 4px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   opacity: 0.5;
-  min-width: 50px;
+  min-width: 44px;
+  min-height: 0;
 }
 
 .stat.active {
@@ -180,9 +187,10 @@ const blockedCount = computed(() =>
 }
 
 .stat .count {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
+  line-height: 1.1;
 }
 
 .stat .label {
@@ -190,21 +198,23 @@ const blockedCount = computed(() =>
   text-transform: uppercase;
   color: inherit;
   opacity: 0.8;
+  line-height: 1;
 }
 
 .latched-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 6px;
   background: #7f1d1d;
   color: #fca5a5;
   border-radius: 4px;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 600;
   cursor: pointer;
   animation: pulse 1s infinite;
+  flex-shrink: 0;
 }
 
 .latched-row:hover {
@@ -212,7 +222,7 @@ const blockedCount = computed(() =>
 }
 
 .reset-hint {
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   opacity: 0.7;
   font-weight: 400;
 }
@@ -221,29 +231,31 @@ const blockedCount = computed(() =>
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 6px;
   background: #78350f;
   color: #fbbf24;
   border-radius: 4px;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .ack-btn {
-  padding: 6px 12px;
-  background: #374151;
-  border: 1px solid #4b5563;
+  padding: 4px 10px;
+  background: var(--btn-secondary-bg);
+  border: 1px solid var(--btn-secondary-hover);
   border-radius: 4px;
-  color: #fff;
-  font-size: 0.7rem;
+  color: var(--text-primary);
+  font-size: 0.65rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
 .ack-btn:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 /* Compact mode */
@@ -254,7 +266,7 @@ const blockedCount = computed(() =>
 .compact .stat {
   flex-direction: row;
   gap: 4px;
-  padding: 3px 6px;
+  padding: 2px 5px;
 }
 
 .compact .stat .count {

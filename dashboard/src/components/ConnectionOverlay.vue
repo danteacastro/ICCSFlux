@@ -6,6 +6,7 @@ const props = defineProps<{
   reconnectAttempts: number
   dataIsStale: boolean
   lastHeartbeatTime: number
+  isAcquiring: boolean
 }>()
 
 const emit = defineEmits<{
@@ -42,9 +43,9 @@ watch(() => props.reconnectAttempts, () => {
 }, { immediate: true })
 
 watch(() => props.connected, (isConnected) => {
-  if (isConnected && countdownInterval) {
-    clearInterval(countdownInterval)
-    countdownInterval = null
+  if (isConnected) {
+    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null }
+    countdownSeconds.value = 0
   }
 })
 
@@ -95,7 +96,7 @@ onMounted(() => {
 // Show overlay when disconnected or data is stale (respecting grace period)
 const showOverlay = computed(() => {
   if (inGracePeriod.value) return false
-  return !props.connected || (props.dataIsStale && props.lastHeartbeatTime > 0)
+  return !props.connected || (props.isAcquiring && props.dataIsStale && props.lastHeartbeatTime > 0)
 })
 
 const overlayMessage = computed(() => {
@@ -165,7 +166,7 @@ const showRetryButton = computed(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.85);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -175,7 +176,7 @@ const showRetryButton = computed(() => {
 
 .overlay-content {
   text-align: center;
-  color: white;
+  color: var(--text-primary);
   max-width: 400px;
   padding: 2rem;
 }
@@ -183,8 +184,8 @@ const showRetryButton = computed(() => {
 .spinner {
   width: 48px;
   height: 48px;
-  border: 4px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #3b82f6;
+  border: 4px solid var(--border-light);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin: 0 auto 1.5rem;
@@ -200,24 +201,24 @@ h2 {
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0 0 0.5rem;
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .sub-message {
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--text-secondary);
   margin: 0 0 1rem;
   font-size: 0.95rem;
 }
 
 .countdown {
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-dim);
   font-size: 0.85rem;
   margin-bottom: 1rem;
 }
 
 .retry-button {
-  background: #3b82f6;
-  color: white;
+  background: var(--color-accent);
+  color: var(--text-primary);
   border: none;
   padding: 0.75rem 1.5rem;
   border-radius: 6px;
@@ -229,11 +230,11 @@ h2 {
 }
 
 .retry-button:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .hint {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-disabled);
   font-size: 0.8rem;
   margin-top: 1rem;
 }

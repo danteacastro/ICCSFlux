@@ -44,7 +44,11 @@ const discoveryChannels = ref<any[]>([])
 const crioDiscoveryChannels = ref<Record<string, any[]>>({}) // nodeId -> channels
 const isScanning = ref(false)
 let scanTimeoutId: ReturnType<typeof setTimeout> | null = null
+let crioRescanTimeoutId: ReturnType<typeof setTimeout> | null = null
 const SCAN_TIMEOUT_MS = 30000 // 30 second timeout for device scan
+
+// Auth state - set by useAuth to gate permission-sensitive commands (avoids circular import)
+const userAuthenticated = ref(false)
 
 // Output rate limiting - prevents MQTT flooding from rapid UI changes (e.g., sliders)
 const OUTPUT_RATE_LIMIT_MS = 50
@@ -182,10 +186,11 @@ export function useMqtt(prefix: string = 'nisystem') {
 
     const options: IClientOptions = {
       clientId: `nisystem-dashboard-${Math.random().toString(16).slice(2, 8)}`,
-      clean: false, // Changed to false to allow message queuing
+      clean: true, // Random client ID makes persistent sessions pointless; clean: false orphans sessions on the broker
       keepalive: 120, // Match mosquitto max_keepalive; tolerate browser tab throttling
       reconnectPeriod: getReconnectDelay(),
       connectTimeout: 30000,
+      queueQoSZero: false,  // Don't queue QoS 0 messages while offline
     }
 
     // Only add auth if credentials are provided
@@ -897,7 +902,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     // A new cRIO node was discovered - automatically refresh discovery
     console.debug('[MQTT] New cRIO node discovered:', payload.node_id, '- auto-refreshing discovery')
     // Small delay to ensure cRIO is fully registered before re-scanning
-    setTimeout(() => {
+    // Store the timeout so cancelScan() can clear it
+    if (crioRescanTimeoutId) {
+      clearTimeout(crioRescanTimeoutId)
+    }
+    crioRescanTimeoutId = setTimeout(() => {
+      crioRescanTimeoutId = null
       if (!isScanning.value) {
         console.debug('[MQTT] Auto-triggering discovery scan for new cRIO')
         scanDevices()
@@ -1566,6 +1576,10 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.warn('[MQTT] Not connected - cannot set safe state')
       return
     }
+    if (!userAuthenticated.value) {
+      console.debug('[MQTT] Not authenticated - skipping safe state command')
+      return
+    }
 
     console.debug(`[MQTT] Setting ALL outputs to safe state - reason: ${reason}`)
 
@@ -1579,6 +1593,11 @@ export function useMqtt(prefix: string = 'nisystem') {
         sendNodeCommand('system/safe-state', { reason }, nodeId)
       }
     }
+  }
+
+  /** Set auth state (called by useAuth to avoid circular imports) */
+  function setUserAuthenticated(isAuth: boolean) {
+    userAuthenticated.value = isAuth
   }
 
   // Discovery functions
@@ -1616,6 +1635,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     if (scanTimeoutId) {
       clearTimeout(scanTimeoutId)
       scanTimeoutId = null
+    }
+    // Also cancel any pending cRIO auto-rescan
+    if (crioRescanTimeoutId) {
+      clearTimeout(crioRescanTimeoutId)
+      crioRescanTimeoutId = null
     }
     isScanning.value = false
     console.debug('Discovery scan cancelled')
@@ -2045,6 +2069,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     saveConfig,
     setOutput,
     setAllOutputsSafe,
+    setUserAuthenticated,
     resetCounter,
     sendCommand,
     sendNodeCommand,

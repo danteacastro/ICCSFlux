@@ -466,15 +466,15 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
 
 .editor-header {
   padding: 12px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -488,32 +488,32 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
 
 .name-input {
   flex: 1;
-  background: #252540;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 1rem;
   font-weight: 600;
 }
 
 .name-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .description-input {
-  background: #252540;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 6px 12px;
-  color: #aaa;
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 
 .description-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .enabled-toggle {
@@ -521,7 +521,7 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   align-items: center;
   gap: 6px;
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
@@ -532,36 +532,36 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
 }
 
 .help-panel {
-  border-bottom: 1px solid #2a2a4a;
-  background: #1f1f35;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-elevated);
 }
 
 .help-panel summary {
   padding: 8px 12px;
   cursor: pointer;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .help-panel summary:hover {
-  color: #aaa;
+  color: var(--text-muted);
 }
 
 .help-content {
   padding: 8px 12px 12px;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .help-content pre {
-  background: #151525;
+  background: var(--bg-primary);
   padding: 8px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
   font-size: 0.7rem;
   overflow-x: auto;
   margin: 8px 0;
-  color: #a5d6ff;
+  color: var(--color-accent-light);
 }
 
 .help-content p {
@@ -584,9 +584,9 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(239, 68, 68, 0.15);
-  border-top: 1px solid #ef4444;
-  color: #ef4444;
+  background: var(--color-error-bg);
+  border-top: 1px solid var(--color-error);
+  color: var(--color-error);
   font-size: 0.85rem;
 }
 
@@ -596,8 +596,8 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   justify-content: center;
   width: 18px;
   height: 18px;
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
   border-radius: 50%;
   font-weight: bold;
   font-size: 0.75rem;
@@ -605,14 +605,14 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
 
 .outputs-section {
   padding: 12px;
-  border-top: 1px solid #2a2a4a;
-  background: #1f1f35;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-elevated);
 }
 
 .outputs-section h4 {
   margin: 0 0 8px;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -632,33 +632,33 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   min-width: 120px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
-  color: #4ade80;
+  color: var(--color-success);
 }
 
 .output-units {
   width: 80px;
-  background: #252540;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 4px 8px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
 }
 
 .output-desc {
   flex: 1;
-  background: #252540;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 4px 8px;
-  color: #aaa;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
 .output-units:focus,
 .output-desc:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .editor-actions {
@@ -666,38 +666,38 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
   justify-content: flex-end;
   gap: 12px;
   padding: 12px;
-  border-top: 1px solid #2a2a4a;
-  background: #1f1f35;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-elevated);
 }
 
 .btn-cancel {
   padding: 8px 16px;
   background: transparent;
-  border: 1px solid #666;
+  border: 1px solid var(--text-muted);
   border-radius: 4px;
-  color: #aaa;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 0.85rem;
 }
 
 .btn-cancel:hover {
-  border-color: #888;
-  color: #fff;
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .btn-save {
   padding: 8px 20px;
-  background: #3b82f6;
+  background: var(--color-accent);
   border: none;
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 0.85rem;
   font-weight: 500;
 }
 
 .btn-save:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-save:disabled {
@@ -707,11 +707,11 @@ DISTANCE = sqrt(X**2 + Y**2)</pre>
 
 /* Monaco theme overrides */
 :deep(.error-line) {
-  background: rgba(239, 68, 68, 0.15);
+  background: var(--color-error-bg);
 }
 
 :deep(.error-glyph) {
-  background: #ef4444;
+  background: var(--color-error);
   border-radius: 50%;
   margin-left: 4px;
 }

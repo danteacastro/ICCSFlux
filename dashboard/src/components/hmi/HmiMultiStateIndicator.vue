@@ -85,8 +85,8 @@ const isAlarm = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -94,13 +94,13 @@ const isAlarm = computed(() => {
 }
 
 .hmi-multistate.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-ms-label {
-  background: #C0C0C0;
-  color: #333;
+  background: var(--hmi-label-bg, #C0C0C0);
+  color: var(--hmi-label-text, #333);
   font-size: clamp(7px, 20%, 10px);
   font-weight: 600;
   text-transform: uppercase;
@@ -131,7 +131,7 @@ const isAlarm = computed(() => {
 }
 
 .hmi-ms-state {
-  color: #333;
+  color: var(--hmi-label-text, #333);
   font-size: clamp(8px, 30%, 14px);
   font-weight: 700;
   text-transform: uppercase;

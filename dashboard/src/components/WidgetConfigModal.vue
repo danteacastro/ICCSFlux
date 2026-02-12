@@ -718,6 +718,20 @@ const selectedChartChannels = computed(() => {
                 />
               </div>
             </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.invert" />
+                Invert Logic (ON when value = 0)
+              </label>
+            </div>
+            <div class="form-group">
+              <label>LED Size</label>
+              <select v-model="localWidget.ledSize">
+                <option value="small">Small</option>
+                <option value="medium">Medium (default)</option>
+                <option value="large">Large</option>
+              </select>
+            </div>
           </template>
 
           <!-- Toggle specific -->
@@ -1348,8 +1362,143 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
+          <!-- Image specific -->
+          <template v-if="widgetType === 'image'">
+            <div class="form-group">
+              <label>Image URL</label>
+              <input type="text" v-model="localWidget.imageUrl" placeholder="https://example.com/logo.png" />
+            </div>
+            <div class="form-group">
+              <label>Fit Mode</label>
+              <select v-model="localWidget.imageFit">
+                <option value="contain">Contain (fit inside, preserve ratio)</option>
+                <option value="cover">Cover (fill, may crop)</option>
+                <option value="fill">Fill (stretch to fit)</option>
+                <option value="none">None (original size)</option>
+              </select>
+            </div>
+          </template>
+
+          <!-- Sparkline specific -->
+          <template v-if="widgetType === 'sparkline'">
+            <div class="form-group">
+              <label>History Length (samples)</label>
+              <input type="number" v-model.number="localWidget.historyLength" placeholder="60" min="10" max="600" />
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>Min Value</label>
+                <input type="number" v-model.number="localWidget.minValue" placeholder="Auto" />
+              </div>
+              <div class="form-group half">
+                <label>Max Value</label>
+                <input type="number" v-model.number="localWidget.maxValue" placeholder="Auto" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" placeholder="2" min="0" max="6" />
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.showLabel" />
+                Show Label
+              </label>
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.showUnit" />
+                Show Unit
+              </label>
+            </div>
+          </template>
+
+          <!-- Alarm Summary specific -->
+          <template v-if="widgetType === 'alarm_summary'">
+            <div class="form-group">
+              <label>Max Items Displayed</label>
+              <input type="number" v-model.number="localWidget.maxItems" placeholder="50" min="5" max="500" />
+            </div>
+            <div class="form-group">
+              <label>Filter by Priority</label>
+              <select v-model="localWidget.filterPriority">
+                <option value="">All Priorities</option>
+                <option value="critical">Critical Only</option>
+                <option value="high">High and Above</option>
+                <option value="medium">Medium and Above</option>
+                <option value="low">Low and Above</option>
+              </select>
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.showAckButton" />
+                Show Acknowledge Button
+              </label>
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.showBypassButtons" />
+                Show Bypass Controls
+              </label>
+            </div>
+          </template>
+
+          <!-- PID Loop specific -->
+          <template v-if="widgetType === 'pid_loop'">
+            <div class="form-group">
+              <label>PV Channel (Process Variable)</label>
+              <select v-model="localWidget.pvChannel">
+                <option value="">-- Select PV Channel --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>SP Channel (Setpoint)</label>
+              <select v-model="localWidget.spChannel">
+                <option value="">-- Select SP Channel --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Output Channel (CV / Control Variable)</label>
+              <select v-model="localWidget.outputChannel">
+                <option value="">-- None (optional) --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Enable Channel (Auto/Manual)</label>
+              <select v-model="localWidget.enableChannel">
+                <option value="">-- None (optional) --</option>
+                <option v-for="[name, config] in allChannelsForHeater" :key="name" :value="name">
+                  {{ name }} ({{ channelTypeLabel(config.channel_type) }}{{ formatUnit(config.unit) ? ' · ' + formatUnit(config.unit) : '' }})
+                </option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>SP Min</label>
+                <input type="number" v-model.number="localWidget.spMin" placeholder="0" />
+              </div>
+              <div class="form-group half">
+                <label>SP Max</label>
+                <input type="number" v-model.number="localWidget.spMax" placeholder="100" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" placeholder="1" min="0" max="6" />
+            </div>
+          </template>
+
           <!-- Common Appearance Section (for widgets that support background colors) -->
-          <template v-if="['numeric', 'bar_graph', 'setpoint', 'gauge', 'sparkline', 'led', 'alarm_summary', 'value_table', 'clock', 'system_status', 'recording_status', 'interlock_status', 'scheduler_status', 'crio_status', 'latch_switch'].includes(widgetType)">
+          <template v-if="['numeric', 'bar_graph', 'setpoint', 'gauge', 'sparkline', 'led', 'alarm_summary', 'value_table', 'clock', 'system_status', 'recording_status', 'interlock_status', 'scheduler_status', 'crio_status', 'latch_switch', 'pid_loop'].includes(widgetType)">
             <div class="config-section">
               <div class="section-header">Appearance</div>
               <div class="form-group">
@@ -1384,7 +1533,7 @@ const selectedChartChannels = computed(() => {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1392,8 +1541,8 @@ const selectedChartChannels = computed(() => {
 }
 
 .widget-config-modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   min-width: 360px;
   max-width: 480px;
@@ -1407,20 +1556,20 @@ const selectedChartChannels = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
   margin: 0;
   font-size: 1rem;
-  color: #fff;
+  color: var(--text-primary);
   text-transform: capitalize;
 }
 
 .modal-header .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1.5rem;
   cursor: pointer;
   padding: 0;
@@ -1428,7 +1577,7 @@ const selectedChartChannels = computed(() => {
 }
 
 .modal-header .close-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .modal-body {
@@ -1444,7 +1593,7 @@ const selectedChartChannels = computed(() => {
 .form-group label {
   display: block;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -1452,7 +1601,7 @@ const selectedChartChannels = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #ccc;
+  color: var(--text-bright);
   cursor: pointer;
 }
 
@@ -1461,24 +1610,24 @@ const selectedChartChannels = computed(() => {
 .form-group select {
   width: 100%;
   padding: 8px 12px;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .form-group input:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .channel-checklist {
   max-height: 200px;
   overflow-y: auto;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 8px;
 }
@@ -1488,19 +1637,19 @@ const selectedChartChannels = computed(() => {
   align-items: center;
   gap: 8px;
   padding: 4px 0;
-  color: #ccc;
+  color: var(--text-bright);
   cursor: pointer;
 }
 
 .channel-item:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .channel-checkboxes {
   max-height: 180px;
   overflow-y: auto;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 6px;
   display: flex;
@@ -1516,12 +1665,12 @@ const selectedChartChannels = computed(() => {
   border-radius: 3px;
   cursor: pointer;
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-muted);
 }
 
 .channel-checkbox:hover {
-  background: #1a1a2e;
-  color: #fff;
+  background: var(--bg-widget);
+  color: var(--text-primary);
 }
 
 .channel-checkbox input {
@@ -1548,22 +1697,22 @@ const selectedChartChannels = computed(() => {
 }
 
 .color-btn.selected {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-border);
 }
 
 .color-btn.transparent {
   background: repeating-linear-gradient(
     45deg,
-    #333,
-    #333 4px,
-    #444 4px,
-    #444 8px
+    var(--bg-primary),
+    var(--bg-primary) 4px,
+    var(--border-color) 4px,
+    var(--border-color) 8px
   ) !important;
 }
 
 .transparent-icon {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1rem;
 }
 
@@ -1572,7 +1721,7 @@ const selectedChartChannels = computed(() => {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .btn {
@@ -1585,26 +1734,26 @@ const selectedChartChannels = computed(() => {
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .hint {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 4px;
   font-style: italic;
 }
@@ -1613,7 +1762,7 @@ const selectedChartChannels = computed(() => {
 .config-section {
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .config-section:last-child {
@@ -1624,7 +1773,7 @@ const selectedChartChannels = computed(() => {
 .section-header {
   font-size: 0.75rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 12px;
@@ -1653,9 +1802,9 @@ const selectedChartChannels = computed(() => {
   align-items: center;
   gap: 8px;
   padding: 8px;
-  background: #0f0f1a;
+  background: var(--bg-input);
   border-radius: 4px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
 }
 
 .channel-style-preview {
@@ -1669,7 +1818,7 @@ const selectedChartChannels = computed(() => {
 .channel-style-name {
   flex: 1;
   font-size: 0.85rem;
-  color: #ccc;
+  color: var(--text-bright);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1710,16 +1859,16 @@ const selectedChartChannels = computed(() => {
   width: auto;
   padding: 4px 6px;
   font-size: 0.75rem;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
-  color: #ccc;
+  color: var(--text-bright);
 }
 
 .visibility-btn {
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -1730,16 +1879,16 @@ const selectedChartChannels = computed(() => {
 }
 
 .visibility-btn:hover {
-  color: #fff;
-  background: #2a2a4a;
+  color: var(--text-primary);
+  background: var(--border-color);
 }
 
 .visibility-btn.hidden {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .visibility-btn.hidden:hover {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 /* Script Monitor Item Config */
@@ -1751,8 +1900,8 @@ const selectedChartChannels = computed(() => {
 }
 
 .monitor-item-config {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -1762,14 +1911,14 @@ const selectedChartChannels = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .item-tag {
   font-size: 0.85rem;
   font-weight: 500;
-  color: #4ade80;
+  color: var(--color-success);
   font-family: 'JetBrains Mono', 'Consolas', monospace;
 }
 
@@ -1804,7 +1953,7 @@ const selectedChartChannels = computed(() => {
 }
 
 .btn-icon:hover {
-  background: rgba(239, 68, 68, 0.2);
+  background: var(--color-error-bg);
 }
 
 /* Heater Zone advanced params */
@@ -1819,20 +1968,20 @@ const selectedChartChannels = computed(() => {
   flex: 1;
   min-width: 0;
   padding: 4px 6px;
-  background: #1a1a2e;
-  border: 1px solid #333;
+  background: var(--bg-widget);
+  border: 1px solid var(--bg-primary);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 11px;
 }
 
 .param-label {
   width: 80px;
   padding: 4px 6px;
-  background: #1a1a2e;
-  border: 1px solid #333;
+  background: var(--bg-widget);
+  border: 1px solid var(--bg-primary);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 11px;
 }
 
@@ -1841,7 +1990,7 @@ const selectedChartChannels = computed(() => {
   align-items: center;
   gap: 2px;
   font-size: 10px;
-  color: #888;
+  color: var(--text-secondary);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -1849,7 +1998,7 @@ const selectedChartChannels = computed(() => {
 .btn-remove-param {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   font-size: 16px;
   cursor: pointer;
   padding: 0 4px;
@@ -1857,22 +2006,22 @@ const selectedChartChannels = computed(() => {
 }
 
 .btn-remove-param:hover {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .btn-add-param {
   width: 100%;
   padding: 4px 8px;
   margin-top: 4px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px dashed #3b82f6;
+  background: var(--color-accent-bg);
+  border: 1px dashed var(--color-accent);
   border-radius: 4px;
-  color: #3b82f6;
+  color: var(--color-accent);
   font-size: 11px;
   cursor: pointer;
 }
 
 .btn-add-param:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: var(--color-accent-border);
 }
 </style>

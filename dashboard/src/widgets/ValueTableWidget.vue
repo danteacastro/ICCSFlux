@@ -102,7 +102,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border: 1px solid var(--border-color, #2a2a4a);
   border-radius: 4px;
   overflow: hidden;
@@ -111,7 +111,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .table-header {
   padding: 6px 8px;
   background: #252540;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -153,16 +153,16 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 .status-dot.active {
-  background: #22c55e;
-  box-shadow: 0 0 4px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
 }
 
 .status-dot.warning {
-  background: #fbbf24;
+  background: var(--color-warning);
 }
 
 .status-dot.alarm {
-  background: #ef4444;
+  background: var(--color-error);
   animation: blink 1s infinite;
 }
 
@@ -179,7 +179,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   font-size: 0.85rem;
   font-weight: 600;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
-  color: #4ade80;
+  color: var(--color-success-light);
   text-align: right;
   min-width: 60px;
 }
@@ -196,11 +196,11 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 }
 
 .table-row.warning .value-cell {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .table-row.alarm .value-cell {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .empty-state {

@@ -187,12 +187,12 @@ const alarmState = computed(() => {
 }
 
 .hmi-gauge.alarm svg circle:first-child {
-  stroke: #FF0000;
+  stroke: var(--hmi-alarm, #FF0000);
   stroke-width: 2;
 }
 
 .hmi-gauge.warning svg circle:first-child {
-  stroke: #FFD700;
+  stroke: var(--hmi-warning, #FFD700);
   stroke-width: 2;
 }
 

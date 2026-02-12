@@ -334,8 +334,8 @@ onUnmounted(() => clearConfirmTimer())
   padding: 8px;
   gap: 6px;
   border-radius: 6px;
-  border: 2px solid #4b5563;
-  background: #1a1a2e;
+  border: 2px solid var(--border-heavy);
+  background: var(--bg-widget);
   transition: border-color 0.3s;
   position: relative;
   overflow: hidden;
@@ -343,11 +343,11 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .heater-zone-widget.on {
-  border-color: #22c55e;
+  border-color: var(--color-success);
 }
 
 .heater-zone-widget.alarm {
-  border-color: #ef4444;
+  border-color: var(--color-error);
 }
 
 .heater-zone-widget.disabled {
@@ -365,7 +365,7 @@ onUnmounted(() => clearConfirmTimer())
 .hz-label {
   font-size: 12px;
   font-weight: 600;
-  color: #ccc;
+  color: var(--text-bright);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -392,13 +392,13 @@ onUnmounted(() => clearConfirmTimer())
   width: 36px;
   height: 20px;
   border-radius: 10px;
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
   padding: 2px;
   transition: background 0.2s;
 }
 
 .hz-toggle.on .hz-toggle-track {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .hz-toggle-thumb {
@@ -437,15 +437,15 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .hz-confirm-btn.yes {
-  background: #22c55e;
-  border-color: #22c55e;
+  background: var(--color-success);
+  border-color: var(--color-success);
   color: #000;
 }
 
 .hz-confirm-btn.no {
   background: transparent;
-  border-color: #666;
-  color: #ccc;
+  border-color: var(--text-muted);
+  color: var(--text-bright);
 }
 
 /* Values */
@@ -475,7 +475,7 @@ onUnmounted(() => clearConfirmTimer())
 
 .hz-value-label {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
@@ -506,7 +506,7 @@ onUnmounted(() => clearConfirmTimer())
 
 .hz-unit {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .hz-input {
@@ -514,8 +514,8 @@ onUnmounted(() => clearConfirmTimer())
   font-size: 18px;
   font-weight: 700;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  background: #0f0f1a;
-  border: 1px solid #3b82f6;
+  background: var(--bg-input);
+  border: 1px solid var(--color-accent);
   border-radius: 4px;
   color: #4ade80;
   text-align: center;
@@ -531,7 +531,7 @@ onUnmounted(() => clearConfirmTimer())
 /* Output bar */
 .hz-output-bar {
   height: 14px;
-  background: #1e1e3a;
+  background: var(--bg-elevated);
   border-radius: 3px;
   position: relative;
   overflow: hidden;
@@ -550,7 +550,7 @@ onUnmounted(() => clearConfirmTimer())
   top: 0;
   right: 4px;
   font-size: 10px;
-  color: #ccc;
+  color: var(--text-bright);
   line-height: 14px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
@@ -592,8 +592,8 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .hz-advanced-modal {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   width: 360px;
   max-height: 80vh;
@@ -606,20 +606,20 @@ onUnmounted(() => clearConfirmTimer())
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .hz-modal-header h3 {
   margin: 0;
   font-size: 14px;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-weight: 600;
 }
 
 .hz-modal-close {
   background: none;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -627,7 +627,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .hz-modal-close:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .hz-modal-body {
@@ -639,7 +639,7 @@ onUnmounted(() => clearConfirmTimer())
   align-items: center;
   justify-content: space-between;
   padding: 6px 0;
-  border-bottom: 1px solid #1e1e3a;
+  border-bottom: 1px solid var(--bg-elevated);
 }
 
 .hz-param-row:last-child {
@@ -648,7 +648,7 @@ onUnmounted(() => clearConfirmTimer())
 
 .hz-param-label {
   font-size: 12px;
-  color: #ccc;
+  color: var(--text-bright);
   flex: 1;
 }
 
@@ -663,8 +663,8 @@ onUnmounted(() => clearConfirmTimer())
   width: 80px;
   font-size: 12px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #4ade80;
   text-align: right;
@@ -673,7 +673,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .hz-param-input:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .hz-param-input:disabled {

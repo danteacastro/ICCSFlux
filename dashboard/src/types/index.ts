@@ -80,6 +80,8 @@ export type WidgetType =
   | 'variable_explorer'
   | 'variable_input'
   | 'pid_loop'
+  | 'status_messages'
+  | 'image'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -658,6 +660,10 @@ export interface WidgetConfig {
     label: string
     readonly?: boolean
   }>
+
+  // Image widget
+  imageUrl?: string
+  imageFit?: 'contain' | 'cover' | 'fill' | 'none'
 }
 
 // Pipe/Connection point on grid
@@ -707,6 +713,11 @@ export interface PidSymbol {
   height: number
   // Rotation in degrees (any angle, not just 0/90/180/270)
   rotation?: number
+  // Horizontal/vertical mirror
+  flipX?: boolean
+  flipY?: boolean
+  // ISA loop number (e.g. "100", "200A") — validated unique across all pages
+  loopNumber?: string
   // Optional channel binding for live data
   channel?: string
   // Styling
@@ -733,6 +744,11 @@ export interface PidSymbol {
   // Runtime state (set by channel binding)
   runtimeState?: 'on' | 'off' | 'fault' | 'manual' | 'auto'
   stateChannel?: string      // Channel to determine state
+  // State-based coloring (for valves, pumps, etc.)
+  onColor?: string           // Color when state channel value >= threshold (default: '#22c55e' green)
+  offColor?: string          // Color when state channel value < threshold (default: '#6b7280' gray)
+  faultColor?: string        // Color when state channel has alarm/disconnected (default: '#ef4444' red)
+  stateThreshold?: number    // Value threshold for on/off (default: 0.5 — works for digital 0/1)
   // ISA-101 grayscale mode override
   useGrayscale?: boolean
   // Custom pipe connection ports (in addition to built-in ports)
@@ -765,10 +781,97 @@ export interface PidSymbol {
   hmiButtonValue?: number
   // Trend Sparkline: number of history samples to keep
   hmiSparklineSamples?: number
+  // Valve position channel (0-100% open) — for control/modulating valves
+  positionChannel?: string
   // Off-page connector: target page for navigation
   linkedPageId?: string
   // Named layer membership
   layerId?: string
+  // Interlock binding (for hmi_interlock control)
+  interlockId?: string
+  // Auxiliary channel bindings — for equipment with multiple Modbus/OPC registers
+  // (e.g., heater controllers: PV, SP, output%, enable, heater current)
+  auxiliaryChannels?: Array<{
+    role: string            // e.g., 'pv', 'sp', 'output', 'enable', 'heaterCurrent'
+    channel: string         // channel name from store.channels
+    label: string           // display label (e.g., 'Setpoint', 'Output %')
+    unit?: string           // optional unit override
+    decimals?: number       // optional decimal places
+    writable?: boolean      // true if user can write a value (setpoint, enable)
+    min?: number            // range min for writable channels
+    max?: number            // range max for writable channels
+  }>
+
+  // Block editor indicator stubs (nozzle-point style annotations)
+  indicators?: PidIndicator[]
+}
+
+// Indicator stub on a P&ID symbol's perimeter edge.
+// Represents channel values, interlocks, alarm annotations, or control outputs.
+export interface PidIndicator {
+  id: string
+  edge: 'top' | 'right' | 'bottom' | 'left'
+  edgeOffset: number  // 0-1 position along that edge
+  type: PidIndicatorType
+  channel?: string
+  interlockId?: string
+  label?: string
+  isaLetters?: string    // ISA function letters (TE, LSH, TAH, etc.)
+  tagNumber?: string
+  shape: PidIndicatorShape
+  showValue?: boolean
+  decimals?: number
+  unit?: string
+  signalLineLength?: number   // pixels, default 30
+  signalLineDashed?: boolean  // default true (deprecated — use signalType for ISA-standard dashing)
+  // ISA 5.1 signal line type — controls dash pattern per standard
+  signalType?: PidSignalLineType
+}
+
+// ISA 5.1 signal line types — each has a specific dash pattern per the standard
+export type PidSignalLineType =
+  | 'undefined'      // Solid line (connection/process)
+  | 'pneumatic'      // Dashed: --- --- ---
+  | 'electrical'     // Dotted: . . . . .
+  | 'capillary'      // Dash-dot: -.-.-.-
+  | 'hydraulic'      // Dash-dot-dot: -..-..-..-
+  | 'electromagnetic' // Triple-dot-dash: ...---...---
+  | 'software'       // Software/data link: equal dashes ═══
+
+export type PidIndicatorType = 'channel_value' | 'interlock' | 'alarm_annotation' | 'control_output'
+export type PidIndicatorShape = 'circle' | 'diamond' | 'flag' | 'square' | 'hexagon' | 'circleBar' | 'dashedCircle' | 'circleInSquare'
+
+// Preset auxiliary channel templates for common equipment types
+export const AUXILIARY_CHANNEL_PRESETS: Record<string, Array<{
+  role: string; label: string; unit?: string; decimals?: number; writable?: boolean
+}>> = {
+  heaterController: [
+    { role: 'pv', label: 'Process Value', unit: '°C', decimals: 1 },
+    { role: 'sp', label: 'Setpoint', unit: '°C', decimals: 1, writable: true },
+    { role: 'output', label: 'Output', unit: '%', decimals: 0 },
+    { role: 'enable', label: 'Enable', writable: true },
+  ],
+  heaterControllerFull: [
+    { role: 'pv', label: 'Process Value', unit: '°C', decimals: 1 },
+    { role: 'sp', label: 'Setpoint', unit: '°C', decimals: 1, writable: true },
+    { role: 'output', label: 'Output', unit: '%', decimals: 0 },
+    { role: 'enable', label: 'Enable', writable: true },
+    { role: 'heaterCurrent', label: 'Heater Current', unit: 'A', decimals: 2 },
+    { role: 'controlMode', label: 'Control Mode' },
+  ],
+  pidLoop: [
+    { role: 'pv', label: 'Process Variable', decimals: 2 },
+    { role: 'sp', label: 'Setpoint', decimals: 2, writable: true },
+    { role: 'cv', label: 'Control Output', unit: '%', decimals: 1 },
+    { role: 'mode', label: 'Mode' },
+  ],
+  vfd: [
+    { role: 'speed', label: 'Speed', unit: 'Hz', decimals: 1 },
+    { role: 'speedCmd', label: 'Speed Command', unit: 'Hz', decimals: 1, writable: true },
+    { role: 'current', label: 'Current', unit: 'A', decimals: 1 },
+    { role: 'enable', label: 'Run/Stop', writable: true },
+    { role: 'fault', label: 'Fault Code' },
+  ],
 }
 
 // Arrow marker types for pipe endpoints
@@ -818,10 +921,26 @@ export interface PidPipe {
   flowDirection?: 'forward' | 'reverse' | 'stopped'
   // Pipe medium/type indicator
   medium?: 'water' | 'steam' | 'gas' | 'air' | 'oil' | 'chemical' | 'electrical' | 'signal' | 'custom'
-  // ISA-5.1 line coding
-  lineCode?: string          // e.g., 'pneumatic', 'hydraulic', 'electrical'
+  // ISA-5.1 line coding (for signal/instrument lines)
+  lineCode?: PidSignalLineType
+  // Structured pipe attributes (ISA standard pipe identification)
+  nominalSize?: string       // Nominal pipe size, e.g. "4\"", "DN100", "2\""
+  pressureRating?: string    // Pressure class, e.g. "150#", "300#", "PN16"
+  material?: string          // Material spec, e.g. "CS", "SS316", "CPVC"
+  fluidCode?: string         // Fluid service code, e.g. "S" (steam), "W" (water), "G" (gas)
+  lineNumber?: string        // Full line number, e.g. "4\"-S-150#-CS-101"
+  // Flow particle animation (animated dots along the pipe path)
+  flowParticles?: boolean
+  particleCount?: number     // Number of particles (default 4)
+  particleColor?: string     // Particle color (default: pipe color)
+  // Heat tracing (ISA zigzag marking alongside pipe)
+  heatTrace?: 'none' | 'electric' | 'steam' | 'hot-water'
+  heatTraceChannel?: string  // Channel binding: trace on when value >= threshold
+  heatTraceThreshold?: number // On/off threshold (default 0.5)
   // Named layer membership
   layerId?: string
+  // System grouping (e.g., cooling, heating, process)
+  system?: string
 }
 
 // P&ID layer data for a page
@@ -845,6 +964,8 @@ export interface PidLayerData {
   guides?: Array<{ id: string; axis: 'h' | 'v'; position: number }>
   // Named layer metadata
   layerInfos?: PidLayerInfo[]
+  // Pipe system definitions (for color-coding and filtering)
+  systems?: Array<{ id: string; name: string; color: string }>
 }
 
 // Named layer for P&ID elements
@@ -871,6 +992,7 @@ export interface PidTextAnnotation {
   y: number
   fontSize: number
   fontWeight?: 'normal' | 'bold'
+  fontStyle?: 'normal' | 'italic'
   color?: string
   backgroundColor?: string
   rotation?: number
@@ -901,12 +1023,14 @@ export interface PidCommand {
     pipes?: PidPipe[]
     textAnnotations?: PidTextAnnotation[]
     groups?: PidGroup[]
+    layerInfos?: PidLayerInfo[]
   }
   afterState: {
     symbols?: PidSymbol[]
     pipes?: PidPipe[]
     textAnnotations?: PidTextAnnotation[]
     groups?: PidGroup[]
+    layerInfos?: PidLayerInfo[]
   }
   // For batch operations, store sub-commands
   subCommands?: PidCommand[]
@@ -1117,7 +1241,9 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   script_output: { w: 4, h: 3, minW: 2, minH: 2 },
   variable_explorer: { w: 3, h: 4, minW: 2, minH: 2 },
   variable_input: { w: 2, h: 3, minW: 1, minH: 2 },
-  pid_loop: { w: 2, h: 3, minW: 2, minH: 2 }
+  pid_loop: { w: 2, h: 3, minW: 2, minH: 2 },
+  status_messages: { w: 3, h: 2, minW: 2, minH: 2 },
+  image: { w: 2, h: 2, minW: 1, minH: 1 }
 }
 
 // Preset colors for widgets (expanded palette)
@@ -1531,6 +1657,10 @@ export interface Interlock {
   bypassReason?: string
   // SIL Rating (IEC 61508) - informational
   silRating?: 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4'
+  // Operational priority for dashboard display (ISA-18.2 aligned)
+  priority?: 'critical' | 'high' | 'medium' | 'low'
+  // Require operator acknowledgment after trip (IEC 61511)
+  requiresAcknowledgment?: boolean
   // Proof test interval in days (IEC 61511)
   proofTestInterval?: number
   lastProofTest?: string
@@ -1562,6 +1692,13 @@ export interface InterlockStatus {
     delayElapsed: number
     delayMet: boolean
   }[]
+  // IEC 61511 compliance fields
+  priority?: 'critical' | 'high' | 'medium' | 'low'
+  silRating?: 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4'
+  requiresAcknowledgment?: boolean
+  tripAcknowledged?: boolean
+  tripAcknowledgedBy?: string
+  tripAcknowledgedAt?: string
 }
 
 // Interlock History Event Types
@@ -1577,6 +1714,7 @@ export type InterlockEventType =
   | 'cleared'         // Interlock cleared (conditions restored)
   | 'demand'          // Interlock was demanded (conditions failed while controlling)
   | 'proof_test'      // Proof test performed
+  | 'trip_acknowledged' // Operator acknowledged a trip (IEC 61511)
   | 'removed'         // Interlock removed from configuration
 
 export interface InterlockHistoryEntry {

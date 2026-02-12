@@ -726,7 +726,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -735,9 +735,9 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .modal-container {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #3a3a5a;
+  border: 1px solid var(--border-light);
   width: 100%;
   max-width: 650px;
   max-height: 90vh;
@@ -751,7 +751,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid #3a3a5a;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .modal-header h3 {
@@ -760,22 +760,22 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   gap: 8px;
   margin: 0;
   font-size: 1.1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .header-icon {
-  color: #f59e0b;
+  color: var(--color-warning);
 }
 
 .channel-name {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-family: 'JetBrains Mono', monospace;
 }
 
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -783,8 +783,8 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .close-btn:hover {
-  color: #fff;
-  background: #3a3a5a;
+  color: var(--text-primary);
+  background: var(--border-light);
 }
 
 /* Tab Navigation */
@@ -792,15 +792,15 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   display: flex;
   gap: 2px;
   padding: 0 20px;
-  background: #0d0d1a;
-  border-bottom: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .tab-btn {
   background: none;
   border: none;
   padding: 12px 20px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.9rem;
   border-bottom: 2px solid transparent;
@@ -811,17 +811,17 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .tab-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .tab-btn.active {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   border-bottom-color: #60a5fa;
 }
 
 .tab-badge {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
   font-size: 0.65rem;
   padding: 2px 5px;
   border-radius: 3px;
@@ -866,24 +866,24 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .form-label {
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .form-input {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-input:disabled {
@@ -901,23 +901,23 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .form-select {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
   cursor: pointer;
 }
 
 .form-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-hint {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .input-with-unit {
@@ -932,7 +932,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .input-with-unit .unit {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -942,10 +942,10 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   justify-content: center;
   width: 16px;
   height: 16px;
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 50%;
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   cursor: help;
 }
 
@@ -972,7 +972,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   position: absolute;
   cursor: pointer;
   inset: 0;
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 24px;
   transition: 0.2s;
 }
@@ -995,7 +995,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .toggle-switch input:checked + .slider {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .toggle-switch input:checked + .slider::before {
@@ -1008,7 +1008,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .toggle-label {
   font-size: 0.9rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .toggle-inline {
@@ -1035,7 +1035,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: #ddd;
+  color: var(--text-bright);
 }
 
 .checkbox-label input {
@@ -1055,8 +1055,8 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
@@ -1067,7 +1067,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .severity-option:hover {
-  border-color: #555;
+  border-color: var(--border-heavy);
 }
 
 .severity-option.selected {
@@ -1077,7 +1077,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .severity-label {
   font-size: 0.85rem;
-  color: #ddd;
+  color: var(--text-bright);
 }
 
 .severity-option.selected .severity-label {
@@ -1097,8 +1097,8 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: flex-start;
   gap: 10px;
   padding: 12px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
@@ -1109,12 +1109,12 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .behavior-option:hover {
-  border-color: #555;
+  border-color: var(--border-heavy);
 }
 
 .behavior-option.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .behavior-content {
@@ -1125,13 +1125,13 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .behavior-label {
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .behavior-desc {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* Threshold Diagram */
@@ -1146,7 +1146,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   height: 200px;
   display: flex;
   flex-direction: column;
-  border: 1px solid #3a3a5a;
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -1174,7 +1174,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .zone.normal {
   background: rgba(34, 197, 94, 0.1);
-  color: #4ade80;
+  color: var(--color-success);
   flex: 1;
 }
 
@@ -1196,26 +1196,26 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: flex-start;
   gap: 10px;
   padding: 12px 16px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: var(--color-accent-bg);
+  border: 1px solid var(--color-accent-border);
   border-radius: 6px;
   margin-bottom: 16px;
 }
 
 .info-banner svg {
-  color: #60a5fa;
+  color: var(--color-accent-light);
   flex-shrink: 0;
   margin-top: 2px;
 }
 
 .info-banner span {
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
 .info-banner strong {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Threshold Display (Read-only) */
@@ -1236,8 +1236,8 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   flex-direction: column;
   gap: 4px;
   padding: 12px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
 }
 
@@ -1251,17 +1251,17 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
 .limit-label {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .limit-value {
   font-size: 1rem;
-  color: #fff;
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', monospace;
 }
 
 .limit-item .limit-value:has(+ .limit-value) {
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Threshold Inputs (legacy) */
@@ -1299,15 +1299,15 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 .section-header {
   font-size: 0.85rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   padding-bottom: 8px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
   margin-top: 8px;
 }
 
 .divider {
   height: 1px;
-  background: #2a2a4a;
+  background: var(--border-color);
   margin: 8px 0;
 }
 
@@ -1329,8 +1329,8 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1340,16 +1340,16 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .state-option.selected {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .state-high {
-  color: #4ade80;
+  color: var(--color-success);
   font-weight: 500;
 }
 
 .state-low {
-  color: #888;
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -1367,7 +1367,7 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 20px;
-  border-top: 1px solid #3a3a5a;
+  border-top: 1px solid var(--border-light);
 }
 
 .btn {
@@ -1381,20 +1381,20 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 }
 
 .btn-secondary {
-  background: #3a3a5a;
-  color: #ddd;
+  background: var(--border-light);
+  color: var(--text-bright);
 }
 
 .btn-secondary:hover {
-  background: #4a4a6a;
+  background: var(--border-heavy);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 </style>

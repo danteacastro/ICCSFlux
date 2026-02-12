@@ -116,7 +116,7 @@ function handleReset() {
   flex-direction: column;
   height: 100%;
   padding: 8px;
-  background: var(--widget-bg, #1a1a2e);
+  background: var(--bg-widget);
   border-radius: 4px;
   border: 1px solid var(--border-color, #2a2a4a);
   gap: 8px;
@@ -133,7 +133,7 @@ function handleReset() {
   align-items: center;
   gap: 4px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.8rem;
 }
 
@@ -154,12 +154,12 @@ function handleReset() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .connection.online .dot {
-  background: #22c55e;
-  box-shadow: 0 0 4px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
 }
 
 .connection .label {
@@ -243,7 +243,7 @@ function handleReset() {
   flex-direction: column;
   align-items: center;
   padding: 4px 12px;
-  background: #0f0f1a;
+  background: var(--bg-secondary);
   border-radius: 4px;
 }
 
@@ -255,7 +255,7 @@ function handleReset() {
   font-size: 1rem;
   font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .io-item.alert .io-value {
@@ -297,8 +297,8 @@ function handleReset() {
 .reset-btn {
   margin-top: auto;
   padding: 8px;
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error-dark);
+  color: var(--text-primary);
   border: none;
   border-radius: 4px;
   font-weight: 700;
@@ -321,7 +321,7 @@ function handleReset() {
   justify-content: space-between;
   align-items: center;
   padding-top: 4px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   font-size: 0.6rem;
   color: #6b7280;
 }
@@ -333,7 +333,7 @@ function handleReset() {
 .sim-badge {
   padding: 1px 4px;
   background: #7c3aed;
-  color: #fff;
+  color: var(--text-primary);
   border-radius: 2px;
   font-weight: 700;
   font-size: 0.5rem;

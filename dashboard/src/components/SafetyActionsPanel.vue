@@ -465,9 +465,9 @@ function formatLastTriggered(action: any): string {
 
 <style scoped>
 .safety-actions-panel {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #3a3a5a;
+  border: 1px solid var(--border-light);
   overflow: hidden;
 }
 
@@ -476,14 +476,14 @@ function formatLastTriggered(action: any): string {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  background: #0d0d1a;
-  border-bottom: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .panel-header h4 {
   margin: 0;
   font-size: 0.95rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .actions-list {
@@ -498,7 +498,7 @@ function formatLastTriggered(action: any): string {
 .empty-state {
   text-align: center;
   padding: 24px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .empty-state .hint {
@@ -508,8 +508,8 @@ function formatLastTriggered(action: any): string {
 
 /* Action Card */
 .action-card {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   padding: 12px;
   transition: all 0.2s;
@@ -528,13 +528,13 @@ function formatLastTriggered(action: any): string {
 .action-icon {
   width: 36px;
   height: 36px;
-  background: rgba(59, 130, 246, 0.2);
+  background: var(--color-accent-border);
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -544,24 +544,24 @@ function formatLastTriggered(action: any): string {
 
 .action-name {
   font-weight: 500;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .action-type {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .action-description {
   margin-top: 8px;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .action-details {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .detail-row {
@@ -572,18 +572,18 @@ function formatLastTriggered(action: any): string {
 }
 
 .detail-label {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .detail-value {
-  color: #aaa;
+  color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
 
 .last-triggered {
   margin-top: 8px;
   font-size: 0.75rem;
-  color: #555;
+  color: var(--border-heavy);
 }
 
 .action-actions {
@@ -610,7 +610,7 @@ function formatLastTriggered(action: any): string {
   position: absolute;
   cursor: pointer;
   inset: 0;
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 20px;
   transition: 0.2s;
 }
@@ -622,13 +622,13 @@ function formatLastTriggered(action: any): string {
   width: 14px;
   left: 3px;
   bottom: 3px;
-  background: #fff;
+  background: var(--text-primary);
   border-radius: 50%;
   transition: 0.2s;
 }
 
 .toggle-switch input:checked + .slider {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .toggle-switch input:checked + .slider::before {
@@ -657,12 +657,12 @@ function formatLastTriggered(action: any): string {
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-primary:disabled {
@@ -671,37 +671,37 @@ function formatLastTriggered(action: any): string {
 }
 
 .btn-secondary {
-  background: #3a3a5a;
-  color: #ddd;
+  background: var(--border-light);
+  color: var(--text-bright);
 }
 
 .btn-secondary:hover {
-  background: #4a4a6a;
+  background: var(--border-heavy);
 }
 
 .btn-warning {
-  background: #f59e0b;
+  background: var(--color-warning);
   color: #000;
 }
 
 .btn-warning:hover {
-  background: #d97706;
+  background: var(--color-warning-dark);
 }
 
 .btn-danger {
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .btn-danger:hover {
-  background: #b91c1c;
+  background: var(--color-error-dark);
 }
 
 /* Modal */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -710,9 +710,9 @@ function formatLastTriggered(action: any): string {
 }
 
 .modal-container {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #3a3a5a;
+  border: 1px solid var(--border-light);
   width: 100%;
   max-width: 550px;
   max-height: 90vh;
@@ -725,19 +725,19 @@ function formatLastTriggered(action: any): string {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid #3a3a5a;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .modal-header h3 {
   margin: 0;
   font-size: 1.1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -745,8 +745,8 @@ function formatLastTriggered(action: any): string {
 }
 
 .close-btn:hover {
-  color: #fff;
-  background: #3a3a5a;
+  color: var(--text-primary);
+  background: var(--border-light);
 }
 
 .modal-body {
@@ -763,7 +763,7 @@ function formatLastTriggered(action: any): string {
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 20px;
-  border-top: 1px solid #3a3a5a;
+  border-top: 1px solid var(--border-light);
 }
 
 /* Form Elements */
@@ -792,21 +792,21 @@ function formatLastTriggered(action: any): string {
 
 .form-label {
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-muted);
 }
 
 .form-input {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-input.small {
@@ -824,11 +824,11 @@ function formatLastTriggered(action: any): string {
 }
 
 .form-select {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
@@ -841,7 +841,7 @@ function formatLastTriggered(action: any): string {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: #ddd;
+  color: var(--text-bright);
 }
 
 .checkbox-label input {
@@ -861,8 +861,8 @@ function formatLastTriggered(action: any): string {
   align-items: center;
   gap: 10px;
   padding: 10px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
@@ -873,12 +873,12 @@ function formatLastTriggered(action: any): string {
 }
 
 .action-type-option:hover {
-  border-color: #555;
+  border-color: var(--border-heavy);
 }
 
 .action-type-option.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .option-content {
@@ -890,14 +890,14 @@ function formatLastTriggered(action: any): string {
 .option-icon {
   width: 28px;
   height: 28px;
-  background: #2a2a4a;
+  background: var(--border-color);
   border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
   font-size: 0.8rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -908,12 +908,12 @@ function formatLastTriggered(action: any): string {
 
 .option-label {
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .option-desc {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Channel Select Grid */
@@ -931,8 +931,8 @@ function formatLastTriggered(action: any): string {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.8rem;
@@ -940,12 +940,12 @@ function formatLastTriggered(action: any): string {
 }
 
 .channel-option:hover {
-  border-color: #555;
+  border-color: var(--border-heavy);
 }
 
 .channel-option.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .channel-option .ch-type {
@@ -956,17 +956,17 @@ function formatLastTriggered(action: any): string {
 }
 
 .channel-option.is-do .ch-type {
-  background: rgba(34, 197, 94, 0.2);
-  color: #4ade80;
+  background: var(--color-success-bg);
+  color: var(--color-success);
 }
 
 .channel-option.is-ao .ch-type {
-  background: rgba(168, 85, 247, 0.2);
-  color: #c084fc;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-light);
 }
 
 .channel-option .ch-name {
-  color: #ddd;
+  color: var(--text-bright);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -978,12 +978,12 @@ function formatLastTriggered(action: any): string {
 
 .actions-list::-webkit-scrollbar-track,
 .channel-select-grid::-webkit-scrollbar-track {
-  background: #0d0d1a;
+  background: var(--bg-primary);
 }
 
 .actions-list::-webkit-scrollbar-thumb,
 .channel-select-grid::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 3px;
 }
 </style>

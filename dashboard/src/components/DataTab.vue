@@ -69,12 +69,15 @@ const showFileBrowser = ref(false)
 const selectedFile = ref<string | null>(null)
 
 // Feedback
-const feedbackMessage = ref<{ type: 'success' | 'error' | 'info', text: string } | null>(null)
+const feedbackMessage = ref<{ type: 'success' | 'error' | 'info' | 'warning', text: string } | null>(null)
+let feedbackTimeoutId: ReturnType<typeof setTimeout> | null = null
 
-function showFeedback(type: 'success' | 'error' | 'info', text: string, duration = 3000) {
+function showFeedback(type: 'success' | 'error' | 'info' | 'warning', text: string, duration = 3000) {
+  if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId)
   feedbackMessage.value = { type, text }
-  setTimeout(() => {
+  feedbackTimeoutId = setTimeout(() => {
     feedbackMessage.value = null
+    feedbackTimeoutId = null
   }, duration)
 }
 
@@ -430,7 +433,10 @@ const estimatedSizePerHour = computed(() => {
 })
 
 // Start Recording
+const isRecordingOp = ref(false)
+
 function startRecording() {
+  if (isRecordingOp.value) return
   if (!requireEditPermission()) return
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
@@ -520,15 +526,20 @@ function startRecording() {
   mqtt.updateRecordingConfig(config)
 
   // Use the system command to start recording
+  isRecordingOp.value = true
   mqtt.startRecording()
   showFeedback('info', 'Starting recording...')
+  setTimeout(() => { isRecordingOp.value = false }, 3000)
 }
 
 // Stop Recording
 function stopRecording() {
+  if (isRecordingOp.value) return
   if (!requireEditPermission()) return
+  isRecordingOp.value = true
   mqtt.stopRecording()
   showFeedback('info', 'Stopping recording...')
+  setTimeout(() => { isRecordingOp.value = false }, 3000)
 }
 
 // Load recorded files list
@@ -623,6 +634,7 @@ function testPostgresConnection() {
 
   // Listen for response
   const unsub = mqtt.onRecordingResponse((result: { success: boolean, message: string }) => {
+    if (dbTestTimeoutId) { clearTimeout(dbTestTimeoutId); dbTestTimeoutId = null }
     dbTestStatus.value = {
       testing: false,
       result: result.message,
@@ -632,10 +644,13 @@ function testPostgresConnection() {
   })
 
   // Timeout after 10 seconds
-  setTimeout(() => {
+  if (dbTestTimeoutId) clearTimeout(dbTestTimeoutId)
+  dbTestTimeoutId = setTimeout(() => {
     if (dbTestStatus.value.testing) {
       dbTestStatus.value = { testing: false, result: 'Connection test timed out', success: false }
+      unsub()
     }
+    dbTestTimeoutId = null
   }, 10000)
 }
 
@@ -646,9 +661,14 @@ function togglePostgresEnabled() {
 
 // Cleanup on unmount
 let unsubscribeProjectLoaded: (() => void) | null = null
+let unsubscribeRecordingResponse: (() => void) | null = null
+let dbTestTimeoutId: ReturnType<typeof setTimeout> | null = null
 
 onUnmounted(() => {
   if (unsubscribeProjectLoaded) unsubscribeProjectLoaded()
+  if (unsubscribeRecordingResponse) unsubscribeRecordingResponse()
+  if (dbTestTimeoutId) clearTimeout(dbTestTimeoutId)
+  if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId)
 })
 
 // Format helpers
@@ -695,8 +715,8 @@ onMounted(() => {
     }
   })
 
-  // Listen for recording responses
-  mqtt.onRecordingResponse((response) => {
+  // Listen for recording responses (store unsubscribe for cleanup)
+  unsubscribeRecordingResponse = mqtt.onRecordingResponse((response) => {
     if (response.success) {
       showFeedback('success', response.message)
       // Refresh file list after operations
@@ -735,7 +755,7 @@ const scheduleDayLabels = [
 
 <template>
   <div class="data-tab">
-    <div v-if="!hasEditPermission.value" class="view-only-notice">
+    <div v-if="!hasEditPermission" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Operator access required to manage recordings</span>
       <button class="login-link" @click="showLoginDialogFn">Login</button>
@@ -2027,7 +2047,7 @@ const scheduleDayLabels = [
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0a0a14;
+  background: var(--bg-primary);
 }
 
 /* View-only notice banner */
@@ -2075,7 +2095,7 @@ const scheduleDayLabels = [
   gap: 8px;
   padding: 16px 24px;
   background: rgba(15, 15, 26, 0.95);
-  border: 1px solid #ef4444;
+  border: 1px solid var(--color-error);
   border-radius: 8px;
   z-index: 10;
   font-size: 0.8rem;
@@ -2092,8 +2112,8 @@ const scheduleDayLabels = [
   gap: 8px;
   padding: 10px 16px;
   margin-bottom: 16px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid #ef4444;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error);
   border-radius: 6px;
   font-size: 0.8rem;
   color: #fca5a5;
@@ -2134,13 +2154,13 @@ const scheduleDayLabels = [
   justify-content: space-between;
   align-items: center;
   padding: 12px 20px;
-  background: #0f0f1a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .status-bar.recording {
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.1), #0f0f1a);
-  border-bottom-color: #ef4444;
+  background: linear-gradient(90deg, var(--color-error-bg), var(--bg-secondary));
+  border-bottom-color: var(--color-error);
 }
 
 .status-left {
@@ -2164,14 +2184,14 @@ const scheduleDayLabels = [
 }
 
 .status-indicator.active .dot {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .status-indicator .pulse {
   position: absolute;
   width: 12px;
   height: 12px;
-  background: #ef4444;
+  background: var(--color-error);
   border-radius: 50%;
   animation: pulse 1.5s ease-out infinite;
 }
@@ -2189,7 +2209,7 @@ const scheduleDayLabels = [
 }
 
 .status-bar.recording .status-text {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .status-divider {
@@ -2216,12 +2236,12 @@ const scheduleDayLabels = [
 }
 
 .record-btn.start {
-  background: #ef4444;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-primary);
 }
 
 .record-btn.start:hover:not(:disabled) {
-  background: #dc2626;
+  background: var(--color-error-dark);
 }
 
 .record-btn.start:disabled {
@@ -2230,25 +2250,25 @@ const scheduleDayLabels = [
 }
 
 .record-btn.stop {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .record-btn.stop:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .record-icon {
   width: 10px;
   height: 10px;
-  background: #fff;
+  background: var(--text-primary);
   border-radius: 50%;
 }
 
 .stop-icon {
   width: 10px;
   height: 10px;
-  background: #fff;
+  background: var(--text-primary);
   border-radius: 2px;
 }
 
@@ -2262,7 +2282,7 @@ const scheduleDayLabels = [
 
 .feedback-message.success {
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .feedback-message.error {
@@ -2272,7 +2292,7 @@ const scheduleDayLabels = [
 
 .feedback-message.info {
   background: #1e3a5f;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .fade-enter-active, .fade-leave-active {
@@ -2293,8 +2313,8 @@ const scheduleDayLabels = [
 /* Channel Panel */
 .channel-panel {
   width: 280px;
-  background: #0f0f1a;
-  border-right: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
 }
@@ -2304,13 +2324,13 @@ const scheduleDayLabels = [
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .panel-header h3 {
   margin: 0;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .select-all {
@@ -2323,7 +2343,7 @@ const scheduleDayLabels = [
 }
 
 .select-all input {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .channel-list {
@@ -2350,7 +2370,7 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border: 1px solid transparent;
   border-radius: 4px;
   margin-bottom: 4px;
@@ -2359,16 +2379,16 @@ const scheduleDayLabels = [
 }
 
 .channel-item:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
 }
 
 .channel-item.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .channel-item input[type="checkbox"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .channel-item.python-channel {
@@ -2410,12 +2430,12 @@ const scheduleDayLabels = [
 }
 
 .channel-item.system-channel {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .channel-item.system-channel.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .channel-item.alarm-channel {
@@ -2436,7 +2456,7 @@ const scheduleDayLabels = [
 .channel-name {
   display: block;
   font-size: 0.8rem;
-  color: #fff;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2464,7 +2484,7 @@ const scheduleDayLabels = [
 
 .channel-summary {
   padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   font-size: 0.75rem;
   color: #888;
   text-align: center;
@@ -2478,8 +2498,8 @@ const scheduleDayLabels = [
 }
 
 .settings-section {
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 16px;
   margin-bottom: 16px;
@@ -2488,7 +2508,7 @@ const scheduleDayLabels = [
 .settings-section h3 {
   margin: 0 0 16px;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .form-group {
@@ -2506,17 +2526,17 @@ const scheduleDayLabels = [
 .form-group select {
   width: 100%;
   padding: 8px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .form-group input:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .path-input {
@@ -2547,7 +2567,7 @@ const scheduleDayLabels = [
 }
 
 .checkbox-label input {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .preview-filename {
@@ -2556,7 +2576,7 @@ const scheduleDayLabels = [
   gap: 8px;
   margin-top: 12px;
   padding: 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
@@ -2568,14 +2588,14 @@ const scheduleDayLabels = [
 .preview-filename code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .rate-info {
   font-size: 0.75rem;
   color: #888;
   padding: 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-top: 8px;
 }
@@ -2590,8 +2610,8 @@ const scheduleDayLabels = [
 .mode-btn {
   flex: 1;
   padding: 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.8rem;
@@ -2601,19 +2621,19 @@ const scheduleDayLabels = [
 }
 
 .mode-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .mode-btn.active {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #60a5fa;
+  border-color: var(--color-accent);
+  color: var(--color-accent-light);
 }
 
 .mode-options {
   padding: 16px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
@@ -2646,8 +2666,8 @@ const scheduleDayLabels = [
   flex: 1;
   min-width: 90px;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.75rem;
@@ -2657,19 +2677,19 @@ const scheduleDayLabels = [
 }
 
 .rotation-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .rotation-btn.active {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #60a5fa;
+  border-color: var(--color-accent);
+  color: var(--color-accent-light);
 }
 
 .rotation-options {
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-bottom: 12px;
 }
@@ -2682,8 +2702,8 @@ const scheduleDayLabels = [
 
 .quick-presets button {
   padding: 4px 10px;
-  background: #2a2a4a;
-  border: 1px solid #3a3a5a;
+  background: var(--btn-hover);
+  border: 1px solid var(--border-light);
   border-radius: 3px;
   color: #888;
   font-size: 0.7rem;
@@ -2692,14 +2712,14 @@ const scheduleDayLabels = [
 }
 
 .quick-presets button:hover {
-  background: #3a3a5a;
-  color: #fff;
+  background: var(--bg-active);
+  color: var(--text-primary);
 }
 
 .limit-action {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .section-label {
@@ -2725,7 +2745,7 @@ const scheduleDayLabels = [
 }
 
 .radio-label input[type="radio"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 /* Naming Selector */
@@ -2738,8 +2758,8 @@ const scheduleDayLabels = [
 .naming-btn {
   flex: 1;
   padding: 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.8rem;
@@ -2749,19 +2769,19 @@ const scheduleDayLabels = [
 }
 
 .naming-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .naming-btn.active {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #60a5fa;
+  border-color: var(--color-accent);
+  color: var(--color-accent-light);
 }
 
 .naming-options {
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   margin-bottom: 12px;
 }
@@ -2776,8 +2796,8 @@ const scheduleDayLabels = [
 .dir-btn {
   flex: 1;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   font-size: 0.75rem;
@@ -2787,14 +2807,14 @@ const scheduleDayLabels = [
 }
 
 .dir-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .dir-btn.active {
   background: #1e3a5f;
-  border-color: #3b82f6;
-  color: #60a5fa;
+  border-color: var(--color-accent);
+  color: var(--color-accent-light);
 }
 
 .preview-path {
@@ -2803,7 +2823,7 @@ const scheduleDayLabels = [
   gap: 4px;
   margin-top: 12px;
   padding: 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
@@ -2815,7 +2835,7 @@ const scheduleDayLabels = [
 .preview-path code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
-  color: #22c55e;
+  color: var(--color-success);
   word-break: break-all;
 }
 
@@ -2829,20 +2849,20 @@ const scheduleDayLabels = [
 .radio-card {
   flex: 1;
   padding: 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .radio-card:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
 }
 
 .radio-card.active {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .radio-card input[type="radio"] {
@@ -2857,7 +2877,7 @@ const scheduleDayLabels = [
 
 .radio-content strong {
   font-size: 0.85rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .radio-content span {
@@ -2867,7 +2887,7 @@ const scheduleDayLabels = [
 
 .buffer-options {
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
 }
 
@@ -2887,7 +2907,7 @@ const scheduleDayLabels = [
 }
 
 .rotation-badge.single {
-  background: #374151;
+  background: var(--btn-secondary-bg);
 }
 
 .rotation-badge.time {
@@ -2903,7 +2923,7 @@ const scheduleDayLabels = [
 }
 
 .rotation-badge.session {
-  background: #d97706;
+  background: var(--color-warning-dark);
 }
 
 /* Day Selector */
@@ -2915,8 +2935,8 @@ const scheduleDayLabels = [
 .day-btn {
   width: 32px;
   height: 32px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #666;
   font-size: 0.75rem;
@@ -2926,14 +2946,14 @@ const scheduleDayLabels = [
 }
 
 .day-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .day-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--text-primary);
 }
 
 /* Settings Actions */
@@ -2950,13 +2970,13 @@ const scheduleDayLabels = [
   gap: 6px;
   padding: 8px 12px;
   font-size: 0.75rem;
-  color: #22c55e;
-  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+  background: var(--color-success-bg);
   border-radius: 4px;
 }
 
 .auto-save-indicator svg {
-  stroke: #22c55e;
+  stroke: var(--color-success);
 }
 
 .btn {
@@ -2973,28 +2993,28 @@ const scheduleDayLabels = [
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
 }
 
 .btn-secondary:hover {
-  background: #4b5563;
+  background: var(--btn-secondary-hover);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 /* Info Panel */
 .info-panel {
   width: 240px;
-  background: #0f0f1a;
-  border-left: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
   padding: 16px;
   overflow-y: auto;
 }
@@ -3015,7 +3035,7 @@ const scheduleDayLabels = [
   display: flex;
   justify-content: space-between;
   padding: 6px 0;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--bg-widget);
 }
 
 .info-label {
@@ -3025,12 +3045,12 @@ const scheduleDayLabels = [
 
 .info-value {
   font-size: 0.75rem;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .info-value.active {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .mode-badge {
@@ -3041,7 +3061,7 @@ const scheduleDayLabels = [
 }
 
 .mode-badge.manual {
-  background: #374151;
+  background: var(--btn-secondary-bg);
 }
 
 .mode-badge.triggered {
@@ -3059,19 +3079,19 @@ const scheduleDayLabels = [
   font-weight: 500;
   text-align: center;
   background: #451a03;
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .connection-status.connected {
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 /* Modal */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay-light);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3081,8 +3101,8 @@ const scheduleDayLabels = [
 .file-browser-modal {
   width: 700px;
   max-height: 80vh;
-  background: #0f0f1a;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -3093,13 +3113,13 @@ const scheduleDayLabels = [
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .modal-header h3 {
   margin: 0;
   font-size: 1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .close-btn {
@@ -3111,7 +3131,7 @@ const scheduleDayLabels = [
 }
 
 .close-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .modal-content {
@@ -3125,7 +3145,7 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 8px;
   padding: 10px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
@@ -3144,7 +3164,7 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
@@ -3152,16 +3172,16 @@ const scheduleDayLabels = [
 }
 
 .file-item:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
 }
 
 .file-item.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .file-icon {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .file-info {
@@ -3172,7 +3192,7 @@ const scheduleDayLabels = [
 .file-name {
   display: block;
   font-size: 0.85rem;
-  color: #fff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -3189,7 +3209,7 @@ const scheduleDayLabels = [
 .icon-btn {
   padding: 6px;
   background: transparent;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #888;
   cursor: pointer;
@@ -3197,13 +3217,13 @@ const scheduleDayLabels = [
 }
 
 .icon-btn:hover {
-  background: #2a2a4a;
-  color: #fff;
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 
 .icon-btn.danger:hover {
   background: #7f1d1d;
-  border-color: #ef4444;
+  border-color: var(--color-error);
   color: #fca5a5;
 }
 
@@ -3228,7 +3248,7 @@ const scheduleDayLabels = [
   display: flex;
   justify-content: flex-end;
   padding: 16px 20px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Modal transitions */
@@ -3252,7 +3272,7 @@ const scheduleDayLabels = [
   font-weight: 500;
   padding: 3px 8px;
   background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
+  color: var(--color-success);
   border: 1px solid rgba(34, 197, 94, 0.3);
   border-radius: 4px;
   text-transform: uppercase;
@@ -3276,19 +3296,19 @@ const scheduleDayLabels = [
   display: flex;
   flex-direction: column;
   padding: 12px 14px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .toggle-card:hover {
-  background: #2a2a4a;
+  background: var(--btn-hover);
 }
 
 .toggle-card.active {
-  border-color: #22c55e;
+  border-color: var(--color-success);
   background: rgba(34, 197, 94, 0.08);
 }
 
@@ -3305,7 +3325,7 @@ const scheduleDayLabels = [
 
 .toggle-header input[type="checkbox"] {
   margin-top: 2px;
-  accent-color: #22c55e;
+  accent-color: var(--color-success);
   width: 16px;
   height: 16px;
 }
@@ -3318,7 +3338,7 @@ const scheduleDayLabels = [
 
 .toggle-content strong {
   font-size: 0.85rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .toggle-content span {
@@ -3332,20 +3352,20 @@ const scheduleDayLabels = [
   gap: 8px;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
   font-size: 0.7rem;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .toggle-details svg {
-  stroke: #22c55e;
+  stroke: var(--color-success);
   flex-shrink: 0;
 }
 
 .alcoa-summary {
   margin-top: 16px;
   padding: 12px;
-  background: rgba(34, 197, 94, 0.1);
+  background: var(--color-success-bg);
   border: 1px solid rgba(34, 197, 94, 0.2);
   border-radius: 6px;
 }
@@ -3356,12 +3376,12 @@ const scheduleDayLabels = [
   gap: 8px;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #22c55e;
+  color: var(--color-success);
   margin-bottom: 8px;
 }
 
 .summary-header svg {
-  stroke: #22c55e;
+  stroke: var(--color-success);
 }
 
 .summary-items {
@@ -3381,8 +3401,8 @@ const scheduleDayLabels = [
 /* ALCOA Status in Info Panel */
 .alcoa-status {
   padding: 10px 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -3411,11 +3431,11 @@ const scheduleDayLabels = [
   text-transform: uppercase;
   letter-spacing: 0.5px;
   background: #14532d;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .alcoa-badge.off {
-  background: #374151;
+  background: var(--btn-secondary-bg);
   color: #666;
 }
 
@@ -3424,7 +3444,7 @@ const scheduleDayLabels = [
   gap: 6px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .feature-dot {
@@ -3434,7 +3454,7 @@ const scheduleDayLabels = [
   width: 22px;
   height: 22px;
   background: rgba(34, 197, 94, 0.2);
-  color: #22c55e;
+  color: var(--color-success);
   border-radius: 4px;
   font-size: 0.65rem;
   font-weight: 700;
@@ -3448,7 +3468,7 @@ const scheduleDayLabels = [
 }
 
 .cloud-section h3 svg {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .cloud-destinations {
@@ -3459,8 +3479,8 @@ const scheduleDayLabels = [
 
 .destination-item {
   padding: 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -3508,7 +3528,7 @@ const scheduleDayLabels = [
 
 .destination-status.active {
   background: rgba(34, 197, 94, 0.2);
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .destination-status.warning {
@@ -3540,7 +3560,7 @@ const scheduleDayLabels = [
 /* Azure Config Modal */
 .azure-config-modal {
   background: #12121e;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   width: 90%;
   max-width: 600px;
@@ -3556,7 +3576,7 @@ const scheduleDayLabels = [
 }
 
 .azure-config-modal .modal-header h3 svg {
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .azure-config-content {
@@ -3598,8 +3618,8 @@ const scheduleDayLabels = [
 .azure-channel-list {
   max-height: 200px;
   overflow-y: auto;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 8px;
   display: grid;
@@ -3628,8 +3648,8 @@ const scheduleDayLabels = [
 
 .azure-status-box {
   padding: 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -3637,7 +3657,7 @@ const scheduleDayLabels = [
   display: flex;
   justify-content: space-between;
   padding: 4px 0;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .azure-status-box .status-row:last-child {
@@ -3656,16 +3676,16 @@ const scheduleDayLabels = [
 }
 
 .azure-status-box .status-value.connected {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .azure-status-box .status-value.error {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 /* Info panel error value */
 .info-value.error {
-  color: #ef4444;
+  color: var(--color-error);
   font-size: 0.7rem;
   word-break: break-word;
 }
@@ -3673,7 +3693,7 @@ const scheduleDayLabels = [
 /* PostgreSQL Config Modal */
 .postgres-modal {
   background: #12121e;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   width: 90%;
   max-width: 560px;
@@ -3706,8 +3726,8 @@ const scheduleDayLabels = [
 
 .postgres-modal .form-group input {
   padding: 8px 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   color: #e5e7eb;
   font-size: 0.85rem;
@@ -3735,8 +3755,8 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 12px;
   padding: 10px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -3746,11 +3766,11 @@ const scheduleDayLabels = [
 }
 
 .db-test-result.success {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .db-test-result.error {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .postgres-info {
@@ -3777,8 +3797,8 @@ const scheduleDayLabels = [
 
 .db-status-box {
   padding: 12px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -3786,7 +3806,7 @@ const scheduleDayLabels = [
   display: flex;
   justify-content: space-between;
   padding: 4px 0;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .db-status-box .status-row:last-child {
@@ -3805,6 +3825,6 @@ const scheduleDayLabels = [
 }
 
 .db-status-box .status-value.connected {
-  color: #22c55e;
+  color: var(--color-success);
 }
 </style>

@@ -253,6 +253,111 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const pidAutoRoute = ref(false)       // Auto-route pipes around obstacles
   const pidPropertiesPanelOpen = ref(true) // Properties panel sidebar
 
+  // P&ID Nozzle stubs
+  const pidShowNozzleStubs = ref(true)
+
+  // P&ID Panel collapse & resize
+  const pidSymbolPanelCollapsed = ref(false)
+  const pidPropertiesPanelCollapsed = ref(false)
+  const pidSymbolPanelWidth = ref(220)
+  const pidPropertiesPanelWidth = ref(240)
+
+  // P&ID Custom symbols (#4.1)
+  interface CustomSymbolDef {
+    svg: string
+    name: string
+    category: string
+    ports: Array<{ id: string; x: number; y: number; direction: 'left' | 'right' | 'top' | 'bottom' }>
+  }
+  const pidCustomSymbols = ref<Record<string, CustomSymbolDef>>(
+    JSON.parse(localStorage.getItem('pid-custom-symbols') || '{}')
+  )
+
+  function pidAddCustomSymbol(id: string, def: CustomSymbolDef) {
+    pidCustomSymbols.value = { ...pidCustomSymbols.value, [id]: def }
+    localStorage.setItem('pid-custom-symbols', JSON.stringify(pidCustomSymbols.value))
+  }
+
+  function pidRemoveCustomSymbol(id: string) {
+    const copy = { ...pidCustomSymbols.value }
+    delete copy[id]
+    pidCustomSymbols.value = copy
+    localStorage.setItem('pid-custom-symbols', JSON.stringify(pidCustomSymbols.value))
+  }
+
+  // P&ID Favorite & Recent symbols (#3.4)
+  const pidFavoriteSymbols = ref<string[]>(JSON.parse(localStorage.getItem('pid-favorites') || '[]'))
+  const pidRecentSymbols = ref<string[]>(JSON.parse(localStorage.getItem('pid-recent') || '[]'))
+
+  function pidToggleFavorite(type: string) {
+    const idx = pidFavoriteSymbols.value.indexOf(type)
+    if (idx >= 0) {
+      pidFavoriteSymbols.value = pidFavoriteSymbols.value.filter(t => t !== type)
+    } else {
+      pidFavoriteSymbols.value = [...pidFavoriteSymbols.value, type]
+    }
+    localStorage.setItem('pid-favorites', JSON.stringify(pidFavoriteSymbols.value))
+  }
+
+  function pidTrackRecentSymbol(type: string) {
+    const filtered = pidRecentSymbols.value.filter(t => t !== type)
+    pidRecentSymbols.value = [type, ...filtered].slice(0, 10)
+    localStorage.setItem('pid-recent', JSON.stringify(pidRecentSymbols.value))
+  }
+
+  // P&ID Operator Notes (#6.6) — session-scoped sticky notes (localStorage, not project file)
+  interface PidOperatorNote {
+    id: string
+    x: number
+    y: number
+    text: string
+    color: string
+    author: string
+    timestamp: number
+  }
+  const pidOperatorNotes = ref<PidOperatorNote[]>(JSON.parse(localStorage.getItem('pid-operator-notes') || '[]'))
+
+  function pidAddOperatorNote(x: number, y: number, text: string, color = '#fbbf24', author = 'Operator') {
+    const note: PidOperatorNote = {
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      x, y, text, color, author,
+      timestamp: Date.now(),
+    }
+    pidOperatorNotes.value = [...pidOperatorNotes.value, note]
+    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+    return note.id
+  }
+
+  function pidUpdateOperatorNote(id: string, updates: Partial<Omit<PidOperatorNote, 'id'>>) {
+    pidOperatorNotes.value = pidOperatorNotes.value.map(n =>
+      n.id === id ? { ...n, ...updates } : n
+    )
+    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+  }
+
+  function pidRemoveOperatorNote(id: string) {
+    pidOperatorNotes.value = pidOperatorNotes.value.filter(n => n.id !== id)
+    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+  }
+
+  function pidClearOperatorNotes() {
+    pidOperatorNotes.value = []
+    localStorage.removeItem('pid-operator-notes')
+  }
+
+  // P&ID Focus mode
+  const pidFocusMode = ref(false)
+  const pidToolbarCompact = ref(false)
+  const pidFocusModePrevState = ref<{
+    symbolPanelOpen: boolean
+    symbolPanelCollapsed: boolean
+    propertiesPanelOpen: boolean
+    propertiesPanelCollapsed: boolean
+    showMinimap: boolean
+    showRulers: boolean
+    showGrid: boolean
+  } | null>(null)
+
   // ========================================================================
   // P&ID TEMPLATE LIBRARY
   // ========================================================================
@@ -552,6 +657,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Reorder remaining pages
     pages.value.forEach((p, i) => p.order = i)
 
+    saveLayoutToStorage()
     return true
   }
 
@@ -583,9 +689,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
       name: `${source.name} (copy)`,
       widgets: newWidgets,
       order: pages.value.length,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(source.pidLayer ? { pidLayer: JSON.parse(JSON.stringify(source.pidLayer)) } : {})
     })
 
+    saveLayoutToStorage()
     return id
   }
 
@@ -949,11 +1057,72 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidEditMode.value = enabled
     if (!enabled) {
       pidDrawingMode.value = false
+      if (pidFocusMode.value) exitPidFocusMode()
     }
   }
 
   function setPidDrawingMode(enabled: boolean) {
     pidDrawingMode.value = enabled
+  }
+
+  function togglePidSymbolPanelCollapse() {
+    if (!pidSymbolPanelOpen.value) {
+      pidSymbolPanelOpen.value = true
+      pidSymbolPanelCollapsed.value = false
+    } else {
+      pidSymbolPanelCollapsed.value = !pidSymbolPanelCollapsed.value
+    }
+  }
+
+  function togglePidPropertiesPanelCollapse() {
+    if (!pidPropertiesPanelOpen.value) {
+      pidPropertiesPanelOpen.value = true
+      pidPropertiesPanelCollapsed.value = false
+    } else {
+      pidPropertiesPanelCollapsed.value = !pidPropertiesPanelCollapsed.value
+    }
+  }
+
+  function enterPidFocusMode() {
+    pidFocusModePrevState.value = {
+      symbolPanelOpen: pidSymbolPanelOpen.value,
+      symbolPanelCollapsed: pidSymbolPanelCollapsed.value,
+      propertiesPanelOpen: pidPropertiesPanelOpen.value,
+      propertiesPanelCollapsed: pidPropertiesPanelCollapsed.value,
+      showMinimap: pidShowMinimap.value,
+      showRulers: pidShowRulers.value,
+      showGrid: pidShowGrid.value,
+    }
+    pidSymbolPanelCollapsed.value = true
+    pidPropertiesPanelCollapsed.value = true
+    pidShowMinimap.value = false
+    pidShowRulers.value = false
+    pidToolbarCompact.value = true
+    pidFocusMode.value = true
+  }
+
+  function exitPidFocusMode() {
+    const prev = pidFocusModePrevState.value
+    if (prev) {
+      pidSymbolPanelOpen.value = prev.symbolPanelOpen
+      pidSymbolPanelCollapsed.value = prev.symbolPanelCollapsed
+      pidPropertiesPanelOpen.value = prev.propertiesPanelOpen
+      pidPropertiesPanelCollapsed.value = prev.propertiesPanelCollapsed
+      pidShowMinimap.value = prev.showMinimap
+      pidShowRulers.value = prev.showRulers
+      pidShowGrid.value = prev.showGrid
+    }
+    pidToolbarCompact.value = false
+    pidFocusMode.value = false
+    pidFocusModePrevState.value = null
+  }
+
+  function togglePidFocusMode() {
+    if (pidFocusMode.value) {
+      exitPidFocusMode()
+    } else {
+      enterPidFocusMode()
+    }
   }
 
   function togglePidGridSnap() {
@@ -1181,7 +1350,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
       symbols: JSON.parse(JSON.stringify(pidLayer.value.symbols)),
       pipes: JSON.parse(JSON.stringify(pidLayer.value.pipes)),
       textAnnotations: JSON.parse(JSON.stringify(pidLayer.value.textAnnotations || [])),
-      groups: JSON.parse(JSON.stringify(pidLayer.value.groups || []))
+      groups: JSON.parse(JSON.stringify(pidLayer.value.groups || [])),
+      layerInfos: JSON.parse(JSON.stringify(pidLayer.value.layerInfos || []))
     }
   }
 
@@ -1216,13 +1386,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const command = pidUndoStack.value.pop()
     if (!command) return false
 
-    // Restore before state
+    // Restore before state (including layerInfos for #3.6)
     pidLayer.value = {
       ...pidLayer.value,
       symbols: command.beforeState.symbols || [],
       pipes: command.beforeState.pipes || [],
       textAnnotations: command.beforeState.textAnnotations || [],
-      groups: command.beforeState.groups || []
+      groups: command.beforeState.groups || [],
+      ...(command.beforeState.layerInfos ? { layerInfos: command.beforeState.layerInfos } : {})
     }
 
     // Push to redo stack
@@ -1239,13 +1410,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const command = pidRedoStack.value.pop()
     if (!command) return false
 
-    // Restore after state
+    // Restore after state (including layerInfos for #3.6)
     pidLayer.value = {
       ...pidLayer.value,
       symbols: command.afterState.symbols || [],
       pipes: command.afterState.pipes || [],
       textAnnotations: command.afterState.textAnnotations || [],
-      groups: command.afterState.groups || []
+      groups: command.afterState.groups || [],
+      ...(command.afterState.layerInfos ? { layerInfos: command.afterState.layerInfos } : {})
     }
 
     // Push back to undo stack
@@ -2428,15 +2600,19 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function pidAddLayer(name: string): string {
+    const beforeState = createPidStateSnapshot()
     const infos = ensureLayerInfos()
     const id = `layer-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`
     const newInfo: PidLayerInfo = { id, name, visible: true, locked: false, opacity: 1, order: infos.length }
     pidLayer.value = { ...pidLayer.value, layerInfos: [...infos, newInfo] }
     pidActiveLayerId.value = id
+    pushPidCommand('modify', `Add layer "${name}"`, beforeState)
+    saveLayoutToStorage()
     return id
   }
 
   function pidRemoveLayer(layerId: string) {
+    const beforeState = createPidStateSnapshot()
     const infos = ensureLayerInfos()
     if (infos.length <= 1) return // Can't remove last layer
     const mainId = infos[0]!.id
@@ -2455,14 +2631,19 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (pidActiveLayerId.value === layerId) {
       pidActiveLayerId.value = newInfos[0]?.id || 'main'
     }
+    pushPidCommand('modify', 'Remove layer', beforeState)
+    saveLayoutToStorage()
   }
 
   function pidRenameLayer(layerId: string, name: string) {
+    const beforeState = createPidStateSnapshot()
     const infos = ensureLayerInfos()
     pidLayer.value = {
       ...pidLayer.value,
       layerInfos: infos.map(l => l.id === layerId ? { ...l, name } : l)
     }
+    pushPidCommand('modify', `Rename layer to "${name}"`, beforeState)
+    saveLayoutToStorage()
   }
 
   function pidToggleLayerVisibility(layerId: string) {
@@ -2505,6 +2686,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
       textIds.includes(t.id) ? { ...t, layerId: targetLayerId } : t
     )
     pidLayer.value = { ...pidLayer.value, symbols, pipes, textAnnotations }
+  }
+
+  function pidReorderLayers(fromIndex: number, toIndex: number) {
+    const infos = ensureLayerInfos()
+    const sorted = [...infos].sort((a, b) => a.order - b.order)
+    const [moved] = sorted.splice(fromIndex, 1)
+    if (!moved) return
+    sorted.splice(toIndex, 0, moved)
+    const reordered = sorted.map((l, i) => ({ ...l, order: i }))
+    pidLayer.value = { ...pidLayer.value, layerInfos: reordered }
   }
 
   function isLayerLocked(layerId: string | undefined): boolean {
@@ -2572,6 +2763,70 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const beforeState = createPidStateSnapshot()
     removePidPipe(id)
     pushPidCommand('delete', 'Delete pipe', beforeState)
+  }
+
+  /**
+   * Batch update multiple symbols with a single undo command
+   */
+  function updatePidSymbolsBatch(ids: string[], updates: Partial<PidSymbol>) {
+    if (ids.length === 0) return
+    const beforeState = createPidStateSnapshot()
+    for (const id of ids) {
+      updatePidSymbol(id, updates)
+    }
+    pushPidCommand('modify', `Update ${ids.length} symbols`, beforeState)
+  }
+
+  /**
+   * Auto-match selected symbol labels to channel names.
+   * Returns number of symbols matched.
+   * Matching strategy (in priority order):
+   * 1. Exact match: symbol.label === channel.name (case-insensitive)
+   * 2. Tag prefix match: symbol.label starts with channel tag prefix (e.g., "TC-001" matches "TC-001_PV")
+   * 3. Fuzzy substring: channel.name contains symbol.label or vice versa
+   */
+  function pidAutoMatchChannels(symbolIds?: string[]): { matched: number; total: number } {
+    const ids = symbolIds || pidSelectedIds.value.symbolIds
+    const targetSymbols = pidLayer.value.symbols.filter(s => ids.includes(s.id))
+    if (targetSymbols.length === 0) return { matched: 0, total: 0 }
+
+    const chNames = Object.keys(channels.value)
+    if (chNames.length === 0) return { matched: 0, total: targetSymbols.length }
+
+    const beforeState = createPidStateSnapshot()
+    let matched = 0
+
+    for (const sym of targetSymbols) {
+      const label = (sym.label || '').trim()
+      if (!label) continue
+      if (sym.channel) continue // skip already bound
+
+      const labelLower = label.toLowerCase()
+
+      // 1. Exact match
+      let match = chNames.find(ch => ch.toLowerCase() === labelLower)
+
+      // 2. Tag prefix — label is a prefix of channel name (e.g., "TC-001" → "TC-001_PV")
+      if (!match) {
+        match = chNames.find(ch => ch.toLowerCase().startsWith(labelLower + '_') || ch.toLowerCase().startsWith(labelLower + '/'))
+      }
+
+      // 3. Channel contains label or label contains channel
+      if (!match) {
+        match = chNames.find(ch => ch.toLowerCase().includes(labelLower) || labelLower.includes(ch.toLowerCase()))
+      }
+
+      if (match) {
+        updatePidSymbol(sym.id, { channel: match })
+        matched++
+      }
+    }
+
+    if (matched > 0) {
+      pushPidCommand('modify', `Auto-match ${matched} channels`, beforeState)
+    }
+
+    return { matched, total: targetSymbols.length }
   }
 
   // ========================================================================
@@ -2802,8 +3057,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function saveLayoutToStorage() {
-    const layout = getLayout()
-    localStorage.setItem(`nisystem-layout-${systemId.value}`, JSON.stringify(layout))
+    try {
+      const layout = getLayout()
+      localStorage.setItem(`nisystem-layout-${systemId.value}`, JSON.stringify(layout))
+    } catch (e) {
+      console.error('[DASHBOARD STORE] Failed to save layout to localStorage:', e)
+    }
   }
 
   function loadLayoutFromStorage(): boolean {
@@ -2957,7 +3216,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
       python_console: { w: 8, h: 6 },
       script_output: { w: 8, h: 6 },
       variable_explorer: { w: 6, h: 8 },
-      variable_input: { w: 4, h: 6 }
+      variable_input: { w: 4, h: 6 },
+      status_messages: { w: 6, h: 4 },
+      image: { w: 4, h: 4 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }
@@ -3293,6 +3554,29 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidShowRulers,
     pidAutoRoute,
     pidPropertiesPanelOpen,
+
+    // P&ID Nozzle stubs
+    pidShowNozzleStubs,
+
+    // P&ID Panel collapse & resize
+    pidCustomSymbols,
+    pidAddCustomSymbol,
+    pidRemoveCustomSymbol,
+    pidFavoriteSymbols,
+    pidRecentSymbols,
+    pidToggleFavorite,
+    pidTrackRecentSymbol,
+    pidSymbolPanelCollapsed,
+    pidPropertiesPanelCollapsed,
+    pidSymbolPanelWidth,
+    pidPropertiesPanelWidth,
+    togglePidSymbolPanelCollapse,
+    togglePidPropertiesPanelCollapse,
+
+    // P&ID Focus mode
+    pidFocusMode,
+    pidToolbarCompact,
+    togglePidFocusMode,
     setPidZoom,
     setPidPan,
     pidFitToContent,
@@ -3377,11 +3661,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidToggleLayerLock,
     pidSetLayerOpacity,
     pidMoveToLayer,
+    pidReorderLayers,
     isLayerLocked,
 
     // P&ID Enhanced Actions (with Undo)
     addPidSymbolWithUndo,
     updatePidSymbolWithUndo,
+    updatePidSymbolsBatch,
+    pidAutoMatchChannels,
     removePidSymbolWithUndo,
     addPidPipeWithUndo,
     updatePidPipeWithUndo,
@@ -3392,6 +3679,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
     createPidTemplate,
     instantiatePidTemplate,
     deletePidTemplate,
+
+    // P&ID Operator Notes
+    pidOperatorNotes,
+    pidAddOperatorNote,
+    pidUpdateOperatorNote,
+    pidRemoveOperatorNote,
+    pidClearOperatorNotes,
 
     // P&ID Pipe Drawing Defaults
     pidPipeColor,

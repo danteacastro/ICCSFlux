@@ -183,7 +183,7 @@ const displayLabel = computed(() => {
   height: 100%;
   background: #0d0d1a;
   border-radius: 4px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   font-family: 'JetBrains Mono', 'Consolas', monospace;
   font-size: 0.7rem;
   overflow: hidden;
@@ -194,8 +194,8 @@ const displayLabel = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #1a1a2e;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .widget-title {
@@ -223,11 +223,11 @@ const displayLabel = computed(() => {
 
 .action-btn:hover {
   color: #aaa;
-  background: #2a2a4a;
+  background: var(--border-color);
 }
 
 .action-btn.active {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Status Bar */
@@ -237,7 +237,7 @@ const displayLabel = computed(() => {
   gap: 6px;
   padding: 4px 8px;
   font-size: 0.65rem;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .status-indicator {
@@ -248,14 +248,14 @@ const displayLabel = computed(() => {
 }
 
 .status-bar.running .status-indicator {
-  background: #22c55e;
-  box-shadow: 0 0 4px #22c55e;
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 .status-bar.error .status-indicator {
-  background: #ef4444;
-  box-shadow: 0 0 4px #ef4444;
+  background: var(--color-error);
+  box-shadow: 0 0 4px var(--color-error);
 }
 
 .status-bar.idle .status-indicator {
@@ -324,19 +324,19 @@ const displayLabel = computed(() => {
 
 /* Output types */
 .output-line.stdout .line-message {
-  color: #e2e8f0;
+  color: var(--text-bright);
 }
 
 .output-line.info .line-message {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .output-line.warning .line-message {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .output-line.error .line-message {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 /* Scrollbar */
@@ -349,7 +349,7 @@ const displayLabel = computed(() => {
 }
 
 .output-container::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 3px;
 }
 

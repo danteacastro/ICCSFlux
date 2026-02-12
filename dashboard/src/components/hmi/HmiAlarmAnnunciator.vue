@@ -79,8 +79,8 @@ function acknowledge() {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  background: #808080;
-  border: 1px solid #666;
+  background: var(--hmi-ann-normal-bg, #808080);
+  border: 1px solid var(--hmi-ann-normal-border, #666);
   border-radius: 2px;
   font-family: 'Segoe UI', Arial, sans-serif;
   user-select: none;
@@ -90,27 +90,27 @@ function acknowledge() {
 
 /* Normal — dark gray, visually quiet */
 .hmi-annunciator.normal {
-  background: #808080;
-  border-color: #666;
+  background: var(--hmi-ann-normal-bg, #808080);
+  border-color: var(--hmi-ann-normal-border, #666);
 }
 
 /* Disconnected */
 .hmi-annunciator.disconnected {
-  background: #555;
-  border-color: #444;
+  background: var(--hmi-disconnected-bg, #555);
+  border-color: var(--hmi-disconnected-border, #444);
 }
 
 /* Alarm — red */
 .hmi-annunciator.alarm {
-  background: #CC0000;
-  border-color: #990000;
+  background: var(--hmi-ann-alarm-bg, #CC0000);
+  border-color: var(--hmi-ann-alarm-border, #990000);
   cursor: pointer;
 }
 
 /* Warning — gold */
 .hmi-annunciator.warning {
-  background: #CC9900;
-  border-color: #997300;
+  background: var(--hmi-ann-warning-bg, #CC9900);
+  border-color: var(--hmi-ann-warning-border, #997300);
   cursor: pointer;
 }
 
@@ -125,7 +125,7 @@ function acknowledge() {
 }
 
 .hmi-ann-tag {
-  color: rgba(255,255,255,0.85);
+  color: var(--hmi-ann-text, rgba(255,255,255,0.85));
   font-size: clamp(7px, 22%, 10px);
   font-weight: 600;
   text-transform: uppercase;
@@ -137,7 +137,7 @@ function acknowledge() {
 }
 
 .hmi-ann-state {
-  color: white;
+  color: var(--hmi-ann-state-text, white);
   font-size: clamp(9px, 30%, 14px);
   font-weight: 700;
   text-transform: uppercase;
@@ -148,6 +148,6 @@ function acknowledge() {
 .normal .hmi-ann-state,
 .disconnected .hmi-ann-tag,
 .disconnected .hmi-ann-state {
-  color: rgba(255,255,255,0.6);
+  color: var(--hmi-ann-quiet-text, rgba(255,255,255,0.6));
 }
 </style>

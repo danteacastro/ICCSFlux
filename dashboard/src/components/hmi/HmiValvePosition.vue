@@ -97,8 +97,8 @@ const discAngle = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #D4D4D4;
-  border: 1px solid #A0A0A4;
+  background: var(--hmi-panel-bg, #D4D4D4);
+  border: 1px solid var(--hmi-panel-border, #A0A0A4);
   border-radius: 2px;
   overflow: hidden;
   font-family: 'Segoe UI', Arial, sans-serif;
@@ -107,17 +107,17 @@ const discAngle = computed(() => {
 }
 
 .hmi-valve-pos.alarm {
-  border-color: #FF0000;
+  border-color: var(--hmi-alarm, #FF0000);
   border-width: 2px;
 }
 
 .hmi-valve-pos.warning {
-  border-color: #FFD700;
+  border-color: var(--hmi-warning, #FFD700);
   border-width: 2px;
 }
 
 .hmi-vp-label {
-  color: #555;
+  color: var(--hmi-subtle-text, #555);
   font-size: clamp(6px, 16%, 9px);
   font-weight: 600;
   text-transform: uppercase;
@@ -143,7 +143,7 @@ const discAngle = computed(() => {
 }
 
 .hmi-vp-value {
-  color: #1E3A8A;
+  color: var(--hmi-value-text, #1E3A8A);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: clamp(8px, 24%, 14px);
   font-weight: 700;
@@ -152,10 +152,10 @@ const discAngle = computed(() => {
 }
 
 .alarm .hmi-vp-value {
-  color: #FF0000;
+  color: var(--hmi-alarm, #FF0000);
 }
 
 .warning .hmi-vp-value {
-  color: #FF8C00;
+  color: var(--hmi-warning-text, #FF8C00);
 }
 </style>

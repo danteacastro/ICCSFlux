@@ -272,7 +272,7 @@ const isValid = computed(() => {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -281,9 +281,9 @@ const isValid = computed(() => {
 }
 
 .modal-container {
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 8px;
-  border: 1px solid #3a3a5a;
+  border: 1px solid var(--border-light);
   width: 100%;
   max-width: 550px;
   max-height: 90vh;
@@ -297,7 +297,7 @@ const isValid = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid #3a3a5a;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .modal-header h3 {
@@ -306,17 +306,17 @@ const isValid = computed(() => {
   gap: 8px;
   margin: 0;
   font-size: 1.1rem;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .header-icon {
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -324,8 +324,8 @@ const isValid = computed(() => {
 }
 
 .close-btn:hover {
-  color: #fff;
-  background: #3a3a5a;
+  color: var(--text-primary);
+  background: var(--border-light);
 }
 
 .modal-body {
@@ -342,7 +342,7 @@ const isValid = computed(() => {
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 20px;
-  border-top: 1px solid #3a3a5a;
+  border-top: 1px solid var(--border-light);
 }
 
 /* Form Elements */
@@ -359,7 +359,7 @@ const isValid = computed(() => {
 
 .form-label {
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -367,12 +367,12 @@ const isValid = computed(() => {
 }
 
 .required {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .form-hint {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .form-hint.inline {
@@ -380,17 +380,17 @@ const isValid = computed(() => {
 }
 
 .form-input {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-input.textarea {
@@ -399,18 +399,18 @@ const isValid = computed(() => {
 }
 
 .form-select {
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 0.9rem;
   cursor: pointer;
 }
 
 .form-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .input-with-unit {
@@ -425,7 +425,7 @@ const isValid = computed(() => {
 }
 
 .input-with-unit .unit {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -434,7 +434,7 @@ const isValid = computed(() => {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: #ddd;
+  color: var(--text-bright);
 }
 
 .checkbox-label input {
@@ -451,8 +451,8 @@ const isValid = computed(() => {
   max-height: 200px;
   overflow-y: auto;
   padding: 4px;
-  background: #0d0d1a;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
 }
 
@@ -461,8 +461,8 @@ const isValid = computed(() => {
   flex-direction: column;
   gap: 2px;
   padding: 6px 10px;
-  background: #1a1a2e;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-light);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.8rem;
@@ -470,27 +470,27 @@ const isValid = computed(() => {
 }
 
 .channel-option:hover {
-  border-color: #555;
+  border-color: var(--border-heavy);
 }
 
 .channel-option.selected {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .channel-option .ch-name {
-  color: #ddd;
+  color: var(--text-bright);
   font-family: 'JetBrains Mono', monospace;
 }
 
 .channel-option .ch-group {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .selected-count {
   font-size: 0.75rem;
-  color: #60a5fa;
+  color: var(--color-accent-light);
 }
 
 /* Buttons */
@@ -505,21 +505,21 @@ const isValid = computed(() => {
 }
 
 .btn-secondary {
-  background: #3a3a5a;
-  color: #ddd;
+  background: var(--border-light);
+  color: var(--text-bright);
 }
 
 .btn-secondary:hover {
-  background: #4a4a6a;
+  background: var(--border-heavy);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--text-primary);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--color-accent-dark);
 }
 
 .btn-primary:disabled {
@@ -533,11 +533,11 @@ const isValid = computed(() => {
 }
 
 .channel-select-grid::-webkit-scrollbar-track {
-  background: #0d0d1a;
+  background: var(--bg-primary);
 }
 
 .channel-select-grid::-webkit-scrollbar-thumb {
-  background: #3a3a5a;
+  background: var(--border-light);
   border-radius: 3px;
 }
 </style>
