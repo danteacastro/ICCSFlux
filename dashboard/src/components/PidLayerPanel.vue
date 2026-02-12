@@ -44,6 +44,42 @@ function removeLayer(layerId: string) {
     store.pidRemoveLayer(layerId)
   }
 }
+
+// Drag-to-reorder (#3.3)
+const dragIndex = ref<number | null>(null)
+const dropIndex = ref<number | null>(null)
+
+function onDragStart(event: DragEvent, index: number) {
+  dragIndex.value = index
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onDragOver(event: DragEvent, index: number) {
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dropIndex.value = index
+}
+
+function onDragLeave() {
+  dropIndex.value = null
+}
+
+function onDrop(event: DragEvent, toIndex: number) {
+  event.preventDefault()
+  if (dragIndex.value !== null && dragIndex.value !== toIndex) {
+    store.pidReorderLayers(dragIndex.value, toIndex)
+  }
+  dragIndex.value = null
+  dropIndex.value = null
+}
+
+function onDragEnd() {
+  dragIndex.value = null
+  dropIndex.value = null
+}
 </script>
 
 <template>
@@ -54,12 +90,29 @@ function removeLayer(layerId: string) {
     </div>
     <div class="layer-list">
       <div
-        v-for="layer in layers()"
+        v-for="(layer, index) in layers()"
         :key="layer.id"
         class="layer-item"
-        :class="{ active: store.pidActiveLayerId === layer.id }"
+        :class="{
+          active: store.pidActiveLayerId === layer.id,
+          'drag-over': dropIndex === index && dragIndex !== index
+        }"
         @click="store.pidActiveLayerId = layer.id"
+        draggable="true"
+        @dragstart="onDragStart($event, index)"
+        @dragover="onDragOver($event, index)"
+        @dragleave="onDragLeave"
+        @drop="onDrop($event, index)"
+        @dragend="onDragEnd"
       >
+        <!-- Drag grip -->
+        <span class="layer-grip" title="Drag to reorder">
+          <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor">
+            <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
+            <circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/>
+            <circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/>
+          </svg>
+        </span>
         <!-- Visibility toggle -->
         <button
           class="layer-icon-btn"
@@ -120,6 +173,21 @@ function removeLayer(layerId: string) {
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
+
+        <!-- Opacity slider (shown when layer is active) -->
+        <div v-if="store.pidActiveLayerId === layer.id" class="layer-opacity" @click.stop>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            :value="layer.opacity ?? 1"
+            class="opacity-slider"
+            @input="store.pidSetLayerOpacity(layer.id, parseFloat(($event.target as HTMLInputElement).value))"
+            :title="`Opacity: ${Math.round((layer.opacity ?? 1) * 100)}%`"
+          />
+          <span class="opacity-label">{{ Math.round((layer.opacity ?? 1) * 100) }}%</span>
+        </div>
       </div>
     </div>
     <!-- Move to layer -->
@@ -137,8 +205,8 @@ function removeLayer(layerId: string) {
 
 <style scoped>
 .layer-panel {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   min-width: 180px;
   font-size: 12px;
@@ -151,11 +219,11 @@ function removeLayer(layerId: string) {
   justify-content: space-between;
   padding: 6px 8px;
   background: #0f0f23;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .layer-title {
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
@@ -164,7 +232,7 @@ function removeLayer(layerId: string) {
 
 .layer-add-btn {
   background: #10b981;
-  color: #fff;
+  color: var(--text-primary);
   border: none;
   border-radius: 3px;
   width: 20px;
@@ -202,13 +270,32 @@ function removeLayer(layerId: string) {
 
 .layer-item.active {
   background: rgba(96, 165, 250, 0.12);
-  border-left-color: #60a5fa;
+  border-left-color: var(--color-accent-light);
+}
+
+.layer-grip {
+  color: var(--text-disabled);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.layer-item:hover .layer-grip {
+  opacity: 1;
+}
+
+.layer-item.drag-over {
+  border-top: 2px solid var(--color-accent);
+  padding-top: 2px;
 }
 
 .layer-icon-btn {
   background: transparent;
   border: none;
-  color: #94a3b8;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -221,12 +308,12 @@ function removeLayer(layerId: string) {
 }
 
 .layer-icon-btn.off {
-  color: #475569;
+  color: var(--text-disabled);
   opacity: 0.5;
 }
 
 .layer-icon-btn.delete {
-  color: #ef4444;
+  color: var(--color-error);
   opacity: 0.5;
   margin-left: auto;
 }
@@ -237,7 +324,7 @@ function removeLayer(layerId: string) {
 
 .layer-name {
   flex: 1;
-  color: #e2e8f0;
+  color: var(--text-bright);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,8 +334,8 @@ function removeLayer(layerId: string) {
 .layer-rename-input {
   width: 100%;
   background: #0f0f23;
-  color: #e2e8f0;
-  border: 1px solid #3b82f6;
+  color: var(--text-bright);
+  border: 1px solid var(--color-accent);
   border-radius: 2px;
   padding: 1px 4px;
   font-size: 12px;
@@ -257,17 +344,52 @@ function removeLayer(layerId: string) {
 
 .layer-move {
   padding: 4px 6px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .layer-move-select {
   width: 100%;
   background: #0f0f23;
-  color: #94a3b8;
-  border: 1px solid #2a2a4a;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
   padding: 3px 6px;
   font-size: 11px;
   cursor: pointer;
+}
+
+.layer-opacity {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 4px 24px;
+  width: 100%;
+}
+
+.opacity-slider {
+  flex: 1;
+  height: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border-color);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.opacity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent-light);
+  cursor: pointer;
+}
+
+.opacity-label {
+  font-size: 9px;
+  color: #666;
+  min-width: 28px;
+  text-align: right;
 }
 </style>

@@ -178,6 +178,62 @@ function isInsideAnyRect(p: Point, rects: Rect[]): boolean {
   return false
 }
 
+/** Binary min-heap for A* open set — O(log n) insert/extract vs O(n) scan */
+class MinHeap {
+  private heap: Array<{ node: number; f: number }> = []
+  private inHeap = new Set<number>()
+
+  get size() { return this.heap.length }
+
+  push(node: number, f: number) {
+    this.heap.push({ node, f })
+    this.inHeap.add(node)
+    this._bubbleUp(this.heap.length - 1)
+  }
+
+  pop(): number {
+    const top = this.heap[0]!
+    this.inHeap.delete(top.node)
+    const last = this.heap.pop()!
+    if (this.heap.length > 0) {
+      this.heap[0] = last
+      this._sinkDown(0)
+    }
+    return top.node
+  }
+
+  has(node: number): boolean {
+    return this.inHeap.has(node)
+  }
+
+  /** Update priority if lower — re-insert (duplicate allowed, handled by closed set) */
+  decreaseKey(node: number, f: number) {
+    this.push(node, f)
+  }
+
+  private _bubbleUp(i: number) {
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (this.heap[i]!.f >= this.heap[parent]!.f) break
+      const tmp = this.heap[i]!; this.heap[i] = this.heap[parent]!; this.heap[parent] = tmp
+      i = parent
+    }
+  }
+
+  private _sinkDown(i: number) {
+    const n = this.heap.length
+    while (true) {
+      let smallest = i
+      const l = 2 * i + 1, r = 2 * i + 2
+      if (l < n && this.heap[l]!.f < this.heap[smallest]!.f) smallest = l
+      if (r < n && this.heap[r]!.f < this.heap[smallest]!.f) smallest = r
+      if (smallest === i) break
+      const tmp = this.heap[i]!; this.heap[i] = this.heap[smallest]!; this.heap[smallest] = tmp
+      i = smallest
+    }
+  }
+}
+
 /** A* pathfinding with Manhattan distance heuristic + bend penalty */
 function astar(
   startIdx: number,
@@ -187,24 +243,22 @@ function astar(
 ): number[] | null {
   const end = nodes[endIdx]!
   const gScore = new Map<number, number>()
-  const fScore = new Map<number, number>()
   const cameFrom = new Map<number, number>()
+  const closed = new Set<number>()
 
   gScore.set(startIdx, 0)
-  fScore.set(startIdx, manhattan(nodes[startIdx]!, end))
+  const startF = manhattan(nodes[startIdx]!, end)
 
-  // Priority queue (simple sorted array — fine for small graphs)
-  const open = new Set<number>([startIdx])
+  const open = new MinHeap()
+  open.push(startIdx, startF)
 
+  const MAX_ITERATIONS = 5000
+  let iterations = 0
   while (open.size > 0) {
-    // Pick node with lowest fScore
-    let current = -1
-    let bestF = Infinity
-    for (const n of open) {
-      const f = fScore.get(n) ?? Infinity
-      if (f < bestF) { bestF = f; current = n }
-    }
-    if (current === -1) break
+    if (++iterations > MAX_ITERATIONS) return null // prevent browser freeze on dense diagrams
+    const current = open.pop()
+    if (closed.has(current)) continue // skip stale duplicate entries
+    closed.add(current)
 
     if (current === endIdx) {
       // Reconstruct path
@@ -217,10 +271,11 @@ function astar(
       return path.reverse()
     }
 
-    open.delete(current)
     const currentG = gScore.get(current) ?? Infinity
 
     for (const edge of adj.get(current) || []) {
+      if (closed.has(edge.to)) continue
+
       // Add a bend penalty: if direction changes from previous segment, add cost
       let bendPenalty = 0
       const prev = cameFrom.get(current)
@@ -237,8 +292,8 @@ function astar(
       if (tentativeG < (gScore.get(edge.to) ?? Infinity)) {
         cameFrom.set(edge.to, current)
         gScore.set(edge.to, tentativeG)
-        fScore.set(edge.to, tentativeG + manhattan(nodes[edge.to]!, end))
-        open.add(edge.to)
+        const f = tentativeG + manhattan(nodes[edge.to]!, end)
+        open.decreaseKey(edge.to, f)
       }
     }
   }

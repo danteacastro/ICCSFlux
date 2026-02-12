@@ -14,6 +14,7 @@
 import { computed, ref } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import type { PipeConnection, PipePoint } from '../types'
+import { distanceToSegment } from '../utils/pipeRendering'
 
 const props = defineProps<{
   pipes: PipeConnection[]
@@ -240,38 +241,6 @@ function onWaypointContextMenu(event: MouseEvent, pipeId: string, pointIndex: nu
   emit('update:pipe', { ...pipe, points: newPoints })
 }
 
-// Distance from point to line segment
-function distanceToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
-  const A = px - x1
-  const B = py - y1
-  const C = x2 - x1
-  const D = y2 - y1
-
-  const dot = A * C + B * D
-  const lenSq = C * C + D * D
-  let param = -1
-
-  if (lenSq !== 0) param = dot / lenSq
-
-  let xx, yy
-
-  if (param < 0) {
-    xx = x1
-    yy = y1
-  } else if (param > 1) {
-    xx = x2
-    yy = y2
-  } else {
-    xx = x1 + param * C
-    yy = y1 + param * D
-  }
-
-  const dx = px - xx
-  const dy = py - yy
-
-  return Math.sqrt(dx * dx + dy * dy)
-}
-
 // Delete selected pipe
 function deleteSelectedPipe() {
   if (selectedPipeId.value) {
@@ -425,16 +394,16 @@ function onOverlayClick(event: MouseEvent) {
 .pipe-label {
   font-size: 10px;
   font-weight: 600;
-  fill: #fff;
+  fill: var(--text-primary);
   paint-order: stroke;
-  stroke: #1a1a2e;
+  stroke: var(--bg-widget);
   stroke-width: 3px;
   pointer-events: none;
 }
 
 .waypoint {
-  fill: #3b82f6;
-  stroke: #fff;
+  fill: var(--color-accent);
+  stroke: var(--text-primary);
   stroke-width: 2;
   cursor: grab;
   transition: r 0.15s, fill 0.15s;
@@ -442,17 +411,17 @@ function onOverlayClick(event: MouseEvent) {
 
 .waypoint:hover {
   r: 8;
-  fill: #60a5fa;
+  fill: var(--color-accent-light);
 }
 
 .waypoint.first,
 .waypoint.last {
-  fill: #22c55e;
+  fill: var(--color-success);
 }
 
 .waypoint.dragging {
   r: 10;
-  fill: #fbbf24;
+  fill: var(--color-warning);
   cursor: grabbing;
 }
 

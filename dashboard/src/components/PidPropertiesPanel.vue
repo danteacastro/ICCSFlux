@@ -9,17 +9,24 @@
  * - Multiple selection: Bulk color, alignment
  */
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useScripts } from '../composables/useScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
-import type { PidSymbol, PidPipe, ButtonAction, ButtonActionType, SystemCommandType } from '../types'
+import type { PidSymbol, PidPipe, PidTextAnnotation, ButtonAction, ButtonActionType, SystemCommandType } from '../types'
+import { AUXILIARY_CHANNEL_PRESETS } from '../types'
 import { isHmiControl, HMI_CONTROL_CATALOG } from '../constants/hmiControls'
-import { SYMBOL_INFO, OFF_PAGE_CONNECTOR_TYPES } from '../assets/symbols'
+import { SYMBOL_INFO, OFF_PAGE_CONNECTOR_TYPES, getVariantGroup } from '../assets/symbols'
+import { isValveSymbol, isTankSymbol } from '../composables/usePidRendering'
+import { useResizablePanel } from '../composables/useResizablePanel'
+import { useSafety } from '../composables/useSafety'
 
 const store = useDashboardStore()
 const scriptsComposable = useScripts()
 const backendScriptsComposable = useBackendScripts()
+const safety = useSafety()
+
+const availableInterlocks = computed(() => safety.interlocks.value)
 
 const selectedSymbolIds = computed(() => store.pidSelectedIds.symbolIds)
 const selectedPipeIds = computed(() => store.pidSelectedIds.pipeIds)
@@ -34,12 +41,91 @@ const selectedPipe = computed<PidPipe | null>(() => {
   return store.pidLayer.pipes.find(p => p.id === selectedPipeIds.value[0]) || null
 })
 
+const selectedTextAnnotation = computed<PidTextAnnotation | null>(() => {
+  const ids = store.pidSelectedIds.textAnnotationIds
+  if (ids.length !== 1 || selectedSymbolIds.value.length > 0 || selectedPipeIds.value.length > 0) return null
+  return store.pidLayer.textAnnotations?.find(t => t.id === ids[0]) || null
+})
+
 const selectionCount = computed(() =>
   selectedSymbolIds.value.length + selectedPipeIds.value.length +
   store.pidSelectedIds.textAnnotationIds.length
 )
 
 const channelNames = computed(() => Object.keys(store.channels).sort())
+
+// Grouped channel list with type/device metadata for smarter dropdowns
+const groupedChannels = computed(() => {
+  const groups: Record<string, Array<{ name: string; type: string; unit: string; device: string }>> = {}
+  for (const [name, cfg] of Object.entries(store.channels)) {
+    if (cfg.visible === false) continue
+    const device = cfg.physical_channel?.split('/')[0] || cfg.group || 'Other'
+    if (!groups[device]) groups[device] = []
+    groups[device].push({
+      name,
+      type: cfg.channel_type || '',
+      unit: cfg.unit || '',
+      device,
+    })
+  }
+  // Sort channels within each group
+  for (const key of Object.keys(groups)) {
+    groups[key]!.sort((a, b) => a.name.localeCompare(b.name))
+  }
+  return groups
+})
+
+// Auto-compose pipe line number from structured attributes
+const computedLineNumber = computed<string>(() => {
+  const p = selectedPipe.value
+  if (!p) return ''
+  const parts: string[] = []
+  if (p.nominalSize) parts.push(p.nominalSize)
+  if (p.fluidCode) parts.push(p.fluidCode)
+  if (p.pressureRating) parts.push(p.pressureRating)
+  if (p.material) parts.push(p.material)
+  return parts.length >= 2 ? parts.join('-') : ''
+})
+
+// Loop number duplicate detection (checks all pages)
+const loopNumberConflict = computed<string | null>(() => {
+  const sym = selectedSymbol.value
+  if (!sym?.loopNumber) return null
+  const loop = sym.loopNumber.trim()
+  if (!loop) return null
+  for (const page of store.pages) {
+    const pidLayer = page.pidLayer
+    if (!pidLayer) continue
+    for (const s of pidLayer.symbols) {
+      if (s.id === sym.id) continue
+      if (s.loopNumber?.trim() === loop) {
+        return `${s.label || s.type} (${page.name})`
+      }
+    }
+  }
+  return null
+})
+
+const autoMatchResult = ref<{ matched: number; total: number } | null>(null)
+
+function runAutoMatch() {
+  autoMatchResult.value = store.pidAutoMatchChannels(selectedSymbolIds.value)
+  globalThis.setTimeout(() => { autoMatchResult.value = null }, 4000)
+}
+
+// Alarm config summary for the selected symbol's channel
+const symbolAlarmConfig = computed(() => {
+  const ch = selectedSymbol.value?.channel
+  if (!ch) return null
+  return safety.getAlarmConfig(ch) || null
+})
+
+// Interlock status for the selected symbol's bound interlock
+const symbolInterlockStatus = computed(() => {
+  const ilId = selectedSymbol.value?.interlockId
+  if (!ilId) return null
+  return safety.interlockStatuses.value.find(s => s.id === ilId) || null
+})
 
 const symbolDisplayName = computed(() => {
   if (!selectedSymbol.value) return ''
@@ -54,10 +140,22 @@ const symbolDisplayName = computed(() => {
   return t.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim()
 })
 
+// Variant group for current symbol (for type switching)
+const symbolVariants = computed(() => {
+  if (!selectedSymbol.value) return []
+  return getVariantGroup(selectedSymbol.value.type)
+})
+
 // Symbol property updates
 function updateSymbol(updates: Partial<PidSymbol>) {
   if (!selectedSymbol.value) return
   store.updatePidSymbolWithUndo(selectedSymbol.value.id, updates)
+}
+
+// Text annotation property updates
+function updateTextAnnotation(updates: Partial<PidTextAnnotation>) {
+  if (!selectedTextAnnotation.value) return
+  store.updatePidTextAnnotation(selectedTextAnnotation.value.id, updates)
 }
 
 // Pipe property updates
@@ -179,13 +277,87 @@ function setButtonActionType(type: ButtonActionType) {
   updateSymbol({ hmiButtonAction: { type } })
 }
 
+// Auxiliary channel helpers
+function addAuxiliaryChannel() {
+  if (!selectedSymbol.value) return
+  const channels = [...(selectedSymbol.value.auxiliaryChannels || [])]
+  channels.push({ role: '', channel: '', label: 'New Channel' })
+  updateSymbol({ auxiliaryChannels: channels })
+}
+
+function updateAuxiliaryChannel(index: number, field: string, value: string | number | boolean | undefined) {
+  if (!selectedSymbol.value) return
+  const channels = [...(selectedSymbol.value.auxiliaryChannels || [])]
+  if (channels[index]) {
+    channels[index] = { ...channels[index], [field]: value }
+    updateSymbol({ auxiliaryChannels: channels })
+  }
+}
+
+function removeAuxiliaryChannel(index: number) {
+  if (!selectedSymbol.value) return
+  const channels = [...(selectedSymbol.value.auxiliaryChannels || [])]
+  channels.splice(index, 1)
+  updateSymbol({ auxiliaryChannels: channels.length > 0 ? channels : undefined })
+}
+
+function applyAuxiliaryPreset(presetKey: string) {
+  if (!selectedSymbol.value) return
+  const preset = AUXILIARY_CHANNEL_PRESETS[presetKey]
+  if (!preset) return
+  const channels = preset.map(p => ({
+    ...p,
+    channel: '', // user fills in the channel
+  }))
+  updateSymbol({ auxiliaryChannels: channels })
+}
+
+const availablePresets = computed(() =>
+  Object.entries(AUXILIARY_CHANNEL_PRESETS).map(([key, slots]) => ({
+    key,
+    label: key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
+    slotCount: slots.length,
+  }))
+)
+
 function closePanel() {
   store.pidPropertiesPanelOpen = false
 }
+
+function toggleCollapse() {
+  store.pidPropertiesPanelCollapsed = !store.pidPropertiesPanelCollapsed
+}
+
+// Resizable panel
+const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
+  side: 'right',
+  minWidth: 160,
+  maxWidth: 400,
+  getWidth: () => store.pidPropertiesPanelWidth,
+  setWidth: (w) => { store.pidPropertiesPanelWidth = w },
+})
 </script>
 
 <template>
-  <div class="pid-properties-panel">
+  <!-- Collapse/expand tab — vertically centered on panel edge -->
+  <div
+    class="panel-tab panel-tab-right"
+    :style="{ right: store.pidPropertiesPanelCollapsed ? '0px' : (store.pidPropertiesPanelWidth - 1) + 'px' }"
+    @click="toggleCollapse"
+    :title="store.pidPropertiesPanelCollapsed ? 'Expand Properties (])' : 'Collapse Properties (])'"
+  >
+    <svg width="10" height="18" viewBox="0 0 10 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline v-if="store.pidPropertiesPanelCollapsed" points="7 2 2 9 7 16" />
+      <polyline v-else points="3 2 8 9 3 16" />
+    </svg>
+  </div>
+
+  <!-- Full panel -->
+  <div
+    v-if="!store.pidPropertiesPanelCollapsed"
+    class="pid-properties-panel"
+    :style="{ width: store.pidPropertiesPanelWidth + 'px' }"
+  >
     <div class="panel-header">
       <span class="panel-title">Properties</span>
       <button class="btn-close-panel" @click="closePanel" title="Close Panel">
@@ -202,6 +374,14 @@ function closePanel() {
         <div class="prop-section">
           <div class="section-title">Symbol</div>
           <div class="prop-type">{{ symbolDisplayName }}</div>
+          <select
+            v-if="symbolVariants.length > 1"
+            class="prop-select variant-select"
+            :value="selectedSymbol!.type"
+            @change="updateSymbol({ type: ($event.target as HTMLSelectElement).value as any })"
+          >
+            <option v-for="v in symbolVariants" :key="v.type" :value="v.type">{{ v.label }}</option>
+          </select>
         </div>
 
         <div class="prop-section">
@@ -213,6 +393,22 @@ function closePanel() {
             @change="updateSymbol({ label: ($event.target as HTMLInputElement).value || undefined })"
             :placeholder="OFF_PAGE_CONNECTOR_TYPES.has(selectedSymbol.type) ? 'e.g. TO BOILER' : 'e.g. SOV-101'"
           />
+        </div>
+
+        <!-- Loop Number (ISA 5.1) -->
+        <div class="prop-section">
+          <div class="section-title">Loop Number</div>
+          <input
+            type="text"
+            class="prop-input"
+            :value="selectedSymbol.loopNumber || ''"
+            @change="updateSymbol({ loopNumber: ($event.target as HTMLInputElement).value || undefined })"
+            placeholder="e.g. 100, 200A"
+          />
+          <div v-if="loopNumberConflict" class="prop-info-badge info-warn">
+            <span class="info-icon">&#x26A0;</span>
+            <span class="info-text">Duplicate: also on {{ loopNumberConflict }}</span>
+          </div>
         </div>
 
         <!-- Off-Page Connector: Linked Page -->
@@ -241,8 +437,87 @@ function closePanel() {
             @change="updateSymbol({ channel: ($event.target as HTMLSelectElement).value || undefined })"
           >
             <option value="">None</option>
-            <option v-for="ch in channelNames" :key="ch" :value="ch">{{ ch }}</option>
+            <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="device">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">
+                {{ ch.name }}{{ ch.unit ? ` (${ch.unit})` : '' }}{{ ch.type ? ` [${ch.type}]` : '' }}
+              </option>
+            </optgroup>
           </select>
+          <!-- Alarm config summary from SafetyTab -->
+          <div v-if="symbolAlarmConfig" class="prop-info-badge">
+            <span class="info-icon">&#x26A0;</span>
+            <span class="info-text">
+              Alarm thresholds:
+              <template v-if="symbolAlarmConfig.high_high != null"> HiHi={{ symbolAlarmConfig.high_high }}</template>
+              <template v-if="symbolAlarmConfig.high != null"> Hi={{ symbolAlarmConfig.high }}</template>
+              <template v-if="symbolAlarmConfig.low != null"> Lo={{ symbolAlarmConfig.low }}</template>
+              <template v-if="symbolAlarmConfig.low_low != null"> LoLo={{ symbolAlarmConfig.low_low }}</template>
+            </span>
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Interlock</div>
+          <select class="prop-select"
+            :value="selectedSymbol.interlockId || ''"
+            @change="updateSymbol({ interlockId: ($event.target as HTMLSelectElement).value || undefined })"
+          >
+            <option value="">None</option>
+            <option v-for="il in availableInterlocks" :key="il.id" :value="il.id">
+              {{ il.name }}{{ il.silRating ? ` (${il.silRating})` : '' }}
+            </option>
+          </select>
+          <!-- Interlock status preview -->
+          <div v-if="symbolInterlockStatus" class="prop-info-badge" :class="{
+            'info-ok': symbolInterlockStatus.satisfied && !symbolInterlockStatus.bypassed,
+            'info-warn': symbolInterlockStatus.bypassed,
+            'info-fail': !symbolInterlockStatus.satisfied && !symbolInterlockStatus.bypassed,
+          }">
+            <span class="info-icon">{{ symbolInterlockStatus.bypassed ? '&#x23ED;' : symbolInterlockStatus.satisfied ? '&#x2705;' : '&#x1F6D1;' }}</span>
+            <span class="info-text">
+              {{ symbolInterlockStatus.bypassed ? 'Bypassed' : symbolInterlockStatus.satisfied ? 'Satisfied' : 'TRIPPED' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Auxiliary Channels (multi-register equipment: heaters, VFDs, PID loops) -->
+        <div class="prop-section">
+          <div class="section-title">
+            Auxiliary Channels
+            <button class="btn-add-inline" @click="addAuxiliaryChannel" title="Add channel binding">+</button>
+          </div>
+          <!-- Preset selector -->
+          <div v-if="!selectedSymbol.auxiliaryChannels?.length" class="prop-row">
+            <select class="prop-select" @change="applyAuxiliaryPreset(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+              <option value="">Load preset...</option>
+              <option v-for="p in availablePresets" :key="p.key" :value="p.key">
+                {{ p.label }} ({{ p.slotCount }} channels)
+              </option>
+            </select>
+          </div>
+          <!-- Existing bindings -->
+          <div v-for="(aux, idx) in (selectedSymbol.auxiliaryChannels || [])" :key="idx" class="aux-channel-row">
+            <div class="aux-header">
+              <input
+                type="text"
+                class="prop-input-sm aux-label"
+                :value="aux.label"
+                @change="updateAuxiliaryChannel(idx, 'label', ($event.target as HTMLInputElement).value)"
+                placeholder="Label"
+              />
+              <button class="btn-remove-inline" @click="removeAuxiliaryChannel(idx)" title="Remove">x</button>
+            </div>
+            <select
+              class="prop-select"
+              :value="aux.channel"
+              @change="updateAuxiliaryChannel(idx, 'channel', ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Select channel...</option>
+              <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+            </select>
+          </div>
         </div>
 
         <div class="prop-section">
@@ -259,6 +534,114 @@ function closePanel() {
         </div>
 
         <div class="prop-section">
+          <div class="section-title">State Colors</div>
+          <div class="prop-row">
+            <label class="mini-label">Channel</label>
+            <select
+              class="prop-select"
+              :value="selectedSymbol.stateChannel || ''"
+              @change="updateSymbol({ stateChannel: ($event.target as HTMLSelectElement).value || undefined })"
+            >
+              <option value="">None</option>
+              <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+            </select>
+          </div>
+          <template v-if="selectedSymbol.stateChannel">
+            <div class="prop-row prop-color-row">
+              <label class="mini-label">On</label>
+              <input
+                type="color"
+                class="prop-color"
+                :value="selectedSymbol.onColor || '#22c55e'"
+                @input="updateSymbol({ onColor: ($event.target as HTMLInputElement).value })"
+              />
+              <label class="mini-label">Off</label>
+              <input
+                type="color"
+                class="prop-color"
+                :value="selectedSymbol.offColor || '#6b7280'"
+                @input="updateSymbol({ offColor: ($event.target as HTMLInputElement).value })"
+              />
+              <label class="mini-label">Fault</label>
+              <input
+                type="color"
+                class="prop-color"
+                :value="selectedSymbol.faultColor || '#ef4444'"
+                @input="updateSymbol({ faultColor: ($event.target as HTMLInputElement).value })"
+              />
+            </div>
+            <div class="prop-row">
+              <label class="mini-label">Threshold</label>
+              <input
+                type="number"
+                class="prop-input-sm"
+                step="0.1"
+                :value="selectedSymbol.stateThreshold ?? 0.5"
+                @change="updateSymbol({ stateThreshold: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </div>
+          </template>
+        </div>
+
+        <!-- Valve position channel (only for valve types) -->
+        <div v-if="isValveSymbol(selectedSymbol)" class="prop-section">
+          <div class="section-title">Valve Position</div>
+          <div class="prop-row">
+            <label class="mini-label">Channel (0-100%)</label>
+            <select
+              class="prop-select"
+              :value="selectedSymbol.positionChannel || ''"
+              @change="updateSymbol({ positionChannel: ($event.target as HTMLSelectElement).value || undefined })"
+            >
+              <option value="">None</option>
+              <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+            </select>
+          </div>
+        </div>
+
+        <!-- Tank fill level (only for tank types) -->
+        <div v-if="isTankSymbol(selectedSymbol)" class="prop-section">
+          <div class="section-title">Tank Fill</div>
+          <div class="prop-row">
+            <label class="mini-label">Channel (0-100%)</label>
+            <select
+              class="prop-select"
+              :value="selectedSymbol.fillChannel || ''"
+              @change="updateSymbol({ fillChannel: ($event.target as HTMLSelectElement).value || undefined })"
+            >
+              <option value="">None (use static)</option>
+              <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+            </select>
+          </div>
+          <div v-if="!selectedSymbol.fillChannel" class="prop-row">
+            <label class="mini-label">Static Level</label>
+            <input
+              type="range"
+              class="prop-range"
+              min="0" max="100" step="1"
+              :value="selectedSymbol.fillLevel ?? 50"
+              @input="updateSymbol({ fillLevel: Number(($event.target as HTMLInputElement).value) })"
+            />
+            <span class="range-value">{{ selectedSymbol.fillLevel ?? 50 }}%</span>
+          </div>
+          <div class="prop-row">
+            <label class="mini-label">Fill Color</label>
+            <input
+              type="color"
+              class="prop-color"
+              :value="selectedSymbol.fillColor || '#3b82f6'"
+              @input="updateSymbol({ fillColor: ($event.target as HTMLInputElement).value })"
+            />
+          </div>
+        </div>
+
+        <div class="prop-section">
           <div class="section-title">Rotation</div>
           <select
             class="prop-select"
@@ -270,6 +653,24 @@ function closePanel() {
             <option :value="180">180°</option>
             <option :value="270">270°</option>
           </select>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Flip</div>
+          <div class="prop-row" style="gap: 4px">
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedSymbol.flipX }"
+              @click="updateSymbol({ flipX: !selectedSymbol.flipX })"
+              title="Flip Horizontal (H)"
+            >&#8596;</button>
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedSymbol.flipY }"
+              @click="updateSymbol({ flipY: !selectedSymbol.flipY })"
+              title="Flip Vertical (V)"
+            >&#8597;</button>
+          </div>
         </div>
 
         <div class="prop-section">
@@ -310,6 +711,17 @@ function closePanel() {
               @change="updateSymbol({ locked: ($event.target as HTMLInputElement).checked })" />
             Locked
           </label>
+        </div>
+
+        <!-- Block Editor hint (indicators + ports) -->
+        <div class="prop-section block-editor-hint">
+          <div class="section-title">Block Editor</div>
+          <div class="hint-counts">
+            <span v-if="selectedSymbol.indicators?.length">{{ selectedSymbol.indicators.length }} indicator{{ selectedSymbol.indicators.length !== 1 ? 's' : '' }}</span>
+            <span v-if="selectedSymbol.customPorts?.length">{{ selectedSymbol.customPorts.length }} custom port{{ selectedSymbol.customPorts.length !== 1 ? 's' : '' }}</span>
+            <span v-if="!selectedSymbol.indicators?.length && !selectedSymbol.customPorts?.length" class="hint-empty">No indicators or custom ports</span>
+          </div>
+          <div class="hint-text">Double-click symbol to edit</div>
         </div>
 
         <!-- HMI Control Properties (type-filtered) -->
@@ -414,7 +826,9 @@ function closePanel() {
                 :value="buttonAction.channel || ''"
                 @change="updateButtonAction({ channel: ($event.target as HTMLSelectElement).value || undefined })">
                 <option value="">-- Select --</option>
-                <option v-for="ch in channelNames" :key="ch" :value="ch">{{ ch }}</option>
+                <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
               </select>
               <div class="section-title">Set Value</div>
               <input type="number" class="prop-input-sm"
@@ -508,6 +922,7 @@ function closePanel() {
               :value="selectedSymbol.hmiSparklineSamples ?? 60"
               @change="updateSymbol({ hmiSparklineSamples: Number(($event.target as HTMLInputElement).value) })" />
           </div>
+
 
           <!-- Multi-State: state definitions -->
           <div v-if="selectedSymbol.type === 'hmi_multistate'" class="prop-section">
@@ -673,6 +1088,112 @@ function closePanel() {
           </select>
         </div>
 
+        <!-- Structured Pipe Attributes (ISA standard) -->
+        <div class="prop-section">
+          <div class="section-title">Pipe Identification</div>
+          <div class="prop-grid-4">
+            <label class="mini-label">Size</label>
+            <input type="text" class="prop-input-sm"
+              :value="selectedPipe.nominalSize || ''"
+              @change="updatePipe({ nominalSize: ($event.target as HTMLInputElement).value || undefined })"
+              placeholder='4"' />
+            <label class="mini-label">Rating</label>
+            <input type="text" class="prop-input-sm"
+              :value="selectedPipe.pressureRating || ''"
+              @change="updatePipe({ pressureRating: ($event.target as HTMLInputElement).value || undefined })"
+              placeholder="150#" />
+            <label class="mini-label">Material</label>
+            <input type="text" class="prop-input-sm"
+              :value="selectedPipe.material || ''"
+              @change="updatePipe({ material: ($event.target as HTMLInputElement).value || undefined })"
+              placeholder="CS" />
+            <label class="mini-label">Fluid</label>
+            <input type="text" class="prop-input-sm"
+              :value="selectedPipe.fluidCode || ''"
+              @change="updatePipe({ fluidCode: ($event.target as HTMLInputElement).value || undefined })"
+              placeholder="S" />
+          </div>
+          <div class="prop-sub">
+            <label class="mini-label">Line Number</label>
+            <input type="text" class="prop-input"
+              :value="selectedPipe.lineNumber || ''"
+              @change="updatePipe({ lineNumber: ($event.target as HTMLInputElement).value || undefined })"
+              :placeholder="computedLineNumber || '4&quot;-S-150#-CS-101'" />
+          </div>
+          <div v-if="computedLineNumber && !selectedPipe.lineNumber" class="prop-hint">
+            Auto: {{ computedLineNumber }}
+          </div>
+        </div>
+
+        <!-- ISA Signal Line Type (for signal/instrument pipes) -->
+        <div v-if="selectedPipe.medium === 'signal'" class="prop-section">
+          <div class="section-title">Signal Line Type (ISA 5.1)</div>
+          <select
+            class="prop-select"
+            :value="selectedPipe.lineCode || 'undefined'"
+            @change="updatePipe({ lineCode: ($event.target as HTMLSelectElement).value as any })"
+          >
+            <option value="undefined">Solid (Process)</option>
+            <option value="pneumatic">Pneumatic (--- ---)</option>
+            <option value="electrical">Electrical (. . . .)</option>
+            <option value="capillary">Capillary (-.-.-)</option>
+            <option value="hydraulic">Hydraulic (-..-..)</option>
+            <option value="electromagnetic">Electromagnetic (...---)</option>
+            <option value="software">Software/Data Link</option>
+          </select>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Heat Trace</div>
+          <select
+            class="prop-select"
+            :value="selectedPipe.heatTrace || 'none'"
+            @change="updatePipe({ heatTrace: ($event.target as HTMLSelectElement).value as any })"
+          >
+            <option value="none">None</option>
+            <option value="electric">Electric Trace (ET)</option>
+            <option value="steam">Steam Trace (ST)</option>
+            <option value="hot-water">Hot Water Trace (HWT)</option>
+          </select>
+          <template v-if="selectedPipe.heatTrace && selectedPipe.heatTrace !== 'none'">
+            <div class="prop-row">
+              <label class="mini-label">Control Channel</label>
+              <select
+                class="prop-select"
+                :value="selectedPipe.heatTraceChannel || ''"
+                @change="updatePipe({ heatTraceChannel: ($event.target as HTMLSelectElement).value || undefined })"
+              >
+                <option value="">Always on</option>
+                <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+              </select>
+            </div>
+            <div v-if="selectedPipe.heatTraceChannel" class="prop-row">
+              <label class="mini-label">Threshold</label>
+              <input
+                type="number"
+                class="prop-input-sm"
+                step="0.1"
+                :value="selectedPipe.heatTraceThreshold ?? 0.5"
+                @change="updatePipe({ heatTraceThreshold: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </div>
+          </template>
+        </div>
+
+        <div v-if="store.pidLayer.systems && store.pidLayer.systems.length > 0" class="prop-section">
+          <div class="section-title">System</div>
+          <select
+            class="prop-select"
+            :value="selectedPipe.system || ''"
+            @change="updatePipe({ system: ($event.target as HTMLSelectElement).value || undefined })"
+          >
+            <option value="">None</option>
+            <option v-for="sys in store.pidLayer.systems" :key="sys.id" :value="sys.id">{{ sys.name }}</option>
+          </select>
+        </div>
+
         <div class="prop-section">
           <label class="prop-checkbox">
             <input type="checkbox" :checked="selectedPipe.animated || false"
@@ -687,8 +1208,21 @@ function closePanel() {
               @change="updatePipe({ flowChannel: ($event.target as HTMLSelectElement).value || undefined })"
             >
               <option value="">None</option>
-              <option v-for="ch in channelNames" :key="ch" :value="ch">{{ ch }}</option>
+              <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
             </select>
+            <label class="prop-checkbox" style="margin-top: 4px">
+              <input type="checkbox" :checked="selectedPipe.flowParticles || false"
+                @change="updatePipe({ flowParticles: ($event.target as HTMLInputElement).checked })" />
+              Flow Particles
+            </label>
+            <div v-if="selectedPipe.flowParticles" class="prop-row">
+              <label class="mini-label">Count</label>
+              <input type="number" class="prop-input-sm" min="1" max="12" step="1"
+                :value="selectedPipe.particleCount || 4"
+                @change="updatePipe({ particleCount: Number(($event.target as HTMLInputElement).value) })" />
+            </div>
           </div>
         </div>
 
@@ -748,7 +1282,117 @@ function closePanel() {
         </div>
       </template>
 
-      <!-- Multi Selection -->
+      <!-- Single Text Annotation Selected (#3.2) -->
+      <template v-else-if="selectedTextAnnotation">
+        <div class="prop-section">
+          <div class="section-title">Text Annotation</div>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Font Size</div>
+          <input
+            type="range"
+            class="prop-range"
+            min="8" max="72" step="1"
+            :value="selectedTextAnnotation.fontSize"
+            @input="updateTextAnnotation({ fontSize: Number(($event.target as HTMLInputElement).value) })"
+            :title="`${selectedTextAnnotation.fontSize}px`"
+          />
+          <span class="range-value">{{ selectedTextAnnotation.fontSize }}px</span>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Style</div>
+          <div class="prop-row" style="gap: 4px">
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedTextAnnotation.fontWeight === 'bold' }"
+              @click="updateTextAnnotation({ fontWeight: selectedTextAnnotation!.fontWeight === 'bold' ? 'normal' : 'bold' })"
+              title="Bold"
+            ><strong>B</strong></button>
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedTextAnnotation.fontStyle === 'italic' }"
+              @click="updateTextAnnotation({ fontStyle: selectedTextAnnotation!.fontStyle === 'italic' ? 'normal' : 'italic' })"
+              title="Italic"
+            ><em>I</em></button>
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Alignment</div>
+          <div class="prop-row" style="gap: 4px">
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: (selectedTextAnnotation.textAlign || 'left') === 'left' }"
+              @click="updateTextAnnotation({ textAlign: 'left' })"
+              title="Align Left"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none">
+                <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="18" y2="18"/>
+              </svg>
+            </button>
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedTextAnnotation.textAlign === 'center' }"
+              @click="updateTextAnnotation({ textAlign: 'center' })"
+              title="Align Center"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none">
+                <line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>
+              </svg>
+            </button>
+            <button
+              class="prop-toggle-btn"
+              :class="{ active: selectedTextAnnotation.textAlign === 'right' }"
+              @click="updateTextAnnotation({ textAlign: 'right' })"
+              title="Align Right"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none">
+                <line x1="3" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="6" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="section-title">Colors</div>
+          <div class="prop-row prop-color-row">
+            <label class="mini-label">Text</label>
+            <input
+              type="color"
+              class="prop-color"
+              :value="selectedTextAnnotation.color || '#e2e8f0'"
+              @input="updateTextAnnotation({ color: ($event.target as HTMLInputElement).value })"
+            />
+            <label class="mini-label">BG</label>
+            <input
+              type="color"
+              class="prop-color"
+              :value="selectedTextAnnotation.backgroundColor || '#1a1a2e'"
+              @input="updateTextAnnotation({ backgroundColor: ($event.target as HTMLInputElement).value })"
+            />
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <label class="prop-checkbox">
+            <input type="checkbox" :checked="selectedTextAnnotation.border || false"
+              @change="updateTextAnnotation({ border: ($event.target as HTMLInputElement).checked })" />
+            Border
+          </label>
+          <div v-if="selectedTextAnnotation.border" class="prop-sub">
+            <input
+              type="color"
+              class="prop-color"
+              :value="selectedTextAnnotation.borderColor || '#475569'"
+              @input="updateTextAnnotation({ borderColor: ($event.target as HTMLInputElement).value })"
+            />
+          </div>
+        </div>
+      </template>
+
+      <!-- Multi Selection (#3.7 — enhanced) -->
       <template v-else-if="selectionCount > 1">
         <div class="prop-section">
           <div class="section-title">Selection</div>
@@ -766,6 +1410,73 @@ function closePanel() {
               selectedPipeIds.forEach(id => store.updatePidPipeWithUndo(id, { color }))
             }"
           />
+        </div>
+        <div v-if="selectedSymbolIds.length > 0" class="prop-section">
+          <div class="section-title">Bulk Rotation</div>
+          <select
+            class="prop-select"
+            value=""
+            @change="(e) => {
+              const rotation = Number((e.target as HTMLSelectElement).value)
+              selectedSymbolIds.forEach(id => store.updatePidSymbolWithUndo(id, { rotation }))
+            }"
+          >
+            <option value="" disabled>Set rotation...</option>
+            <option :value="0">0°</option>
+            <option :value="90">90°</option>
+            <option :value="180">180°</option>
+            <option :value="270">270°</option>
+          </select>
+        </div>
+        <div v-if="selectedSymbolIds.length > 0" class="prop-section">
+          <div class="section-title">Bulk Flip</div>
+          <div class="prop-row" style="gap: 4px">
+            <button class="prop-toggle-btn"
+              @click="selectedSymbolIds.forEach(id => {
+                const s = store.pidLayer.symbols.find(s => s.id === id)
+                if (s) store.updatePidSymbolWithUndo(id, { flipX: !s.flipX })
+              })"
+              title="Flip Horizontal"
+            >&#8596;</button>
+            <button class="prop-toggle-btn"
+              @click="selectedSymbolIds.forEach(id => {
+                const s = store.pidLayer.symbols.find(s => s.id === id)
+                if (s) store.updatePidSymbolWithUndo(id, { flipY: !s.flipY })
+              })"
+              title="Flip Vertical"
+            >&#8597;</button>
+          </div>
+        </div>
+        <div v-if="selectedSymbolIds.length > 0" class="prop-section">
+          <div class="section-title">Bulk Channel</div>
+          <select
+            class="prop-select"
+            value=""
+            @change="(e) => {
+              const channel = (e.target as HTMLSelectElement).value || undefined
+              selectedSymbolIds.forEach(id => store.updatePidSymbolWithUndo(id, { channel }))
+            }"
+          >
+            <option value="" disabled>Set channel...</option>
+            <option value="">None</option>
+            <optgroup v-for="(chList, device) in groupedChannels" :key="device" :label="String(device)">
+              <option v-for="ch in chList" :key="ch.name" :value="ch.name">{{ ch.name }}</option>
+            </optgroup>
+          </select>
+        </div>
+        <div v-if="selectedSymbolIds.length > 1" class="prop-section">
+          <div class="section-title">Auto-Match</div>
+          <button
+            class="btn-auto-match"
+            @click="runAutoMatch"
+            title="Match symbol labels to channel names automatically"
+          >
+            Auto-Match Labels → Channels
+          </button>
+          <div v-if="autoMatchResult" class="auto-match-result" :class="{ success: autoMatchResult.matched > 0 }">
+            Matched {{ autoMatchResult.matched }} of {{ autoMatchResult.total }} symbols
+          </div>
+          <div class="prop-hint">Matches symbol labels to channel names (exact, prefix, substring)</div>
         </div>
       </template>
 
@@ -816,22 +1527,57 @@ function closePanel() {
         </div>
       </template>
     </div>
+
+    <!-- Resize handle -->
+    <div
+      class="resize-handle resize-handle-left"
+      :class="{ active: isResizing }"
+      @mousedown="onResizeStart"
+    />
   </div>
 </template>
 
 <style scoped>
+/* Collapse/expand tab handle */
+.panel-tab {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 64px;
+  background: var(--bg-widget);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 56;
+  color: #888;
+  transition: background 0.15s, color 0.15s;
+  box-shadow: -2px 0 6px rgba(0, 0, 0, 0.3);
+}
+
+.panel-tab:hover {
+  background: #252540;
+  color: var(--color-accent-light);
+}
+
+.panel-tab-right {
+  border: 1px solid var(--border-color);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+}
+
+/* Full panel */
 .pid-properties-panel {
   position: absolute;
   top: 0;
   right: 0;
-  width: 240px;
   height: 100%;
-  background: #0f0f1a;
-  border-left: 1px solid #2a2a4a;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  z-index: 50;
+  z-index: 55;
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
 }
 
@@ -840,14 +1586,15 @@ function closePanel() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  border-bottom: 1px solid #2a2a4a;
-  background: #1a1a2e;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-widget);
+  flex-shrink: 0;
 }
 
 .panel-title {
   font-size: 13px;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--color-accent-light);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -855,7 +1602,7 @@ function closePanel() {
 .btn-close-panel {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -863,7 +1610,26 @@ function closePanel() {
 }
 
 .btn-close-panel:hover {
-  color: #fff;
+  color: var(--text-primary);
+}
+
+/* Resize handle */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 51;
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--color-accent-glow);
+}
+
+.resize-handle-left {
+  left: 0;
 }
 
 .panel-body {
@@ -877,7 +1643,7 @@ function closePanel() {
 }
 
 .panel-body::-webkit-scrollbar-thumb {
-  background: #2a2a4a;
+  background: var(--border-color);
   border-radius: 3px;
 }
 
@@ -900,14 +1666,19 @@ function closePanel() {
   padding: 4px 0;
 }
 
+.variant-select {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
 .prop-input,
 .prop-select {
   width: 100%;
   padding: 5px 8px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 12px;
   outline: none;
   box-sizing: border-box;
@@ -915,7 +1686,7 @@ function closePanel() {
 
 .prop-input:focus,
 .prop-select:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .prop-hint {
@@ -932,17 +1703,17 @@ function closePanel() {
 .prop-input-sm {
   width: 100%;
   padding: 3px 6px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 11px;
   outline: none;
   box-sizing: border-box;
 }
 
 .prop-input-sm:focus {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .prop-row {
@@ -954,7 +1725,7 @@ function closePanel() {
 .prop-color {
   width: 28px;
   height: 28px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   cursor: pointer;
   padding: 0;
@@ -965,6 +1736,12 @@ function closePanel() {
   font-size: 11px;
   color: #888;
   font-family: monospace;
+}
+
+.prop-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .prop-grid-4 {
@@ -993,13 +1770,13 @@ function closePanel() {
 }
 
 .prop-checkbox input[type="checkbox"] {
-  accent-color: #3b82f6;
+  accent-color: var(--color-accent);
 }
 
 .prop-sub {
   margin-top: 6px;
   padding-left: 12px;
-  border-left: 2px solid #2a2a4a;
+  border-left: 2px solid var(--border-color);
 }
 
 .hmi-states-list {
@@ -1017,10 +1794,10 @@ function closePanel() {
 .prop-input-xs {
   width: 46px;
   padding: 3px 4px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 11px;
 }
 
@@ -1028,7 +1805,7 @@ function closePanel() {
   width: 22px;
   height: 22px;
   padding: 0;
-  border: 1px solid #2a2a4a;
+  border: 1px solid var(--border-color);
   border-radius: 3px;
   cursor: pointer;
   background: transparent;
@@ -1045,12 +1822,12 @@ function closePanel() {
 }
 
 .btn-remove-xs:hover {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .btn-add-xs {
   background: transparent;
-  border: 1px dashed #2a2a4a;
+  border: 1px dashed var(--border-color);
   border-radius: 3px;
   color: #888;
   cursor: pointer;
@@ -1060,15 +1837,15 @@ function closePanel() {
 }
 
 .btn-add-xs:hover {
-  border-color: #3b82f6;
-  color: #3b82f6;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 .prop-btn {
   width: 100%;
   padding: 5px 10px;
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--bg-surface);
+  color: var(--text-bright);
+  border: 1px solid var(--border-heavy);
   border-radius: 4px;
   font-size: 11px;
   cursor: pointer;
@@ -1076,6 +1853,174 @@ function closePanel() {
 }
 
 .prop-btn:hover {
-  background: #334155;
+  background: var(--bg-hover);
+}
+
+.prop-toggle-btn {
+  padding: 3px 8px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-heavy);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+}
+
+.prop-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-bright);
+}
+
+.prop-toggle-btn.active {
+  background: var(--color-accent);
+  color: var(--text-primary);
+  border-color: var(--color-accent);
+}
+
+.prop-range {
+  width: 100%;
+  margin: 4px 0;
+}
+
+.range-value {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Integration info badges (alarm config, interlock status) */
+.prop-info-badge {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.3;
+  background: rgba(250, 204, 21, 0.12);
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  color: #a16207;
+}
+.prop-info-badge.info-ok {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #15803d;
+}
+.prop-info-badge.info-warn {
+  background: rgba(251, 146, 60, 0.12);
+  border-color: rgba(251, 146, 60, 0.3);
+  color: #c2410c;
+}
+.prop-info-badge.info-fail {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--color-error-dark);
+}
+.info-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.info-text {
+  word-break: break-word;
+}
+
+.prop-range {
+  width: 100%;
+  margin: 4px 0;
+}
+
+/* Auxiliary channel bindings */
+.btn-add-inline {
+  float: right;
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  color: var(--color-accent-light);
+  border-radius: 3px;
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.btn-add-inline:hover { background: rgba(96, 165, 250, 0.3); }
+
+.btn-auto-match {
+  width: 100%;
+  padding: 5px 8px;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 4px;
+  color: #34d399;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-auto-match:hover { background: rgba(52, 211, 153, 0.25); }
+
+.auto-match-result {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+.auto-match-result.success { color: #34d399; }
+
+.aux-channel-row {
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.aux-channel-row:last-child { border-bottom: none; }
+
+.aux-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+.aux-label {
+  flex: 1;
+  font-weight: 500;
+}
+.btn-remove-inline {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--color-error);
+  border-radius: 3px;
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.btn-remove-inline:hover { background: rgba(239, 68, 68, 0.25); }
+
+/* Block editor hint */
+.block-editor-hint {
+  padding: 8px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  border-radius: 4px;
+}
+.hint-counts {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.hint-empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.hint-text {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
 }
 </style>

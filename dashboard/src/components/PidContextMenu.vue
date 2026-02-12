@@ -13,6 +13,7 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 export type MenuTarget =
   | { type: 'symbol'; id: string }
   | { type: 'pipe'; id: string }
+  | { type: 'port'; symbolId: string; portId: string; pipeId: string; pipeEnd: 'start' | 'end'; currentArrow?: string }
   | { type: 'canvas' }
 
 const props = defineProps<{
@@ -20,6 +21,7 @@ const props = defineProps<{
   y: number
   target: MenuTarget
   hasStyleClipboard?: boolean
+  pipeSegmentCount?: number  // number of segments in selected pipe (for segment-level delete)
 }>()
 
 const emit = defineEmits<{
@@ -41,9 +43,11 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 onMounted(() => {
-  setTimeout(() => {
+  // Use requestAnimationFrame to ensure listener is added after the right-click event
+  // that triggered this menu has fully propagated (prevents immediate close)
+  requestAnimationFrame(() => {
     window.addEventListener('mousedown', handleClickOutside)
-  }, 0)
+  })
   // Adjust position if menu overflows viewport
   nextTick(() => {
     if (!menuRef.value) return
@@ -127,6 +131,12 @@ onUnmounted(() => {
         <button class="menu-item" @click="handleAction('rotateCCW')">
           Rotate 90\u00B0 CCW
         </button>
+        <button class="menu-item" @click="handleAction('flipH')">
+          Flip Horizontal
+        </button>
+        <button class="menu-item" @click="handleAction('flipV')">
+          Flip Vertical
+        </button>
       </template>
 
       <!-- Pipe Menu -->
@@ -149,13 +159,66 @@ onUnmounted(() => {
           Paste Style
         </button>
         <div class="menu-divider" />
+        <button v-if="(pipeSegmentCount ?? 0) > 1" class="menu-item danger" @click="handleAction('deleteSegment')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <line x1="12" y1="5" x2="12" y2="19" />
+          </svg>
+          Delete Segment
+          <span class="shortcut">Del</span>
+        </button>
         <button class="menu-item danger" @click="handleAction('delete')">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6" />
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           </svg>
-          Delete Pipe
-          <span class="shortcut">Del</span>
+          Delete Entire Pipe
+        </button>
+      </template>
+
+      <!-- Port Menu (right-click on connected port) -->
+      <template v-else-if="target.type === 'port'">
+        <div class="menu-header">Flow Arrow</div>
+        <button
+          class="menu-item"
+          :class="{ active: target.currentArrow === 'arrow' }"
+          @click="handleAction('portArrow:arrow')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
+          Arrow (filled)
+        </button>
+        <button
+          class="menu-item"
+          :class="{ active: target.currentArrow === 'open' }"
+          @click="handleAction('portArrow:open')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="14 7 19 12 14 17" />
+          </svg>
+          Arrow (open)
+        </button>
+        <button
+          class="menu-item"
+          :class="{ active: target.currentArrow === 'dot' }"
+          @click="handleAction('portArrow:dot')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="12" x2="15" y2="12" />
+            <circle cx="18" cy="12" r="3" />
+          </svg>
+          Dot
+        </button>
+        <div class="menu-divider" />
+        <button class="menu-item" @click="handleAction('portArrow:none')">
+          Remove Arrow
+        </button>
+        <div class="menu-divider" />
+        <button class="menu-item" @click="handleAction('portSelectPipe')">
+          Select Pipe
         </button>
       </template>
 
@@ -187,8 +250,8 @@ onUnmounted(() => {
 .pid-context-menu {
   position: fixed;
   min-width: 180px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-heavy);
   border-radius: 6px;
   padding: 4px 0;
   z-index: 99999;
@@ -203,18 +266,18 @@ onUnmounted(() => {
   padding: 7px 12px;
   background: transparent;
   border: none;
-  color: #e2e8f0;
+  color: var(--text-bright);
   font-size: 12px;
   cursor: pointer;
   text-align: left;
 }
 
 .menu-item:hover {
-  background: #334155;
+  background: var(--bg-hover);
 }
 
 .menu-item.disabled {
-  color: #475569;
+  color: var(--text-disabled);
   cursor: default;
 }
 
@@ -222,8 +285,22 @@ onUnmounted(() => {
   background: transparent;
 }
 
+.menu-item.active {
+  color: var(--color-accent-light);
+  background: var(--color-accent-bg);
+}
+
+.menu-header {
+  padding: 5px 12px 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .menu-item.danger {
-  color: #f87171;
+  color: var(--color-error-light);
 }
 
 .menu-item.danger:hover {
@@ -233,12 +310,12 @@ onUnmounted(() => {
 .shortcut {
   margin-left: auto;
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-dim);
 }
 
 .menu-divider {
   height: 1px;
-  background: #334155;
+  background: var(--border-heavy);
   margin: 4px 0;
 }
 </style>
