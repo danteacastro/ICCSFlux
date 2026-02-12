@@ -1184,6 +1184,10 @@ class CRIONodeV2:
                     self._stale_warned.discard(ch)
                 batch[ch] = entry
 
+            # Cap _stale_warned to prevent unbounded growth if channels are removed
+            if hasattr(self, '_stale_warned') and len(self._stale_warned) > 500:
+                self._stale_warned = set(list(self._stale_warned)[:500])
+
             # Include output values
             for ch, val in self.output_values.items():
                 batch[ch] = {

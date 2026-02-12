@@ -835,7 +835,10 @@ class RecordingManager:
             try:
                 os.fsync(self.current_file_handle.fileno())
             except OSError as e:
-                logger.warning(f"fsync failed during buffer flush: {e}")
+                logger.error(f"fsync failed during buffer flush: {e} — data may not be persisted to disk")
+                # Treat fsync failure as a write error for proper recovery
+                self._handle_write_error(e)
+                return
             self.write_buffer = []
             self.last_flush_time = datetime.now()
         except IOError as e:
@@ -861,8 +864,14 @@ class RecordingManager:
                     logger.info("Successfully reopened recording file")
             except Exception as reopen_error:
                 logger.error(f"Failed to recover recording file: {reopen_error}")
-                # Mark recording as having errors but don't stop
-                # The user should see this in the status
+                # Stop recording to prevent silent data loss — operator will see
+                # the recording stop in the dashboard and can investigate
+                logger.critical("Stopping recording due to unrecoverable write error")
+                try:
+                    self.stop()
+                except Exception:
+                    # Last resort: force recording state to False so status is accurate
+                    self.recording = False
 
     def _handle_trigger(self, values: Dict[str, Any]) -> bool:
         """Handle triggered recording mode. Returns True if sample should be written."""
@@ -1012,9 +1021,13 @@ class RecordingManager:
     def _enforce_circular_limit(self):
         """Delete oldest files to maintain circular buffer limit"""
         while len(self.circular_files) > self.config.circular_max_files:
-            oldest = self.circular_files.pop(0)
+            oldest = self.circular_files[0]
+            if oldest == self.current_file:
+                # Never remove the current file from tracking — skip it
+                break
+            self.circular_files.pop(0)
             try:
-                if oldest.exists() and oldest != self.current_file:
+                if oldest.exists():
                     oldest.unlink()
                     logger.info(f"Circular mode: deleted oldest file {oldest.name}")
             except Exception as e:
@@ -1170,8 +1183,14 @@ class RecordingManager:
         if not data_dir.exists():
             return files
 
-        # Search recursively to find files in date-based subdirectories
-        for f in sorted(data_dir.glob("**/*.csv"), key=lambda x: x.stat().st_mtime, reverse=True):
+        # Snapshot file list under lock to avoid races with rotation/deletion
+        with self.lock:
+            try:
+                csv_files = sorted(data_dir.glob("**/*.csv"), key=lambda x: x.stat().st_mtime, reverse=True)
+            except OSError:
+                return files
+
+        for f in csv_files:
             try:
                 stat = f.stat()
 
@@ -1212,30 +1231,41 @@ class RecordingManager:
         return files
 
     def delete_file(self, filename: str) -> bool:
-        """Delete a recorded file"""
+        """Delete a recorded file (path-validated and lock-protected)"""
         try:
-            file_path = Path(self.config.base_path) / filename
-            if file_path.exists() and file_path.is_file():
-                # Don't delete current recording file
-                if self.recording and self.current_file and file_path == self.current_file:
+            # Reject traversal attempts
+            if '..' in filename or os.path.isabs(filename):
+                logger.warning(f"[SECURITY] Rejected delete with path traversal: {filename}")
+                return False
+
+            file_path = (Path(self.config.base_path) / filename).resolve()
+
+            # Validate path stays within base directory
+            if not self._is_path_within_base(file_path):
+                logger.warning(f"[SECURITY] Path traversal blocked in delete: {filename}")
+                return False
+
+            with self.lock:
+                if not file_path.exists() or not file_path.is_file():
+                    logger.warning(f"File not found: {filename}")
+                    return False
+
+                # Don't delete current recording file (checked under lock)
+                if self.recording and self.current_file and file_path == self.current_file.resolve():
                     logger.warning("Cannot delete file that is currently being recorded")
                     return False
 
                 file_path.unlink()
                 logger.info(f"Deleted recording file: {filename}")
                 return True
-            else:
-                logger.warning(f"File not found: {filename}")
-                return False
         except Exception as e:
             logger.error(f"Failed to delete file {filename}: {e}")
             return False
 
     def export_file(self, filename: str, format: str = 'csv') -> Optional[str]:
         """Export a file to different format (placeholder for future TDMS support)"""
-        # For now, just return the path to the file
-        file_path = Path(self.config.base_path) / filename
-        if file_path.exists():
+        file_path = self._find_recording_file(filename)
+        if file_path and file_path.exists():
             return str(file_path)
         return None
 
@@ -1644,23 +1674,36 @@ class RecordingManager:
 
         return result
 
+    def _is_path_within_base(self, file_path: Path) -> bool:
+        """Validate that a resolved path stays within the recording base directory.
+        Prevents path traversal attacks (e.g., '../../etc/passwd').
+        """
+        try:
+            base = Path(self.config.base_path).resolve()
+            resolved = file_path.resolve()
+            return str(resolved).startswith(str(base) + os.sep) or resolved == base
+        except (OSError, ValueError):
+            return False
+
     def _find_recording_file(self, filename: str) -> Optional[Path]:
-        """Find a recording file by name, checking base path and subdirectories"""
-        # Check if it's an absolute path
-        if os.path.isabs(filename):
-            path = Path(filename)
-            if path.exists():
-                return path
+        """Find a recording file by name, checking base path and subdirectories.
+        All returned paths are validated to be within base_path (no traversal).
+        """
+        # Reject absolute paths and obvious traversal attempts
+        if os.path.isabs(filename) or '..' in filename:
+            logger.warning(f"[SECURITY] Rejected file path with traversal or absolute path: {filename}")
             return None
 
         # Check base path directly
         base = Path(self.config.base_path)
         direct_path = base / filename
-        if direct_path.exists():
-            return direct_path
+        if direct_path.exists() and self._is_path_within_base(direct_path):
+            return direct_path.resolve()
 
-        # Search subdirectories
-        for f in base.glob(f"**/{filename}"):
-            return f
+        # Search subdirectories (basename only to prevent traversal via glob)
+        safe_name = Path(filename).name  # Strip any directory components
+        for f in base.glob(f"**/{safe_name}"):
+            if self._is_path_within_base(f):
+                return f.resolve()
 
         return None

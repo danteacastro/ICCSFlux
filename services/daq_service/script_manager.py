@@ -313,6 +313,8 @@ class Counter:
         faults.rate                   # events per second
     """
 
+    _MAX_EVENTS = 10000  # Cap sliding window to prevent unbounded memory growth
+
     def __init__(self, target=None, window=None, debounce=0, auto_reset=False, mode='rate'):
         # Core counting
         self._count = 0
@@ -366,7 +368,13 @@ class Counter:
         self._count -= n
 
     def tick(self):
-        self._events.append(time.time())
+        now = time.time()
+        self._events.append(now)
+        if self._window_seconds:
+            cutoff = now - self._window_seconds
+            self._events = [t for t in self._events if t >= cutoff]
+        elif len(self._events) > self._MAX_EVENTS:
+            self._events = self._events[-self._MAX_EVENTS:]
         self.increment()
 
     def reset(self):
@@ -408,6 +416,11 @@ class Counter:
             if current and not self._last_bool:
                 self.increment()
                 self._events.append(now)
+                if self._window_seconds:
+                    cutoff = now - self._window_seconds
+                    self._events = [t for t in self._events if t >= cutoff]
+                elif len(self._events) > self._MAX_EVENTS:
+                    self._events = self._events[-self._MAX_EVENTS:]
                 self._cycle_start = now
             if not current and self._last_bool:
                 if self._cycle_start is not None:

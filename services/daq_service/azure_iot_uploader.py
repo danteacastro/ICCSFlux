@@ -57,6 +57,7 @@ class AzureIoTUploader:
         batch_size: int = 10,
         batch_interval_ms: int = 1000,
         max_queue_size: int = 10000,
+        upload_interval_s: float = 1.0,
     ):
         """
         Initialize Azure IoT Hub uploader.
@@ -66,6 +67,9 @@ class AzureIoTUploader:
             batch_size: Number of samples to batch before sending
             batch_interval_ms: Max time between sends (even if batch not full)
             max_queue_size: Max queued samples before dropping oldest
+            upload_interval_s: Minimum seconds between queued samples (decimation).
+                               0 = no decimation (queue every scan).
+                               1.0 = ~1 Hz upload rate (default).
         """
         if not AZURE_IOT_AVAILABLE:
             raise RuntimeError(
@@ -77,6 +81,7 @@ class AzureIoTUploader:
         self._batch_size = batch_size
         self._batch_interval_ms = batch_interval_ms
         self._max_queue_size = max_queue_size
+        self._upload_interval_s = max(0.0, upload_interval_s)
 
         self._client: Optional[IoTHubDeviceClient] = None
         self._channels: List[str] = []
@@ -86,6 +91,12 @@ class AzureIoTUploader:
         # Thread-safe queue for data
         self._queue: deque = deque(maxlen=max_queue_size)
         self._queue_lock = threading.Lock()
+
+        # Decimation tracking
+        self._last_push_time: float = 0.0
+        # Safety event cooldown: prevents alarm chatter from flooding Azure
+        self._last_force_time: float = 0.0
+        self._force_cooldown_s: float = 30.0  # Min seconds between forced pushes
 
         # Upload thread
         self._upload_thread: Optional[threading.Thread] = None
@@ -97,6 +108,7 @@ class AzureIoTUploader:
             'messages_failed': 0,
             'samples_sent': 0,
             'samples_dropped': 0,
+            'samples_decimated': 0,
             'last_send_time': None,
             'last_error': None,
             'connected': False,
@@ -207,7 +219,8 @@ class AzureIoTUploader:
         logger.info("Azure IoT Hub uploader stopped")
         self._notify_status()
 
-    def push_data(self, channel_values: Dict[str, float], timestamp: Optional[datetime] = None) -> None:
+    def push_data(self, channel_values: Dict[str, float], timestamp: Optional[datetime] = None,
+                  force: bool = False) -> None:
         """
         Push channel data to the upload queue.
 
@@ -216,9 +229,28 @@ class AzureIoTUploader:
         Args:
             channel_values: Dict of channel_name -> value
             timestamp: Optional timestamp (defaults to now)
+            force: Bypass decimation (use for alarm/interlock events)
         """
         if not self._enabled or not self._channels:
             return
+
+        # Cooldown on forced pushes to prevent alarm chatter flooding Azure
+        if force:
+            now_f = time.time()
+            if (now_f - self._last_force_time) < self._force_cooldown_s:
+                force = False  # Downgrade to normal decimation path
+            else:
+                self._last_force_time = now_f
+
+        # Decimation: skip samples that arrive faster than upload_interval_s
+        # Bypassed when force=True (safety-critical events)
+        if not force and self._upload_interval_s > 0:
+            now = time.time()
+            if (now - self._last_push_time) < self._upload_interval_s:
+                with self._stats_lock:
+                    self._stats['samples_decimated'] += 1
+                return
+            self._last_push_time = now
 
         # Filter to selected channels only
         filtered = {}
@@ -236,8 +268,10 @@ class AzureIoTUploader:
         ts = timestamp or datetime.now(timezone.utc)
         data_point = {
             'timestamp': ts.isoformat(),
-            'values': filtered
+            'values': filtered,
         }
+        if force:
+            data_point['safety_event'] = True
 
         # Add to queue (thread-safe via deque maxlen)
         with self._queue_lock:
@@ -307,7 +341,8 @@ class AzureIoTUploader:
             )
 
             # Add message properties for routing
-            message.custom_properties['messageType'] = 'telemetry'
+            has_safety = any(p.get('safety_event') for p in batch)
+            message.custom_properties['messageType'] = 'safety_event' if has_safety else 'telemetry'
             message.custom_properties['batchSize'] = str(len(batch))
 
             # Send (blocking, but with timeout)
@@ -394,6 +429,7 @@ class AzureIoTUploader:
             'batch_size': self._batch_size,
             'batch_interval_ms': self._batch_interval_ms,
             'max_queue_size': self._max_queue_size,
+            'upload_interval_s': self._upload_interval_s,
             # Don't include connection string for security
             'has_connection_string': bool(self._connection_string),
         }
@@ -403,6 +439,7 @@ class AzureIoTUploader:
         channels: Optional[List[str]] = None,
         batch_size: Optional[int] = None,
         batch_interval_ms: Optional[int] = None,
+        upload_interval_s: Optional[float] = None,
     ) -> None:
         """Update configuration (doesn't require restart)."""
         if channels is not None:
@@ -411,9 +448,13 @@ class AzureIoTUploader:
             self._batch_size = max(1, batch_size)
         if batch_interval_ms is not None:
             self._batch_interval_ms = max(100, batch_interval_ms)
+        if upload_interval_s is not None:
+            self._upload_interval_s = max(0.0, upload_interval_s)
 
+        rate = f"{1/self._upload_interval_s:.1f}Hz" if self._upload_interval_s > 0 else "unlimited"
         logger.info(f"Azure IoT config updated: channels={len(self._channels)}, "
-                   f"batch_size={self._batch_size}, interval={self._batch_interval_ms}ms")
+                   f"batch_size={self._batch_size}, interval={self._batch_interval_ms}ms, "
+                   f"upload_rate={rate}")
 
 
 def is_available() -> bool:

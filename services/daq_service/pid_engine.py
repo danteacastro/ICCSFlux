@@ -449,7 +449,12 @@ class PIDEngine:
         elif loop.setpoint_source in self.loops:
             # Cascade mode - use output of another loop as setpoint
             master_loop = self.loops[loop.setpoint_source]
-            return master_loop.output
+            output = master_loop.output
+            # Guard against NaN propagation from master loop
+            if output is None or (isinstance(output, float) and (output != output)):
+                logger.warning(f"PID cascade: master loop '{loop.setpoint_source}' output is NaN, using manual setpoint")
+                return loop.setpoint
+            return output
         else:
             return loop.setpoint
 
@@ -513,14 +518,15 @@ class PIDEngine:
             else:
                 loop.i_term += integral_contribution
 
-        # Derivative term
+        # Derivative term (clamp dt to avoid spike from near-zero timer resolution)
         if loop.kd > 0 and dt > 0:
+            safe_dt = max(dt, 1e-3)  # Minimum 1ms to prevent derivative amplification
             if loop.derivative_mode == DerivativeMode.ON_PV:
                 # Derivative on PV (avoids derivative kick on setpoint change)
-                d_input = -(pv - loop.last_pv) / dt
+                d_input = -(pv - loop.last_pv) / safe_dt
             else:
                 # Derivative on error
-                d_input = (error - loop.last_error) / dt
+                d_input = (error - loop.last_error) / safe_dt
 
             loop.d_term = loop.kd * d_input
         else:

@@ -884,9 +884,11 @@ class AlarmManager:
 
         # --- Alarm flood detection (ISA-18.2) ---
         self._flood_alarm_times.append(mono_now)
-        # Prune timestamps outside the window
+        # Prune timestamps outside the window (cap at 10000 to prevent unbounded growth)
         cutoff = mono_now - self.FLOOD_WINDOW_S
         self._flood_alarm_times = [t for t in self._flood_alarm_times if t >= cutoff]
+        if len(self._flood_alarm_times) > 10000:
+            self._flood_alarm_times = self._flood_alarm_times[-10000:]
 
         if not self._flood_active:
             if len(self._flood_alarm_times) >= self.FLOOD_THRESHOLD:
@@ -1116,22 +1118,41 @@ class AlarmManager:
             return True
 
     def unshelve_alarm(self, alarm_id: str, user: str, reason: str = ""):
-        """Unshelve an alarm"""
+        """Unshelve an alarm — re-evaluate current value to get correct state"""
         with self.lock:
             alarm = self.active_alarms.get(alarm_id)
             if alarm is None or alarm.state != AlarmState.SHELVED:
                 return False
 
-            # Revert to previous state
-            if alarm.acknowledged_at:
-                alarm.state = AlarmState.ACKNOWLEDGED
-            else:
-                alarm.state = AlarmState.ACTIVE
-
             alarm.shelved_at = None
             alarm.shelved_by = None
             alarm.shelve_expires_at = None
             alarm.shelve_reason = ""
+
+            # Re-evaluate alarm condition against current value instead of
+            # blindly restoring old state (value may have changed while shelved)
+            config = self.alarm_configs.get(alarm_id)
+            condition_met = False
+            if config and alarm.current_value is not None:
+                if config.alarm_type == 'digital':
+                    condition_met, _, _ = self._check_digital_alarm(config, alarm.current_value, time.time())
+                else:
+                    condition_met, _, _ = self._check_thresholds(config, alarm.current_value)
+
+            if condition_met:
+                # Condition still active — restore to appropriate active state
+                if alarm.acknowledged_at:
+                    alarm.state = AlarmState.ACKNOWLEDGED
+                else:
+                    alarm.state = AlarmState.ACTIVE
+            else:
+                # Condition cleared while shelved — remove the alarm
+                self._log_event(alarm, 'unshelved', alarm.current_value, alarm.threshold_value, user)
+                self._log_event(alarm, 'cleared_after_unshelve', alarm.current_value, alarm.threshold_value, user)
+                del self.active_alarms[alarm_id]
+                self._publish_alarm_cleared(alarm_id)
+                logger.info(f"ALARM UNSHELVED+CLEARED: {alarm.name} by {user} — condition no longer active")
+                return True
 
             # Log
             self._log_event(alarm, 'unshelved', alarm.current_value, alarm.threshold_value, user)

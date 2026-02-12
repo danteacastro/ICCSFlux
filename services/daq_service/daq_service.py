@@ -2580,11 +2580,24 @@ Unit conversions:
         """
         data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
 
+        # Stale threshold for remote node values (cRIO/Opto22): if no update
+        # received within this window, the value is considered stale and safety
+        # evaluation treats it as unavailable (fails safe).
+        STALE_REMOTE_VALUE_SECONDS = 30.0
+
         def get_channel_value(channel: str) -> Optional[float]:
-            """Get current value of a channel"""
+            """Get current value of a channel, returning None for stale remote values"""
             with self.values_lock:
                 val = self.channel_values.get(channel)
                 if val is not None:
+                    # Check staleness for remote node channels
+                    ch_config = self.config.channels.get(channel) if self.config else None
+                    if ch_config and ch_config.is_remote_node:
+                        ts = self.channel_timestamps.get(channel, 0)
+                        if ts > 0 and (time.time() - ts) > STALE_REMOTE_VALUE_SECONDS:
+                            logger.warning(f"[SAFETY] Stale remote value for {channel} "
+                                           f"(age={time.time() - ts:.0f}s > {STALE_REMOTE_VALUE_SECONDS}s)")
+                            return None
                     try:
                         return float(val)
                     except (ValueError, TypeError):
@@ -2627,11 +2640,28 @@ Unit conversions:
             }
 
         def get_alarm_state() -> Dict[str, Any]:
-            """Get current alarm state"""
+            """Get current alarm state including per-alarm details for safety evaluation"""
             if self.alarm_manager:
                 counts = self.alarm_manager.get_alarm_counts()
-                return {'active_count': counts.get('active', 0)}
-            return {'active_count': 0}
+                # Include per-alarm data for alarm_active/alarm_state condition types
+                active_alarms = {}
+                for alarm in self.alarm_manager.get_active_alarms():
+                    active_alarms[alarm.alarm_id] = {
+                        'state': alarm.state.value,
+                        'channel': alarm.channel,
+                        'severity': alarm.severity.name.lower()
+                    }
+                    # Also index by channel name for frontend compatibility
+                    active_alarms[alarm.channel] = active_alarms[alarm.alarm_id]
+                return {
+                    'active_count': counts.get('active', 0),
+                    'active_alarms': active_alarms
+                }
+            return {'active_count': 0, 'active_alarms': {}}
+
+        def trigger_safe_state(reason: str):
+            """Send atomic safe-state to all cRIO nodes"""
+            self._forward_safe_state_to_crio(reason)
 
         self.safety_manager = SafetyManager(
             data_dir=data_dir,
@@ -2642,7 +2672,8 @@ Unit conversions:
             set_output_callback=set_output,
             stop_session_callback=stop_session,
             get_system_state=get_system_state,
-            get_alarm_state=get_alarm_state
+            get_alarm_state=get_alarm_state,
+            trigger_safe_state_callback=trigger_safe_state
         )
 
         self.safety_manager.node_id = getattr(self.config.system, 'node_id', 'node-001')
@@ -3492,6 +3523,8 @@ Unit conversions:
             client.subscribe(f"{base}/interlocks/bypass")
             client.subscribe(f"{base}/interlocks/sync")
             client.subscribe(f"{base}/interlocks/list")
+            client.subscribe(f"{base}/interlocks/acknowledge_trip")
+            client.subscribe(f"{base}/alarms/config/sync")
 
             # Subscribe to PID control topics
             client.subscribe(f"{base}/pid/loops")
@@ -3729,6 +3762,8 @@ Unit conversions:
         'interlocks/remove': Permission.MODIFY_SAFETY,
         'interlocks/bypass': Permission.BYPASS_SAFETY_LOCK,
         'interlocks/sync': Permission.MODIFY_SAFETY,
+        'interlocks/acknowledge_trip': Permission.ACK_ALARMS,
+        'alarms/config/sync': Permission.MODIFY_SAFETY,
         # Alarm operations (Operator+)
         'alarm/acknowledge': Permission.ACK_ALARMS,
         'alarm/clear': Permission.RESET_ALARMS,
@@ -3964,6 +3999,10 @@ Unit conversions:
             self._handle_interlock_sync(payload)
         elif topic == f"{base}/interlocks/list":
             self._handle_interlocks_list()
+        elif topic == f"{base}/interlocks/acknowledge_trip":
+            self._handle_interlock_acknowledge_trip(payload)
+        elif topic == f"{base}/alarms/config/sync":
+            self._handle_alarm_config_sync(payload)
 
         # === PID CONTROL ===
         elif topic == f"{base}/pid/loops":
@@ -8355,17 +8394,16 @@ Unit conversions:
             self._sync_crio_system_state(crio_channel, value)
             return
 
-        # Only process regular cRIO values when acquisition is active
-        # This prevents values from flowing to frontend before user presses START
-        if not self.acquiring:
-            return
+        # Always store cRIO values for safety evaluation (interlocks need them pre-acquisition),
+        # but only publish to frontend/dashboard when acquisition is active.
+        publish_to_frontend = self.acquiring
 
         # Debug: log every Nth value to verify flow
         if not hasattr(self, '_crio_value_count'):
             self._crio_value_count = 0
         self._crio_value_count += 1
         if self._crio_value_count % 100 == 1:  # Log every 100th value
-            logger.info(f"[CRIO_FLOW] Processing cRIO value #{self._crio_value_count}: {crio_channel} = {value}")
+            logger.info(f"[CRIO_FLOW] Processing cRIO value #{self._crio_value_count}: {crio_channel} = {value} (acquiring={self.acquiring})")
 
         # First try direct TAG name match (remote node sends TAG names after config push)
         if crio_channel in self.config.channels:
@@ -8381,10 +8419,11 @@ Unit conversions:
                     self.channel_qualities = {}
                 self.channel_qualities[crio_channel] = quality
                 logger.debug(f"Remote node value (TAG match): {crio_channel} = {value} (quality={quality})")
-                # Also publish to MQTT for dashboard
-                self._publish_channel_value(crio_channel, value)
-                if self._crio_value_count % 100 == 1:
-                    logger.info(f"[REMOTE_FLOW] Published to frontend: {crio_channel} = {value}")
+                # Only publish to MQTT for dashboard when acquiring
+                if publish_to_frontend:
+                    self._publish_channel_value(crio_channel, value)
+                    if self._crio_value_count % 100 == 1:
+                        logger.info(f"[REMOTE_FLOW] Published to frontend: {crio_channel} = {value}")
                 return
 
         # Fallback: Find by physical_channel match (for cRIO/Opto22 nodes)
@@ -8406,10 +8445,11 @@ Unit conversions:
                         self.channel_qualities = {}
                     self.channel_qualities[name] = quality
                     logger.debug(f"Remote node value (physical match): {name} ({crio_channel}) = {value} (quality={quality})")
-                    # Also publish to MQTT for dashboard
-                    self._publish_channel_value(name, value)
-                    if self._crio_value_count % 100 == 1:
-                        logger.info(f"[REMOTE_FLOW] Published (physical match): {name} = {value}")
+                    # Only publish to MQTT for dashboard when acquiring
+                    if publish_to_frontend:
+                        self._publish_channel_value(name, value)
+                        if self._crio_value_count % 100 == 1:
+                            logger.info(f"[REMOTE_FLOW] Published (physical match): {name} = {value}")
                     return
 
     def _sync_crio_system_state(self, channel: str, value: Any):
@@ -12441,6 +12481,99 @@ Unit conversions:
             json.dumps({'interlocks': interlocks}),
             qos=1
         )
+
+    def _handle_interlock_acknowledge_trip(self, payload: Any):
+        """Acknowledge a tripped interlock (IEC 61511 operator response)"""
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock_id = payload.get('id')
+        user = payload.get('user', 'unknown')
+        reason = payload.get('reason', '')
+        if not interlock_id:
+            return
+        result = self.safety_manager.acknowledge_trip(interlock_id, user, reason)
+        if result:
+            self._publish_safety_status()
+
+    def _handle_alarm_config_sync(self, payload: Any):
+        """Sync alarm configs from frontend SafetyTab to backend AlarmManager.
+
+        Receives alarm configuration updates from the frontend and applies them
+        to the backend AlarmManager, closing the alarm config sync gap.
+        """
+        if not self.alarm_manager or not isinstance(payload, dict):
+            return
+        configs = payload.get('configs', [])
+        updated = 0
+        for cfg in configs:
+            alarm_id = cfg.get('id')
+            if not alarm_id:
+                continue
+            existing = self.alarm_manager.get_alarm_config(alarm_id)
+            if existing:
+                # Update existing alarm config with frontend values
+                severity_str = cfg.get('severity', 'medium').upper()
+                severity_map = {
+                    'CRITICAL': AlarmSeverity.CRITICAL,
+                    'HIGH': AlarmSeverity.HIGH,
+                    'MEDIUM': AlarmSeverity.MEDIUM,
+                    'LOW': AlarmSeverity.LOW
+                }
+                existing.severity = severity_map.get(severity_str, AlarmSeverity.MEDIUM)
+                existing.high_high = cfg.get('high_high')
+                existing.high = cfg.get('high')
+                existing.low = cfg.get('low')
+                existing.low_low = cfg.get('low_low')
+                existing.deadband = cfg.get('deadband', 0)
+                existing.on_delay_s = cfg.get('on_delay_s', 0)
+                existing.off_delay_s = cfg.get('off_delay_s', 0)
+                existing.enabled = cfg.get('enabled', False)
+                behavior = cfg.get('behavior', 'auto_clear')
+                behavior_map = {
+                    'auto_clear': LatchBehavior.AUTO_CLEAR,
+                    'latch': LatchBehavior.LATCH,
+                    'timed_latch': LatchBehavior.TIMED_LATCH
+                }
+                existing.latch_behavior = behavior_map.get(behavior, LatchBehavior.AUTO_CLEAR)
+                updated += 1
+            else:
+                # Create new alarm config from frontend data
+                channel_name = cfg.get('channel', '')
+                severity_str = cfg.get('severity', 'medium').upper()
+                severity_map = {
+                    'CRITICAL': AlarmSeverity.CRITICAL,
+                    'HIGH': AlarmSeverity.HIGH,
+                    'MEDIUM': AlarmSeverity.MEDIUM,
+                    'LOW': AlarmSeverity.LOW
+                }
+                behavior = cfg.get('behavior', 'auto_clear')
+                behavior_map = {
+                    'auto_clear': LatchBehavior.AUTO_CLEAR,
+                    'latch': LatchBehavior.LATCH,
+                    'timed_latch': LatchBehavior.TIMED_LATCH
+                }
+                new_config = AlarmConfig(
+                    id=alarm_id,
+                    channel=channel_name,
+                    name=cfg.get('name', channel_name),
+                    description=cfg.get('description', ''),
+                    enabled=cfg.get('enabled', False),
+                    severity=severity_map.get(severity_str, AlarmSeverity.MEDIUM),
+                    high_high=cfg.get('high_high'),
+                    high=cfg.get('high'),
+                    low=cfg.get('low'),
+                    low_low=cfg.get('low_low'),
+                    deadband=cfg.get('deadband', 0),
+                    on_delay_s=cfg.get('on_delay_s', 0),
+                    off_delay_s=cfg.get('off_delay_s', 0),
+                    latch_behavior=behavior_map.get(behavior, LatchBehavior.AUTO_CLEAR),
+                    group=cfg.get('group', ''),
+                    actions=[]
+                )
+                self.alarm_manager.add_alarm_config(new_config)
+                updated += 1
+        if updated:
+            logger.info(f"Synced {updated} alarm configs from frontend")
 
     # =========================================================================
     # PID CONTROL HANDLERS

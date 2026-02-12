@@ -56,9 +56,13 @@ class InterlockCondition:
     value: Optional[Any] = None
     invert: bool = False
     delay_s: float = 0.0
+    alarm_id: Optional[str] = None       # For alarm_active, alarm_state conditions
+    alarm_state_check: Optional[str] = None  # For alarm_state: expected state (active, acknowledged, etc.)
+    variable_id: Optional[str] = None    # For variable_value conditions
+    expression: Optional[str] = None     # For expression conditions
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             'id': self.id,
             'type': self.condition_type,
             'channel': self.channel,
@@ -67,9 +71,24 @@ class InterlockCondition:
             'invert': self.invert,
             'delay_s': self.delay_s
         }
+        if self.alarm_id is not None:
+            d['alarmId'] = self.alarm_id
+        if self.alarm_state_check is not None:
+            d['alarmState'] = self.alarm_state_check
+        if self.variable_id is not None:
+            d['variableId'] = self.variable_id
+        if self.expression is not None:
+            d['expression'] = self.expression
+        return d
 
     VALID_OPERATORS = {'==', '!=', '<', '>', '<=', '>='}
-    VALID_CONDITION_TYPES = {'channel_value', 'digital_state', 'alarm_state'}
+    VALID_CONDITION_TYPES = {
+        'channel_value', 'digital_input',
+        'mqtt_connected', 'daq_connected',
+        'acquiring', 'not_recording', 'no_active_alarms',
+        'alarm_active', 'alarm_state',
+        'variable_value', 'expression'
+    }
 
     @staticmethod
     def from_dict(d: dict) -> 'InterlockCondition':
@@ -85,6 +104,15 @@ class InterlockCondition:
         if condition_type == 'channel_value' and not d.get('channel'):
             logger.error("Interlock condition of type 'channel_value' has no channel specified")
             return None
+        if condition_type == 'digital_input' and not d.get('channel'):
+            logger.error("Interlock condition of type 'digital_input' has no channel specified")
+            return None
+        if condition_type in ('alarm_active', 'alarm_state') and not d.get('alarmId'):
+            logger.error(f"Interlock condition of type '{condition_type}' has no alarmId specified")
+            return None
+        if condition_type == 'variable_value' and not d.get('variableId'):
+            logger.error("Interlock condition of type 'variable_value' has no variableId specified")
+            return None
 
         return InterlockCondition(
             id=d.get('id', str(uuid.uuid4())),
@@ -93,7 +121,11 @@ class InterlockCondition:
             operator=operator,
             value=d.get('value'),
             invert=d.get('invert', False),
-            delay_s=d.get('delay_s', 0.0)
+            delay_s=d.get('delay_s', 0.0),
+            alarm_id=d.get('alarmId'),
+            alarm_state_check=d.get('alarmState'),
+            variable_id=d.get('variableId'),
+            expression=d.get('expression')
         )
 
 
@@ -148,6 +180,11 @@ class Interlock:
     last_proof_test: Optional[str] = None
     proof_test_interval_days: Optional[float] = None  # IEC 61511: periodic verification interval
 
+    # IEC 61511 / ISA-18.2 compliance
+    priority: str = "medium"  # critical, high, medium, low — operational display priority
+    sil_rating: Optional[str] = None  # SIL1, SIL2, SIL3, SIL4
+    requires_acknowledgment: bool = False  # Require operator ack after trip
+
     def to_dict(self) -> dict:
         return {
             'id': self.id,
@@ -166,7 +203,10 @@ class Interlock:
             'demandCount': self.demand_count,
             'lastDemandTime': self.last_demand_time,
             'lastProofTest': self.last_proof_test,
-            'proofTestIntervalDays': self.proof_test_interval_days
+            'proofTestIntervalDays': self.proof_test_interval_days,
+            'priority': self.priority,
+            'silRating': self.sil_rating,
+            'requiresAcknowledgment': self.requires_acknowledgment
         }
 
     @staticmethod
@@ -188,7 +228,10 @@ class Interlock:
             demand_count=d.get('demandCount', d.get('demand_count', 0)),
             last_demand_time=d.get('lastDemandTime', d.get('last_demand_time')),
             last_proof_test=d.get('lastProofTest', d.get('last_proof_test')),
-            proof_test_interval_days=d.get('proofTestIntervalDays', d.get('proof_test_interval_days'))
+            proof_test_interval_days=d.get('proofTestIntervalDays', d.get('proof_test_interval_days')),
+            priority=d.get('priority', 'medium'),
+            sil_rating=d.get('silRating', d.get('sil_rating')),
+            requires_acknowledgment=d.get('requiresAcknowledgment', d.get('requires_acknowledgment', False))
         )
 
 
@@ -201,16 +244,31 @@ class InterlockStatus:
     enabled: bool
     bypassed: bool
     failed_conditions: List[Dict[str, Any]] = field(default_factory=list)
+    # IEC 61511 compliance fields
+    priority: str = "medium"
+    sil_rating: Optional[str] = None
+    requires_acknowledgment: bool = False
+    trip_acknowledged: bool = False
+    trip_acknowledged_by: Optional[str] = None
+    trip_acknowledged_at: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             'id': self.id,
             'name': self.name,
             'satisfied': self.satisfied,
             'enabled': self.enabled,
             'bypassed': self.bypassed,
-            'failedConditions': self.failed_conditions
+            'failedConditions': self.failed_conditions,
+            'priority': self.priority,
+            'silRating': self.sil_rating,
+            'requiresAcknowledgment': self.requires_acknowledgment,
         }
+        if self.requires_acknowledgment:
+            d['tripAcknowledged'] = self.trip_acknowledged
+            d['tripAcknowledgedBy'] = self.trip_acknowledged_by
+            d['tripAcknowledgedAt'] = self.trip_acknowledged_at
+        return d
 
 
 @dataclass
@@ -252,7 +310,7 @@ class InterlockHistoryEntry:
     timestamp: str
     interlock_id: str
     interlock_name: str
-    event: str  # created, enabled, disabled, bypassed, bypass_removed, demand, cleared, proof_test
+    event: str  # created, enabled, disabled, bypassed, bypass_removed, demand, cleared, proof_test, trip_acknowledged
     user: Optional[str] = None
     reason: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
@@ -288,7 +346,8 @@ class SafetyManager:
         set_output_callback: Optional[Callable[[str, Any], None]] = None,
         stop_session_callback: Optional[Callable[[], None]] = None,
         get_system_state: Optional[Callable[[], Dict[str, Any]]] = None,
-        get_alarm_state: Optional[Callable[[], Dict[str, Any]]] = None
+        get_alarm_state: Optional[Callable[[], Dict[str, Any]]] = None,
+        trigger_safe_state_callback: Optional[Callable[[str], None]] = None
     ):
         """
         Initialize SafetyManager.
@@ -303,6 +362,7 @@ class SafetyManager:
             stop_session_callback: Callback to stop test session
             get_system_state: Callback to get system state (acquiring, recording, etc.)
             get_alarm_state: Callback to get alarm state (active alarms, etc.)
+            trigger_safe_state_callback: Callback to send atomic safe-state to remote nodes (cRIO)
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -316,6 +376,7 @@ class SafetyManager:
         self._stop_session = stop_session_callback
         self._get_system_state = get_system_state
         self._get_alarm_state = get_alarm_state
+        self._trigger_safe_state = trigger_safe_state_callback
 
         # Thread safety
         self.lock = threading.RLock()
@@ -343,6 +404,9 @@ class SafetyManager:
 
         # Executed actions tracking (prevent repeated execution)
         self._executed_actions: Set[str] = set()
+
+        # Per-interlock trip acknowledgment state (runtime-only, not persisted)
+        self._trip_ack_state: Dict[str, dict] = {}
 
         # Interlock history (audit trail)
         self.history: List[InterlockHistoryEntry] = []
@@ -554,6 +618,63 @@ class SafetyManager:
                         'reason': f"{condition.channel} = {'ON' if actual_state else 'OFF'}{invert_note} ({'OK' if satisfied else ('requires ON' if expected else 'requires OFF')})"
                     }
 
+        elif cond_type == 'alarm_active':
+            # Satisfied when specific alarm is NOT active (same semantics as frontend)
+            if not condition.alarm_id:
+                result['reason'] = 'No alarm ID specified'
+            else:
+                alarm_state = self._get_alarm_state() if self._get_alarm_state else {}
+                active_alarms = alarm_state.get('active_alarms', {})
+                is_active = condition.alarm_id in active_alarms
+                result = {
+                    'satisfied': not is_active,
+                    'current_value': is_active,
+                    'reason': f'Alarm {condition.alarm_id} is {"active" if is_active else "clear"}'
+                }
+
+        elif cond_type == 'alarm_state':
+            # Check if alarm is in a specific state
+            if not condition.alarm_id or not condition.alarm_state_check:
+                result['reason'] = 'Invalid alarm state condition'
+            else:
+                alarm_state = self._get_alarm_state() if self._get_alarm_state else {}
+                active_alarms = alarm_state.get('active_alarms', {})
+                alarm_info = active_alarms.get(condition.alarm_id)
+                current_state = alarm_info.get('state', 'none') if alarm_info else 'none'
+                in_state = current_state == condition.alarm_state_check
+                result = {
+                    'satisfied': in_state,
+                    'current_value': current_state,
+                    'reason': f'Alarm {condition.alarm_id} is {current_state}' + (
+                        ' (OK)' if in_state else f' (requires {condition.alarm_state_check})')
+                }
+
+        elif cond_type == 'variable_value':
+            # Check user variable value — variables are published as channel values
+            if not condition.variable_id or condition.operator is None or condition.value is None:
+                result['reason'] = 'Invalid variable condition'
+            else:
+                value = self._get_channel_value(condition.variable_id)
+                if value is None:
+                    result['reason'] = f'Variable {condition.variable_id} not found'
+                else:
+                    satisfied = self._compare_values(value, condition.operator, condition.value)
+                    result = {
+                        'satisfied': satisfied,
+                        'current_value': value,
+                        'reason': f'Variable {condition.variable_id} = {value}' + (
+                            ' (OK)' if satisfied else f' (requires {condition.operator} {condition.value})')
+                    }
+
+        elif cond_type == 'expression':
+            # Expression evaluation is frontend-only; backend defaults to satisfied (fail-open)
+            # to avoid false trips from unsupported server-side expression parsing
+            result = {
+                'satisfied': True,
+                'current_value': None,
+                'reason': 'Expression conditions evaluated on frontend only'
+            }
+
         return result
 
     def _compare_values(self, current: float, operator: str, threshold: float) -> bool:
@@ -610,6 +731,9 @@ class SafetyManager:
 
     def evaluate_interlock(self, interlock: Interlock) -> InterlockStatus:
         """Evaluate an interlock and return its status"""
+        # Common fields for all return paths
+        ack_state = self._trip_ack_state.get(interlock.id, {})
+
         if not interlock.enabled:
             return InterlockStatus(
                 id=interlock.id,
@@ -617,7 +741,10 @@ class SafetyManager:
                 satisfied=True,
                 enabled=False,
                 bypassed=False,
-                failed_conditions=[]
+                failed_conditions=[],
+                priority=interlock.priority,
+                sil_rating=interlock.sil_rating,
+                requires_acknowledgment=interlock.requires_acknowledgment,
             )
 
         # Check bypass expiration
@@ -637,7 +764,10 @@ class SafetyManager:
                 satisfied=True,
                 enabled=True,
                 bypassed=True,
-                failed_conditions=[]
+                failed_conditions=[],
+                priority=interlock.priority,
+                sil_rating=interlock.sil_rating,
+                requires_acknowledgment=interlock.requires_acknowledgment,
             )
 
         # Evaluate conditions
@@ -674,6 +804,9 @@ class SafetyManager:
             })
         elif not was_satisfied and satisfied:
             self._record_event(interlock, 'cleared', 'system')
+            # Clear trip acknowledgment when interlock returns to satisfied
+            if interlock.id in self._trip_ack_state:
+                del self._trip_ack_state[interlock.id]
 
         self._previous_states[interlock.id] = satisfied
 
@@ -683,7 +816,13 @@ class SafetyManager:
             satisfied=satisfied,
             enabled=True,
             bypassed=False,
-            failed_conditions=failed_conditions
+            failed_conditions=failed_conditions,
+            priority=interlock.priority,
+            sil_rating=interlock.sil_rating,
+            requires_acknowledgment=interlock.requires_acknowledgment,
+            trip_acknowledged=ack_state.get('acknowledged', False),
+            trip_acknowledged_by=ack_state.get('user'),
+            trip_acknowledged_at=ack_state.get('timestamp'),
         )
 
     # ========================================================================
@@ -752,6 +891,16 @@ class SafetyManager:
 
             config = self.safe_state_config
 
+            # Send atomic safe-state to remote nodes (cRIO) FIRST for fastest response.
+            # This is a single MQTT message that triggers hardware.set_safe_state() on
+            # the cRIO, rather than relying on individual per-channel output commands.
+            if self._trigger_safe_state:
+                try:
+                    self._trigger_safe_state(reason)
+                    logger.warning("TRIP: Atomic safe-state sent to remote nodes")
+                except Exception as e:
+                    logger.error(f"Failed to send atomic safe-state to remote nodes: {e}")
+
             # Stop session first
             if config.stop_session and self._stop_session:
                 try:
@@ -806,6 +955,31 @@ class SafetyManager:
             self.latch_state = LatchState.SAFE
             self._publish_latch_state(user=user)
             logger.info(f"Trip reset by {user}")
+            return True
+
+    def acknowledge_trip(self, interlock_id: str, user: str, reason: str = "") -> bool:
+        """Acknowledge a tripped interlock (IEC 61511 operator response).
+
+        Records that an operator has acknowledged the trip condition for audit trail purposes.
+        This does NOT reset the interlock — the underlying condition must clear first.
+        """
+        with self.lock:
+            interlock = self.interlocks.get(interlock_id)
+            if not interlock:
+                logger.warning(f"Cannot acknowledge trip - interlock {interlock_id} not found")
+                return False
+            if not interlock.requires_acknowledgment:
+                logger.warning(f"Interlock {interlock_id} does not require acknowledgment")
+                return False
+
+            self._trip_ack_state[interlock_id] = {
+                'acknowledged': True,
+                'user': user,
+                'timestamp': datetime.now().isoformat(),
+                'reason': reason
+            }
+            self._record_event(interlock, 'trip_acknowledged', user, reason)
+            logger.info(f"Trip acknowledged for interlock '{interlock.name}' by {user}")
             return True
 
     # ========================================================================

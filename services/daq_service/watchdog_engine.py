@@ -311,10 +311,12 @@ class WatchdogEngine:
             tracker = self.channel_trackers[channel]
             timestamp = channel_timestamps.get(channel, now)
 
-            # Update rate history (keep last 60 seconds)
+            # Update rate history (keep last 60 seconds, cap at 1000 entries)
             tracker.rate_history.append((now, value))
             cutoff = now - 60
             tracker.rate_history = [(t, v) for t, v in tracker.rate_history if t >= cutoff]
+            if len(tracker.rate_history) > 1000:
+                tracker.rate_history = tracker.rate_history[-1000:]
 
             # Track stuck value
             if tracker.last_value is not None:

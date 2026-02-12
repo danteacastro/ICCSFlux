@@ -337,6 +337,12 @@ class ProjectDiffer:
         old_alarms = old_safety.get('alarmConfigs', {})
         new_alarms = new_safety.get('alarmConfigs', {})
 
+        # Handle list format
+        if isinstance(old_alarms, list):
+            old_alarms = {a.get('id', str(i)): a for i, a in enumerate(old_alarms)} if old_alarms else {}
+        if isinstance(new_alarms, list):
+            new_alarms = {a.get('id', str(i)): a for i, a in enumerate(new_alarms)} if new_alarms else {}
+
         for name in set(new_alarms.keys()) - set(old_alarms.keys()):
             self._add_change('ADDED', 'Safety', 'Alarm Config', name)
 
@@ -374,6 +380,12 @@ class ProjectDiffer:
         """Compare user variables"""
         old_vars = old_data.get('variables', {})
         new_vars = new_data.get('variables', {})
+
+        # Handle list format (some projects store variables as [])
+        if isinstance(old_vars, list):
+            old_vars = {v.get('name', str(i)): v for i, v in enumerate(old_vars)} if old_vars else {}
+        if isinstance(new_vars, list):
+            new_vars = {v.get('name', str(i)): v for i, v in enumerate(new_vars)} if new_vars else {}
 
         for name in set(new_vars.keys()) - set(old_vars.keys()):
             self._add_change('ADDED', 'Variables', 'Variable', name, f"= {new_vars[name]}")

@@ -535,7 +535,7 @@ class TriggerEngine:
         schedule_time = hour * 60 + minute
 
         # Check if we're within the minute of scheduled time
-        if abs(current_time - schedule_time) > 0:
+        if abs(current_time - schedule_time) > 1:
             return False
 
         # Check day of week for weekly schedules

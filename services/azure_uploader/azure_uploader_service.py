@@ -68,6 +68,9 @@ class AzureUploaderService:
         # MQTT topics
         self.command_topic = 'nisystem/azure/command'
         self.data_topic = 'nisystem/nodes/+/channels/values'
+        self.alarm_topic = 'nisystem/nodes/+/alarms/active/+'
+        self.safety_trip_topic = 'nisystem/nodes/+/safety/trip'
+        self.safety_action_topic = 'nisystem/nodes/+/safety/action'
         self.status_topic = 'nisystem/azure/status'
 
         # MQTT client (always connected)
@@ -82,11 +85,21 @@ class AzureUploaderService:
         self.batch_size: int = 10
         self.batch_interval_ms: int = 1000
         self.max_queue_size: int = 10000
+        self.upload_interval_s: float = 1.0
 
         # State
         self._service_running = False  # Service process running
         self._streaming = False         # Actively streaming to Azure
         self._stop_event = threading.Event()
+        self._force_flush = threading.Event()
+
+        # Decimation tracking
+        self._last_queue_time: float = 0.0
+
+        # Safety event cooldown: prevents alarm chatter from flooding Azure
+        # Key: alarm_id or topic, Value: last forwarded timestamp
+        self._safety_cooldowns: Dict[str, float] = {}
+        self._safety_cooldown_s: float = 30.0  # Min seconds between same alarm forwarding
 
         # Data queue (only used when streaming)
         self._queue: deque = deque(maxlen=self.max_queue_size)
@@ -102,6 +115,7 @@ class AzureUploaderService:
             'messages_sent': 0,
             'messages_failed': 0,
             'samples_sent': 0,
+            'samples_decimated': 0,
             'last_error': None,
         }
         self._stats_lock = threading.Lock()
@@ -189,6 +203,11 @@ class AzureUploaderService:
             # Subscribe to data topic (will only process when streaming)
             client.subscribe(self.data_topic)
 
+            # Subscribe to alarm/safety topics for immediate forwarding
+            client.subscribe(self.alarm_topic)
+            client.subscribe(self.safety_trip_topic)
+            client.subscribe(self.safety_action_topic)
+
             with self._stats_lock:
                 self._stats['mqtt_connected'] = True
 
@@ -212,6 +231,10 @@ class AzureUploaderService:
                 self._handle_command(msg.payload)
             elif self._streaming and '/channels/values' in msg.topic:
                 self._handle_data(msg.payload)
+            elif self._streaming and ('/alarms/active/' in msg.topic or
+                                       '/safety/trip' in msg.topic or
+                                       '/safety/action' in msg.topic):
+                self._handle_safety_event(msg.topic, msg.payload)
         except Exception as e:
             logger.warning(f"Error processing message on {msg.topic}: {e}")
 
@@ -252,6 +275,7 @@ class AzureUploaderService:
         self.channels = config.get('channels', [])
         self.batch_size = config.get('batch_size', 10)
         self.batch_interval_ms = config.get('batch_interval_ms', 1000)
+        self.upload_interval_s = max(0.0, config.get('upload_interval_s', 1.0))
 
         if not self.connection_string:
             logger.error("No Azure connection string in config")
@@ -289,6 +313,9 @@ class AzureUploaderService:
 
             self._streaming = True
             self._stop_event.clear()
+            self._force_flush.clear()
+            self._last_queue_time = 0.0
+            self._safety_cooldowns.clear()
 
             self._upload_thread = threading.Thread(
                 target=self._upload_loop,
@@ -348,6 +375,15 @@ class AzureUploaderService:
             with self._stats_lock:
                 self._stats['messages_received'] += 1
 
+            # Decimation: skip messages that arrive faster than upload_interval_s
+            if self.upload_interval_s > 0:
+                now = time.time()
+                if (now - self._last_queue_time) < self.upload_interval_s:
+                    with self._stats_lock:
+                        self._stats['samples_decimated'] += 1
+                    return
+                self._last_queue_time = now
+
             # Extract values
             values = data.get('values', data)
             if not isinstance(values, dict):
@@ -386,6 +422,59 @@ class AzureUploaderService:
         except Exception as e:
             logger.debug(f"Error processing data: {e}")
 
+    # Alarm severities / threshold types that bypass decimation
+    _CRITICAL_THRESHOLDS = {'high_high', 'low_low'}
+    _CRITICAL_SEVERITIES = {'CRITICAL', 'HIGH'}
+
+    def _handle_safety_event(self, topic: str, payload: bytes) -> None:
+        """Handle alarm or safety interlock events — bypass decimation and queue immediately."""
+        if not self._streaming:
+            return
+
+        try:
+            data = json.loads(payload.decode('utf-8'))
+
+            # For alarm messages, only forward critical ones (HiHi/LoLo or CRITICAL/HIGH severity)
+            if '/alarms/active/' in topic:
+                # Cleared alarms (active=False) also get forwarded so cloud knows it resolved
+                if data.get('active') is False:
+                    pass  # forward the clear event
+                else:
+                    severity = data.get('severity', '')
+                    threshold_type = data.get('threshold_type', '')
+                    if (severity not in self._CRITICAL_SEVERITIES and
+                            threshold_type not in self._CRITICAL_THRESHOLDS):
+                        return  # Skip non-critical alarms
+
+            # Cooldown: prevent the same alarm from flooding Azure (e.g., chattering alarm)
+            cooldown_key = data.get('alarm_id', topic)
+            now = time.time()
+            last_forwarded = self._safety_cooldowns.get(cooldown_key, 0.0)
+            if (now - last_forwarded) < self._safety_cooldown_s:
+                logger.debug(f"Safety event throttled (cooldown): {cooldown_key}")
+                return
+            self._safety_cooldowns[cooldown_key] = now
+
+            event_point = {
+                'timestamp': data.get('triggered_at', datetime.now(timezone.utc).isoformat()),
+                'safety_event': True,
+                'event_topic': topic,
+                'event_data': data
+            }
+
+            with self._queue_lock:
+                self._queue.append(event_point)
+
+            # Signal upload thread to flush immediately
+            self._force_flush.set()
+
+            logger.info(f"Safety event queued for immediate upload: {cooldown_key}")
+
+        except json.JSONDecodeError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error processing safety event: {e}")
+
     def _upload_loop(self) -> None:
         """Background thread that batches and sends data to Azure."""
         batch: List[Dict] = []
@@ -399,8 +488,13 @@ class AzureUploaderService:
                         batch.append(self._queue.popleft())
 
                 # Check if we should send
+                forced = self._force_flush.is_set()
+                if forced:
+                    self._force_flush.clear()
+
                 elapsed_ms = (time.time() - last_send) * 1000
                 should_send = (
+                    forced or
                     len(batch) >= self.batch_size or
                     (batch and elapsed_ms >= self.batch_interval_ms)
                 )
@@ -445,7 +539,8 @@ class AzureUploaderService:
                 content_encoding='utf-8',
                 content_type='application/json'
             )
-            message.custom_properties['messageType'] = 'telemetry'
+            has_safety = any(p.get('safety_event') for p in batch)
+            message.custom_properties['messageType'] = 'safety_event' if has_safety else 'telemetry'
             message.custom_properties['batchSize'] = str(len(batch))
 
             self.azure_client.send_message(message)

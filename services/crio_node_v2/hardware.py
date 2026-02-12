@@ -413,6 +413,9 @@ class NIDAQmxHardware(HardwareInterface):
             timer.cancel()
         self._momentary_timers.clear()
 
+        # Clear counter rollover tracking to prevent stale offsets on reconfiguration
+        self._counter_rollover.clear()
+
         logger.info("NI-DAQmx hardware stopped")
 
     def _get_physical_path(self, physical_channel: str) -> str:

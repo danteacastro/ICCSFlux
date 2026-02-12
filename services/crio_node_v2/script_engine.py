@@ -170,6 +170,8 @@ class Counter:
         faults.rate                   # events per second
     """
 
+    _MAX_EVENTS = 10000  # Cap sliding window to prevent unbounded memory growth
+
     def __init__(self, target=None, window=None, debounce=0, auto_reset=False, mode='rate'):
         # Core counting
         self._count = 0
@@ -226,7 +228,13 @@ class Counter:
 
     def tick(self):
         """Record a timestamped event (for sliding-window rate)."""
-        self._events.append(time.time())
+        now = time.time()
+        self._events.append(now)
+        if self._window_seconds:
+            cutoff = now - self._window_seconds
+            self._events = [t for t in self._events if t >= cutoff]
+        elif len(self._events) > self._MAX_EVENTS:
+            self._events = self._events[-self._MAX_EVENTS:]
         self.increment()
 
     def reset(self):
@@ -285,6 +293,11 @@ class Counter:
             if current and not self._last_bool:
                 self.increment()
                 self._events.append(now)
+                if self._window_seconds:
+                    cutoff = now - self._window_seconds
+                    self._events = [t for t in self._events if t >= cutoff]
+                elif len(self._events) > self._MAX_EVENTS:
+                    self._events = self._events[-self._MAX_EVENTS:]
                 self._cycle_start = now
 
             # Falling edge → cycle complete
@@ -1445,7 +1458,18 @@ class ScriptEngine:
         self._threads[script_id] = thread
         thread.start()
 
-        logger.info(f"Started script: {script_id}")
+        # Timeout monitor thread (default 300s, matches DAQ service)
+        max_runtime = script.get('max_runtime_seconds', 300.0)
+        if max_runtime and max_runtime > 0:
+            monitor = threading.Thread(
+                target=self._monitor_timeout,
+                args=(script_id, script, thread, max_runtime),
+                name=f"ScriptMonitor-{script_id}",
+                daemon=True
+            )
+            monitor.start()
+
+        logger.info(f"Started script: {script_id} (max_runtime={max_runtime}s)")
         self.publish_status()
         self._publish_output(script_id, f"Script started: {script.get('name', script_id)}")
 
@@ -1506,6 +1530,27 @@ class ScriptEngine:
     # =========================================================================
     # SCRIPT EXECUTION
     # =========================================================================
+
+    def _monitor_timeout(self, script_id: str, script: Dict[str, Any],
+                         thread: threading.Thread, timeout_seconds: float):
+        """Monitor script for timeout and force stop if exceeded."""
+        start_time = script.get('_start_time', time.time())
+        while thread.is_alive():
+            elapsed = time.time() - start_time
+            if elapsed >= timeout_seconds:
+                logger.warning(f"SCRIPT TIMEOUT: {script.get('name', script_id)} "
+                               f"exceeded {timeout_seconds}s — forcing stop")
+                error_msg = f"Script timeout after {timeout_seconds:.0f}s — script was forcefully stopped"
+                script['_stop_requested'] = True
+                self._publish_output(script_id, f"ERROR: {error_msg}", is_error=True)
+                # Wait briefly for graceful stop
+                time.sleep(2.0)
+                if thread.is_alive():
+                    logger.error(f"Script {script.get('name', script_id)} "
+                                 f"did not respond to stop after timeout")
+                self.publish_status()
+                return
+            time.sleep(1.0)
 
     def _run_script(self, script_id: str, script: Dict[str, Any]):
         """Execute a Python script with sandboxed environment."""
