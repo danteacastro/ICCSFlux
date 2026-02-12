@@ -233,6 +233,22 @@ vi.mock('../composables/useBackendScripts', () => {
   }
 })
 
+vi.mock('../composables/useAuth', () => {
+  const { ref, computed } = require('vue')
+  return {
+    useAuth: () => ({
+      isAdmin: ref(true),
+      isOperator: ref(true),
+      isSupervisor: ref(true),
+      isAuthenticated: ref(true),
+      currentUser: ref({ username: 'test', role: 'admin', displayName: 'Test', permissions: [] }),
+      login: vi.fn(),
+      logout: vi.fn(),
+      checkPermission: vi.fn().mockReturnValue(true)
+    })
+  }
+})
+
 // Mock child components
 vi.mock('./ModbusDeviceConfig.vue', () => ({
   default: { template: '<div class="mock-modbus">Modbus Config</div>' }
@@ -671,5 +687,345 @@ describe('Module Type Detection', () => {
     // Relay modules (NI 9481, 9482, 9485) are digital outputs
     const relayModules = ['NI 9481', 'NI 9482', 'NI 9485']
     expect(relayModules.length).toBe(3)
+  })
+})
+
+// ===========================================================================
+// CHANNEL TYPE FILTER BUTTON TESTS
+// ===========================================================================
+// Tests verify that each filter tab correctly shows matching channels
+// and hides non-matching ones, including alias handling
+// (e.g., 'counter' tab shows both 'counter' and 'counter_input' types)
+// ===========================================================================
+
+describe('Channel Type Filter Buttons', { timeout: 15000 }, () => {
+  // Helper to mount with a Record<string, ChannelConfig> channels object
+  function mountWithChannels(channels: Record<string, Partial<ChannelConfig>>) {
+    const state = getConfigTabMockState()
+    if (state) {
+      // Set channels as a Record (object) so Object.entries() works correctly
+      state.mockChannels.value = channels as any
+    }
+    return shallowMount(ConfigurationTab, {
+      global: {
+        provide: {
+          canEditConfig: ref(true),
+          showLoginDialog: () => {}
+        }
+      }
+    })
+  }
+
+  // Create a comprehensive set of channels covering all types
+  const allChannels: Record<string, Partial<ChannelConfig>> = {
+    'TC_001': { name: 'TC_001', channel_type: 'thermocouple', physical_channel: 'cDAQ1Mod1/ai0' },
+    'TC_002': { name: 'TC_002', channel_type: 'thermocouple', physical_channel: 'cDAQ1Mod1/ai1' },
+    'RTD_001': { name: 'RTD_001', channel_type: 'rtd', physical_channel: 'cDAQ1Mod2/ai0' },
+    'V_IN_001': { name: 'V_IN_001', channel_type: 'voltage_input', physical_channel: 'cDAQ1Mod3/ai0' },
+    'V_IN_LEGACY': { name: 'V_IN_LEGACY', channel_type: 'voltage' as any, physical_channel: 'cDAQ1Mod3/ai1' },
+    'mA_IN_001': { name: 'mA_IN_001', channel_type: 'current_input', physical_channel: 'cDAQ1Mod4/ai0' },
+    'mA_IN_LEGACY': { name: 'mA_IN_LEGACY', channel_type: 'current' as any, physical_channel: 'cDAQ1Mod4/ai1' },
+    'V_OUT_001': { name: 'V_OUT_001', channel_type: 'voltage_output', physical_channel: 'cDAQ1Mod5/ao0' },
+    'mA_OUT_001': { name: 'mA_OUT_001', channel_type: 'current_output', physical_channel: 'cDAQ1Mod6/ao0' },
+    'DI_001': { name: 'DI_001', channel_type: 'digital_input', physical_channel: 'cDAQ1Mod7/port0/line0' },
+    'DO_001': { name: 'DO_001', channel_type: 'digital_output', physical_channel: 'cDAQ1Mod8/port0/line0' },
+    'CTR_001': { name: 'CTR_001', channel_type: 'counter', physical_channel: 'cDAQ1Mod9/ctr0' },
+    'CTR_002': { name: 'CTR_002', channel_type: 'counter_input', physical_channel: 'cDAQ1Mod9/ctr1' },
+    'PLS_001': { name: 'PLS_001', channel_type: 'pulse_output', physical_channel: 'cDAQ1Mod10/ctr0' },
+    'FREQ_001': { name: 'FREQ_001', channel_type: 'frequency_input', physical_channel: 'cDAQ1Mod10/ctr1' },
+    'STRAIN_001': { name: 'STRAIN_001', channel_type: 'strain', physical_channel: 'cDAQ1Mod11/ai0' },
+    'STRAIN_002': { name: 'STRAIN_002', channel_type: 'strain_input', physical_channel: 'cDAQ1Mod11/ai1' },
+    'BRIDGE_001': { name: 'BRIDGE_001', channel_type: 'bridge_input', physical_channel: 'cDAQ1Mod11/ai2' },
+    'IEPE_001': { name: 'IEPE_001', channel_type: 'iepe', physical_channel: 'cDAQ1Mod12/ai0' },
+    'IEPE_002': { name: 'IEPE_002', channel_type: 'iepe_input', physical_channel: 'cDAQ1Mod12/ai1' },
+    'MB_REG_001': { name: 'MB_REG_001', channel_type: 'modbus_register', physical_channel: '192.168.1.10:502/hr0' },
+    'MB_COIL_001': { name: 'MB_COIL_001', channel_type: 'modbus_coil', physical_channel: '192.168.1.10:502/c0' },
+    'REST_001': { name: 'REST_001', channel_type: 'rest_api' as any, physical_channel: 'https://api.example.com/temp' },
+    'OPC_001': { name: 'OPC_001', channel_type: 'opc_ua' as any, physical_channel: 'ns=2;s=Temp' },
+  }
+
+  // Helper to get filtered channel names from the component
+  function getFilteredNames(wrapper: any): string[] {
+    return wrapper.vm.filteredChannels.map(([name]: [string, any]) => name)
+  }
+
+  it('ALL tab should show every channel', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'all'
+
+    const names = getFilteredNames(wrapper)
+    expect(names.length).toBe(Object.keys(allChannels).length)
+  })
+
+  it('TC tab should show only thermocouple channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'thermocouple'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('TC_001')
+    expect(names).toContain('TC_002')
+    expect(names.length).toBe(2)
+  })
+
+  it('RTD tab should show only RTD channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'rtd'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('RTD_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('V-IN tab should show voltage_input and legacy voltage channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'voltage_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('V_IN_001')
+    expect(names).toContain('V_IN_LEGACY')
+    expect(names.length).toBe(2)
+  })
+
+  it('mA-IN tab should show current_input and legacy current channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'current_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('mA_IN_001')
+    expect(names).toContain('mA_IN_LEGACY')
+    expect(names.length).toBe(2)
+  })
+
+  it('V-OUT tab should show voltage_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'voltage_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('V_OUT_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('V-OUT tab should include legacy analog_output with voltage range', () => {
+    const channels = {
+      ...allChannels,
+      'AO_V_001': { name: 'AO_V_001', channel_type: 'analog_output' as any, ao_range: '0-10V', physical_channel: 'Mod5/ao0' },
+      'AO_MA_001': { name: 'AO_MA_001', channel_type: 'analog_output' as any, ao_range: '4-20mA', physical_channel: 'Mod5/ao1' },
+      'AO_DEFAULT': { name: 'AO_DEFAULT', channel_type: 'analog_output' as any, physical_channel: 'Mod5/ao2' },
+    }
+    const wrapper = mountWithChannels(channels)
+    wrapper.vm.activeTypeTab = 'voltage_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('V_OUT_001')
+    // analog_output with voltage range should show
+    expect(names).toContain('AO_V_001')
+    // analog_output with no range specified (default) should also show under V-OUT
+    expect(names).toContain('AO_DEFAULT')
+    // analog_output with mA range should NOT show
+    expect(names).not.toContain('AO_MA_001')
+  })
+
+  it('mA-OUT tab should show current_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'current_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('mA_OUT_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('mA-OUT tab should include legacy analog_output with mA range', () => {
+    const channels = {
+      ...allChannels,
+      'AO_MA_001': { name: 'AO_MA_001', channel_type: 'analog_output' as any, ao_range: '4-20mA', physical_channel: 'Mod6/ao0' },
+    }
+    const wrapper = mountWithChannels(channels)
+    wrapper.vm.activeTypeTab = 'current_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('mA_OUT_001')
+    expect(names).toContain('AO_MA_001')
+  })
+
+  it('DI tab should show only digital_input channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'digital_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('DI_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('DO tab should show only digital_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'digital_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('DO_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('CTR tab should show both counter and counter_input channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'counter'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('CTR_001')   // channel_type: 'counter'
+    expect(names).toContain('CTR_002')   // channel_type: 'counter_input'
+    expect(names.length).toBe(2)
+  })
+
+  it('PLS tab should show pulse_output and frequency_input channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'pulse_output'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('PLS_001')    // channel_type: 'pulse_output'
+    expect(names).toContain('FREQ_001')   // channel_type: 'frequency_input'
+    expect(names.length).toBe(2)
+  })
+
+  it('STR tab should show strain, strain_input, and bridge_input channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'strain'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('STRAIN_001')  // channel_type: 'strain'
+    expect(names).toContain('STRAIN_002')  // channel_type: 'strain_input'
+    expect(names).toContain('BRIDGE_001')  // channel_type: 'bridge_input'
+    expect(names.length).toBe(3)
+  })
+
+  it('IEPE tab should show both iepe and iepe_input channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'iepe'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('IEPE_001')   // channel_type: 'iepe'
+    expect(names).toContain('IEPE_002')   // channel_type: 'iepe_input'
+    expect(names.length).toBe(2)
+  })
+
+  it('MODBUS tab should show both modbus_register and modbus_coil channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'modbus'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('MB_REG_001')   // channel_type: 'modbus_register'
+    expect(names).toContain('MB_COIL_001')  // channel_type: 'modbus_coil'
+    expect(names.length).toBe(2)
+  })
+
+  it('generic tabs (rest_api, opc_ua) should use exact type match', () => {
+    const wrapper = mountWithChannels(allChannels)
+
+    wrapper.vm.activeTypeTab = 'rest_api'
+    let names = getFilteredNames(wrapper)
+    expect(names).toContain('REST_001')
+    expect(names.length).toBe(1)
+
+    wrapper.vm.activeTypeTab = 'opc_ua'
+    names = getFilteredNames(wrapper)
+    expect(names).toContain('OPC_001')
+    expect(names.length).toBe(1)
+  })
+
+  it('filter should show empty when no channels match the type', () => {
+    const channels = {
+      'TC_001': { name: 'TC_001', channel_type: 'thermocouple', physical_channel: 'Mod1/ai0' },
+    }
+    const wrapper = mountWithChannels(channels)
+    wrapper.vm.activeTypeTab = 'digital_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names.length).toBe(0)
+  })
+
+  it('filter should work with empty channel list', () => {
+    const wrapper = mountWithChannels({})
+    wrapper.vm.activeTypeTab = 'thermocouple'
+
+    const names = getFilteredNames(wrapper)
+    expect(names.length).toBe(0)
+  })
+
+  it('search filter should combine with type filter', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'thermocouple'
+    wrapper.vm.searchQuery = 'TC_001'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('TC_001')
+    expect(names).not.toContain('TC_002')
+    expect(names.length).toBe(1)
+  })
+
+  it('search filter should match channel description', () => {
+    const channels = {
+      'TC_001': { name: 'TC_001', channel_type: 'thermocouple', description: 'Inlet Temperature', physical_channel: 'Mod1/ai0' },
+      'TC_002': { name: 'TC_002', channel_type: 'thermocouple', description: 'Outlet Temperature', physical_channel: 'Mod1/ai1' },
+    }
+    const wrapper = mountWithChannels(channels)
+    wrapper.vm.activeTypeTab = 'thermocouple'
+    wrapper.vm.searchQuery = 'Inlet'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).toContain('TC_001')
+    expect(names).not.toContain('TC_002')
+    expect(names.length).toBe(1)
+  })
+
+  it('switching tabs should update the filtered results', () => {
+    const wrapper = mountWithChannels(allChannels)
+
+    // Start on all
+    wrapper.vm.activeTypeTab = 'all'
+    expect(getFilteredNames(wrapper).length).toBe(Object.keys(allChannels).length)
+
+    // Switch to TC
+    wrapper.vm.activeTypeTab = 'thermocouple'
+    expect(getFilteredNames(wrapper).length).toBe(2)
+
+    // Switch to CTR
+    wrapper.vm.activeTypeTab = 'counter'
+    expect(getFilteredNames(wrapper).length).toBe(2)
+
+    // Switch back to all
+    wrapper.vm.activeTypeTab = 'all'
+    expect(getFilteredNames(wrapper).length).toBe(Object.keys(allChannels).length)
+  })
+
+  it('counter tab should NOT show pulse_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'counter'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).not.toContain('PLS_001')
+    expect(names).not.toContain('FREQ_001')
+  })
+
+  it('strain tab should NOT show iepe channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'strain'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).not.toContain('IEPE_001')
+    expect(names).not.toContain('IEPE_002')
+  })
+
+  it('voltage_input tab should NOT show voltage_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'voltage_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).not.toContain('V_OUT_001')
+  })
+
+  it('current_input tab should NOT show current_output channels', () => {
+    const wrapper = mountWithChannels(allChannels)
+    wrapper.vm.activeTypeTab = 'current_input'
+
+    const names = getFilteredNames(wrapper)
+    expect(names).not.toContain('mA_OUT_001')
   })
 })

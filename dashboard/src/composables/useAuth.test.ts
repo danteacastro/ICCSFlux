@@ -28,6 +28,7 @@ const mockMqtt = {
   onSystemUpdate: vi.fn().mockReturnValue(() => {}),
   systemStatus: ref({ acquiring: false, recording: false }),
   channelValues: ref({}),
+  setUserAuthenticated: vi.fn(),
 }
 
 vi.mock('./useMqtt', () => ({

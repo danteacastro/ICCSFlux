@@ -274,11 +274,11 @@ describe('NumericDisplay', () => {
   // ===========================================================================
 
   describe('Display Modes', () => {
-    it('should have compact class in compact mode', () => {
+    it('should accept compact prop (legacy - layout now CSS container queries)', () => {
       const wrapper = mount(NumericDisplay, {
         props: { channel: 'TC_001', compact: true }
       })
-      expect(wrapper.find('.numeric-display').classes()).toContain('compact')
+      expect(wrapper.find('.numeric-display').exists()).toBe(true)
     })
 
     it('should have industrial class in industrial mode', () => {
@@ -288,12 +288,11 @@ describe('NumericDisplay', () => {
       expect(wrapper.find('.numeric-display').classes()).toContain('industrial')
     })
 
-    it('should support both compact and industrial modes', () => {
+    it('should support both compact and industrial props', () => {
       const wrapper = mount(NumericDisplay, {
         props: { channel: 'TC_001', compact: true, industrial: true }
       })
       const classes = wrapper.find('.numeric-display').classes()
-      expect(classes).toContain('compact')
       expect(classes).toContain('industrial')
     })
   })
@@ -308,7 +307,7 @@ describe('NumericDisplay', () => {
         props: { channel: 'TC_001', backgroundColor: '#ff0000' }
       })
       const style = wrapper.find('.numeric-display').attributes('style')
-      expect(style).toContain('--widget-bg')
+      expect(style).toContain('--bg-widget')
     })
 
     it('should apply custom value color', () => {
@@ -324,7 +323,7 @@ describe('NumericDisplay', () => {
         props: { channel: 'TC_001', style: { backgroundColor: '#0000ff' } }
       })
       const style = wrapper.find('.numeric-display').attributes('style')
-      expect(style).toContain('--widget-bg')
+      expect(style).toContain('--bg-widget')
     })
   })
 

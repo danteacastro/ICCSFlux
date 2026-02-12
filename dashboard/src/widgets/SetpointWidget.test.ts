@@ -232,8 +232,9 @@ describe('SetpointWidget', () => {
         props: { widgetId: 'sp-1', channel: 'AO_001' }
       })
       const buttons = wrapper.findAll('.step-btn')
-      expect(buttons.length).toBe(2)
-      expect(buttons[1]?.text()).toBe('+')
+      // 4 buttons: 2 per layout (horizontal + vertical, CSS toggles visibility)
+      expect(buttons.length).toBe(4)
+      expect(buttons.some(b => b.text() === '+')).toBe(true)
     })
 
     it('should render decrement button', () => {

@@ -98,6 +98,21 @@ vi.mock('./useSafety', () => ({
   })
 }))
 
+// Mock useScripts composable (used for addNotification in error handling)
+vi.mock('./useScripts', () => ({
+  useScripts: () => ({
+    addNotification: vi.fn(),
+  })
+}))
+
+// Mock usePlayground composable (used for formulaBlocksList/variablesList in collectCurrentState)
+vi.mock('./usePlayground', () => ({
+  usePlayground: () => ({
+    formulaBlocksList: { value: [] },
+    variablesList: { value: [] },
+  })
+}))
+
 describe('useProjectFiles', () => {
   beforeEach(() => {
     vi.resetAllMocks()  // Reset call counts AND implementations

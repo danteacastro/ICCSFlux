@@ -55,6 +55,7 @@ vi.mock('../stores/dashboard', () => {
       get values() { return mockValues.value },
       get isAcquiring() { return mockIsAcquiring.value },
       get editMode() { return mockEditMode.value },
+      widgets: [],
       updateWidgetStyle: vi.fn()
     })
   }
