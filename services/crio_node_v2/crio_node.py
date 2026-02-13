@@ -379,18 +379,27 @@ class CRIONodeV2:
         """
         Main loop - the heart of the service.
 
+        Uses epoch-anchored timing to prevent cumulative drift.
+        Each scan targets an absolute time rather than sleeping relative
+        to the end of the previous scan.
+
         Pattern:
         1. Process all pending commands
         2. Read channels (if acquiring)
         3. Check safety (single pass)
         4. Publish values (rate-limited)
+        5. Sleep until next epoch-anchored target
         """
         logger.info("Main loop started")
         _loop_count = 0
 
         _consecutive_errors = 0
+        next_scan_time = time.time()
 
         while not self._shutdown.is_set():
+            # Calculate interval dynamically to pick up runtime rate changes
+            scan_interval = self._scan_interval
+            next_scan_time += scan_interval
             loop_start = time.time()
 
             try:
@@ -416,7 +425,7 @@ class CRIONodeV2:
                 if self.state.is_acquiring:
                     self._toggle_watchdog_output()
 
-                # 5. PUBLISH VALUES (rate-limited)
+                # 6. PUBLISH VALUES (rate-limited)
                 now = time.time()
                 published = False
                 if self.state.is_acquiring and (now - self._last_publish_time) >= self._publish_interval:
@@ -453,6 +462,14 @@ class CRIONodeV2:
                 # Set timing defaults so sleep still works after error
                 t_read_end = t_read_start = t_safety_end = t_pub_end = time.time()
                 published = False
+
+            # Sleep until next epoch-anchored target (prevents cumulative drift)
+            sleep_time = max(0, next_scan_time - time.time())
+            # If we fell behind by more than one interval, reset to prevent burst catch-up
+            if time.time() - next_scan_time > scan_interval:
+                next_scan_time = time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         logger.info("Main loop stopped")
 
@@ -775,18 +792,28 @@ class CRIONodeV2:
         # Update scan/publish rates if provided
         rate_changed = False
         if 'scan_rate_hz' in payload:
-            new_rate = float(payload['scan_rate_hz'])
+            new_rate = min(float(payload['scan_rate_hz']), 100.0)  # Cap at 100 Hz
+            if new_rate < 0.1:
+                new_rate = 0.1  # Minimum 0.1 Hz
             if new_rate != self.config.scan_rate_hz:
-                logger.info(f"Scan rate updated: {self.config.scan_rate_hz} Hz -> {new_rate} Hz")
+                old_rate = self.config.scan_rate_hz
+                logger.info(f"Scan rate updated: {old_rate} Hz -> {new_rate} Hz")
                 self.config.scan_rate_hz = new_rate
                 self._scan_interval = 1.0 / new_rate
-                # Update hardware config
+                self._scan_timing.target_ms = self._scan_interval * 1000
+                # Reinit hardware so DAQmx sample clock matches new rate
                 if self.hardware:
                     self.hardware.config.scan_rate_hz = new_rate
+                    if self.state.is_acquiring:
+                        logger.info(f"Reinitializing hardware for new sample rate: {new_rate} Hz")
+                        if not self.hardware.reinit_sample_rate():
+                            logger.error("Hardware reinit failed — sample rate may not have changed")
                 rate_changed = True
 
         if 'publish_rate_hz' in payload:
-            new_rate = float(payload['publish_rate_hz'])
+            new_rate = min(float(payload['publish_rate_hz']), 100.0)  # Cap at 100 Hz
+            if new_rate < 0.1:
+                new_rate = 0.1  # Minimum 0.1 Hz
             if new_rate != self.config.publish_rate_hz:
                 logger.info(f"Publish rate updated: {self.config.publish_rate_hz} Hz -> {new_rate} Hz")
                 self.config.publish_rate_hz = new_rate
@@ -1307,6 +1334,8 @@ class CRIONodeV2:
             'module_count': len(self._cached_modules),
             'config_version': self.config_version,
             'config_timestamp': self.config_timestamp,
+            'scan_rate_hz': self.config.scan_rate_hz,
+            'publish_rate_hz': self.config.publish_rate_hz,
             'scan_timing': self._scan_timing.to_dict(),
         }
 

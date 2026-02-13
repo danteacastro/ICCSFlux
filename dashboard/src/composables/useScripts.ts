@@ -149,6 +149,9 @@ export function useScripts() {
   // NOTIFICATIONS
   // ========================================================================
 
+  // Track auto-dismiss timers so they can be cancelled on manual dismiss
+  const notificationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
   function addNotification(type: 'info' | 'warning' | 'error' | 'success', title: string, message: string) {
     const notification = {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -167,15 +170,23 @@ export function useScripts() {
 
     // Auto-dismiss info/success after 5 seconds
     if (type === 'info' || type === 'success') {
-      setTimeout(() => {
+      const timerId = setTimeout(() => {
+        notificationTimers.delete(notification.id)
         dismissNotification(notification.id)
       }, 5000)
+      notificationTimers.set(notification.id, timerId)
     }
 
     return notification.id
   }
 
   function dismissNotification(id: string) {
+    // Cancel any pending auto-dismiss timer
+    const timer = notificationTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      notificationTimers.delete(id)
+    }
     const index = notifications.value.findIndex(n => n.id === id)
     if (index >= 0) {
       notifications.value.splice(index, 1)

@@ -1038,6 +1038,7 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
   </div>
 </template>
 
@@ -1585,4 +1586,5 @@ button {
 
 .issue-icon { flex-shrink: 0; }
 .issue-text { line-height: 1.3; }
+
 </style>

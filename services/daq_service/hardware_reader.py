@@ -75,7 +75,7 @@ except Exception:
 logger = logging.getLogger('HardwareReader')
 
 # Configuration for continuous acquisition
-SAMPLE_RATE_HZ = 10  # Hardware sample rate (samples per second per channel)
+DEFAULT_SAMPLE_RATE_HZ = 10  # Fallback if config doesn't specify scan_rate_hz
 BUFFER_SIZE = 100    # Hardware buffer size (samples per channel)
 
 
@@ -165,20 +165,27 @@ class HardwareReader:
     Reads from real NI hardware using nidaqmx with CONTINUOUS BUFFERED ACQUISITION.
 
     Instead of on-demand reads (which block on ADC settling), this uses:
-    - Hardware-timed continuous sampling at SAMPLE_RATE_HZ
+    - Hardware-timed continuous sampling at config.system.scan_rate_hz
     - Background thread reads from hardware FIFO buffer
     - read_all() returns latest cached values INSTANTLY
 
     This matches LabVIEW's recommended DAQmx architecture.
     """
 
-    def __init__(self, config: NISystemConfig, sample_rate: float = SAMPLE_RATE_HZ,
+    def __init__(self, config: NISystemConfig, sample_rate: float = None,
                  initial_output_values: Optional[Dict[str, float]] = None):
         if not NIDAQMX_AVAILABLE:
             raise RuntimeError("nidaqmx library not available - cannot use HardwareReader")
 
         self.config = config
-        self.sample_rate = sample_rate
+        # Use configured scan rate from project, fall back to default only if not specified
+        if sample_rate is not None:
+            self.sample_rate = sample_rate
+        elif hasattr(config, 'system') and hasattr(config.system, 'scan_rate_hz'):
+            self.sample_rate = config.system.scan_rate_hz
+        else:
+            self.sample_rate = DEFAULT_SAMPLE_RATE_HZ
+        logger.info(f"HardwareReader sample rate: {self.sample_rate} Hz (from {'explicit param' if sample_rate is not None else 'config.system.scan_rate_hz'})")
         self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task

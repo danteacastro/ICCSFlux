@@ -6508,6 +6508,11 @@ Unit conversions:
                 self._scan_timing.target_ms = 1000.0 / new_scan_rate
                 logger.info(f"Scan rate updated: {old_scan_rate} Hz -> {new_scan_rate} Hz")
 
+                # Reinit hardware reader so DAQmx sample clock matches new rate
+                if self.hardware_reader and old_scan_rate != new_scan_rate:
+                    logger.info(f"Reinitializing hardware reader for new sample rate: {new_scan_rate} Hz")
+                    self._reinit_hardware_reader()
+
             # Update publish rate if provided
             if 'publish_rate_hz' in payload:
                 new_publish_rate = min(float(payload['publish_rate_hz']), 10.0)  # Cap at 10 Hz
@@ -8158,7 +8163,7 @@ Unit conversions:
 
         # Only process if it's a remote node (cRIO or Opto22)
         node_type = payload.get('node_type')
-        if node_type not in ('crio', 'opto22'):
+        if node_type not in ('crio', 'opto22', 'gc'):
             return
 
         # Extract node_id from topic: nisystem/nodes/{node_id}/status/system
@@ -8185,20 +8190,26 @@ Unit conversions:
         # Check if this is a NEW node (not seen before)
         if node_type == 'crio':
             existing_nodes = {n.node_id for n in self.device_discovery.get_crio_nodes()}
-        else:  # opto22
+        elif node_type == 'opto22':
             existing_nodes = {n.node_id for n in self.device_discovery.get_opto22_nodes()}
+        else:  # gc
+            existing_nodes = {n.node_id for n in self.device_discovery.get_gc_nodes()}
         is_new_node = node_id not in existing_nodes
 
         if status == 'offline':
             if node_type == 'crio':
                 self.device_discovery.mark_crio_offline(node_id)
-            else:
+            elif node_type == 'opto22':
                 self.device_discovery.mark_opto22_offline(node_id)
+            else:  # gc
+                self.device_discovery.mark_gc_offline(node_id)
         else:
             if node_type == 'crio':
                 self.device_discovery.register_crio_node(node_id, payload)
-            else:
+            elif node_type == 'opto22':
                 self.device_discovery.register_opto22_node(node_id, payload)
+            else:  # gc
+                self.device_discovery.register_gc_node(node_id, payload)
 
         logger.debug(f"{node_type.upper()} node status: {node_id} -> {status}")
 
@@ -8212,7 +8223,7 @@ Unit conversions:
                     "node_id": node_id,
                     "node_type": node_type,
                     "status": status,
-                    "product_type": payload.get('product_type', 'cRIO' if node_type == 'crio' else 'groov EPIC'),
+                    "product_type": payload.get('product_type', 'cRIO' if node_type == 'crio' else ('groov EPIC' if node_type == 'opto22' else 'GC Analyzer')),
                     "channels": payload.get('channels', 0),
                     "timestamp": datetime.now().isoformat()
                 }),
@@ -8268,7 +8279,7 @@ Unit conversions:
 
         # Only process cRIO and Opto22 heartbeats
         node_type = payload.get('node_type')
-        if node_type not in ('crio', 'opto22'):
+        if node_type not in ('crio', 'opto22', 'gc'):
             return
 
         # Extract node_id from topic: nisystem/nodes/{node_id}/heartbeat
@@ -8295,14 +8306,16 @@ Unit conversions:
             'channels': payload.get('channels', 0),
             'pc_connected': payload.get('pc_connected', False),
             'ip_address': payload.get('ip_address', 'unknown'),
-            'product_type': payload.get('product_type', 'cRIO' if node_type == 'crio' else 'groov EPIC'),
+            'product_type': payload.get('product_type', 'cRIO' if node_type == 'crio' else ('groov EPIC' if node_type == 'opto22' else 'GC Analyzer')),
             'serial_number': payload.get('serial_number', ''),
         }
 
         if node_type == 'crio':
             self.device_discovery.update_crio_heartbeat(node_id, heartbeat_data)
-        else:
+        elif node_type == 'opto22':
             self.device_discovery.update_opto22_heartbeat(node_id, heartbeat_data)
+        else:  # gc
+            self.device_discovery.update_gc_heartbeat(node_id, heartbeat_data)
 
     def _handle_crio_channel_value(self, topic: str, payload: Dict[str, Any]):
         """
@@ -13228,15 +13241,20 @@ Unit conversions:
             time.sleep(sleep_time)
 
     def _publish_loop(self):
-        """Publish loop - publishes values at publish rate"""
+        """Publish loop - publishes values at publish rate.
+
+        Uses epoch-anchored timing to prevent cumulative drift.
+        """
         logger.info(f"Starting publish loop at {self.config.system.publish_rate_hz} Hz")
 
         publish_count = 0
         status_publish_counter = 0
+        next_publish_time = time.time()
 
         while self.running:
             # Calculate interval dynamically to pick up runtime rate changes
             publish_interval = 1.0 / self.config.system.publish_rate_hz
+            next_publish_time += publish_interval
             start_time = time.time()
 
             # Only publish if acquiring
@@ -13359,8 +13377,11 @@ Unit conversions:
             elapsed = time.time() - start_time
             self.last_publish_dt_ms = elapsed * 1000
 
-            # Sleep for remainder of publish interval
-            sleep_time = max(0, publish_interval - elapsed)
+            # Sleep until next epoch-anchored target (prevents cumulative drift)
+            sleep_time = max(0, next_publish_time - time.time())
+            # If we fell behind by more than one interval, reset to prevent burst catch-up
+            if time.time() - next_publish_time > publish_interval:
+                next_publish_time = time.time()
             time.sleep(sleep_time)
 
     def _log_value(self, channel_name: str, value: Any):

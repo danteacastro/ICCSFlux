@@ -3218,7 +3218,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
       variable_explorer: { w: 6, h: 8 },
       variable_input: { w: 4, h: 6 },
       status_messages: { w: 6, h: 4 },
-      image: { w: 4, h: 4 }
+      image: { w: 4, h: 4 },
+      gc_chromatogram: { w: 8, h: 8 },
+      gc_overview: { w: 12, h: 8 }
     }
     return defaults[type] || { w: 2, h: 2 }
   }

@@ -64,6 +64,13 @@ watch(() => props.widgetId, () => {
       if (!localWidget.value.advancedParams) localWidget.value.advancedParams = []
       if (!localWidget.value.temperatureUnit) localWidget.value.temperatureUnit = 'F'
     }
+    // For gc_chromatogram widgets, initialize display options
+    if (localWidget.value.type === 'gc_chromatogram') {
+      if (localWidget.value.showPeakLabels === undefined) localWidget.value.showPeakLabels = true
+      if (localWidget.value.showComponentTable === undefined) localWidget.value.showComponentTable = true
+      if (localWidget.value.showSstBar === undefined) localWidget.value.showSstBar = true
+      if (localWidget.value.gcHistoryDepth === undefined) localWidget.value.gcHistoryDepth = 10
+    }
   }
 }, { immediate: true })
 
@@ -1494,6 +1501,51 @@ const selectedChartChannels = computed(() => {
             <div class="form-group">
               <label>Decimal Places</label>
               <input type="number" v-model.number="localWidget.decimals" placeholder="1" min="0" max="6" />
+            </div>
+          </template>
+
+          <!-- GC Chromatogram Config -->
+          <template v-if="widgetType === 'gc_chromatogram'">
+            <div class="form-group">
+              <label>GC Node ID</label>
+              <input
+                type="text"
+                v-model="localWidget.gcNodeId"
+                placeholder="e.g. gc-001"
+              />
+              <span class="field-hint">ID of the GC node service to subscribe to</span>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showPeakLabels" />
+                  Show Peak Labels
+                </label>
+              </div>
+              <div class="form-group half">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showComponentTable" />
+                  Show Component Table
+                </label>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>
+                  <input type="checkbox" v-model="localWidget.showSstBar" />
+                  Show SST Status Bar
+                </label>
+              </div>
+              <div class="form-group half">
+                <label>History Depth</label>
+                <input
+                  type="number"
+                  v-model.number="localWidget.gcHistoryDepth"
+                  placeholder="10"
+                  min="1"
+                  max="100"
+                />
+              </div>
             </div>
           </template>
 

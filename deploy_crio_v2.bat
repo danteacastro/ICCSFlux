@@ -118,21 +118,34 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-REM Deploy TLS CA certificate (if available)
+REM Deploy TLS CA certificate (required for encrypted MQTT on port 8883)
 if exist config\tls\ca.crt (
     echo Deploying TLS CA certificate...
     scp config\tls\ca.crt admin@%HOST%:/home/admin/nisystem/ca.crt
+) else (
+    echo WARNING: config\tls\ca.crt not found! Run: python scripts\generate_tls_certs.py
+    echo   cRIO will connect on plaintext port 1883 as fallback.
 )
 
 REM Write persistent credential + identity file to cRIO
 REM This survives reboots so run_crio_v2.py doesn't need CLI args
+REM Port 8883 with TLS when CA cert is available, fallback to 1883 without
 echo Writing credential file to cRIO...
 if defined MQTT_USER (
+    if exist config\tls\ca.crt (
+        set CRIO_PORT=8883
+        set CRIO_TLS=true
+        set CRIO_CA=/home/admin/nisystem/ca.crt
+    ) else (
+        set CRIO_PORT=1883
+        set CRIO_TLS=false
+        set CRIO_CA=
+    )
     ssh admin@%HOST% "cat > /home/admin/nisystem/mqtt_creds.json << 'CREDEOF'
-{\"mqtt_user\": \"%MQTT_USER%\", \"mqtt_pass\": \"%MQTT_PASS%\", \"broker\": \"%BROKER%\", \"node_id\": \"crio-001\"}
+{\"mqtt_user\": \"%MQTT_USER%\", \"mqtt_pass\": \"%MQTT_PASS%\", \"broker\": \"%BROKER%\", \"port\": %CRIO_PORT%, \"tls_enabled\": %CRIO_TLS%, \"tls_ca_cert\": \"%CRIO_CA%\", \"node_id\": \"crio-001\"}
 CREDEOF
 chmod 600 /home/admin/nisystem/mqtt_creds.json"
-    echo   Credentials + identity written to cRIO
+    echo   Credentials written (port %CRIO_PORT%, TLS=%CRIO_TLS%)
 ) else (
     echo   WARNING: No credentials to write. Run start.bat first to generate them.
 )
@@ -171,15 +184,16 @@ REM Build MQTT auth args for cRIO runner
 set MQTT_ARGS=
 if defined MQTT_USER set "MQTT_ARGS=--mqtt-user %MQTT_USER% --mqtt-pass %MQTT_PASS%"
 
-echo Starting cRIO Node V2 (broker: %BROKER%)...
+echo Starting cRIO Node V2 (broker: %BROKER%, port: %CRIO_PORT%)...
 ssh admin@%HOST% "cd /home/admin/nisystem && MALLOC_CHECK_=0 python3 run_crio_v2.py --broker %BROKER% %MQTT_ARGS% --daemon"
 
 REM Clear any retained acquire/start messages so cRIO doesn't auto-acquire
+REM Uses localhost:1883 (local plaintext listener) since we're on the broker PC
 echo Clearing retained acquire messages...
 if defined MQTT_USER (
-    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.username_pw_set('%MQTT_USER%','%MQTT_PASS%'); c.connect('%BROKER%', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
+    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.username_pw_set('%MQTT_USER%','%MQTT_PASS%'); c.connect('localhost', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
 ) else (
-    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.connect('%BROKER%', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
+    python -c "import paho.mqtt.client as m; c=m.Client('deploy-cleanup'); c.connect('localhost', 1883); c.publish('nisystem/nodes/crio-001/system/acquire/start', b'', retain=True); c.publish('nisystem/nodes/crio-001/system/acquire/stop', b'', retain=True); c.loop(0.5); c.disconnect()" 2>nul
 )
 
 echo.

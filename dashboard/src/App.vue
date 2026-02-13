@@ -21,6 +21,7 @@ import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
+import GcAnalysisTab from './components/GcAnalysisTab.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
@@ -42,6 +43,9 @@ let windowPositionCleanup: (() => void) | null = null
 // Login dialog state
 const showLoginDialog = ref(false)
 
+// GC tab visibility — hidden by default, toggle with Ctrl+F
+const showGcTab = ref(false)
+
 // Tabs
 const activeTab = ref('overview')
 
@@ -53,6 +57,7 @@ const tabComponents: Record<string, Component> = {
   data: markRaw(DataTab),
   safety: markRaw(SafetyTab),
   notebook: markRaw(NotebookTab),
+  gc_analysis: markRaw(GcAnalysisTab),
   admin: markRaw(AdminTab),
 }
 const activeTabComponent = computed(() => tabComponents[activeTab.value] || DashboardGrid)
@@ -80,6 +85,7 @@ const tabAccess = {
   data: computed(() => true),
   safety: computed(() => true),
   notebook: computed(() => true),
+  gc_analysis: computed(() => true),
   admin: computed(() => auth.isSupervisor.value),   // Supervisor+ only
 }
 
@@ -128,7 +134,7 @@ function updateUrlNavigation(view: string, pageId: string) {
 
 // Restore activeTab from URL on startup (before any watches fire)
 const urlView = getViewFromUrl()
-if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'notebook', 'admin'].includes(urlView)) {
+if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
   activeTab.value = urlView
 }
 
@@ -507,10 +513,24 @@ onMounted(() => {
   }
   window.addEventListener('beforeunload', handleBeforeUnload)
 
+  // Ctrl+F: Toggle GC tab visibility (hidden by default)
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (e.ctrlKey && e.key === 'f') {
+      e.preventDefault()
+      showGcTab.value = !showGcTab.value
+      // If hiding while on GC tab, switch to overview
+      if (!showGcTab.value && activeTab.value === 'gc_analysis') {
+        activeTab.value = 'overview'
+      }
+    }
+  }
+  window.addEventListener('keydown', handleKeydown)
+
   // Cleanup interval on unmount
   onUnmounted(() => {
     clearInterval(checkMqttReady)
     window.removeEventListener('beforeunload', handleBeforeUnload)
+    window.removeEventListener('keydown', handleKeydown)
     if (windowPositionCleanup) {
       windowPositionCleanup()
     }
@@ -664,6 +684,19 @@ async function handleManualSave() {
               <line x1="8" y1="11" x2="14" y2="11"/>
             </svg>
             Notes
+          </button>
+          <button
+            v-if="showGcTab"
+            class="tab-btn"
+            :class="{ active: activeTab === 'gc_analysis' }"
+            @click="switchTab('gc_analysis')"
+            title="GC Analysis (Ctrl+F to hide)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 3h6v4H9zM12 7v4M7 11h10l1 10H6l1-10z"/>
+              <path d="M10 15v3M14 15v3"/>
+            </svg>
+            GC
           </button>
           <button
             class="tab-btn"

@@ -425,15 +425,24 @@ class PollManager:
             task.cancel()
 
     async def _poll_loop(self, poll_id: str):
+        """Epoch-anchored poll loop to prevent cumulative drift."""
         try:
+            next_poll_time = time.time()
             while True:
                 poll = self.polls.get(poll_id)
                 if not poll or not poll.enabled:
                     break
 
+                scan_interval = poll.scan_rate_ms / 1000.0
+                next_poll_time += scan_interval
+
                 client = self.clients.get(poll.connection_id)
                 if not client or not client.connected:
-                    await asyncio.sleep(poll.scan_rate_ms / 1000.0)
+                    # Still advance epoch target while waiting for connection
+                    sleep_time = max(0, next_poll_time - time.time())
+                    if time.time() - next_poll_time > scan_interval:
+                        next_poll_time = time.time()
+                    await asyncio.sleep(sleep_time)
                     continue
 
                 start = time.time()
@@ -482,7 +491,11 @@ class PollManager:
                         "stats": asdict(stats),
                     })
 
-                sleep_time = max(0, (poll.scan_rate_ms / 1000.0) - (time.time() - start))
+                # Sleep until next epoch-anchored target
+                sleep_time = max(0, next_poll_time - time.time())
+                # If we fell behind by more than one interval, reset to prevent burst catch-up
+                if time.time() - next_poll_time > scan_interval:
+                    next_poll_time = time.time()
                 await asyncio.sleep(sleep_time)
 
         except asyncio.CancelledError:

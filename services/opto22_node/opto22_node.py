@@ -86,6 +86,48 @@ def get_value_quality(value: Any) -> str:
     return 'good'
 
 
+class ScanTimingStats:
+    """Track scan loop timing for observability."""
+
+    def __init__(self, target_ms: float = 250.0, window_size: int = 100):
+        self.target_ms = target_ms
+        self._window_size = window_size
+        self.reset()
+
+    def reset(self):
+        self._samples: list = []
+        self.overruns = 0
+        self.total_scans = 0
+
+    def record(self, dt_ms: float):
+        self.total_scans += 1
+        self._samples.append(dt_ms)
+        if len(self._samples) > self._window_size:
+            self._samples.pop(0)
+        if dt_ms > self.target_ms * 1.5:
+            self.overruns += 1
+
+    @property
+    def mean_ms(self) -> float:
+        return sum(self._samples) / len(self._samples) if self._samples else 0.0
+
+    @property
+    def actual_rate_hz(self) -> float:
+        mean = self.mean_ms
+        return 1000.0 / mean if mean > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            'target_ms': round(self.target_ms, 2),
+            'actual_ms': round(self.mean_ms, 2),
+            'min_ms': round(min(self._samples), 2) if self._samples else 0.0,
+            'max_ms': round(max(self._samples), 2) if self._samples else 0.0,
+            'actual_rate_hz': round(self.actual_rate_hz, 2),
+            'overruns': self.overruns,
+            'total_scans': self.total_scans,
+        }
+
+
 class Opto22NodeService:
     """
     Opto22 Node Service — hybrid architecture with groov Manage MQTT + Python intelligence.
@@ -178,6 +220,10 @@ class Opto22NodeService:
 
         # Interactive console namespace
         self._console_namespace: Optional[Dict[str, Any]] = None
+
+        # Scan timing stats
+        scan_rate = self.config.scan_rate_hz if self.config else 4.0
+        self._scan_timing = ScanTimingStats(target_ms=1000.0 / scan_rate)
 
         # Status tracking
         self.last_pc_contact = time.time()
@@ -401,7 +447,17 @@ class Opto22NodeService:
         if topic.endswith('/full'):
             logger.info("Received full configuration update")
             try:
+                old_scan_rate = self.config.scan_rate_hz if self.config else 4.0
+                old_publish_rate = self.config.publish_rate_hz if self.config else 4.0
+
                 self.config = load_config(payload, self.config)
+
+                # Update scan timing stats if rate changed
+                if self.config.scan_rate_hz != old_scan_rate:
+                    logger.info(f"Scan rate updated: {old_scan_rate} Hz -> {self.config.scan_rate_hz} Hz")
+                    self._scan_timing.target_ms = 1000.0 / self.config.scan_rate_hz
+                if self.config.publish_rate_hz != old_publish_rate:
+                    logger.info(f"Publish rate updated: {old_publish_rate} Hz -> {self.config.publish_rate_hz} Hz")
 
                 # Load safety config
                 self.safety.load_config({
@@ -783,11 +839,19 @@ class Opto22NodeService:
         logger.info("Acquisition stopped")
 
     def _scan_loop(self):
-        """Main data acquisition loop."""
-        scan_interval = 1.0 / (self.config.scan_rate_hz if self.config else 10.0)
-        publish_interval = 1.0 / (self.config.publish_rate_hz if self.config else 4.0)
+        """Main data acquisition loop.
+
+        Uses epoch-anchored timing to prevent cumulative drift.
+        Each scan targets an absolute time rather than sleeping relative
+        to the end of the previous scan.
+        """
+        next_scan_time = time.time()
 
         while self._acquiring.is_set():
+            # Calculate intervals dynamically to pick up runtime rate changes
+            scan_interval = 1.0 / (self.config.scan_rate_hz if self.config else 10.0)
+            publish_interval = 1.0 / (self.config.publish_rate_hz if self.config else 4.0)
+            next_scan_time += scan_interval
             loop_start = time.time()
 
             try:
@@ -808,10 +872,12 @@ class Opto22NodeService:
                         self.channel_values[name] = val
                         self.channel_timestamps[name] = now
 
-                # Publish at rate limit
+                # Publish at rate limit (epoch-anchored)
                 if now - self._last_publish_time >= publish_interval:
                     self._publish_channel_values()
-                    self._last_publish_time = now
+                    self._last_publish_time += publish_interval
+                    if now - self._last_publish_time > publish_interval:
+                        self._last_publish_time = now
 
                 # Snapshot for engines
                 with self.values_lock:
@@ -843,8 +909,15 @@ class Opto22NodeService:
             except Exception as e:
                 logger.error(f"Scan loop error: {e}")
 
-            elapsed = time.time() - loop_start
-            sleep_time = scan_interval - elapsed
+            # Track scan loop timing
+            loop_dt_ms = (time.time() - loop_start) * 1000
+            self._scan_timing.record(loop_dt_ms)
+
+            # Sleep until next epoch-anchored target (prevents cumulative drift)
+            sleep_time = max(0, next_scan_time - time.time())
+            # If we fell behind by more than one interval, reset to prevent burst catch-up
+            if time.time() - next_scan_time > scan_interval:
+                next_scan_time = time.time()
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
@@ -877,6 +950,9 @@ class Opto22NodeService:
             'channels': len(self.config.channels) if self.config else 0,
             'product_type': hw.get('product_type', 'groov EPIC/RIO'),
             'config_version': self.config_version,
+            'scan_rate_hz': self.config.scan_rate_hz if self.config else 0,
+            'publish_rate_hz': self.config.publish_rate_hz if self.config else 0,
+            'scan_timing': self._scan_timing.to_dict(),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }, retain=True)
 

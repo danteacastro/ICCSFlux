@@ -1641,6 +1641,9 @@ class ScriptEngine:
             return self._node.state.is_output_locked(name)
 
         def publish_value(name: str, value: Any):
+            # Cap rate limiters to prevent memory leak from dynamic tag names
+            if len(self._publish_rate_limiters) > 500:
+                self._publish_rate_limiters.clear()
             limiter = self._publish_rate_limiters.get(name)
             if limiter is None:
                 limiter = TokenBucketRateLimiter(rate=4.0, capacity=1.0)

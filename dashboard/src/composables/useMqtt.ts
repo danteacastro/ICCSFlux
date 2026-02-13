@@ -231,7 +231,8 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/config/channel/bulk-create/response`,
         `${nodePrefix}/config/system/update/response`,  // System settings update response
         `${nodePrefix}/script/#`,  // Script published values and status
-        `${nodePrefix}/crio/#`  // cRIO node management
+        `${nodePrefix}/crio/#`,  // cRIO node management
+        `${nodePrefix}/gc/#`  // GC node analysis data
       ]
 
       topics.forEach(topic => {

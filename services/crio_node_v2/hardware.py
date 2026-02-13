@@ -46,7 +46,7 @@ logger = logging.getLogger('cRIONode')
 # ---------------------------------------------------------------------------
 # Hardware constants (extracted from inline magic numbers)
 # ---------------------------------------------------------------------------
-SLOW_READ_INTERVAL_S = 1.0          # Min seconds between slow-task reads (TC modules)
+SLOW_READ_MIN_INTERVAL_S = 1.0      # Physical floor: TC autozero takes ~1s per read
 MIN_BUFFER_SAMPLES = 100            # Minimum DAQmx buffer size (samples)
 BUFFER_DURATION_S = 10              # Buffer duration for continuous acquisition (seconds)
 RESISTANCE_EXCITATION_A = 0.001     # Resistance channel excitation current (1 mA)
@@ -261,7 +261,11 @@ class NIDAQmxHardware(HardwareInterface):
         self._slow_tasks: set = set()  # Task keys that are slow (TC modules)
         self._cached_values: Dict[str, Tuple[float, float]] = {}  # channel -> (value, timestamp)
         self._last_slow_read: Dict[str, float] = {}  # task_key -> last read time
-        self._slow_read_interval: float = SLOW_READ_INTERVAL_S
+        # Slow read interval: max of hardware floor (1s for TC autozero) and scan interval
+        # At 4 Hz scan: reads TCs every 1.0s (physical limit, cached between)
+        # At 0.5 Hz scan: reads TCs every 2.0s (matches scan cadence)
+        scan_interval = 1.0 / self.config.scan_rate_hz if self.config.scan_rate_hz > 0 else 1.0
+        self._slow_read_interval: float = max(SLOW_READ_MIN_INTERVAL_S, scan_interval)
 
         # Timed tasks (modules that require sample clock timing)
         self._timed_tasks: set = set()  # Task keys that use continuous acquisition
@@ -346,10 +350,13 @@ class NIDAQmxHardware(HardwareInterface):
     def start(self) -> bool:
         """Create and start all DAQmx tasks."""
         try:
+            # Recalculate slow read interval from current config
+            scan_interval = 1.0 / self.config.scan_rate_hz if self.config.scan_rate_hz > 0 else 1.0
+            self._slow_read_interval = max(SLOW_READ_MIN_INTERVAL_S, scan_interval)
             self._create_tasks()
             self._start_tasks()
             self._running = True
-            logger.info("NI-DAQmx hardware started")
+            logger.info(f"NI-DAQmx hardware started (sample rate: {self.config.scan_rate_hz} Hz, TC interval: {self._slow_read_interval:.2f}s)")
             return True
         except Exception as e:
             logger.error(f"Failed to start hardware: {e}")
@@ -417,6 +424,99 @@ class NIDAQmxHardware(HardwareInterface):
         self._counter_rollover.clear()
 
         logger.info("NI-DAQmx hardware stopped")
+
+    def reinit_sample_rate(self) -> bool:
+        """Reinitialize DAQmx tasks for a new sample rate WITHOUT resetting outputs.
+
+        Used when scan_rate_hz changes at runtime. Preserves output values
+        across the teardown/rebuild so heaters/valves/solenoids are not interrupted.
+
+        Returns True on success, False on failure (outputs remain at last known state).
+        """
+        # 1. Preserve current output values
+        with self._output_lock:
+            preserved_outputs = dict(self._output_values)
+        logger.info(f"Reinit sample rate: preserving {len(preserved_outputs)} output values")
+
+        # 2. Stop tasks WITHOUT safe state — just close DAQmx resources
+        self._running = False
+        for tasks in [self._di_tasks, self._ai_tasks, self._do_tasks, self._ao_tasks]:
+            for task in tasks.values():
+                try:
+                    task.stop()
+                    task.close()
+                except Exception as e:
+                    logger.warning(f"Error stopping task during reinit: {e}")
+
+        for name, task in self._ctr_in_tasks.items():
+            try:
+                task.stop()
+                task.close()
+            except Exception as e:
+                logger.warning(f"Error stopping counter input {name} during reinit: {e}")
+
+        for name, task in self._ctr_out_tasks.items():
+            try:
+                task.stop()
+                task.close()
+            except Exception as e:
+                logger.warning(f"Error stopping pulse output {name} during reinit: {e}")
+
+        # Clear task/channel maps (same as stop())
+        self._di_tasks.clear()
+        self._ai_tasks.clear()
+        self._do_tasks.clear()
+        self._ao_tasks.clear()
+        self._ctr_in_tasks.clear()
+        self._ctr_out_tasks.clear()
+        self._di_channels.clear()
+        self._ai_channels.clear()
+        self._do_channels.clear()
+        self._ao_channels.clear()
+        self._slow_tasks.clear()
+        self._cached_values.clear()
+        self._last_slow_read.clear()
+        self._timed_tasks.clear()
+        for timer in self._momentary_timers.values():
+            timer.cancel()
+        self._momentary_timers.clear()
+        self._counter_rollover.clear()
+
+        # 3. Recreate and start tasks with new sample rate
+        try:
+            scan_interval = 1.0 / self.config.scan_rate_hz if self.config.scan_rate_hz > 0 else 1.0
+            self._slow_read_interval = max(SLOW_READ_MIN_INTERVAL_S, scan_interval)
+            self._create_tasks()
+            self._start_tasks()
+            self._running = True
+
+            # 4. Restore preserved output values
+            for ch_name, value in preserved_outputs.items():
+                try:
+                    self.write_output(ch_name, value)
+                except Exception as e:
+                    logger.error(f"Failed to restore output {ch_name}={value} after reinit: {e}")
+
+            logger.info(f"Hardware reinit complete (sample rate: {self.config.scan_rate_hz} Hz, "
+                        f"restored {len(preserved_outputs)} outputs)")
+            return True
+
+        except Exception as e:
+            logger.error(f"Hardware reinit failed: {e}")
+            # Attempt recovery — try to restart with old tasks
+            try:
+                self._create_tasks()
+                self._start_tasks()
+                self._running = True
+                for ch_name, value in preserved_outputs.items():
+                    try:
+                        self.write_output(ch_name, value)
+                    except Exception:
+                        pass
+                logger.warning("Hardware reinit recovery: tasks restarted but sample rate may not have changed")
+            except Exception as e2:
+                logger.critical(f"Hardware reinit recovery also failed: {e2} — hardware is stopped!")
+            return False
 
     def _get_physical_path(self, physical_channel: str) -> str:
         """

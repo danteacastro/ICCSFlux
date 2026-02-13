@@ -84,6 +84,8 @@ class AuditEventType(Enum):
     USER_LOGIN_FAILED = "user.login.failed"
     USER_LOGOUT = "user.logout"
     USER_SESSION_TIMEOUT = "user.session.timeout"
+    ELECTRONIC_SIGNATURE = "electronic.signature"
+    ELECTRONIC_SIGNATURE_FAILED = "electronic.signature.failed"
 
     # Test session control
     TEST_SESSION_STARTED = "test.session.started"

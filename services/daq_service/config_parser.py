@@ -95,6 +95,7 @@ class HardwareSource(Enum):
     MODBUS_TCP = "modbus_tcp"  # Modbus TCP device - read by PC
     MODBUS_RTU = "modbus_rtu"  # Modbus RTU device - read by PC via serial
     VIRTUAL = "virtual"        # Computed channel - no hardware
+    GC_NODE = "gc_node"        # Remote GC node in Hyper-V VM - data via MQTT
 
     @classmethod
     def from_channel_config(cls, channel: 'ChannelConfig') -> 'HardwareSource':
@@ -104,6 +105,8 @@ class HardwareSource(Enum):
             return cls.CRIO
         if channel.source_type == "opto22":
             return cls.OPTO22
+        if channel.source_type == "gc":
+            return cls.GC_NODE
 
         # Check for Modbus channels
         if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
@@ -360,9 +363,14 @@ class ChannelConfig:
         return self.hardware_source == HardwareSource.OPTO22
 
     @property
+    def is_gc_node(self) -> bool:
+        """True if this channel is on a remote GC node VM."""
+        return self.hardware_source == HardwareSource.GC_NODE
+
+    @property
     def is_remote_node(self) -> bool:
-        """True if this channel is on any remote node (cRIO or Opto22)."""
-        return self.hardware_source in (HardwareSource.CRIO, HardwareSource.OPTO22)
+        """True if this channel is on any remote node (cRIO, Opto22, or GC)."""
+        return self.hardware_source in (HardwareSource.CRIO, HardwareSource.OPTO22, HardwareSource.GC_NODE)
 
     @property
     def is_local_daq(self) -> bool:

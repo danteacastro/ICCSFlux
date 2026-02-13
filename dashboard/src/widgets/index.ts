@@ -36,6 +36,8 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   heater_zone: defineAsyncComponent(() => import('./HeaterZoneWidget.vue')),
   status_messages: defineAsyncComponent(() => import('./StatusMessages.vue')),
   image: defineAsyncComponent(() => import('./ImageWidget.vue')),
+  gc_chromatogram: defineAsyncComponent(() => import('./GcChromatogramWidget.vue')),
+  gc_overview: defineAsyncComponent(() => import('./GcOverviewWidget.vue')),
 }
 
 export function getWidgetComponent(type: WidgetType | string) {
@@ -305,5 +307,23 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Static image from URL (logos, photos, diagrams)',
     needsChannel: false,
     defaultSize: { w: 2, h: 2 }
+  },
+
+  // === GC ANALYSIS ===
+  {
+    type: 'gc_chromatogram',
+    name: 'GC Chromatogram',
+    icon: '⚗',
+    description: 'Gas chromatograph chromatogram with peak analysis',
+    needsChannel: false,
+    defaultSize: { w: 4, h: 4 }
+  },
+  {
+    type: 'gc_overview',
+    name: 'GC Overview',
+    icon: '🔬',
+    description: 'Multi-GC instrument overview with run queue',
+    needsChannel: false,
+    defaultSize: { w: 6, h: 4 }
   }
 ]

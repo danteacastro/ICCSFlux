@@ -74,9 +74,24 @@ for /f "tokens=1,2 delims=:" %%a in ('"%NISYSTEM_ROOT%\venv\Scripts\python.exe" 
 echo.
 
 REM ============================================================================
+REM Generate TLS certificates (if missing — required for MQTT TLS listener)
+REM ============================================================================
+if not exist "%NISYSTEM_ROOT%\config\tls\ca.crt" (
+    echo [3/6] Generating TLS certificates...
+    "%NISYSTEM_ROOT%\venv\Scripts\python.exe" scripts\generate_tls_certs.py
+    if %ERRORLEVEL% NEQ 0 (
+        echo ERROR: TLS certificate generation failed!
+        pause
+        exit /b 1
+    )
+) else (
+    echo [3/6] TLS certificates OK
+)
+
+REM ============================================================================
 REM Start MQTT Broker (Mosquitto)
 REM ============================================================================
-echo [3/6] Starting MQTT Broker...
+echo [3b/6] Starting MQTT Broker...
 start "MQTT Broker" cmd /k "cd /d "%NISYSTEM_ROOT%" && echo === MQTT BROKER === && echo. && "C:\Program Files\mosquitto\mosquitto.exe" -v -c config\mosquitto.conf"
 timeout /t 2 /nobreak >nul
 echo.

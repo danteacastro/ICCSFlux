@@ -2067,6 +2067,7 @@ function onCanvasDoubleClick(event: MouseEvent) {
       strokeWidth: 3,
       dashed: store.pidPipeDashed || undefined,
       animated: store.pidPipeAnimated || undefined,
+      endArrow: 'arrow',  // Default flow direction indicator
       // Store connection info if snapped to symbol ports (not pipe endpoints)
       startConnection: startConnection.value || undefined,
       endConnection: (nearestPort && !isPipeEndpointSnap(nearestPort)) ? {
@@ -2128,6 +2129,7 @@ function onCanvasRightClick(event: MouseEvent) {
         strokeWidth: 3,
         dashed: store.pidPipeDashed || undefined,
         animated: store.pidPipeAnimated || undefined,
+        endArrow: 'arrow',  // Default flow direction indicator
         startConnection: startConnection.value || undefined,
         endConnection: (nearestPort && !isPipeEndpointSnap(nearestPort)) ? {
           symbolId: nearestPort.symbolId,
@@ -2332,7 +2334,11 @@ function onCanvasDrop(event: DragEvent) {
   const hmiSize = getHmiDefaultSize(symbolType)
   const w = hmiSize?.width ?? 60
   const h = hmiSize?.height ?? 60
-  store.addPidSymbolWithUndo({
+
+  // Check if symbol is dropped on an existing pipe (inline insertion)
+  const hitPipe = findPipeAtPoint(coords.x, coords.y, 15 / zoom.value)
+
+  const newSymbolId = store.addPidSymbolWithUndo({
     type: symbolType as import('../assets/symbols').ScadaSymbolType,
     x: coords.x - w / 2,
     y: coords.y - h / 2,
@@ -2342,8 +2348,101 @@ function onCanvasDrop(event: DragEvent) {
     color: hmiSize ? undefined : '#60a5fa',
     showValue: false
   })
+
+  // If dropped on a pipe, split the pipe and connect both halves to the new symbol
+  if (hitPipe && newSymbolId) {
+    splitPipeAtSymbol(hitPipe.pipe, hitPipe.segmentIndex, coords, newSymbolId, w, h, symbolType)
+  }
+
   store.pidTrackRecentSymbol(symbolType)
 }
+
+/** Find a pipe near a point (returns pipe and segment index). */
+function findPipeAtPoint(px: number, py: number, threshold: number): { pipe: PidPipe; segmentIndex: number } | null {
+  let best: { pipe: PidPipe; segmentIndex: number; dist: number } | null = null
+  for (const pipe of props.pidLayer.pipes) {
+    for (let i = 0; i < pipe.points.length - 1; i++) {
+      const p1 = pipe.points[i]!
+      const p2 = pipe.points[i + 1]!
+      const dist = distanceToSegment(px, py, p1.x, p1.y, p2.x, p2.y)
+      if (dist < threshold && (!best || dist < best.dist)) {
+        best = { pipe, segmentIndex: i, dist }
+      }
+    }
+  }
+  return best
+}
+
+/** Split a pipe at a dropped symbol position, creating two pipe halves connected to the symbol. */
+function splitPipeAtSymbol(
+  pipe: PidPipe,
+  segmentIndex: number,
+  dropPoint: PidPoint,
+  symbolId: string,
+  symbolW: number,
+  symbolH: number,
+  symbolType: string
+) {
+  // Get the symbol's ports to determine connection points
+  const symType = symbolType as ScadaSymbolType
+  const ports = SYMBOL_PORTS[symType]
+  if (!ports || ports.length < 2) return  // Need at least 2 ports (inlet/outlet)
+
+  const inletPort = ports.find(p => INLET_PORT_IDS.has(p.id)) || ports[0]!
+  const outletPort = ports.find(p => OUTLET_PORT_IDS.has(p.id)) || ports[1] || ports[0]!
+
+  // Calculate symbol position
+  const symX = dropPoint.x - symbolW / 2
+  const symY = dropPoint.y - symbolH / 2
+
+  // Get port absolute positions
+  const inletPos = getPortPosition(symType, inletPort.id, symX, symY, symbolW, symbolH, 0)
+  const outletPos = getPortPosition(symType, outletPort.id, symX, symY, symbolW, symbolH, 0)
+  if (!inletPos || !outletPos) return
+
+  // Split pipe points: first half goes from pipe start → symbol inlet
+  const firstHalfPoints = [...pipe.points.slice(0, segmentIndex + 1), { x: inletPos.x, y: inletPos.y }]
+  // Second half goes from symbol outlet → pipe end
+  const secondHalfPoints = [{ x: outletPos.x, y: outletPos.y }, ...pipe.points.slice(segmentIndex + 1)]
+
+  // Create two new pipes
+  const pipe1: PidPipe = {
+    ...pipe,
+    id: `pipe-${Date.now()}-a`,
+    points: firstHalfPoints,
+    endArrow: undefined,
+    startConnection: pipe.startConnection,
+    endConnection: { symbolId, portId: inletPort.id, x: inletPos.x, y: inletPos.y },
+    endSymbolId: symbolId,
+    endPortId: inletPort.id,
+  }
+
+  const pipe2: PidPipe = {
+    ...pipe,
+    id: `pipe-${Date.now()}-b`,
+    points: secondHalfPoints,
+    startArrow: undefined,
+    endArrow: pipe.endArrow,
+    startConnection: { symbolId, portId: outletPort.id, x: outletPos.x, y: outletPos.y },
+    endConnection: pipe.endConnection,
+    startSymbolId: symbolId,
+    startPortId: outletPort.id,
+  }
+
+  // Remove old pipe, add two new pipes
+  const newPipes = props.pidLayer.pipes.filter(p => p.id !== pipe.id)
+  newPipes.push(pipe1, pipe2)
+
+  emit('update:pidLayer', {
+    ...props.pidLayer,
+    pipes: newPipes,
+  })
+}
+
+/** Port IDs considered inlets (used for inline insertion). */
+const INLET_PORT_IDS = new Set(['inlet', 'suction', 'input', 'in', 'return', 'fill', 'process'])
+/** Port IDs considered outlets (used for inline insertion). */
+const OUTLET_PORT_IDS = new Set(['outlet', 'discharge', 'output', 'out', 'supply', 'vent', 'drain'])
 
 // Get current drawing path (preview)
 const currentDrawingPath = computed(() => {

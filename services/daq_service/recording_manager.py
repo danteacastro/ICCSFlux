@@ -748,6 +748,10 @@ class RecordingManager:
             if self.config.write_mode == 'immediate':
                 self.csv_writer.writerow(row)
                 self.current_file_handle.flush()
+                try:
+                    os.fsync(self.current_file_handle.fileno())
+                except OSError:
+                    pass  # Best-effort; buffered mode already has fsync error handling
             else:
                 # Buffered mode
                 self.write_buffer.append(row)

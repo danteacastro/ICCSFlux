@@ -29,6 +29,7 @@ import RestApiDeviceConfig from './RestApiDeviceConfig.vue'
 import OpcUaDeviceConfig from './OpcUaDeviceConfig.vue'
 import EtherNetIPDeviceConfig from './EtherNetIPDeviceConfig.vue'
 import CompactFieldpointDeviceConfig from './CompactFieldpointDeviceConfig.vue'
+import GcNodeDeviceConfig from './GcNodeDeviceConfig.vue'
 
 const store = useDashboardStore()
 const tagDeps = useTagDependencies()
@@ -2604,6 +2605,7 @@ const channelTypeTabs: ChannelTypeTab[] = [
   { id: 'opc_ua', label: 'OPC-UA', icon: '🔗', fullName: 'OPC-UA Server' },
   { id: 'ethernet_ip', label: 'AB PLC', icon: '🏭', fullName: 'Allen Bradley EtherNet/IP', hidden: true },
   { id: 'cfp', label: 'CFP', icon: '📦', fullName: 'Compact FieldPoint (Legacy)', hidden: true },
+  { id: 'gc', label: 'GC', icon: '\u2697', fullName: 'GC Analyzer' },
 ]
 
 // Filter tabs - hide admin-only tabs from non-admins
@@ -4189,6 +4191,13 @@ watch(
       <!-- Compact FieldPoint Configuration (admin only) -->
       <CompactFieldpointDeviceConfig
         v-if="activeTypeTab === 'cfp'"
+        :edit-mode="editMode"
+        @dirty="markDirty"
+      />
+
+      <!-- GC Analyzer Node Configuration -->
+      <GcNodeDeviceConfig
+        v-if="activeTypeTab === 'gc'"
         :edit-mode="editMode"
         @dirty="markDirty"
       />

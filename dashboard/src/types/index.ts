@@ -82,6 +82,8 @@ export type WidgetType =
   | 'pid_loop'
   | 'status_messages'
   | 'image'
+  | 'gc_chromatogram'
+  | 'gc_overview'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -238,7 +240,7 @@ export interface ChannelConfig {
   log_interval_ms?: number
 
   // Multi-node support
-  source_type?: 'local' | 'crio' | 'cdaq' | 'opto22'  // Source of channel data
+  source_type?: 'local' | 'crio' | 'cdaq' | 'opto22' | 'gc'  // Source of channel data
   node_id?: string                 // Remote node ID for cRIO channels, chassis name for cDAQ
   chassis_name?: string            // Chassis name (e.g., "cDAQ-9189", "cRIO-9056")
 
@@ -314,6 +316,37 @@ export interface NodeInfo {
   configVersion?: string      // Reported by cRIO node in status
   expectedVersion?: string    // What PC expects from last push
   configSynced?: boolean      // configVersion === expectedVersion
+}
+
+export interface GCNodeConfig {
+  node_id: string
+  node_name: string
+  gc_type: string
+  vm_ip: string
+  connection_mode: 'direct' | 'vm'
+  source_type: 'file' | 'modbus' | 'serial' | 'analysis'
+  // File watcher
+  file_watch_dir?: string
+  file_pattern?: string
+  parse_template?: string
+  column_mapping?: Record<string, string>
+  // Modbus
+  modbus_ip?: string
+  modbus_port?: number
+  modbus_slave_id?: number
+  modbus_registers?: Array<{name: string, address: number, register_type: string, data_type: string, unit: string}>
+  // Serial
+  serial_port?: string
+  serial_baudrate?: number
+  serial_protocol?: string
+  // Analysis engine
+  analysis_method?: string
+  analysis_components?: Record<string, {rt_expected: number, rt_tolerance: number, response_factor: number, unit: string}>
+  // Status (from MQTT)
+  status?: 'online' | 'offline' | 'unknown'
+  last_seen?: number
+  last_analysis?: string
+  analysis_count?: number
 }
 
 export interface SystemStatus {
@@ -664,6 +697,75 @@ export interface WidgetConfig {
   // Image widget
   imageUrl?: string
   imageFit?: 'contain' | 'cover' | 'fill' | 'none'
+
+  // GC Chromatogram widget
+  gcNodeId?: string            // GC node ID to subscribe to
+  showPeakLabels?: boolean     // Show peak name labels on chart
+  showComponentTable?: boolean // Show component results table
+  showSstBar?: boolean         // Show SST pass/fail status bar
+  gcHistoryDepth?: number      // Number of past runs to keep (default 10)
+}
+
+// GC Analysis types (from gc_node MQTT topics)
+export interface GCPeakResult {
+  name: string
+  rt: number             // Retention time (seconds)
+  area: number
+  area_pct: number
+  height: number
+  width_s: number
+  concentration?: number
+  unit?: string
+  identified: boolean
+  plates?: number        // Theoretical plates (SST)
+  tailing?: number       // Tailing factor (SST)
+  resolution?: number    // Resolution to adjacent peak (SST)
+}
+
+export interface GCComponentResult {
+  name: string
+  concentration: number
+  area_pct: number
+  unit: string
+  rt: number
+}
+
+export interface GCChromatogramData {
+  run_number: number
+  node_id: string
+  times: number[]
+  values: number[]
+  points: number
+  duration_s: number
+  timestamp: number
+}
+
+export interface GCAnalysisResult {
+  run_number: number
+  run_duration_s?: number
+  finish_reason?: string
+  timestamp: string
+  method?: string
+  port?: number
+  port_label?: string
+  components: Record<string, {
+    concentration?: number
+    area_pct?: number
+    area?: number
+    rt?: number
+    unit?: string
+  }>
+  unidentified_peaks?: GCPeakResult[]
+  total_area?: number
+  chromatogram_points?: number
+}
+
+export interface GCRunProgress {
+  run_number: number
+  elapsed_s: number
+  points: number
+  max_voltage: number
+  last_voltage: number
 }
 
 // Pipe/Connection point on grid
@@ -1243,7 +1345,9 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   variable_input: { w: 2, h: 3, minW: 1, minH: 2 },
   pid_loop: { w: 2, h: 3, minW: 2, minH: 2 },
   status_messages: { w: 3, h: 2, minW: 2, minH: 2 },
-  image: { w: 2, h: 2, minW: 1, minH: 1 }
+  image: { w: 2, h: 2, minW: 1, minH: 1 },
+  gc_chromatogram: { w: 4, h: 4, minW: 3, minH: 3 },
+  gc_overview: { w: 6, h: 4, minW: 3, minH: 3 }
 }
 
 // Preset colors for widgets (expanded palette)

@@ -59,11 +59,13 @@ class AzureUploaderService:
     """
 
     def __init__(self, mqtt_host: str = 'localhost', mqtt_port: int = 1883,
-                 mqtt_username: str = None, mqtt_password: str = None):
+                 mqtt_username: str = None, mqtt_password: str = None,
+                 mqtt_tls_ca: str = None):
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
         self.mqtt_username = mqtt_username
         self.mqtt_password = mqtt_password
+        self.mqtt_tls_ca = mqtt_tls_ca
 
         # MQTT topics
         self.command_topic = 'nisystem/azure/command'
@@ -154,6 +156,13 @@ class AzureUploaderService:
             if mqtt_user and mqtt_pass:
                 self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
                 logger.info(f"MQTT authentication: user={mqtt_user}")
+
+            # Optional TLS for broker connection
+            tls_ca = self.mqtt_tls_ca or os.environ.get('MQTT_TLS_CA')
+            if tls_ca and os.path.exists(tls_ca):
+                import ssl
+                self.mqtt_client.tls_set(ca_certs=tls_ca)
+                logger.info(f"MQTT TLS enabled with CA: {tls_ca}")
 
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
             self.mqtt_client.loop_start()
@@ -650,6 +659,7 @@ def main():
     parser.add_argument('--port', type=int, default=1883, help='MQTT broker port')
     parser.add_argument('--mqtt-user', default=None, help='MQTT username')
     parser.add_argument('--mqtt-pass', default=None, help='MQTT password')
+    parser.add_argument('--tls-ca', default=None, help='Path to CA certificate for MQTT TLS')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
     args = parser.parse_args()
 
@@ -661,6 +671,7 @@ def main():
         mqtt_port=args.port,
         mqtt_username=args.mqtt_user,
         mqtt_password=args.mqtt_pass,
+        mqtt_tls_ca=args.tls_ca,
     )
     service.run_forever()
 

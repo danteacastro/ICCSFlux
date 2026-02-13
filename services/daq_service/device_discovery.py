@@ -253,6 +253,23 @@ class Opto22Node:
 
 
 @dataclass
+class GCNode:
+    """Represents a remote GC node in a Hyper-V VM discovered via MQTT"""
+    node_id: str                 # e.g., "gc-001"
+    ip_address: str              # e.g., "10.10.10.10"
+    gc_type: str                 # e.g., "Agilent 7890"
+    status: str                  # "online", "offline", "unknown"
+    last_seen: str               # ISO timestamp
+    channels: int = 0
+    last_analysis: str = ""      # ISO timestamp of last GC result
+    analysis_count: int = 0
+    source_type: str = ""        # "file", "modbus", "serial"
+
+    def to_dict(self) -> Dict:
+        return {**asdict(self), "node_type": "gc"}
+
+
+@dataclass
 class DiscoveryResult:
     """Complete discovery result"""
     success: bool
@@ -262,6 +279,7 @@ class DiscoveryResult:
     standalone_devices: List[Module] = field(default_factory=list)
     crio_nodes: List[CRIONode] = field(default_factory=list)  # Remote cRIO nodes
     opto22_nodes: List[Opto22Node] = field(default_factory=list)  # Remote Opto22 nodes
+    gc_nodes: List[GCNode] = field(default_factory=list)  # Remote GC nodes in VMs
     total_channels: int = 0
     simulation_mode: bool = False
 
@@ -275,7 +293,8 @@ class DiscoveryResult:
             "chassis": [ch.to_dict() for ch in self.chassis],
             "standalone_devices": [dev.to_dict() for dev in self.standalone_devices],
             "crio_nodes": [node.to_dict() for node in self.crio_nodes],
-            "opto22_nodes": [node.to_dict() for node in self.opto22_nodes]
+            "opto22_nodes": [node.to_dict() for node in self.opto22_nodes],
+            "gc_nodes": [node.to_dict() for node in self.gc_nodes],
         }
 
 
@@ -297,6 +316,9 @@ class DeviceDiscovery:
         # Track Opto22 nodes that have registered via MQTT
         self._opto22_nodes: Dict[str, Opto22Node] = {}
         self._opto22_lock = __import__('threading').Lock()
+        # Track GC nodes in Hyper-V VMs that have registered via MQTT
+        self._gc_nodes: Dict[str, GCNode] = {}
+        self._gc_lock = __import__('threading').Lock()
 
     def register_crio_node(self, node_id: str, status_data: Dict[str, Any]):
         """
@@ -522,6 +544,89 @@ class DeviceDiscovery:
         with self._opto22_lock:
             return list(self._opto22_nodes.values())
 
+    def register_gc_node(self, node_id: str, status_data: Dict[str, Any]):
+        """
+        Register or update a GC node from MQTT status message.
+
+        Called by DAQ service when receiving status from GC nodes in Hyper-V VMs.
+
+        Args:
+            node_id: The node ID (e.g., "gc-001")
+            status_data: Status payload from GC node containing:
+                - ip_address: VM's IP address
+                - gc_type: GC instrument type (e.g., "Agilent 7890")
+                - status: "online" or "offline"
+                - channels: Number of configured channels
+                - analysis_count: Number of GC analyses completed
+                - last_analysis: Timestamp of last analysis
+                - source_type: Active data source ("file", "modbus", "serial")
+        """
+        from datetime import datetime
+
+        with self._gc_lock:
+            self._gc_nodes[node_id] = GCNode(
+                node_id=node_id,
+                ip_address=status_data.get('ip_address', 'unknown'),
+                gc_type=status_data.get('gc_type', ''),
+                status=status_data.get('status', 'online'),
+                last_seen=datetime.utcnow().isoformat(),
+                channels=status_data.get('channels', 0),
+                last_analysis=str(status_data.get('last_analysis', '')),
+                analysis_count=status_data.get('analysis_count', 0),
+                source_type=status_data.get('source_type', ''),
+            )
+            logger.info(f"Registered GC node: {node_id} ({status_data.get('status', 'online')})")
+
+    def unregister_gc_node(self, node_id: str):
+        """Remove a GC node from tracking"""
+        with self._gc_lock:
+            if node_id in self._gc_nodes:
+                del self._gc_nodes[node_id]
+                logger.info(f"Unregistered GC node: {node_id}")
+
+    def mark_gc_offline(self, node_id: str):
+        """Mark a GC node as offline (but don't remove it)"""
+        with self._gc_lock:
+            if node_id in self._gc_nodes:
+                self._gc_nodes[node_id].status = 'offline'
+                logger.info(f"GC node offline: {node_id}")
+
+    def update_gc_heartbeat(self, node_id: str, heartbeat_data: Dict[str, Any]):
+        """
+        Update GC node from heartbeat without overwriting full registration.
+
+        If the node exists, only update heartbeat fields.
+        If the node doesn't exist, create minimal registration.
+        """
+        from datetime import datetime
+        with self._gc_lock:
+            if node_id in self._gc_nodes:
+                # Existing node - only update heartbeat fields
+                node = self._gc_nodes[node_id]
+                node.status = heartbeat_data.get('status', 'online')
+                node.last_seen = datetime.utcnow().isoformat()
+                if 'channels' in heartbeat_data:
+                    node.channels = heartbeat_data.get('channels', 0)
+                if 'analysis_count' in heartbeat_data:
+                    node.analysis_count = heartbeat_data.get('analysis_count', 0)
+            else:
+                # New node - create minimal registration from heartbeat
+                self._gc_nodes[node_id] = GCNode(
+                    node_id=node_id,
+                    ip_address=heartbeat_data.get('ip_address', 'unknown'),
+                    gc_type=heartbeat_data.get('gc_type', ''),
+                    status=heartbeat_data.get('status', 'online'),
+                    last_seen=datetime.utcnow().isoformat(),
+                    channels=heartbeat_data.get('channels', 0),
+                    source_type=heartbeat_data.get('source_type', ''),
+                )
+                logger.info(f"Registered GC node: {node_id} ({heartbeat_data.get('status', 'online')})")
+
+    def get_gc_nodes(self) -> List[GCNode]:
+        """Get list of known GC nodes"""
+        with self._gc_lock:
+            return list(self._gc_nodes.values())
+
     def scan(self, include_crio: bool = True, include_opto22: bool = True) -> DiscoveryResult:
         """
         Scan for all connected NI devices and remote nodes (cRIO, Opto22).
@@ -574,6 +679,14 @@ class DeviceDiscovery:
 
             if opto22_nodes:
                 result.message += f", {len(opto22_nodes)} Opto22 nodes ({opto22_channels} remote channels)"
+
+        # Add GC nodes to result
+        gc_nodes = self.get_gc_nodes()
+        result.gc_nodes = gc_nodes
+        gc_channels = sum(node.channels for node in gc_nodes)
+        result.total_channels += gc_channels
+        if gc_nodes:
+            result.message += f", {len(gc_nodes)} GC nodes ({gc_channels} remote channels)"
 
         self._last_result = result
         return result

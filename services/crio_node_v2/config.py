@@ -5,6 +5,14 @@ Handles loading and parsing configuration from:
 - JSON project files
 - system.ini files
 - Command line arguments
+
+Config versioning:
+  - All saved configs include a 'config_version' field.
+  - On load, migrate_crio_config() auto-upgrades old configs to the latest version.
+  - Migration functions are idempotent (safe to run multiple times).
+  - Version history:
+      1.0  Initial release
+      1.1  Added TLS fields (tls_enabled, tls_ca_cert)
 """
 
 import json
@@ -12,11 +20,61 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List, Optional, Tuple
 
 from .channel_types import ChannelType
 
 logger = logging.getLogger('cRIONode')
+
+# Ordered list of config schema versions
+CRIO_CONFIG_VERSIONS = ["1.0", "1.1"]
+CURRENT_CRIO_CONFIG_VERSION = CRIO_CONFIG_VERSIONS[-1]
+
+
+def migrate_crio_config(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """Migrate cRIO config data to the latest version.
+
+    Returns (migrated_data, list_of_applied_migrations).
+    Safe to call on already-current configs.
+    """
+    current = data.get('config_version', '1.0')
+    if current not in CRIO_CONFIG_VERSIONS:
+        logger.warning(f"Unknown cRIO config version '{current}', treating as 1.0")
+        current = '1.0'
+
+    from_idx = CRIO_CONFIG_VERSIONS.index(current)
+    to_idx = len(CRIO_CONFIG_VERSIONS) - 1
+    if from_idx >= to_idx:
+        return data, []
+
+    result = dict(data)
+    applied = []
+
+    for version in CRIO_CONFIG_VERSIONS[from_idx + 1:to_idx + 1]:
+        func_name = f"_migrate_crio_to_{version.replace('.', '_')}"
+        migrate_func = globals().get(func_name)
+        if migrate_func:
+            prev = result.get('config_version', '1.0')
+            logger.info(f"cRIO config migration: {prev} -> {version}")
+            result = migrate_func(result)
+            result['config_version'] = version
+            applied.append(f"{prev}->{version}")
+
+    return result, applied
+
+
+def _migrate_crio_to_1_1(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate from 1.0 to 1.1.
+
+    Changes:
+    - Add TLS fields to system/mqtt section if missing
+    """
+    system = data.get('system', data)
+    if 'tls_enabled' not in system:
+        system['tls_enabled'] = False
+    if 'tls_ca_cert' not in system:
+        system['tls_ca_cert'] = None
+    return data
 
 
 @dataclass
@@ -425,6 +483,10 @@ def load_config(path: Optional[str] = None, **overrides) -> NodeConfig:
         logger.info(f"Loading config from {path}")
         with open(path, 'r') as f:
             config_data = json.load(f)
+        # Auto-migrate older config versions
+        config_data, migrations = migrate_crio_config(config_data)
+        if migrations:
+            logger.info(f"Config migrated: {' -> '.join(migrations)}")
 
     # Override from environment
     env_overrides = {

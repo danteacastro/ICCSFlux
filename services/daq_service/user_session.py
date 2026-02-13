@@ -28,6 +28,14 @@ from dataclasses import dataclass, asdict, field
 from enum import Enum
 import bcrypt
 
+try:
+    from .audit_trail import AuditEventType
+except ImportError:
+    try:
+        from audit_trail import AuditEventType
+    except ImportError:
+        AuditEventType = None
+
 logger = logging.getLogger('UserSession')
 
 
@@ -204,13 +212,15 @@ class UserSessionManager:
                  data_dir: Path,
                  session_timeout_minutes: int = 30,
                  max_failed_attempts: int = 5,
-                 lockout_duration_minutes: int = 15):
+                 lockout_duration_minutes: int = 15,
+                 audit_trail=None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.session_timeout = session_timeout_minutes
         self.max_failed_attempts = max_failed_attempts
         self.lockout_duration = lockout_duration_minutes
+        self._audit_trail = audit_trail
 
         self.lock = threading.RLock()
         self.users: Dict[str, User] = {}
@@ -245,18 +255,19 @@ class UserSessionManager:
     def _ensure_default_users(self):
         """Create default users if none exist.
 
-        Default accounts are created with random passwords and flagged
-        for mandatory password change on first login. The initial admin
-        password is logged once at startup for first-time setup.
+        Default accounts are created with random passwords. The initial
+        admin password is written to data/initial_admin_password.txt
+        (chmod 600) for first-time setup. All other accounts get random
+        passwords that must be reset by an admin.
         """
         if not self.users:
-            # Fixed default passwords for initial setup
-            admin_pw = "iccsadmin1969"
+            # Generate random passwords for all default accounts
+            admin_pw = secrets.token_urlsafe(16)
             default_accounts = [
                 ("admin", admin_pw, UserRole.ADMIN, "Administrator"),
-                ("supervisor", "supervisor", UserRole.SUPERVISOR, "Supervisor"),
-                ("operator", "operator", UserRole.OPERATOR, "Operator"),
-                ("guest", "guest", UserRole.GUEST, "Guest"),
+                ("supervisor", secrets.token_urlsafe(16), UserRole.SUPERVISOR, "Supervisor"),
+                ("operator", secrets.token_urlsafe(16), UserRole.OPERATOR, "Operator"),
+                ("guest", secrets.token_urlsafe(12), UserRole.GUEST, "Guest"),
             ]
             for username, password, role, display_name in default_accounts:
                 self.create_user(
@@ -266,7 +277,28 @@ class UserSessionManager:
                     display_name=display_name
                 )
 
-            logger.info("Created default users with fixed passwords")
+            # Write admin password to file for first-time setup
+            pw_file = Path('data') / 'initial_admin_password.txt'
+            try:
+                pw_file.parent.mkdir(parents=True, exist_ok=True)
+                pw_file.write_text(
+                    f"Initial admin credentials (change after first login):\n"
+                    f"  Username: admin\n"
+                    f"  Password: {admin_pw}\n",
+                    encoding='utf-8'
+                )
+                # Restrict file permissions (owner read/write only)
+                try:
+                    pw_file.chmod(0o600)
+                except OSError:
+                    pass  # Windows may not support chmod; NTFS ACLs apply
+                logger.info(f"Initial admin password written to {pw_file}")
+            except Exception as e:
+                # Fall back to logging if file write fails
+                logger.warning(f"Could not write password file: {e}")
+                logger.info(f"Initial admin password: {admin_pw}")
+
+            logger.info("Created default users with random passwords")
 
     def _hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""
@@ -383,6 +415,13 @@ class UserSessionManager:
                     logger.warning(f"User {username} locked due to failed attempts")
                 self._save_users()
                 logger.warning(f"Authentication failed: incorrect password for {username}")
+                if self._audit_trail:
+                    self._audit_trail.log_event(
+                        event_type=AuditEventType.USER_LOGIN_FAILED,
+                        user=username,
+                        description=f"Login failed for {username}: incorrect password",
+                        source_ip=source_ip,
+                    )
                 return None
 
             # Successful authentication
@@ -403,6 +442,16 @@ class UserSessionManager:
 
             self.sessions[session.session_id] = session
             logger.info(f"User {username} authenticated from {source_ip}")
+
+            if self._audit_trail:
+                self._audit_trail.log_event(
+                    event_type=AuditEventType.USER_LOGIN,
+                    user=username,
+                    description=f"User {username} logged in",
+                    details={'role': user.role.value},
+                    user_role=user.role.value,
+                    source_ip=source_ip,
+                )
 
             return session
 
@@ -430,6 +479,15 @@ class UserSessionManager:
                 session = self.sessions[session_id]
                 del self.sessions[session_id]
                 logger.info(f"User {session.username} logged out")
+                if self._audit_trail:
+                    self._audit_trail.log_event(
+                        event_type=AuditEventType.USER_LOGOUT,
+                        user=session.username,
+                        description=f"User {session.username} logged out",
+                        user_role=session.role.value,
+                        source_ip=session.source_ip,
+                        session_id=session_id,
+                    )
                 return True
             return False
 
@@ -482,6 +540,16 @@ class UserSessionManager:
         # Re-verify password for signature
         if not self._verify_password(password, user.password_hash):
             logger.warning(f"Electronic signature failed: password verification failed for {session.username}")
+            if self._audit_trail:
+                self._audit_trail.log_event(
+                    event_type=AuditEventType.ELECTRONIC_SIGNATURE_FAILED,
+                    user=session.username,
+                    description=f"Electronic signature FAILED: {action_type} - password verification failed",
+                    details={'action_type': action_type, 'action_description': action_description},
+                    user_role=session.role.value,
+                    source_ip=session.source_ip,
+                    session_id=session_id,
+                )
             return None
 
         signature = ElectronicSignature(
@@ -497,6 +565,24 @@ class UserSessionManager:
         )
 
         logger.info(f"Electronic signature created by {session.username} for: {action_type}")
+
+        if self._audit_trail:
+            self._audit_trail.log_event(
+                event_type=AuditEventType.ELECTRONIC_SIGNATURE,
+                user=session.username,
+                description=f"Electronic signature: {action_type} - {action_description}",
+                details={
+                    'signature_id': signature.signature_id,
+                    'action_type': action_type,
+                    'action_description': action_description,
+                    'reason': reason,
+                },
+                reason=reason,
+                user_role=session.role.value,
+                source_ip=session.source_ip,
+                session_id=session_id,
+            )
+
         return signature
 
     def get_active_sessions(self) -> List[dict]:

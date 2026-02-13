@@ -115,26 +115,41 @@ def generate_certificates(output_dir: Path, force: bool = False) -> bool:
     )
 
     # Collect hostnames for SAN
-    hostname = socket.gethostname()
-    san_names = [
-        x509.DNSName("localhost"),
-        x509.DNSName(hostname),
-        x509.IPAddress(
-            __import__('ipaddress').IPv4Address("127.0.0.1")
-        ),
-        x509.IPAddress(
-            __import__('ipaddress').IPv4Address("192.168.1.1")
-        ),
-    ]
+    # Include all likely broker IPs so TLS hostname verification succeeds
+    # from any remote node (cRIO, Opto22, GC) regardless of network topology.
+    import ipaddress
 
-    # Try to add the machine's actual IP
+    hostname = socket.gethostname()
+    san_dns = {"localhost", hostname}
+    san_ips = {
+        ipaddress.IPv4Address("127.0.0.1"),
+        ipaddress.IPv4Address("192.168.1.1"),   # Default USB Ethernet (PC side)
+        ipaddress.IPv4Address("10.10.10.1"),     # Common plant network
+    }
+
+    # Try to add all local IPs from all network interfaces
     try:
+        import subprocess
+        # Use socket to get primary IP
         local_ip = socket.gethostbyname(hostname)
-        san_names.append(x509.IPAddress(
-            __import__('ipaddress').IPv4Address(local_ip)
-        ))
+        san_ips.add(ipaddress.IPv4Address(local_ip))
     except Exception:
         pass
+
+    # Try to discover additional interface IPs (Windows and Linux)
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            try:
+                san_ips.add(ipaddress.IPv4Address(info[4][0]))
+            except (ValueError, IndexError):
+                pass
+    except Exception:
+        pass
+
+    san_names = [x509.DNSName(name) for name in sorted(san_dns)]
+    san_names += [x509.IPAddress(ip) for ip in sorted(san_ips)]
+
+    logger.info(f"  SAN entries: {[str(n) for n in san_names]}")
 
     server_name = x509.Name([
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "NISystem"),
