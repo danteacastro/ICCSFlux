@@ -190,7 +190,7 @@ const isDataStale = computed(() => {
   padding: 4px 6px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 4px;
   container-type: size;
   overflow: hidden;
@@ -240,11 +240,11 @@ const isDataStale = computed(() => {
 }
 
 .status-item.ok .label {
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .status-item.error .label {
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .data-status {
@@ -253,8 +253,8 @@ const isDataStale = computed(() => {
   justify-content: center;
   gap: 4px;
   padding: 3px 8px;
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
   border-radius: 3px;
   font-size: 0.65rem;
   font-weight: 600;
@@ -267,7 +267,7 @@ const isDataStale = computed(() => {
 }
 
 .data-status.stale {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fbbf24;
 }
 
@@ -346,14 +346,14 @@ const isDataStale = computed(() => {
 }
 
 .activity-item.alarms-active {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   animation: pulse-alarm 1s infinite;
 }
 
 .activity-item.ok {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 /* System Health Row */
@@ -411,7 +411,7 @@ const isDataStale = computed(() => {
 }
 
 .health-item.ok .health-value {
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .health-item.warning .health-value {
@@ -419,7 +419,7 @@ const isDataStale = computed(() => {
 }
 
 .health-item.critical .health-value {
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 /* Compact mode: hide activity and health rows when short */

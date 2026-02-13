@@ -460,7 +460,7 @@ function onKnobMouseUp() {
   padding: 4px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   position: relative;
   gap: 2px;
   container-type: size;
@@ -604,7 +604,7 @@ function onKnobMouseUp() {
 
 .range-info {
   font-size: 0.5rem;
-  color: #555;
+  color: var(--text-muted);
   margin-top: 2px;
 }
 
@@ -661,8 +661,8 @@ function onKnobMouseUp() {
   position: absolute;
   inset: 8px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #3a3a5a 0%, #1a1a2e 50%, #2a2a4a 100%);
-  border: 2px solid #4a4a6a;
+  background: linear-gradient(135deg, var(--bg-knob-start) 0%, var(--bg-widget) 50%, var(--border-color) 100%);
+  border: 2px solid var(--bg-knob-border);
   box-shadow:
     inset 0 2px 4px rgba(255,255,255,0.1),
     inset 0 -2px 4px rgba(0,0,0,0.3),
@@ -690,7 +690,7 @@ function onKnobMouseUp() {
   height: 12px;
   margin: -6px 0 0 -6px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #4a4a6a 0%, #2a2a4a 100%);
+  background: linear-gradient(135deg, var(--bg-knob-border) 0%, var(--border-color) 100%);
   border: 1px solid #5a5a7a;
 }
 
@@ -706,7 +706,7 @@ function onKnobMouseUp() {
   width: 1px;
   height: 4px;
   margin-left: -0.5px;
-  background: #555;
+  background: var(--text-muted);
   transform-origin: center 28px;
 }
 
@@ -768,7 +768,7 @@ function onKnobMouseUp() {
   justify-content: space-between;
   width: 100%;
   font-size: 0.45rem;
-  color: #555;
+  color: var(--text-muted);
   padding: 0 4px;
 }
 
@@ -779,11 +779,11 @@ function onKnobMouseUp() {
 }
 
 .setpoint-widget.knob.disabled .knob-indicator {
-  background: #666;
+  background: var(--text-muted);
   box-shadow: none;
 }
 
 .setpoint-widget.knob.disabled .knob-value .value {
-  color: #666;
+  color: var(--text-muted);
 }
 </style>

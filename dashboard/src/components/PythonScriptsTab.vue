@@ -1074,7 +1074,7 @@ function getScriptStateClass(id: string): string {
 .python-scripts-container {
   display: flex;
   height: 100%;
-  background: var(--bg-primary, #1a1a2e);
+  background: var(--bg-primary);
   color: var(--text-primary, #e0e0e0);
 }
 

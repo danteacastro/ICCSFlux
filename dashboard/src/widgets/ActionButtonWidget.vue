@@ -330,7 +330,7 @@ async function executeAction() {
   padding: 4px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   position: relative;
 }
 
@@ -533,7 +533,7 @@ async function executeAction() {
 }
 
 .blocked {
-  border-color: #78350f;
+  border-color: var(--indicator-warning-bg);
 }
 
 /* Active state glow */
@@ -608,7 +608,7 @@ async function executeAction() {
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fbbf24;
   padding: 4px 8px;
   border-radius: 4px;

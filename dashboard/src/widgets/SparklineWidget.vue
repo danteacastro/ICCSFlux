@@ -92,9 +92,9 @@ const statusClass = computed(() => {
 // Line color based on status
 const lineColor = computed(() => {
   if (!channelValue.value) return '#60a5fa'
-  if (channelValue.value.alarm) return '#ef4444'
-  if (channelValue.value.warning) return '#fbbf24'
-  return '#4ade80'
+  if (channelValue.value.alarm) return 'var(--color-error)'
+  if (channelValue.value.warning) return 'var(--color-warning)'
+  return 'var(--color-success-light)'
 })
 
 // Update history when value changes
@@ -160,7 +160,7 @@ onUnmounted(() => {
   padding: 6px 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 4px;
 }
 
@@ -173,7 +173,7 @@ onUnmounted(() => {
 
 .label {
   font-size: 0.65rem;
-  color: var(--label-color, #888);
+  color: var(--text-secondary);
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -222,26 +222,26 @@ onUnmounted(() => {
 
 /* Status styles */
 .normal .value {
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .warning {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
 }
 .warning .value {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .alarm {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   animation: pulse-alarm 1s infinite;
 }
 .alarm .value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 @keyframes pulse-alarm {
   0%, 100% { background-color: var(--bg-widget); }
-  50% { background-color: #3f1515; }
+  50% { background-color: var(--bg-alarm-pulse); }
 }
 </style>

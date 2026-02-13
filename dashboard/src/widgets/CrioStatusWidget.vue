@@ -118,7 +118,7 @@ function handleReset() {
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 8px;
 }
 
@@ -169,7 +169,7 @@ function handleReset() {
 }
 
 .connection.online .label {
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 /* State Banner */
@@ -185,23 +185,23 @@ function handleReset() {
 }
 
 .state-banner.normal {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .state-banner.warning {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fbbf24;
 }
 
 .state-banner.tripped {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   animation: pulse-tripped 1s infinite;
 }
 
 .state-banner.emergency {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
   color: #fff;
   animation: pulse-emergency 0.5s infinite;
 }
@@ -223,11 +223,11 @@ function handleReset() {
 @keyframes pulse-emergency {
   0%, 100% {
     opacity: 1;
-    background: #7f1d1d;
+    background: var(--indicator-danger-bg);
   }
   50% {
     opacity: 0.8;
-    background: #991b1b;
+    background: var(--indicator-danger-bg);
   }
 }
 
@@ -248,7 +248,7 @@ function handleReset() {
 }
 
 .io-item.alert {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
 }
 
 .io-value {
@@ -259,12 +259,12 @@ function handleReset() {
 }
 
 .io-item.alert .io-value {
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .io-label {
   font-size: 0.55rem;
-  color: #6b7280;
+  color: var(--text-dim);
   text-transform: uppercase;
 }
 
@@ -279,7 +279,7 @@ function handleReset() {
 
 .tripped-header {
   font-size: 0.6rem;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -288,7 +288,7 @@ function handleReset() {
   font-size: 0.65rem;
   padding: 2px 6px;
   background: #450a0a;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   border-radius: 2px;
   font-family: 'JetBrains Mono', monospace;
 }
@@ -323,7 +323,7 @@ function handleReset() {
   padding-top: 4px;
   border-top: 1px solid var(--border-color);
   font-size: 0.6rem;
-  color: #6b7280;
+  color: var(--text-dim);
 }
 
 .uptime {

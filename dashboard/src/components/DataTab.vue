@@ -2056,8 +2056,8 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
-  color: #fca5a5;
+  background: linear-gradient(90deg, var(--indicator-danger-bg) 0%, var(--indicator-sim-bg) 100%);
+  color: var(--indicator-danger-text);
   font-size: 0.85rem;
   border-bottom: 1px solid #991b1b;
 }
@@ -2094,12 +2094,12 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 8px;
   padding: 16px 24px;
-  background: rgba(15, 15, 26, 0.95);
+  background: var(--bg-panel);
   border: 1px solid var(--color-error);
   border-radius: 8px;
   z-index: 10;
   font-size: 0.8rem;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .locked-overlay .lock-icon {
@@ -2116,7 +2116,7 @@ const scheduleDayLabels = [
   border: 1px solid var(--color-error);
   border-radius: 6px;
   font-size: 0.8rem;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .locked-banner .lock-icon {
@@ -2204,7 +2204,7 @@ const scheduleDayLabels = [
 .status-text {
   font-size: 0.85rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
 }
 
@@ -2218,7 +2218,7 @@ const scheduleDayLabels = [
 
 .status-info {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -2281,13 +2281,13 @@ const scheduleDayLabels = [
 }
 
 .feedback-message.success {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
 }
 
 .feedback-message.error {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .feedback-message.info {
@@ -2338,7 +2338,7 @@ const scheduleDayLabels = [
   align-items: center;
   gap: 6px;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
@@ -2359,7 +2359,7 @@ const scheduleDayLabels = [
 .group-header {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 8px;
@@ -2464,13 +2464,13 @@ const scheduleDayLabels = [
 
 .channel-meta {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .no-channels {
   text-align: center;
   padding: 40px 20px;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .no-channels p {
@@ -2486,7 +2486,7 @@ const scheduleDayLabels = [
   padding: 12px 16px;
   border-top: 1px solid var(--border-color);
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   text-align: center;
 }
 
@@ -2518,7 +2518,7 @@ const scheduleDayLabels = [
 .form-group label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -2582,7 +2582,7 @@ const scheduleDayLabels = [
 
 .preview-filename label {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .preview-filename code {
@@ -2593,7 +2593,7 @@ const scheduleDayLabels = [
 
 .rate-info {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   padding: 10px;
   background: var(--bg-widget);
   border-radius: 4px;
@@ -2613,7 +2613,7 @@ const scheduleDayLabels = [
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
@@ -2651,7 +2651,7 @@ const scheduleDayLabels = [
 
 .rate-info .rate-detail {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Rotation Selector */
@@ -2669,7 +2669,7 @@ const scheduleDayLabels = [
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
@@ -2705,7 +2705,7 @@ const scheduleDayLabels = [
   background: var(--btn-hover);
   border: 1px solid var(--border-light);
   border-radius: 3px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.7rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -2725,7 +2725,7 @@ const scheduleDayLabels = [
 .section-label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 8px;
 }
 
@@ -2761,7 +2761,7 @@ const scheduleDayLabels = [
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
@@ -2799,7 +2799,7 @@ const scheduleDayLabels = [
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
@@ -2829,7 +2829,7 @@ const scheduleDayLabels = [
 
 .preview-path label {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .preview-path code {
@@ -2882,7 +2882,7 @@ const scheduleDayLabels = [
 
 .radio-content span {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .buffer-options {
@@ -2894,7 +2894,7 @@ const scheduleDayLabels = [
 .buffer-info {
   margin-top: 8px;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -2938,7 +2938,7 @@ const scheduleDayLabels = [
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
@@ -3026,7 +3026,7 @@ const scheduleDayLabels = [
 .info-section h3 {
   margin: 0 0 12px;
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -3040,7 +3040,7 @@ const scheduleDayLabels = [
 
 .info-label {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .info-value {
@@ -3078,12 +3078,12 @@ const scheduleDayLabels = [
   font-size: 0.75rem;
   font-weight: 500;
   text-align: center;
-  background: #451a03;
+  background: var(--indicator-sim-bg);
   color: var(--color-warning);
 }
 
 .connection-status.connected {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
 }
 
@@ -3125,7 +3125,7 @@ const scheduleDayLabels = [
 .close-btn {
   background: none;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
 }
@@ -3149,7 +3149,7 @@ const scheduleDayLabels = [
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 16px;
 }
 
@@ -3198,7 +3198,7 @@ const scheduleDayLabels = [
 
 .file-meta {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .file-actions {
@@ -3211,7 +3211,7 @@ const scheduleDayLabels = [
   background: transparent;
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -3222,9 +3222,9 @@ const scheduleDayLabels = [
 }
 
 .icon-btn.danger:hover {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
   border-color: var(--color-error);
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .no-files {
@@ -3232,7 +3232,7 @@ const scheduleDayLabels = [
   flex-direction: column;
   align-items: center;
   padding: 40px;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .no-files p {
@@ -3281,7 +3281,7 @@ const scheduleDayLabels = [
 
 .section-description {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
   margin: 0 0 16px;
   line-height: 1.4;
 }
@@ -3343,7 +3343,7 @@ const scheduleDayLabels = [
 
 .toggle-content span {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .toggle-details {
@@ -3395,7 +3395,7 @@ const scheduleDayLabels = [
   padding: 3px 8px;
   background: rgba(34, 197, 94, 0.15);
   border-radius: 3px;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 /* ALCOA Status in Info Panel */
@@ -3420,7 +3420,7 @@ const scheduleDayLabels = [
 .alcoa-label {
   font-size: 0.75rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .alcoa-badge {
@@ -3430,13 +3430,13 @@ const scheduleDayLabels = [
   border-radius: 3px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
 }
 
 .alcoa-badge.off {
   background: var(--btn-secondary-bg);
-  color: #666;
+  color: var(--text-muted);
 }
 
 .alcoa-features {

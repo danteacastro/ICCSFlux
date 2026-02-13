@@ -2939,7 +2939,7 @@ watchEffect(() => {
             :width="(getPipeDisplayLabel(pipe).length * 7 + 12) / zoom"
             :height="16 / zoom"
             :rx="3 / zoom"
-            fill="rgba(15, 15, 26, 0.85)"
+            :style="{ fill: 'var(--bg-panel)' }"
             class="pipe-label-bg"
           />
           <text
@@ -4214,7 +4214,7 @@ watchEffect(() => {
 .runtime-tooltip {
   position: absolute;
   transform: translate(-50%, -100%);
-  background: rgba(15, 15, 26, 0.95);
+  background: var(--bg-panel);
   border: 1px solid var(--color-accent);
   border-radius: 6px;
   padding: 6px 10px;

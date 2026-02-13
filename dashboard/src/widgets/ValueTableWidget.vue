@@ -103,19 +103,19 @@ const shouldShowStatus = computed(() => props.showStatus === true)
   flex-direction: column;
   height: 100%;
   background: var(--bg-widget);
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .table-header {
   padding: 6px 8px;
-  background: #252540;
+  background: var(--bg-gradient-elevated);
   border-bottom: 1px solid var(--border-color);
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
-  color: #888;
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
 }
 
@@ -186,13 +186,13 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 
 .unit-cell {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
   min-width: 30px;
 }
 
 /* Status colors */
 .table-row.stale .value-cell {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .table-row.warning .value-cell {
@@ -206,7 +206,7 @@ const shouldShowStatus = computed(() => props.showStatus === true)
 .empty-state {
   padding: 16px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 

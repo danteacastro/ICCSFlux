@@ -388,7 +388,7 @@ function onDragEnd() {
 
 .opacity-label {
   font-size: 9px;
-  color: #666;
+  color: var(--text-muted);
   min-width: 28px;
   text-align: right;
 }

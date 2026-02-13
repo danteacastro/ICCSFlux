@@ -374,7 +374,7 @@ describe('BarGraphWidget', () => {
         props: { channel: 'temp' }
       })
       const barFill = wrapper.find('.bar-fill')
-      expect(barFill.attributes('style')).toContain('#ef4444')
+      expect(barFill.attributes('style')).toContain('var(--color-error)')
     })
 
     it('should use warning color for bar fill', () => {
@@ -387,7 +387,7 @@ describe('BarGraphWidget', () => {
         props: { channel: 'temp' }
       })
       const barFill = wrapper.find('.bar-fill')
-      expect(barFill.attributes('style')).toContain('#fbbf24')
+      expect(barFill.attributes('style')).toContain('var(--color-warning)')
     })
 
     it('should use normal green color for bar fill', () => {
@@ -395,7 +395,7 @@ describe('BarGraphWidget', () => {
         props: { channel: 'temp' }
       })
       const barFill = wrapper.find('.bar-fill')
-      expect(barFill.attributes('style')).toContain('#4ade80')
+      expect(barFill.attributes('style')).toContain('var(--color-success-light)')
     })
   })
 

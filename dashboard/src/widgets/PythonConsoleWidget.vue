@@ -511,7 +511,7 @@ const displayLabel = computed(() => props.label || 'Python Console')
   align-items: center;
   padding: 4px 8px;
   cursor: pointer;
-  border-bottom: 1px solid #252540;
+  border-bottom: 1px solid var(--bg-gradient-elevated);
 }
 
 .completion-item:last-child {
@@ -520,7 +520,7 @@ const displayLabel = computed(() => props.label || 'Python Console')
 
 .completion-item:hover,
 .completion-item.selected {
-  background: #252550;
+  background: var(--bg-gradient-elevated);
 }
 
 .comp-text {
@@ -570,6 +570,6 @@ const displayLabel = computed(() => props.label || 'Python Console')
 
 .console-output::-webkit-scrollbar-thumb:hover,
 .completions-dropdown::-webkit-scrollbar-thumb:hover {
-  background: #4a4a6a;
+  background: var(--bg-knob-border);
 }
 </style>

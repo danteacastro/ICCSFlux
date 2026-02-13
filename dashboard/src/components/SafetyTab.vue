@@ -2367,8 +2367,8 @@ function getControlDescription(ctrl: InterlockControl): string {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
-  color: #fca5a5;
+  background: linear-gradient(90deg, var(--indicator-danger-bg) 0%, var(--indicator-sim-bg) 100%);
+  color: var(--indicator-danger-text);
   font-size: 0.85rem;
   border-bottom: 1px solid #991b1b;
 }
@@ -2431,7 +2431,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .summary-item .label {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -2464,7 +2464,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 @keyframes pulse-alarm {
   0%, 100% { background: var(--bg-widget); }
-  50% { background: #3f1515; }
+  50% { background: var(--bg-alarm-pulse); }
 }
 
 @keyframes pulse-warning {
@@ -2546,7 +2546,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   border-left-color: var(--color-error);
 }
 .alarm-item.alarm.active {
-  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 50%);
+  background: linear-gradient(90deg, var(--bg-alarm-pulse) 0%, var(--bg-widget) 50%);
 }
 
 .alarm-item.warning {
@@ -2627,7 +2627,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   display: flex;
   gap: 12px;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .alarm-actions {
@@ -2747,7 +2747,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   padding: 10px 8px;
   text-align: left;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.7rem;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
@@ -2779,7 +2779,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .channel-name .unit {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .toggle-switch {
@@ -2840,7 +2840,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .threshold-input.alarm {
-  border-color: #7f1d1d;
+  border-color: var(--indicator-danger-bg);
 }
 
 .threshold-input.alarm:focus {
@@ -2849,7 +2849,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .threshold-input.warning {
-  border-color: #78350f;
+  border-color: var(--indicator-warning-bg);
 }
 
 .threshold-input.warning:focus {
@@ -3019,7 +3019,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .history-time {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.65rem;
 }
 
@@ -3043,14 +3043,14 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .history-duration {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.65rem;
   margin-top: 4px;
 }
 
 .no-history {
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   padding: 24px;
   font-size: 0.85rem;
 }
@@ -3101,7 +3101,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   background: transparent;
   border: none;
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
@@ -3129,8 +3129,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .latch-status.active {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   cursor: pointer;
   animation: pulse-latch 1s infinite;
 }
@@ -3146,8 +3146,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .latch-status.clear {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 @keyframes pulse-latch {
@@ -3183,7 +3183,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: var(--text-muted);
   gap: 12px;
   padding: 40px;
 }
@@ -3212,7 +3212,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-card.blocked {
   border-left: 3px solid var(--color-error);
-  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 30%);
+  background: linear-gradient(90deg, var(--bg-alarm-pulse) 0%, var(--bg-widget) 30%);
 }
 
 .interlock-card.bypassed {
@@ -3306,7 +3306,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .conditions-label,
 .controls-label {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   margin-bottom: 4px;
 }
@@ -3320,11 +3320,11 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .condition-item.ok {
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .condition-item.failed {
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .condition-icon {
@@ -3339,7 +3339,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .condition-reason {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   font-style: italic;
 }
 
@@ -3378,8 +3378,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .blocked-item {
   padding: 12px;
-  background: #3f1515;
-  border: 1px solid #7f1d1d;
+  background: var(--bg-alarm-pulse);
+  border: 1px solid var(--indicator-danger-bg);
   border-radius: 6px;
   margin-bottom: 8px;
 }
@@ -3387,13 +3387,13 @@ function getControlDescription(ctrl: InterlockControl): string {
 .blocked-action {
   font-weight: 600;
   font-size: 0.9rem;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   margin-bottom: 4px;
 }
 
 .blocked-by {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .no-blocked {
@@ -3446,7 +3446,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-history-item.tripped {
   border-left-color: var(--color-error);
-  background: linear-gradient(90deg, #3f1515 0%, var(--bg-widget) 30%);
+  background: linear-gradient(90deg, var(--bg-alarm-pulse) 0%, var(--bg-widget) 30%);
 }
 
 .interlock-history-item.bypassed {
@@ -3460,7 +3460,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .interlock-history-item.disabled {
-  border-left-color: #888;
+  border-left-color: var(--text-secondary);
 }
 
 .interlock-history-item.proof_test {
@@ -3469,7 +3469,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-history-item .history-time {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-bottom: 4px;
 }
 
@@ -3489,12 +3489,12 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .event-badge.tripped {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .event-badge.bypassed {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fcd34d;
 }
 
@@ -3506,8 +3506,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .event-badge.cleared,
 .event-badge.enabled {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .event-badge.disabled {
@@ -3537,20 +3537,20 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 .interlock-history-item .history-reason {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .interlock-history-item .history-user {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 2px;
 }
 
 .interlock-history-panel .no-history {
   padding: 20px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 
@@ -3595,7 +3595,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .form-group label {
   display: block;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -3720,7 +3720,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .condition-expression-input::placeholder {
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -3737,7 +3737,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .delay-input label {
-  color: #888;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -3758,7 +3758,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .delay-input .unit {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 
@@ -3794,7 +3794,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .empty-hint {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-style: italic;
   margin: 8px 0 0;
@@ -3856,10 +3856,10 @@ function getControlDescription(ctrl: InterlockControl): string {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
   border: 1px solid var(--color-error);
   border-radius: 6px;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   cursor: pointer;
   animation: pulse-first-out 1.5s infinite;
 }
@@ -3887,7 +3887,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 /* Critical severity */
 .summary-item.critical {
   border: 2px solid var(--color-error-dark);
-  background: linear-gradient(135deg, #7f1d1d 0%, var(--bg-widget) 100%);
+  background: linear-gradient(135deg, var(--indicator-danger-bg) 0%, var(--bg-widget) 100%);
 }
 .summary-item.critical .count {
   color: var(--color-error-light);
@@ -3897,7 +3897,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 @keyframes pulse-critical {
-  0%, 100% { background: linear-gradient(135deg, #7f1d1d 0%, var(--bg-widget) 100%); }
+  0%, 100% { background: linear-gradient(135deg, var(--indicator-danger-bg) 0%, var(--bg-widget) 100%); }
   50% { background: linear-gradient(135deg, #991b1b 0%, #2a1a2e 100%); }
 }
 
@@ -3962,7 +3962,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 
 @keyframes pulse-critical-item {
   0%, 100% { background: linear-gradient(90deg, #450a0a 0%, var(--bg-widget) 40%); }
-  50% { background: linear-gradient(90deg, #7f1d1d 0%, var(--bg-widget) 40%); }
+  50% { background: linear-gradient(90deg, var(--indicator-danger-bg) 0%, var(--bg-widget) 40%); }
 }
 
 .alarm-item.critical .alarm-icon {
@@ -3973,7 +3973,7 @@ function getControlDescription(ctrl: InterlockControl): string {
   border-left-color: #f59e0b;
 }
 .alarm-item.medium.active {
-  background: linear-gradient(90deg, #451a03 0%, var(--bg-widget) 40%);
+  background: linear-gradient(90deg, var(--indicator-sim-bg) 0%, var(--bg-widget) 40%);
 }
 
 /* Severity badges */
@@ -4058,7 +4058,7 @@ function getControlDescription(ctrl: InterlockControl): string {
 .shelve-warning {
   margin: 16px 0;
   padding: 10px 12px;
-  background: #451a03;
+  background: var(--indicator-sim-bg);
   border: 1px solid var(--color-warning-dark);
   border-radius: 4px;
   font-size: 0.8rem;
@@ -4281,8 +4281,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-icon.danger:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 /* ============================================
@@ -4445,13 +4445,13 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .type-badge.alarm_triggered {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .type-badge.alarm_cleared {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .type-badge.alarm_acknowledged {
@@ -4509,8 +4509,8 @@ function getControlDescription(ctrl: InterlockControl): string {
 }
 
 .btn-danger {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   border: none;
 }
 

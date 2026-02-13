@@ -407,7 +407,7 @@ describe('GaugeWidget', () => {
         props: { channel: 'temp' }
       })
       const valueArc = wrapper.find('.value-arc')
-      expect(valueArc.attributes('stroke')).toBe('#ef4444')
+      expect(valueArc.attributes('style')).toContain('var(--color-error)')
     })
 
     it('should use warning color when in warning', () => {
@@ -420,7 +420,7 @@ describe('GaugeWidget', () => {
         props: { channel: 'temp' }
       })
       const valueArc = wrapper.find('.value-arc')
-      expect(valueArc.attributes('stroke')).toBe('#fbbf24')
+      expect(valueArc.attributes('style')).toContain('var(--color-warning)')
     })
 
     it('should use normal color when no alarm/warning', () => {
@@ -428,7 +428,7 @@ describe('GaugeWidget', () => {
         props: { channel: 'temp' }
       })
       const valueArc = wrapper.find('.value-arc')
-      expect(valueArc.attributes('stroke')).toBe('#4ade80')
+      expect(valueArc.attributes('style')).toContain('var(--color-success-light)')
     })
 
     it('should use gray color when stale', () => {
@@ -439,7 +439,7 @@ describe('GaugeWidget', () => {
         props: { channel: 'temp' }
       })
       const valueText = wrapper.find('.value-text')
-      expect(valueText.attributes('fill')).toBe('#666')
+      expect(valueText.attributes('style')).toContain('var(--text-muted)')
     })
   })
 

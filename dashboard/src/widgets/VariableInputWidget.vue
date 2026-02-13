@@ -229,7 +229,7 @@ function formatValue(value: number, units?: string): string {
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   overflow: hidden;
 }
 
@@ -239,7 +239,7 @@ function formatValue(value: number, units?: string): string {
   gap: 6px;
   margin-bottom: 8px;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--border-color, #2a2a4a);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .title {

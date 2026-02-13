@@ -372,14 +372,14 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 6px;
 }
 
 .widget-title {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding-bottom: 4px;
@@ -387,7 +387,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 }
 
 .interlock-status-widget.has-blocked {
-  border-color: #7f1d1d;
+  border-color: var(--indicator-danger-bg);
 }
 
 .no-interlocks {
@@ -396,7 +396,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
   justify-content: center;
   gap: 8px;
   height: 100%;
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 
@@ -419,9 +419,9 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 }
 
 .stat.active { opacity: 1; }
-.stat.ok.active { background: #14532d; color: #86efac; }
-.stat.blocked.active { background: #7f1d1d; color: #fca5a5; animation: pulse 1s infinite; }
-.stat.bypassed.active { background: #78350f; color: #fbbf24; }
+.stat.ok.active { background: var(--indicator-success-bg); color: var(--indicator-success-text); }
+.stat.blocked.active { background: var(--indicator-danger-bg); color: var(--indicator-danger-text); animation: pulse 1s infinite; }
+.stat.bypassed.active { background: var(--indicator-warning-bg); color: #fbbf24; }
 .stat.disabled-stat.active { background: #1f2937; color: #9ca3af; }
 
 .stat .count {
@@ -442,8 +442,8 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
   justify-content: center;
   gap: 6px;
   padding: 6px;
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
@@ -553,7 +553,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 
 .expand-chevron {
   flex-shrink: 0;
-  color: #666;
+  color: var(--text-muted);
   transition: transform 0.15s;
 }
 
@@ -571,7 +571,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
   align-items: center;
   gap: 4px;
   font-size: 0.62rem;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   padding: 1px 0;
 }
 
@@ -593,7 +593,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 
 .failed-more {
   font-size: 0.58rem;
-  color: #888;
+  color: var(--text-secondary);
   font-style: italic;
 }
 
@@ -618,7 +618,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 .section-label {
   font-size: 0.52rem;
   font-weight: 700;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 3px;
@@ -675,8 +675,8 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 }
 
 .delay-timer.met {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 /* Control rows */
@@ -691,7 +691,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 
 .detail-empty {
   font-size: 0.6rem;
-  color: #555;
+  color: var(--text-dim);
   font-style: italic;
 }
 
@@ -707,7 +707,7 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 
 .meta-label {
   font-size: 0.55rem;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
@@ -729,8 +729,8 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 .overdue-tag {
   font-size: 0.45rem;
   padding: 0 3px;
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   border-radius: 2px;
   font-weight: 700;
   margin-left: 4px;
@@ -806,8 +806,8 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
 }
 
 .priority-critical {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .priority-high {
@@ -832,12 +832,12 @@ function isProofTestOverdue(interlock: ReturnType<typeof getInterlock>): boolean
   flex-direction: column;
   gap: 2px;
   font-size: 0.58rem;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .ack-status.acknowledged {
   font-weight: 600;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .ack-pending {

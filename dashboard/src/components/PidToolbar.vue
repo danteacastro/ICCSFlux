@@ -1329,7 +1329,7 @@ button {
 }
 
 .dropdown-item-danger:hover {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
 }
 
 .dropdown-check {
@@ -1479,7 +1479,7 @@ button {
 }
 
 .search-box .search-input::placeholder {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .search-count {

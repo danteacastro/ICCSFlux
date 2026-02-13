@@ -117,10 +117,10 @@ const bgArcPath = computed(() => {
 
 // Color based on alarm/warning state
 const gaugeColor = computed(() => {
-  if (isStale.value) return '#666'
-  if (channelValue.value?.alarm) return '#ef4444'
-  if (channelValue.value?.warning) return '#fbbf24'
-  return '#4ade80'
+  if (isStale.value) return 'var(--text-muted)'
+  if (channelValue.value?.alarm) return 'var(--color-error)'
+  if (channelValue.value?.warning) return 'var(--color-warning)'
+  return 'var(--color-success-light)'
 })
 
 const statusClass = computed(() => {
@@ -140,7 +140,7 @@ const statusClass = computed(() => {
       <path
         :d="bgArcPath"
         fill="none"
-        stroke="#2a2a4a"
+        :style="{ stroke: 'var(--border-color)' }"
         stroke-width="8"
         stroke-linecap="round"
       />
@@ -150,14 +150,14 @@ const statusClass = computed(() => {
         v-if="percentage > 0"
         :d="arcPath"
         fill="none"
-        :stroke="gaugeColor"
+        :style="{ stroke: gaugeColor }"
         stroke-width="8"
         stroke-linecap="round"
         class="value-arc"
       />
 
       <!-- Center value -->
-      <text x="50" y="52" text-anchor="middle" class="value-text" :fill="gaugeColor">
+      <text x="50" y="52" text-anchor="middle" class="value-text" :style="{ fill: gaugeColor }">
         {{ displayValue }}
       </text>
 
@@ -182,7 +182,7 @@ const statusClass = computed(() => {
   padding: 4px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
 }
 
 .label {
@@ -223,16 +223,16 @@ const statusClass = computed(() => {
 
 /* Status-based styling */
 .warning {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
 }
 
 .alarm {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   animation: pulse-alarm 1s infinite;
 }
 
 @keyframes pulse-alarm {
   0%, 100% { background-color: var(--bg-widget); }
-  50% { background-color: #3f1515; }
+  50% { background-color: var(--bg-alarm-pulse); }
 }
 </style>

@@ -268,17 +268,17 @@ defineExpose({
 
 .latch-switch-widget.armed {
   border-color: var(--color-success);
-  background: linear-gradient(135deg, #1a2e1a 0%, #1a1a2e 100%);
+  background: linear-gradient(135deg, var(--bg-armed) 0%, var(--bg-widget) 100%);
 }
 
 .latch-switch-widget.blocked {
-  border-color: #f59e0b;
+  border-color: var(--color-warning);
   opacity: 0.8;
 }
 
 .latch-switch-widget.tripped {
   border-color: var(--color-error-dark);
-  background: linear-gradient(135deg, #2e1a1a 0%, #1a1a2e 100%);
+  background: linear-gradient(135deg, var(--bg-tripped) 0%, var(--bg-widget) 100%);
   animation: pulse-red 1s infinite;
 }
 
@@ -293,7 +293,7 @@ defineExpose({
 
 .latch-label {
   font-size: 0.7rem;
-  color: var(--label-color, #888);
+  color: var(--text-secondary);
   text-transform: uppercase;
   margin-bottom: 6px;
   font-weight: 600;
@@ -359,7 +359,7 @@ defineExpose({
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: #9ca3af;
+  color: var(--text-disabled);
 }
 
 .latch-button.armed .latch-status,
@@ -375,7 +375,7 @@ defineExpose({
 
 .blocked-reason {
   font-size: 0.55rem;
-  color: #f59e0b;
+  color: var(--color-warning);
   margin-top: 4px;
   text-align: center;
   max-width: 100%;
@@ -429,7 +429,7 @@ defineExpose({
 }
 
 .confirm-btn.no {
-  background: #6b7280;
+  background: var(--text-dim);
   color: var(--text-primary);
 }
 

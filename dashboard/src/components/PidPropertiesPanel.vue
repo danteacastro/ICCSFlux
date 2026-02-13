@@ -1015,7 +1015,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
               :value="selectedPipe.opacity ?? 1"
               @input="updatePipe({ opacity: Number(($event.target as HTMLInputElement).value) })"
               style="flex: 1;" />
-            <span style="font-size: 11px; color: #888; width: 32px; text-align: right;">
+            <span style="font-size: 11px; color: var(--text-secondary); width: 32px; text-align: right;">
               {{ Math.round((selectedPipe.opacity ?? 1) * 100) }}%
             </span>
           </div>
@@ -1551,13 +1551,13 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
   justify-content: center;
   cursor: pointer;
   z-index: 56;
-  color: #888;
+  color: var(--text-secondary);
   transition: background 0.15s, color 0.15s;
   box-shadow: -2px 0 6px rgba(0, 0, 0, 0.3);
 }
 
 .panel-tab:hover {
-  background: #252540;
+  background: var(--bg-gradient-elevated);
   color: var(--color-accent-light);
 }
 
@@ -1654,7 +1654,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 .section-title {
   font-size: 10px;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.3px;
   margin-bottom: 4px;
@@ -1691,13 +1691,13 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 
 .prop-hint {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
   margin-top: 3px;
 }
 
 .prop-input::placeholder {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .prop-input-sm {
@@ -1734,7 +1734,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 
 .color-hex {
   font-size: 11px;
-  color: #888;
+  color: var(--text-secondary);
   font-family: monospace;
 }
 
@@ -1753,7 +1753,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 
 .mini-label {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
   font-weight: 600;
   text-align: right;
   padding-right: 2px;
@@ -1814,7 +1814,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 .btn-remove-xs {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
@@ -1829,7 +1829,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
   background: transparent;
   border: 1px dashed var(--border-color);
   border-radius: 3px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 11px;
   padding: 3px 8px;

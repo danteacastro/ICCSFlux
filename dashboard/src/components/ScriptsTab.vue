@@ -4051,8 +4051,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: linear-gradient(90deg, #7f1d1d 0%, #451a03 100%);
-  color: #fca5a5;
+  background: linear-gradient(90deg, var(--indicator-danger-bg) 0%, var(--indicator-sim-bg) 100%);
+  color: var(--indicator-danger-text);
   font-size: 0.85rem;
   border-bottom: 1px solid #991b1b;
 }
@@ -4095,7 +4095,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -4158,7 +4158,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .count {
   margin-left: auto;
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Buttons */
@@ -4241,7 +4241,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   padding: 10px 16px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   position: sticky;
@@ -4286,7 +4286,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .item-sub {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -4306,12 +4306,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .item-value .unit {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-left: 2px;
 }
 
 .item-value .no-value {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .error-icon {
@@ -4359,7 +4359,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .delete-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -4367,14 +4367,14 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .delete-btn:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .empty-list {
   padding: 40px 20px;
   text-align: center;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .empty-list .hint {
@@ -4420,7 +4420,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .close-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   font-size: 1rem;
@@ -4443,7 +4443,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .form-group label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 6px;
   text-transform: uppercase;
 }
@@ -4490,7 +4490,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .formula-help {
   margin-top: 6px;
   font-size: 0.7rem;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .formula-help code {
@@ -4513,7 +4513,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--bg-widget);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.7rem;
   font-family: 'JetBrains Mono', monospace;
   cursor: pointer;
@@ -4540,7 +4540,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .preview-value .unit {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-muted);
   margin-left: 4px;
 }
 
@@ -4570,12 +4570,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .state-badge.idle { background: var(--btn-secondary-bg); color: #9ca3af; }
 .state-badge.running { background: #166534; color: var(--color-success); }
-.state-badge.paused { background: #78350f; color: var(--color-warning); }
+.state-badge.paused { background: var(--indicator-warning-bg); color: var(--color-warning); }
 .state-badge.completed { background: #1e3a5f; color: var(--color-accent-light); }
-.state-badge.aborted { background: #7f1d1d; color: #fca5a5; }
-.state-badge.error { background: #7f1d1d; color: var(--color-error); }
-.state-badge.active { background: #7f1d1d; color: var(--color-error); animation: pulse 1s infinite; }
-.state-badge.acknowledged { background: #78350f; color: var(--color-warning); }
+.state-badge.aborted { background: var(--indicator-danger-bg); color: var(--indicator-danger-text); }
+.state-badge.error { background: var(--indicator-danger-bg); color: var(--color-error); }
+.state-badge.active { background: var(--indicator-danger-bg); color: var(--color-error); animation: pulse 1s infinite; }
+.state-badge.acknowledged { background: var(--indicator-warning-bg); color: var(--color-warning); }
 
 /* Sequence specific */
 .sequence-controls {
@@ -4633,7 +4633,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .step-type {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -4652,7 +4652,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
 }
@@ -4663,8 +4663,8 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .step-btn.delete:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .step-btn:disabled {
@@ -4675,7 +4675,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .empty-steps {
   padding: 20px;
   text-align: center;
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.8rem;
 }
 
@@ -4695,7 +4695,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: block;
   font-size: 0.65rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   margin-bottom: 6px;
   letter-spacing: 0.5px;
@@ -4736,7 +4736,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .active-alarms-banner {
   background: #1a0a0a;
-  border-bottom: 1px solid #7f1d1d;
+  border-bottom: 1px solid var(--indicator-danger-bg);
   padding: 8px 16px;
 }
 
@@ -4770,7 +4770,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .alarm-time {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .ack-btn {
@@ -4825,10 +4825,10 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .remove-btn {
   padding: 4px 8px;
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
   border: none;
   border-radius: 4px;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
   cursor: pointer;
 }
 
@@ -4919,7 +4919,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   padding: 8px 16px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   position: sticky;
@@ -4949,7 +4949,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-desc {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 4px;
 }
 
@@ -4981,7 +4981,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .config-header p {
   margin: 0;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .config-form {
@@ -5011,12 +5011,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .template-intro {
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* Action button styles */
@@ -5025,7 +5025,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   cursor: pointer;
 }
@@ -5046,11 +5046,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .action-btn.pause {
   color: var(--color-warning);
-  border-color: #78350f;
+  border-color: var(--indicator-warning-bg);
 }
 
 .action-btn.pause:hover {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
 }
 
 /* =========================================================================
@@ -5114,7 +5114,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .clear-btn {
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
 }
@@ -5158,7 +5158,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   padding: 6px 12px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   background: transparent;
   border-bottom: none;
 }
@@ -5182,7 +5182,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -5236,7 +5236,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .block-outputs .output-name {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .block-outputs .value {
@@ -5283,7 +5283,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .block-info p {
   margin: 0 0 8px 0;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .block-category-badge {
@@ -5292,7 +5292,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--btn-hover);
   border-radius: 4px;
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -5303,7 +5303,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .section-header {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   margin-bottom: 10px;
   text-transform: uppercase;
 }
@@ -5334,7 +5334,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .input-unit {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-left: 4px;
 }
 
@@ -5392,7 +5392,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .output-unit {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
   margin-left: 4px;
 }
 
@@ -5411,7 +5411,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .state-key {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .state-value {
@@ -5457,7 +5457,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .schedule-info .description {
   margin: 0;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -5477,7 +5477,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .schedule-timing .label {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-right: 6px;
 }
@@ -5504,7 +5504,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .action-group .group-label {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
@@ -5529,7 +5529,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--btn-bg);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.8rem;
 }
@@ -5552,7 +5552,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .form-group .hint {
   display: block;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 4px;
 }
 
@@ -5635,7 +5635,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-desc {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -5678,7 +5678,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .history-time {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -5711,13 +5711,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   font-size: 0.7rem;
   color: var(--color-error);
   padding: 6px;
-  background: #7f1d1d30;
+  background: color-mix(in srgb, var(--indicator-danger-bg) 20%, transparent);
   border-radius: 4px;
 }
 
 .empty-history {
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   padding: 20px;
 }
 
@@ -5795,7 +5795,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .detail-label {
-  color: #888;
+  color: var(--text-secondary);
   min-width: 80px;
 }
 
@@ -5856,7 +5856,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .no-channels {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-style: italic;
 }
@@ -5964,7 +5964,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .card-desc {
   margin: 8px 0 0;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .icon-btn {
@@ -5984,7 +5984,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .icon-btn.danger:hover {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
 }
 
 .icon-btn.active {
@@ -6001,7 +6001,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .empty-state.small p {
   margin: 0;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -6025,12 +6025,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .cycle-status-banner.running {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   animation: pulse-bg 2s infinite;
 }
 
 .cycle-status-banner.paused {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
 }
 
 @keyframes pulse-bg {
@@ -6088,7 +6088,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: var(--bg-secondary);
   font-size: 0.75rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
 }
@@ -6131,7 +6131,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .duration {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .valve-status {
@@ -6149,7 +6149,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .valve-status.active {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
   animation: pulse 1s infinite;
 }
@@ -6160,13 +6160,13 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .valve-status.skipped {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: var(--color-warning);
 }
 
 .valve-status.error {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .progress-cell {
@@ -6193,12 +6193,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .progress-text {
   font-size: 0.75rem;
   font-family: 'JetBrains Mono', monospace;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .elapsed-time {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .completed-info {
@@ -6208,7 +6208,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 .no-progress {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .cycle-settings {
@@ -6222,7 +6222,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .cycle-settings h4 {
   margin: 0 0 12px 0;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .settings-row {
@@ -6267,7 +6267,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: block;
   margin-top: 4px;
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .col-enabled { width: 50px; }
@@ -6345,7 +6345,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   padding: 10px 8px;
   text-align: left;
   font-weight: 500;
-  color: #888;
+  color: var(--text-secondary);
   border-bottom: 1px solid var(--border-color);
   white-space: nowrap;
 }
@@ -6427,7 +6427,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 }
 
 /* Column widths for schedule grid */
-.col-row-num { width: 40px; text-align: center; color: #666; }
+.col-row-num { width: 40px; text-align: center; color: var(--text-muted); }
 .col-time { width: 90px; }
 .col-valve { width: 130px; }
 .col-unit { width: 70px; }
@@ -6444,7 +6444,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .entry-status.pending {
   background: var(--btn-hover);
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .entry-status.active {
@@ -6472,7 +6472,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .empty-grid-state {
   padding: 32px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .empty-grid-state p {
@@ -6481,12 +6481,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .empty-grid-state .hint {
   font-size: 0.8rem;
-  color: #555;
+  color: var(--text-dim);
 }
 
 /* Grid help text */
 .grid-help {
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.75rem;
 }
 
@@ -6499,7 +6499,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   background: transparent;
   border: 1px solid #333;
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.7rem;
   transition: all 0.15s;

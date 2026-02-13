@@ -266,7 +266,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 
 .widget-title {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -279,13 +279,13 @@ const hasVariables = computed(() => variables.value.length > 0)
 
 .last-update {
   font-size: 0.6rem;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .action-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 2px 4px;
   display: flex;
@@ -337,7 +337,7 @@ const hasVariables = computed(() => variables.value.length > 0)
   align-items: center;
   justify-content: center;
   padding: 20px;
-  color: #555;
+  color: var(--text-dim);
   height: 100%;
 }
 
@@ -367,7 +367,7 @@ const hasVariables = computed(() => variables.value.length > 0)
   text-align: left;
   font-size: 0.6rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
 }
@@ -413,8 +413,8 @@ const hasVariables = computed(() => variables.value.length > 0)
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 0.6rem;
-  background: #252540;
-  color: #888;
+  background: var(--bg-gradient-elevated);
+  color: var(--text-secondary);
 }
 
 .type-number {
@@ -444,13 +444,13 @@ const hasVariables = computed(() => variables.value.length > 0)
 
 /* Size & dtype */
 .dtype {
-  color: #666;
+  color: var(--text-muted);
   font-size: 0.6rem;
   margin-right: 4px;
 }
 
 .size {
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.6rem;
 }
 
@@ -482,7 +482,7 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .var-count {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .disconnected {
@@ -504,6 +504,6 @@ const hasVariables = computed(() => variables.value.length > 0)
 }
 
 .variables-container::-webkit-scrollbar-thumb:hover {
-  background: #4a4a6a;
+  background: var(--bg-knob-border);
 }
 </style>

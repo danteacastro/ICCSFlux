@@ -166,7 +166,7 @@ onUnmounted(() => clearConfirmTimer())
   padding: 4px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   container-type: size;
 }
 
@@ -267,7 +267,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .toggle-switch.blocked .switch {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
 }
 
 @keyframes pulse-blocked {

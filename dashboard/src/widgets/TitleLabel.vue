@@ -268,7 +268,7 @@ watch(() => props.text, (newText) => {
   background: #2d3748;
   border: none;
   border-radius: 2px;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 2px;
   display: flex;
@@ -318,7 +318,7 @@ watch(() => props.text, (newText) => {
 .setting-group label {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 8px;
   text-transform: uppercase;
 }
@@ -334,7 +334,7 @@ watch(() => props.text, (newText) => {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -385,7 +385,7 @@ watch(() => props.text, (newText) => {
 }
 
 .transparent-x {
-  color: #666;
+  color: var(--text-muted);
   font-size: 1.2rem;
   font-weight: bold;
 }

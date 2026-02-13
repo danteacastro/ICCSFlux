@@ -138,7 +138,7 @@ const customStyles = computed(() => {
   padding: 4px 6px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   box-sizing: border-box;
   container-type: size;
 }
@@ -224,7 +224,7 @@ const customStyles = computed(() => {
 }
 
 .normal .value {
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .stale .value {
@@ -260,23 +260,23 @@ const customStyles = computed(() => {
 }
 
 .warning {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
 }
 .warning .value {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .alarm {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   animation: pulse-alarm 1s infinite;
 }
 .alarm .value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 @keyframes pulse-alarm {
   0%, 100% { background-color: var(--bg-widget); }
-  50% { background-color: #3f1515; }
+  50% { background-color: var(--bg-alarm-pulse); }
 }
 
 /* ========================================
@@ -299,7 +299,7 @@ const customStyles = computed(() => {
 }
 
 .industrial.normal {
-  background: linear-gradient(180deg, #2d4a2d 0%, #1a2e1a 100%);
+  background: linear-gradient(180deg, var(--bg-armed) 0%, var(--bg-armed) 100%);
   border-color: #3a5a3a;
 }
 
@@ -324,7 +324,7 @@ const customStyles = computed(() => {
 }
 
 .industrial.open-tc {
-  background: linear-gradient(180deg, #4a2d2d 0%, #2e1a1a 100%);
+  background: linear-gradient(180deg, var(--bg-tripped) 0%, var(--bg-tripped) 100%);
   border-color: #dc2626;
   border-style: dashed;
 }
@@ -350,7 +350,7 @@ const customStyles = computed(() => {
 }
 
 .industrial.alarm {
-  background: linear-gradient(180deg, #4a2d2d 0%, #2e1a1a 100%);
+  background: linear-gradient(180deg, var(--bg-tripped) 0%, var(--bg-tripped) 100%);
   border-color: #5a3a3a;
 }
 

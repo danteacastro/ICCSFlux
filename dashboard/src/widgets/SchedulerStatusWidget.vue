@@ -124,7 +124,7 @@ function toggleScheduler() {
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
 }
 
 .header {
@@ -137,7 +137,7 @@ function toggleScheduler() {
 .title {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -170,7 +170,7 @@ function toggleScheduler() {
 
 .status-text {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .no-schedules {
@@ -179,7 +179,7 @@ function toggleScheduler() {
   align-items: center;
   justify-content: center;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .schedule-list {
@@ -241,7 +241,7 @@ function toggleScheduler() {
 .schedule-time {
   font-size: 0.65rem;
   font-family: 'JetBrains Mono', monospace;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .enabled {

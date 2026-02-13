@@ -682,7 +682,7 @@ onUnmounted(() => clearConfirmTimer())
 }
 
 .hz-no-params {
-  color: #555;
+  color: var(--text-dim);
   font-size: 12px;
   font-style: italic;
   text-align: center;

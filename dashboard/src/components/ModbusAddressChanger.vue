@@ -258,7 +258,7 @@ async function writeAddress() {
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1.5rem;
   cursor: pointer;
 }
@@ -280,7 +280,7 @@ async function writeAddress() {
 }
 
 .warning-box {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   border: 1px solid #f59e0b;
   color: #fef3c7;
   padding: 0.75rem;
@@ -298,17 +298,17 @@ async function writeAddress() {
 }
 
 .feedback.success {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .feedback.error {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .feedback.warning {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fef3c7;
 }
 
@@ -322,7 +322,7 @@ async function writeAddress() {
 .form-group h4 {
   margin: 0 0 0.75rem 0;
   font-size: 0.9rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .form-row {
@@ -355,7 +355,7 @@ async function writeAddress() {
 .form-row .hint {
   display: block;
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 0.25rem;
 }
 

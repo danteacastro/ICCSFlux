@@ -736,19 +736,19 @@ import { computed } from 'vue'
 }
 
 .feedback.success {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .feedback.error {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .empty-state {
   text-align: center;
   padding: 2rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .empty-state .hint {
@@ -817,7 +817,7 @@ import { computed } from 'vue'
   gap: 0.5rem;
   margin-top: 0.5rem;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .info-tag {
@@ -842,7 +842,7 @@ import { computed } from 'vue'
 }
 
 .detail-row .label {
-  color: #888;
+  color: var(--text-secondary);
   min-width: 80px;
 }
 
@@ -851,7 +851,7 @@ import { computed } from 'vue'
 }
 
 .detail-row .value.disconnected {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .detail-row.error .value {
@@ -880,7 +880,7 @@ import { computed } from 'vue'
 }
 
 .action-btn.danger {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
 }
 
 .action-btn.danger:hover {
@@ -931,7 +931,7 @@ import { computed } from 'vue'
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 1.5rem;
   cursor: pointer;
 }
@@ -962,7 +962,7 @@ import { computed } from 'vue'
 .form-group h4 {
   margin: 0 0 0.75rem 0;
   font-size: 0.9rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .form-row {
@@ -972,7 +972,7 @@ import { computed } from 'vue'
 .form-row label {
   display: block;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 0.25rem;
 }
 
@@ -1101,7 +1101,7 @@ import { computed } from 'vue'
 .empty-browse {
   padding: 2rem;
   text-align: center;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .tag-item {
@@ -1140,7 +1140,7 @@ import { computed } from 'vue'
 .tag-details {
   display: block;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .data-type {
@@ -1180,7 +1180,7 @@ import { computed } from 'vue'
   padding: 0.5rem;
   text-align: center;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-secondary);
   border-top: 1px solid var(--border-color);
 }
 </style>

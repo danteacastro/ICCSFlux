@@ -200,7 +200,7 @@ const displayLabel = computed(() => {
 
 .widget-title {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -213,7 +213,7 @@ const displayLabel = computed(() => {
 .action-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 2px 4px;
   display: flex;
@@ -273,7 +273,7 @@ const displayLabel = computed(() => {
 }
 
 .iterations {
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Output Container */
@@ -285,7 +285,7 @@ const displayLabel = computed(() => {
 }
 
 .empty-state {
-  color: #555;
+  color: var(--text-dim);
   text-align: center;
   padding: 20px;
   font-style: italic;
@@ -304,7 +304,7 @@ const displayLabel = computed(() => {
 }
 
 .line-time {
-  color: #555;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
@@ -354,6 +354,6 @@ const displayLabel = computed(() => {
 }
 
 .output-container::-webkit-scrollbar-thumb:hover {
-  background: #4a4a6a;
+  background: var(--bg-knob-border);
 }
 </style>

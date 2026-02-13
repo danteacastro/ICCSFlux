@@ -112,7 +112,7 @@ const blockedCount = computed(() =>
   padding: 6px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 3px;
   overflow: hidden;
   min-height: 0;
@@ -121,7 +121,7 @@ const blockedCount = computed(() =>
 .widget-title {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding-bottom: 3px;
@@ -130,7 +130,7 @@ const blockedCount = computed(() =>
 }
 
 .alarm-summary-widget.has-issues {
-  border-color: #7f1d1d;
+  border-color: var(--indicator-danger-bg);
 }
 
 .all-clear {
@@ -171,13 +171,13 @@ const blockedCount = computed(() =>
 }
 
 .stat.alarm.active {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   animation: pulse 1s infinite;
 }
 
 .stat.warning.active {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fbbf24;
 }
 
@@ -207,8 +207,8 @@ const blockedCount = computed(() =>
   justify-content: center;
   gap: 4px;
   padding: 3px 6px;
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   border-radius: 4px;
   font-size: 0.65rem;
   font-weight: 600;
@@ -233,7 +233,7 @@ const blockedCount = computed(() =>
   justify-content: center;
   gap: 4px;
   padding: 3px 6px;
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: #fbbf24;
   border-radius: 4px;
   font-size: 0.65rem;

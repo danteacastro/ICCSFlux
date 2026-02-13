@@ -109,14 +109,14 @@ const elapsedTime = computed(() => {
   padding: 2px 4px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   overflow: hidden;
   container-type: size;
 }
 
 .label {
   font-size: clamp(0.5rem, 2cqh, 0.65rem);
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   line-height: 1;
 }
@@ -133,7 +133,7 @@ const elapsedTime = computed(() => {
 
 .date {
   font-size: clamp(0.5rem, 15cqh, 1rem);
-  color: #888;
+  color: var(--text-secondary);
   line-height: 1;
 }
 

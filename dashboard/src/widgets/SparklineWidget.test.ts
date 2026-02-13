@@ -250,7 +250,7 @@ describe('SparklineWidget', () => {
         props: { channel: 'temp' }
       })
       const path = wrapper.find('path')
-      expect(path.attributes('stroke')).toBe('#4ade80')
+      expect(path.attributes('stroke')).toBe('var(--color-success-light)')
     })
 
     it('should use red color for alarm state', () => {
@@ -263,7 +263,7 @@ describe('SparklineWidget', () => {
         props: { channel: 'temp' }
       })
       const path = wrapper.find('path')
-      expect(path.attributes('stroke')).toBe('#ef4444')
+      expect(path.attributes('stroke')).toBe('var(--color-error)')
     })
 
     it('should use yellow color for warning state', () => {
@@ -276,7 +276,7 @@ describe('SparklineWidget', () => {
         props: { channel: 'temp' }
       })
       const path = wrapper.find('path')
-      expect(path.attributes('stroke')).toBe('#fbbf24')
+      expect(path.attributes('stroke')).toBe('var(--color-warning)')
     })
   })
 

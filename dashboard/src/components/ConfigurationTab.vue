@@ -7628,13 +7628,13 @@ watch(
 }
 
 .status-item.mqtt {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .status-item.mqtt.connected {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 .theme-toggle-small {
@@ -7953,7 +7953,7 @@ watch(
 .type-badge.iepe { background: #831843; color: #f9a8d4; }           /* Pink */
 .type-badge.counter { background: var(--bg-surface); color: var(--text-secondary); }        /* Slate */
 .type-badge.resistance { background: #3f3f46; color: #d4d4d8; }     /* Zinc */
-.type-badge.digital_input { background: #14532d; color: #86efac; }  /* Green */
+.type-badge.digital_input { background: var(--indicator-success-bg); color: var(--indicator-success-text); }  /* Green */
 .type-badge.digital_output { background: #064e3b; color: #6ee7b7; } /* Emerald */
 .type-badge.voltage_output { background: #0c4a6e; color: #7dd3fc; } /* Sky */
 .type-badge.current_output { background: #3b0764; color: #d8b4fe; } /* Purple */
@@ -8064,7 +8064,7 @@ watch(
 }
 
 .digital-state.on {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
 }
 
@@ -8508,7 +8508,7 @@ watch(
   justify-content: center;
   gap: 8px;
   padding: 6px 16px;
-  background: #451a03;
+  background: var(--indicator-sim-bg);
   color: var(--color-warning);
   font-size: 0.75rem;
   font-weight: 500;
@@ -8645,7 +8645,7 @@ input[type="checkbox"] {
 
 /* Warning buttons (orange) - safety/attention: Safety */
 .action-btn.warning {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   border-color: var(--color-warning-dark);
   color: var(--color-warning);
 }
@@ -8691,7 +8691,7 @@ input[type="checkbox"] {
   font-weight: 600;
   padding: 4px 8px;
   border-radius: 3px;
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: var(--color-warning);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -8721,12 +8721,12 @@ input[type="checkbox"] {
 }
 
 .crio-status-indicator.out-of-sync {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: var(--color-warning);
 }
 
 .crio-status-indicator.offline {
-  background: #7f1d1d;
+  background: var(--indicator-danger-bg);
   color: var(--color-error-light);
 }
 
@@ -8765,13 +8765,13 @@ input[type="checkbox"] {
 }
 
 .feedback-message.success {
-  background: #14532d;
+  background: var(--indicator-success-bg);
   color: var(--color-success);
 }
 
 .feedback-message.error {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 .feedback-message.info {
@@ -9080,7 +9080,7 @@ input[type="checkbox"] {
 
 /* cRIO node styling - distinct from cDAQ chassis */
 .tree-crio {
-  background: #1a2e1a;
+  background: var(--bg-armed);
   border-radius: 6px;
   overflow: hidden;
   border: 1px solid #2a4a2a;
@@ -9105,7 +9105,7 @@ input[type="checkbox"] {
 
 .device-badge.crio {
   background: #166534;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .device-badge.cdaq {
@@ -9122,12 +9122,12 @@ input[type="checkbox"] {
 
 .crio-status.online {
   background: #166534;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .crio-status.offline {
   background: #991b1b;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .crio-status.unknown {
@@ -9188,12 +9188,12 @@ input[type="checkbox"] {
 
 .opto22-status.online {
   background: #166534;
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 
 .opto22-status.offline {
   background: #991b1b;
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 
 .opto22-status.unknown {
@@ -9496,8 +9496,8 @@ input[type="checkbox"] {
 }
 
 .delete-btn:hover {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
 }
 
 /* Alarm column styling */
@@ -9758,7 +9758,7 @@ input.input-error {
 
 /* Grey out used/assigned channels in dropdowns */
 option.option-in-use {
-  color: #555 !important;
+  color: var(--text-dim) !important;
   font-style: italic;
 }
 
@@ -10674,7 +10674,7 @@ select option:disabled {
 }
 
 .btn-danger {
-  background: #7f1d1d !important;
+  background: var(--indicator-danger-bg) !important;
   border-color: var(--color-error) !important;
   color: var(--color-error) !important;
 }

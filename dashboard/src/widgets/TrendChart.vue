@@ -886,7 +886,8 @@ function exportToPNG() {
   if (!ctx) return
 
   // Fill background
-  ctx.fillStyle = '#1a1a2e'
+  const style = getComputedStyle(document.documentElement)
+  ctx.fillStyle = style.getPropertyValue('--bg-widget').trim() || '#1a1a2e'
   ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height)
 
   // Draw the chart
@@ -899,7 +900,7 @@ function exportToPNG() {
 
   // Add timestamp
   ctx.font = '10px sans-serif'
-  ctx.fillStyle = '#888'
+  ctx.fillStyle = style.getPropertyValue('--text-secondary').trim() || '#888'
   ctx.fillText(new Date().toLocaleString(), 10, exportCanvas.height - 10)
 
   // Download
@@ -1662,7 +1663,7 @@ function toggleChannelVisibility(channel: string) {
   height: 100%;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   overflow: hidden;
 }
 
@@ -1671,7 +1672,7 @@ function toggleChannelVisibility(channel: string) {
   justify-content: space-between;
   align-items: center;
   padding: 4px 8px;
-  border-bottom: 1px solid var(--border-color, #2a2a4a);
+  border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   gap: 8px;
   flex-wrap: wrap;
@@ -1777,7 +1778,7 @@ function toggleChannelVisibility(channel: string) {
   gap: 2px;
   padding: 2px 8px;
   background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid var(--border-color, #2a2a4a);
+  border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
 }
 
@@ -1847,7 +1848,7 @@ function toggleChannelVisibility(channel: string) {
 }
 
 .custom-time-input::placeholder {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .custom-time-input.error {
@@ -1892,7 +1893,7 @@ function toggleChannelVisibility(channel: string) {
   justify-content: center;
   align-items: center;
   background: rgba(59, 130, 246, 0.05);
-  border-right: 1px solid var(--border-color, #2a2a4a);
+  border-right: 1px solid var(--border-color);
   cursor: pointer;
   transition: background 0.15s;
   flex-shrink: 0;
@@ -2099,7 +2100,7 @@ function toggleChannelVisibility(channel: string) {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-top: 1px solid var(--border-color, #2a2a4a);
+  border-top: 1px solid var(--border-color);
   background: rgba(0, 0, 0, 0.2);
 }
 
@@ -2134,7 +2135,7 @@ function toggleChannelVisibility(channel: string) {
 .cursor-display {
   padding: 4px 8px;
   background: rgba(251, 191, 36, 0.1);
-  border-top: 1px solid #78350f;
+  border-top: 1px solid var(--indicator-warning-bg);
   font-size: 0.7rem;
 }
 
@@ -2166,7 +2167,7 @@ function toggleChannelVisibility(channel: string) {
   flex-wrap: wrap;
   gap: 4px 12px;
   padding: 6px 8px;
-  border-top: 1px solid var(--border-color, #2a2a4a);
+  border-top: 1px solid var(--border-color);
   background: rgba(0, 0, 0, 0.2);
   flex-shrink: 0;
   max-height: 80px;
@@ -2450,7 +2451,7 @@ function toggleChannelVisibility(channel: string) {
   gap: 8px;
   padding: 4px 8px;
   background: rgba(124, 58, 237, 0.05);
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--border-color);
 }
 
 .hist-scrubber input[type="range"] {
@@ -2458,7 +2459,7 @@ function toggleChannelVisibility(channel: string) {
   height: 4px;
   -webkit-appearance: none;
   appearance: none;
-  background: #1a1a2e;
+  background: var(--bg-widget);
   border-radius: 2px;
 }
 

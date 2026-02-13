@@ -256,7 +256,7 @@ const containerStyle = computed(() => {
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 6px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 6px;
   font-size: 12px;
 }
@@ -353,7 +353,7 @@ const containerStyle = computed(() => {
 }
 
 .control-label {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 11px;
   min-width: 50px;
 }
@@ -439,7 +439,7 @@ const containerStyle = computed(() => {
 .term {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 /* Status Row */
@@ -452,7 +452,7 @@ const containerStyle = computed(() => {
 .error-display {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .error-display.negative {
@@ -461,8 +461,8 @@ const containerStyle = computed(() => {
 
 .saturated-indicator {
   padding: 2px 6px;
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   border-radius: 3px;
   font-size: 9px;
   font-weight: 700;

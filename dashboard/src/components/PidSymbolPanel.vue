@@ -256,13 +256,13 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
   justify-content: center;
   cursor: pointer;
   z-index: 56;
-  color: #888;
+  color: var(--text-secondary);
   transition: background 0.15s, color 0.15s;
   box-shadow: 2px 0 6px rgba(0, 0, 0, 0.3);
 }
 
 .panel-tab:hover {
-  background: #252540;
+  background: var(--bg-gradient-elevated);
   color: var(--color-accent-light);
 }
 
@@ -322,7 +322,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 }
 
 .btn-import:hover {
-  background: #252540;
+  background: var(--bg-gradient-elevated);
   border-color: var(--color-accent);
 }
 
@@ -364,7 +364,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 }
 
 .search-input::placeholder {
-  color: #555;
+  color: var(--text-dim);
 }
 
 .search-clear {
@@ -434,7 +434,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 .category-count {
   margin-left: auto;
   font-size: 10px;
-  color: #555;
+  color: var(--text-dim);
   font-weight: 400;
 }
 
@@ -460,7 +460,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 }
 
 .symbol-tile:hover {
-  background: #252540;
+  background: var(--bg-gradient-elevated);
   border-color: var(--color-accent);
 }
 
@@ -511,7 +511,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 
 .tile-name {
   font-size: 9px;
-  color: #888;
+  color: var(--text-secondary);
   text-align: center;
   margin-top: 2px;
   line-height: 1.2;
@@ -526,7 +526,7 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 .no-results {
   padding: 20px;
   text-align: center;
-  color: #555;
+  color: var(--text-dim);
   font-size: 12px;
   font-style: italic;
 }

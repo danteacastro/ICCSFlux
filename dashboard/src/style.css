@@ -74,6 +74,30 @@
   --connection-fail-bg: #7f1d1d;
   --connection-fail-text: #fca5a5;
 
+  /* Status indicator backgrounds (badges, pills, safety indicators) */
+  --indicator-danger-bg: #7f1d1d;
+  --indicator-danger-text: #fca5a5;
+  --indicator-warning-bg: #78350f;
+  --indicator-warning-text: #fbbf24;
+  --indicator-success-bg: #14532d;
+  --indicator-success-text: #86efac;
+  --indicator-sim-bg: #451a03;
+
+  /* Panel / overlay surfaces */
+  --bg-panel: rgba(15, 15, 26, 0.95);
+  --bg-panel-row: rgba(30, 30, 50, 0.5);
+  --bg-status-pill: rgba(0, 0, 0, 0.3);
+
+  /* State backgrounds */
+  --bg-armed: #1a2e1a;
+  --bg-tripped: #2e1a1a;
+  --bg-alarm-pulse: #3f1515;
+
+  /* Gradient / elevated surfaces */
+  --bg-gradient-elevated: #252540;
+  --bg-knob-start: #3a3a5a;
+  --bg-knob-border: #4a4a6a;
+
   /* Typography */
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   line-height: 1.4;
@@ -146,6 +170,26 @@
   --connection-ok-text: #15803d;
   --connection-fail-bg: #fef2f2;
   --connection-fail-text: #b91c1c;
+
+  --indicator-danger-bg: #fef2f2;
+  --indicator-danger-text: #b91c1c;
+  --indicator-warning-bg: #fffbeb;
+  --indicator-warning-text: #92400e;
+  --indicator-success-bg: #dcfce7;
+  --indicator-success-text: #15803d;
+  --indicator-sim-bg: #fef3c7;
+
+  --bg-panel: rgba(255, 255, 255, 0.95);
+  --bg-panel-row: rgba(0, 0, 0, 0.04);
+  --bg-status-pill: rgba(0, 0, 0, 0.06);
+
+  --bg-armed: #f0fdf4;
+  --bg-tripped: #fef2f2;
+  --bg-alarm-pulse: #fee2e2;
+
+  --bg-gradient-elevated: #e5e7eb;
+  --bg-knob-start: #d1d5db;
+  --bg-knob-border: #9ca3af;
 }
 
 /* Light theme scrollbar */

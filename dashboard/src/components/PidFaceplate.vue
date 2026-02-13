@@ -551,7 +551,7 @@ onUnmounted(() => {
 .close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -595,7 +595,7 @@ onUnmounted(() => {
 .unit {
   font-size: 14px;
   font-weight: 400;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .status-indicator {
@@ -620,7 +620,7 @@ onUnmounted(() => {
 .status-indicator.disconnected .status-dot { background: #6b7280; }
 
 .status-text {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .status-indicator.alarm .status-text { color: var(--color-error); }
@@ -638,7 +638,7 @@ onUnmounted(() => {
 .section-label {
   font-size: 10px;
   text-transform: uppercase;
-  color: #666;
+  color: var(--text-muted);
   letter-spacing: 0.5px;
   margin-bottom: 8px;
 }
@@ -723,7 +723,7 @@ onUnmounted(() => {
 }
 
 .setpoint-unit {
-  color: #888;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -748,7 +748,7 @@ onUnmounted(() => {
 
 .setpoint-range {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
   text-align: center;
   margin-top: 6px;
 }
@@ -800,7 +800,7 @@ onUnmounted(() => {
 }
 
 .diag-label {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .diag-value {
@@ -856,7 +856,7 @@ onUnmounted(() => {
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .il-state.state-ok { color: var(--color-success); }

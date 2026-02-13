@@ -102,7 +102,7 @@ const recordingMode = computed(() => {
   padding: 8px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   gap: 6px;
 }
 

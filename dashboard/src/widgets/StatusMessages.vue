@@ -355,7 +355,7 @@ const hasError = computed(() => {
   right: 16px;
   width: 380px;
   max-height: 280px;
-  background: rgba(15, 15, 26, 0.95);
+  background: var(--bg-panel);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -396,7 +396,7 @@ const hasError = computed(() => {
   gap: 6px;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -422,7 +422,7 @@ const hasError = computed(() => {
 .action-btn {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -466,7 +466,7 @@ const hasError = computed(() => {
   padding: 6px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
-  background: rgba(30, 30, 50, 0.5);
+  background: var(--bg-panel-row);
   border-left: 2px solid transparent;
 }
 
@@ -501,14 +501,14 @@ const hasError = computed(() => {
 .message.error .icon { color: var(--color-error); }
 
 .message .time {
-  color: #555;
+  color: var(--text-dim);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 0.65rem;
   flex-shrink: 0;
 }
 
 .message .source {
-  color: #888;
+  color: var(--text-secondary);
   font-weight: 600;
   flex-shrink: 0;
   max-width: 80px;
@@ -518,7 +518,7 @@ const hasError = computed(() => {
 }
 
 .message .text {
-  color: #ccc;
+  color: var(--text-bright);
   flex: 1;
   word-break: break-word;
 }
@@ -528,7 +528,7 @@ const hasError = computed(() => {
   align-items: center;
   justify-content: center;
   height: 60px;
-  color: #555;
+  color: var(--text-dim);
   font-size: 0.8rem;
 }
 
@@ -569,9 +569,9 @@ const hasError = computed(() => {
   gap: 2px;
   font-size: 0.55rem;
   font-weight: 600;
-  color: #666;
+  color: var(--text-muted);
   padding: 2px 4px;
-  background: rgba(0,0,0,0.3);
+  background: var(--bg-status-pill);
   border-radius: 3px;
 }
 
@@ -579,11 +579,11 @@ const hasError = computed(() => {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #6b7280;
+  background: var(--text-dim);
 }
 
 .status-item.active {
-  color: #86efac;
+  color: var(--indicator-success-text);
 }
 .status-item.active .dot {
   background: var(--color-success);
@@ -591,17 +591,17 @@ const hasError = computed(() => {
 }
 
 .status-item.error {
-  color: #fca5a5;
+  color: var(--indicator-danger-text);
 }
 .status-item.error .dot {
   background: var(--color-error);
 }
 
 .status-item.inactive {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .status-item.inactive .dot {
-  background: #4b5563;
+  background: var(--text-disabled);
 }
 
 .status-item .label {
@@ -617,7 +617,7 @@ const hasError = computed(() => {
 
 .status-badge.sim {
   color: var(--color-warning);
-  background: #451a03;
+  background: var(--indicator-sim-bg);
 }
 
 /* Safety Status Indicators */
@@ -632,30 +632,30 @@ const hasError = computed(() => {
 }
 
 .safety-indicator.latched {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   cursor: pointer;
   animation: pulse-safety 1s infinite;
 }
 
 .safety-indicator.latched:hover {
-  background: #991b1b;
+  background: var(--indicator-danger-bg); filter: brightness(1.2);
 }
 
 .safety-indicator.blocked {
-  background: #78350f;
+  background: var(--indicator-warning-bg);
   color: var(--color-warning);
 }
 
 .safety-indicator.alarm {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--indicator-danger-bg);
+  color: var(--indicator-danger-text);
   animation: pulse-safety 1s infinite;
 }
 
 .safety-indicator.clear {
-  background: #14532d;
-  color: #86efac;
+  background: var(--indicator-success-bg);
+  color: var(--indicator-success-text);
 }
 
 @keyframes pulse-safety {

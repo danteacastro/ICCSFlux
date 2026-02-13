@@ -88,10 +88,10 @@ const effectiveVertical = computed(() => {
 
 // Color based on status
 const barColor = computed(() => {
-  if (isStale.value) return '#666'
-  if (channelValue.value?.alarm) return '#ef4444'
-  if (channelValue.value?.warning) return '#fbbf24'
-  return '#4ade80'
+  if (isStale.value) return 'var(--text-muted)'
+  if (channelValue.value?.alarm) return 'var(--color-error)'
+  if (channelValue.value?.warning) return 'var(--color-warning)'
+  return 'var(--color-success-light)'
 })
 
 const statusClass = computed(() => {
@@ -186,7 +186,7 @@ const statusClass = computed(() => {
   padding: 6px;
   background: var(--bg-widget);
   border-radius: 4px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color);
   container-type: size;
 }
 
@@ -362,24 +362,24 @@ const statusClass = computed(() => {
 
 /* Status styling */
 .warning {
-  border-color: #fbbf24;
+  border-color: var(--color-warning);
 }
 
 .alarm {
-  border-color: #ef4444;
+  border-color: var(--color-error);
   animation: pulse-alarm 1s infinite;
 }
 
 .normal .value {
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .warning .value {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .alarm .value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .stale .value {
@@ -388,7 +388,7 @@ const statusClass = computed(() => {
 
 @keyframes pulse-alarm {
   0%, 100% { background-color: var(--bg-widget); }
-  50% { background-color: #3f1515; }
+  50% { background-color: var(--bg-alarm-pulse); }
 }
 
 /* ========== TANK STYLE ========== */
@@ -407,7 +407,7 @@ const statusClass = computed(() => {
   width: 40px;
   min-width: 30px;
   max-width: 60px;
-  background: linear-gradient(90deg, #1a1a2e 0%, #252540 50%, #1a1a2e 100%);
+  background: linear-gradient(90deg, var(--bg-widget) 0%, var(--bg-gradient-elevated) 50%, var(--bg-widget) 100%);
   border-radius: 6px 6px 12px 12px;
   border: 2px solid var(--border-light);
   position: relative;
@@ -505,7 +505,7 @@ const statusClass = computed(() => {
   width: 16px;
   min-width: 12px;
   max-width: 20px;
-  background: linear-gradient(90deg, #1a1a2e 0%, #252540 50%, #1a1a2e 100%);
+  background: linear-gradient(90deg, var(--bg-widget) 0%, var(--bg-gradient-elevated) 50%, var(--bg-widget) 100%);
   border-radius: 8px 8px 0 0;
   border: 2px solid var(--border-light);
   border-bottom: none;
@@ -613,17 +613,17 @@ const statusClass = computed(() => {
 .thermometer .normal .value,
 .bar-graph-widget.tank.normal .tank-value .value,
 .bar-graph-widget.thermometer.normal .thermo-value .value {
-  color: #4ade80;
+  color: var(--color-success-light);
 }
 
 .bar-graph-widget.tank.warning .tank-value .value,
 .bar-graph-widget.thermometer.warning .thermo-value .value {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .bar-graph-widget.tank.alarm .tank-value .value,
 .bar-graph-widget.thermometer.alarm .thermo-value .value {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .bar-graph-widget.tank.stale .tank-value .value,
