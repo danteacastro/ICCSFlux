@@ -6,6 +6,7 @@
 - **Frontend**: Vue 3 + TypeScript dashboard (`dashboard/`) — connects via WebSocket to MQTT
 - **Broker**: Mosquitto MQTT — TCP 1883 (authenticated, for services + cRIO) and WebSocket 9002 (localhost-only, anonymous, for dashboard)
 - **cRIO**: Python node (`services/crio_node_v2/`) deployed to NI cRIO hardware over SSH
+- **Opto22**: Python node (`services/opto22_node/`) deployed to groov EPIC/RIO — hybrid architecture with groov Manage MQTT for I/O + Python for scripts, safety, PID, sequences
 - **Azure**: Separate `AzureUploader` exe uploads to Azure IoT Hub (external process, not part of main DAQ service)
 - **Portable build**: PyInstaller compiles to `dist/ICCSFlux-Portable/` — runs on any Windows PC without Python/Node installed
 
@@ -67,6 +68,7 @@ The main backend service running on the Windows PC.
 |------|-----|---------|
 | `services/daq_service/script_manager.py` | 3,507 | User script lifecycle + sandbox. Helpers: `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `SharedVariableStore`. APIs: `TagsAPI`, `OutputsAPI`, `SessionAPI`, `VarsAPI` |
 | `services/crio_node_v2/script_engine.py` | 1,777 | cRIO-side script engine (same API as DAQ service). **MUST keep blocked lists in sync with script_manager.py** |
+| `services/opto22_node/script_engine.py` | ~1,800 | Opto22-side script engine (same API as DAQ service). **MUST keep blocked lists in sync with script_manager.py** |
 
 ### Section 4: Safety, Control & Automation
 
@@ -104,20 +106,53 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | File | LOC | Purpose |
 |------|-----|---------|
 | `services/crio_node_v2/crio_node.py` | 1,730 | Main cRIO service: event loop, MQTT commands, hardware read, script exec, safety checks |
-| `services/crio_node_v2/script_engine.py` | 1,777 | Script sandbox (same API as DAQ service) |
+| `services/crio_node_v2/script_engine.py` | 1,777 | Script sandbox (same API as DAQ service). 4 Hz rate limiting via TokenBucketRateLimiter. **MUST keep blocked lists in sync with script_manager.py** |
 | `services/crio_node_v2/hardware.py` | 1,178 | NI-DAQmx abstraction for cRIO modules. Falls back to MockHardware if nidaqmx unavailable |
 | `services/crio_node_v2/state_machine.py` | 215 | cRIO state machine: IDLE → ACQUIRING → SESSION |
 | `services/crio_node_v2/mqtt_interface.py` | 337 | paho-mqtt wrapper with auto-reconnect and TLS |
-| `services/crio_node_v2/safety.py` | 378 | cRIO-side alarm evaluation |
+| `services/crio_node_v2/safety.py` | 378+ | ISA-18.2 alarms: shelving (SHELVED/OUT_OF_SERVICE), off-delay, rate-of-change, expanded safety actions (dict + legacy string format) |
 | `services/crio_node_v2/config.py` | 520 | Config loading and channel scaling |
 | `services/crio_node_v2/channel_types.py` | 299 | Channel type definitions and NI module mappings |
+| `services/crio_node_v2/audit_trail.py` | ~150 | Lightweight audit trail: SHA-256 hash chain, append-only JSONL, 10 MB rotation with gzip |
 
-### Section 8: Other Device Services
+### Section 8: Opto22 Node (Remote Controller)
+
+Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for native I/O scanning + Python node for scripts, safety, PID, sequences.
+
+**Core:**
+
+| File | LOC | Purpose |
+|------|-----|---------|
+| `services/opto22_node/opto22_node.py` | 1,139 | Main service orchestrator: dual MQTT, scan loop, command dispatch |
+| `services/opto22_node/state_machine.py` | ~200 | States: IDLE → CONNECTING_MQTT → ACQUIRING → SESSION |
+| `services/opto22_node/mqtt_interface.py` | ~350 | Dual MQTT: SystemMQTT (NISystem) + GroovMQTT (groov Manage) |
+| `services/opto22_node/hardware.py` | ~400 | groov MQTT subscriber + REST API fallback. Unified HardwareInterface |
+| `services/opto22_node/config.py` | ~500 | NodeConfig, ChannelConfig, groov MQTT + REST settings |
+| `services/opto22_node/channel_types.py` | ~300 | ChannelType enum + Opto22 module database (GRV-series) |
+
+**Intelligence (shared with cRIO v2):**
+
+| File | LOC | Purpose |
+|------|-----|---------|
+| `services/opto22_node/script_engine.py` | ~1,800 | Script sandbox (same API as DAQ service). 4 Hz rate limiting. **MUST keep blocked lists in sync with script_manager.py** |
+| `services/opto22_node/safety.py` | ~400 | ISA-18.2 alarms: shelving, off-delay, rate-of-change, interlock trip actions |
+| `services/opto22_node/audit_trail.py` | ~150 | SHA-256 hash chain, append-only JSONL, 10 MB rotation |
+
+**Autonomous engines (Opto22-unique):**
+
+| File | LOC | Purpose |
+|------|-----|---------|
+| `services/opto22_node/pid_engine.py` | ~120 | PID loops: auto/manual/cascade, anti-windup, derivative-on-PV |
+| `services/opto22_node/sequence_manager.py` | ~130 | Server-side sequences: setOutput, wait, condition, loops |
+| `services/opto22_node/trigger_engine.py` | ~50 | Rising-edge threshold detection → actions |
+| `services/opto22_node/watchdog_engine.py` | ~60 | Stale data + out-of-range monitoring with recovery |
+| `services/opto22_node/codesys_bridge.py` | ~240 | Optional: Modbus TCP bridge to CODESYS runtime for deterministic PID |
+
+### Section 9: Other Device Services
 
 | File | LOC | Purpose |
 |------|-----|---------|
 | `services/cfp_node/cfp_node.py` | 998 | NI CompactFieldPoint hardware support |
-| `services/opto22_node/opto22_node.py` | 4,671 | Opto 22 industrial I/O (Modbus RTU, pulse counter, analog I/O) |
 | `services/azure_uploader/azure_uploader_service.py` | 574 | Azure IoT Hub uploader (isolated process, paho-mqtt <2.0) |
 | `services/service_manager.py` | 749 | Service lifecycle management (start/stop/status/logs) |
 | `services/node_deploy.py` | 821 | Remote deployment via SSH/SCP with rollback |
@@ -127,7 +162,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 - `services/crio_node/crio_node.py` (7,715 LOC)
 - `services/crio_service/crio_service.py` (1,385 LOC)
 
-### Section 9: Build & Deployment Scripts
+### Section 10: Build & Deployment Scripts
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -142,7 +177,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | `scripts/cleanup_portable.py` | 263 | Remove old portable builds |
 | `scripts/mqtt_credentials.py` | 124 | MQTT credential generation (auto-generated at first run, chmod 600) |
 
-### Section 10: Dashboard — Core & Stores
+### Section 11: Dashboard — Core & Stores
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -153,7 +188,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | `dashboard/src/types/scripts.ts` | 2,183 | Script types: CalculatedParam, SequenceStep (25+ subtypes), TriggerConfig |
 | `dashboard/src/types/python-scripts.ts` | 509 | Pyodide Python integration types |
 
-### Section 11: Dashboard — Composables (26 hooks)
+### Section 12: Dashboard — Composables (26 hooks)
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -175,7 +210,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | `composables/useTagDependencies.ts` | ~100 | Dependency graph analysis |
 | `composables/useWindowSync.ts` | ~100 | Multi-monitor window position memory |
 
-### Section 12: Dashboard — Tab Components
+### Section 13: Dashboard — Tab Components
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -190,7 +225,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | `components/NotebookTab.vue` | 880 | Markdown notebook with Python cells |
 | `components/SessionTab.vue` | 631 | Test session history |
 
-### Section 13: Dashboard — P&ID Editor Components
+### Section 14: Dashboard — P&ID Editor Components
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -205,7 +240,7 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 | `utils/autoRoute.ts` | ~200 | A* pathfinding on orthogonal visibility graph for pipe routing |
 | `constants/pidSymbols.ts` | 1,200+ | P&ID symbol metadata and categories |
 
-### Section 14: Dashboard — Widgets (30+ types)
+### Section 15: Dashboard — Widgets (30+ types)
 
 **Data Display:**
 
@@ -234,7 +269,7 @@ Plus: `ValueTableWidget`, `AlarmSummaryWidget`, `RecordingStatusWidget`, `Schedu
 
 **Widget registry:** `widgets/index.ts` (294 lines) — component metadata and lazy loading
 
-### Section 15: Dashboard — ISA-101 HMI Controls (12 components)
+### Section 16: Dashboard — ISA-101 HMI Controls (12 components)
 
 Located in `components/hmi/`. HTML-based (not SVG). Support backend alarm flags and HMI threshold overrides.
 
@@ -255,7 +290,7 @@ Located in `components/hmi/`. HTML-based (not SVG). Support backend alarm flags 
 
 Registry: `constants/hmiControls.ts` (350+ lines) — HMI control catalog with SVG thumbnails
 
-### Section 16: Dashboard — Device Configuration Components
+### Section 17: Dashboard — Device Configuration Components
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -266,7 +301,7 @@ Registry: `constants/hmiControls.ts` (350+ lines) — HMI control catalog with S
 | `components/ModbusDeviceConfig.vue` | 1,004 | Modbus RTU/TCP slave setup |
 | `components/ModbusAddressChanger.vue` | ~300 | Bulk Modbus address reassignment |
 
-### Section 17: Dashboard — Dialogs & Utility Components
+### Section 18: Dashboard — Dialogs & Utility Components
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -284,7 +319,7 @@ Registry: `constants/hmiControls.ts` (350+ lines) — HMI control catalog with S
 | `components/NotificationToast.vue` | ~200 | System notifications |
 | `components/InterlockBlockOverlay.vue` | ~200 | Safety block indicator |
 
-### Section 18: Dashboard — Utilities & Assets
+### Section 19: Dashboard — Utilities & Assets
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -292,7 +327,7 @@ Registry: `constants/hmiControls.ts` (350+ lines) — HMI control catalog with S
 | `utils/formatUnit.ts` | ~100 | Unit conversion (degC/degF, psi/bar, inches/mm) |
 | `utils/autoRoute.ts` | ~200 | A* orthogonal pipe routing |
 
-### Section 19: Testing
+### Section 20: Testing
 
 **477 unit tests** (no external deps required):
 
@@ -376,7 +411,10 @@ User scripts run via `exec()` with AST-based validation (not process isolation).
 - Module access (`os`, `sys`, `subprocess`, `ctypes`, `socket`, etc.)
 - `type()` is removed from safe_builtins (prevents `type([]).__bases__[0].__subclasses__()` escape)
 
-Both `services/daq_service/script_manager.py` and `services/crio_node_v2/script_engine.py` share the same blocked lists — keep them in sync when modifying.
+All three script engines share the same blocked lists — keep them in sync when modifying:
+- `services/daq_service/script_manager.py`
+- `services/crio_node_v2/script_engine.py`
+- `services/opto22_node/script_engine.py`
 
 ## Project JSON Constraints
 
