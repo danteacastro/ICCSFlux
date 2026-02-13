@@ -28,7 +28,7 @@ const searchResults = computed(() => {
   const q = searchQuery.value.toLowerCase()
   return store.pidLayer.symbols.filter(s =>
     (s.label && s.label.toLowerCase().includes(q)) ||
-    s.type.toLowerCase().includes(q) ||
+    (s.type && s.type.toLowerCase().includes(q)) ||
     (s.channel && s.channel.toLowerCase().includes(q))
   )
 })

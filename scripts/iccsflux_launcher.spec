@@ -66,7 +66,7 @@ exe_console = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'),
 )
 
 exe_windowed = EXE(
@@ -88,5 +88,5 @@ exe_windowed = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'),
 )

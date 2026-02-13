@@ -339,9 +339,9 @@ const filteredBlocks = computed(() => {
   if (!blockSearchQuery.value) return scripts.functionBlocks.value
   const q = blockSearchQuery.value.toLowerCase()
   return scripts.functionBlocks.value.filter(b =>
-    b.displayName.toLowerCase().includes(q) ||
-    b.name.toLowerCase().includes(q) ||
-    b.category.toLowerCase().includes(q)
+    (b.displayName && b.displayName.toLowerCase().includes(q)) ||
+    (b.name && b.name.toLowerCase().includes(q)) ||
+    (b.category && b.category.toLowerCase().includes(q))
   )
 })
 

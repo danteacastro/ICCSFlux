@@ -38,6 +38,11 @@ SPEC_FILES = {
     "ICCSFlux": SPEC_DIR / "iccsflux.spec",
 }
 
+# Standalone tool specs (built from main venv, deployed to tools/ subfolder)
+TOOL_SPEC_FILES = {
+    "ModbusTool": SPEC_DIR / "modbus_tool.spec",
+}
+
 # Azure spec (built from isolated venv with paho-mqtt 1.x)
 AZURE_SPEC = ("AzureUploader", SPEC_DIR / "azure_uploader.spec")
 
@@ -247,6 +252,70 @@ def compile_executables(quick_mode=False):
             return False
 
     log("All executables compiled", "OK")
+    return True
+
+
+def compile_tools(quick_mode=False):
+    """Compile standalone tool executables using PyInstaller."""
+    if not TOOL_SPEC_FILES:
+        return True
+
+    log("Compiling standalone tools...")
+
+    EXE_DIR.mkdir(parents=True, exist_ok=True)
+
+    for name, spec_file in TOOL_SPEC_FILES.items():
+        exe_path = EXE_DIR / f"{name}.exe"
+
+        if quick_mode and exe_path.exists():
+            log(f"  {name}.exe exists, skipping (--quick mode)")
+            continue
+
+        if not spec_file.exists():
+            log(f"Tool spec file not found: {spec_file}", "WARN")
+            continue
+
+        log(f"  Compiling {name}...")
+        try:
+            subprocess.run(
+                [
+                    sys.executable, "-m", "PyInstaller",
+                    str(spec_file),
+                    "--distpath", str(EXE_DIR),
+                    "--workpath", str(PROJECT_ROOT / "build" / "pyinstaller"),
+                    "--noconfirm",
+                ],
+                cwd=PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+            )
+            log(f"  {name}.exe compiled successfully")
+        except subprocess.CalledProcessError as e:
+            log(f"Failed to compile {name}: {e.stderr.decode() if e.stderr else e}", "WARN")
+
+    log("Standalone tools compiled", "OK")
+    return True
+
+
+def copy_tools():
+    """Copy compiled tool executables to build directory tools/ subfolder."""
+    if not TOOL_SPEC_FILES:
+        return True
+
+    log("Copying standalone tools...")
+
+    tools_dest = BUILD_DIR / "tools"
+    tools_dest.mkdir(exist_ok=True)
+
+    for name in TOOL_SPEC_FILES.keys():
+        exe_src = EXE_DIR / f"{name}.exe"
+        if exe_src.exists():
+            shutil.copy2(exe_src, tools_dest / f"{name}.exe")
+            log(f"  Copied {name}.exe -> tools/")
+        else:
+            log(f"  {name}.exe not found (tool will be unavailable)", "WARN")
+
+    log("Standalone tools copied", "OK")
     return True
 
 
@@ -475,8 +544,17 @@ def copy_config():
             'mqtt_credentials.json',  # Auto-generated at runtime
             'mosquitto_passwd',       # Auto-generated at runtime
             'mosquitto_secure.conf',  # Superseded by mosquitto.conf
+            'projects',              # Dev projects — portable starts clean
+            'nisystem_settings.json', # Contains dev machine paths
         )
     )
+
+    # Create empty projects directory (with backups subdir)
+    projects_dir = config_dest / "projects" / "backups"
+    projects_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write clean settings file
+    (config_dest / "nisystem_settings.json").write_text("{}")
 
     log("Configuration copied", "OK")
     return True
@@ -943,6 +1021,10 @@ def main():
     if not compile_executables(quick_mode=args.quick):
         return 1
 
+    # Build standalone tools (ModbusTool, etc.)
+    print()
+    compile_tools(quick_mode=args.quick)
+
     # Build AzureUploader in isolated venv (paho-mqtt 1.x + azure-iot-device)
     print()
     log("Building Azure IoT Hub Uploader...")
@@ -963,6 +1045,8 @@ def main():
     print()
     if not copy_executables():
         return 1
+
+    copy_tools()
 
     if not copy_config():
         return 1

@@ -25,7 +25,7 @@ try:
     import nidaqmx.system
     from nidaqmx.constants import TerminalConfiguration, ThermocoupleType, RTDType
     NIDAQMX_AVAILABLE = True
-except ImportError:
+except Exception:
     NIDAQMX_AVAILABLE = False
     logger.warning("nidaqmx not available - device discovery will return simulated data")
 

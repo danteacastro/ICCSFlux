@@ -10,11 +10,11 @@ ICCSFlux is a data acquisition (DAQ) and control system that:
 - Reads sensor data from NI cDAQ hardware, cRIO controllers, and Opto22 devices
 - Controls digital and analog outputs
 - Provides real-time visualization via a web dashboard
-- Records data to CSV files
+- Records data to CSV and TDMS files
 - Implements safety interlocks and alarms
 - Runs Python automation scripts
 
-A project JSON file defines the complete system configuration including channels, safety rules, and dashboard layout.
+A project JSON file defines the complete system configuration including channels, safety rules, user variables, recording settings, and dashboard layout.
 
 ---
 
@@ -33,6 +33,8 @@ A project JSON file defines the complete system configuration including channels
   "channels": { },
   "safety": { },
   "scripts": { },
+  "userVariables": [ ],
+  "recording": { },
   "layout": { }
 }
 ```
@@ -130,25 +132,25 @@ The `service` object configures timeouts and health monitoring.
 
 ## Section 4: Channel Configuration
 
-The `channels` object is a dictionary where **keys are TAG names** (unique identifiers) and values are channel configuration objects.
+The `channels` object is a dictionary where **keys are TAG names** (unique identifiers) and values are channel configuration objects. The `name` field inside the channel object must match the dictionary key.
 
 ```json
 "channels": {
-  "TC001": { ... },
-  "PT_Supply": { ... },
-  "Valve_Main": { ... }
+  "TC-001": { "name": "TC-001", ... },
+  "PT_Supply": { "name": "PT_Supply", ... },
+  "Valve_Main": { "name": "Valve_Main", ... }
 }
 ```
 
 ### Channel Naming Rules
 
-1. **Use alphanumeric characters and underscores only**: `A-Z`, `a-z`, `0-9`, `_`
+1. **Use alphanumeric characters, underscores, and dashes**: `A-Z`, `a-z`, `0-9`, `_`, `-`
 2. **Start with a letter**: `TC001` (valid), `001TC` (invalid)
-3. **No spaces or special characters**: `TC_001` (valid), `TC-001` (invalid in TAG, ok in display_name)
+3. **Dashes are valid** (ISA-5.1 tag names use dashes): `TT-101`, `PT-200`, `FT-301`
 4. **Keep concise but descriptive**:
-   - Temperatures: `TC001`, `RTD_Inlet`, `T_Ambient`
-   - Pressures: `PT001`, `PT_Supply`, `P_Tank`
-   - Flows: `FT001`, `FT_Water`, `Flow_Main`
+   - Temperatures: `TC-001`, `RTD_Inlet`, `TT-101`
+   - Pressures: `PT-001`, `PT_Supply`, `PI-200`
+   - Flows: `FT-001`, `FT_Water`, `FI-301`
    - Digital: `Valve_1`, `Pump_Start`, `Alarm_Horn`
 
 ### Channel Types Overview
@@ -165,12 +167,20 @@ The `channels` object is a dictionary where **keys are TAG names** (unique ident
 | `current_output` | 4-20mA analog output | Control signals |
 | `digital_input` | On/Off input | Switches, status signals |
 | `digital_output` | On/Off output | Valves, relays, indicators |
-| `counter` | Counter/pulse input | Flow totalizers, encoder counts |
-| `strain_input` | Strain gauge input | Load cells, force sensors |
-| `iepe_input` | IEPE accelerometer | Vibration sensors |
-| `resistance_input` | Resistance measurement | Resistance sensors |
+| `counter` or `counter_input` | Counter/pulse input | Flow totalizers, encoder counts |
+| `counter_output` | Counter/pulse output | Pulse train output |
+| `frequency_input` | Frequency measurement input | Frequency sensors |
+| `pulse_output` | Pulse train output | Stepper motor, PWM |
+| `strain` or `strain_input` | Strain gauge input | Load cells, force sensors |
+| `bridge_input` | Wheatstone bridge input | Universal bridge sensors |
+| `iepe` or `iepe_input` | IEPE accelerometer | Vibration sensors |
+| `resistance` or `resistance_input` | Resistance measurement | Resistance sensors |
+| `modbus_register` | Modbus holding/input register | Modbus devices |
+| `modbus_coil` | Modbus coil/discrete input | Modbus digital I/O |
 
-**IMPORTANT:** Do NOT use `script`, `calculated`, `virtual`, or any other type not listed above. These are NOT valid channel types and will cause the project to fail to load.
+Short forms (`strain`, `iepe`, `resistance`, `counter`) and explicit forms (`strain_input`, `iepe_input`, `resistance_input`, `counter_input`) are both valid and behave identically.
+
+**IMPORTANT:** Do NOT use `script`, `calculated`, `virtual`, or any other type not listed above. These are NOT valid channel types and will cause `ValueError` when loading the project.
 
 ### Calculated/Derived Values
 
@@ -199,11 +209,11 @@ For temperature measurement using thermocouple sensors.
 
 ```json
 "TC_Flue_1": {
+  "name": "TC_Flue_1",
   "physical_channel": "cDAQ9189-1A2B3C4Mod1/ai0",
   "channel_type": "thermocouple",
   "thermocouple_type": "K",
-  "units": "degF",
-  "display_name": "Flue Gas Temperature 1",
+  "unit": "degF",
   "description": "Primary flue gas temperature at stack exit",
   "alarm_enabled": true,
   "lo_limit": 200,
@@ -215,7 +225,7 @@ For temperature measurement using thermocouple sensors.
   "safety_action": "high-temp-shutdown",
   "log": true,
   "log_interval_ms": 1000,
-  "precision": 1,
+  "decimals": 1,
   "group": "Flue Gas",
   "visible": true,
   "chartable": true
@@ -234,14 +244,14 @@ For temperature measurement using thermocouple sensors.
 
 | Type | Range | Best For |
 |------|-------|----------|
-| `"J"` | -40 to 750°C | General purpose, reducing atmospheres |
-| `"K"` | -200 to 1350°C | **Most common**, general purpose |
-| `"T"` | -200 to 350°C | Low temp, food, cryogenics |
-| `"E"` | -200 to 900°C | High sensitivity |
-| `"N"` | -200 to 1300°C | High temp, stable |
-| `"R"` | 0 to 1450°C | Very high temp, platinum |
-| `"S"` | 0 to 1450°C | Very high temp, platinum |
-| `"B"` | 0 to 1820°C | Extreme high temp |
+| `"J"` | -40 to 750C | General purpose, reducing atmospheres |
+| `"K"` | -200 to 1350C | **Most common**, general purpose |
+| `"T"` | -200 to 350C | Low temp, food, cryogenics |
+| `"E"` | -200 to 900C | High sensitivity |
+| `"N"` | -200 to 1300C | High temp, stable |
+| `"R"` | 0 to 1450C | Very high temp, platinum |
+| `"S"` | 0 to 1450C | Very high temp, platinum |
+| `"B"` | 0 to 1820C | Extreme high temp |
 
 ---
 
@@ -251,18 +261,18 @@ For precision temperature measurement using RTD sensors.
 
 ```json
 "RTD_Water_Supply": {
+  "name": "RTD_Water_Supply",
   "physical_channel": "cDAQ9189-1A2B3C4Mod2/ai0",
   "channel_type": "rtd",
-  "rtd_type": "Pt3851",
-  "resistance_config": "3Wire",
-  "excitation_current": 0.001,
-  "r0": 100,
-  "units": "degF",
-  "display_name": "Water Supply Temperature",
+  "rtd_type": "Pt100",
+  "rtd_wiring": "3-wire",
+  "rtd_current": 0.001,
+  "rtd_resistance": 100,
+  "unit": "degF",
   "description": "Feedwater supply temperature to boiler",
   "alarm_enabled": false,
   "log": true,
-  "precision": 2,
+  "decimals": 2,
   "group": "Water Loop"
 }
 ```
@@ -271,27 +281,27 @@ For precision temperature measurement using RTD sensors.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `rtd_type` | string | **Yes** | - | RTD type (see table below) |
-| `resistance_config` | string | **Yes** | - | Wiring: `"2Wire"`, `"3Wire"`, `"4Wire"` |
-| `excitation_current` | number | No | `0.001` | Excitation current in Amps |
-| `r0` | number | No | `100` | Resistance at 0°C in Ohms |
+| `rtd_type` | string | **Yes** | - | RTD type: `"Pt100"`, `"Pt500"`, `"Pt1000"`, `"custom"` |
+| `rtd_wiring` | string | **Yes** | - | Wiring: `"2-wire"`, `"3-wire"`, `"4-wire"` |
+| `rtd_current` | number | No | `0.001` | Excitation current in Amps |
+| `rtd_resistance` | number | No | `100` | Nominal resistance at 0C in Ohms |
 
 #### RTD Type Selection
 
 | Type | Description |
 |------|-------------|
-| `"Pt3851"` | Platinum, alpha=0.00385 (IEC 60751, most common) |
-| `"Pt3750"` | Platinum, alpha=0.00375 (US industrial) |
-| `"Pt3916"` | Platinum, alpha=0.003916 (US industrial) |
-| `"Pt3920"` | Platinum, alpha=0.00392 (US industrial) |
+| `"Pt100"` | Platinum, 100 Ohm at 0C (IEC 60751, most common) |
+| `"Pt500"` | Platinum, 500 Ohm at 0C |
+| `"Pt1000"` | Platinum, 1000 Ohm at 0C |
+| `"custom"` | Custom RTD type (set `rtd_resistance` to nominal value) |
 
 #### Wiring Configuration
 
 | Config | Description | Accuracy |
 |--------|-------------|----------|
-| `"2Wire"` | Simple, lead resistance affects reading | Low |
-| `"3Wire"` | Compensates for lead resistance | Medium |
-| `"4Wire"` | Full compensation, highest accuracy | High |
+| `"2-wire"` | Simple, lead resistance affects reading | Low |
+| `"3-wire"` | Compensates for lead resistance | Medium |
+| `"4-wire"` | Full compensation, highest accuracy | High |
 
 ---
 
@@ -301,14 +311,17 @@ For analog sensors with 0-10V or similar voltage output.
 
 ```json
 "PT_Supply": {
+  "name": "PT_Supply",
   "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai0",
   "channel_type": "voltage_input",
   "voltage_range": 10,
-  "terminal_config": "Diff",
-  "units": "psig",
-  "scale_min": 0,
-  "scale_max": 100,
-  "display_name": "Supply Pressure",
+  "terminal_config": "differential",
+  "unit": "psig",
+  "scale_type": "map",
+  "pre_scaled_min": 0,
+  "pre_scaled_max": 10,
+  "scaled_min": 0,
+  "scaled_max": 100,
   "description": "Main supply header pressure",
   "alarm_enabled": true,
   "lo_limit": 20,
@@ -318,7 +331,7 @@ For analog sensors with 0-10V or similar voltage output.
   "alarm_priority": "high",
   "alarm_deadband": 2,
   "log": true,
-  "precision": 1,
+  "decimals": 1,
   "group": "Pressures"
 }
 ```
@@ -328,17 +341,34 @@ For analog sensors with 0-10V or similar voltage output.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `voltage_range` | number | **Yes** | - | Max voltage: `1`, `5`, `10` |
-| `terminal_config` | string | No | `"Diff"` | `"Diff"`, `"RSE"`, `"NRSE"` |
-| `scale_min` | number | **Yes** | - | Engineering units at 0V |
-| `scale_max` | number | **Yes** | - | Engineering units at max voltage |
+| `terminal_config` | string | No | `"differential"` | `"differential"`, `"rse"`, `"nrse"` (lowercase preferred) |
+| `scale_type` | string | No | `"none"` | Scaling method: `"none"`, `"linear"`, `"map"` |
+
+**Scaling options:**
+
+For **linear scaling** (`scale_type: "linear"`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scale_slope` | number | Multiplier: `engineering_value = raw * slope + offset` |
+| `scale_offset` | number | Offset |
+
+For **map scaling** (`scale_type: "map"`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pre_scaled_min` | number | Raw value at minimum (e.g., 0V) |
+| `pre_scaled_max` | number | Raw value at maximum (e.g., 10V) |
+| `scaled_min` | number | Engineering units at minimum |
+| `scaled_max` | number | Engineering units at maximum |
 
 #### Terminal Configuration
 
 | Config | Description | Use When |
 |--------|-------------|----------|
-| `"Diff"` | Differential (2 wires per channel) | Best noise rejection, default choice |
-| `"RSE"` | Referenced Single-Ended | More channels, shared ground |
-| `"NRSE"` | Non-Referenced Single-Ended | Floating signal sources |
+| `"differential"` | Differential (2 wires per channel) | Best noise rejection, default choice |
+| `"rse"` | Referenced Single-Ended | More channels, shared ground |
+| `"nrse"` | Non-Referenced Single-Ended | Floating signal sources |
 
 ---
 
@@ -348,15 +378,15 @@ For 4-20mA industrial transmitters.
 
 ```json
 "FT_Water": {
+  "name": "FT_Water",
   "physical_channel": "cDAQ9189-1A2B3C4Mod3/ai4",
   "channel_type": "current_input",
   "current_range_ma": 20,
   "four_twenty_scaling": true,
-  "terminal_config": "Diff",
-  "units": "GPM",
+  "terminal_config": "differential",
+  "unit": "GPM",
   "eng_units_min": 0,
   "eng_units_max": 100,
-  "display_name": "Water Flow Rate",
   "description": "Circulating water flow through heat exchanger",
   "alarm_enabled": true,
   "lo_limit": 10,
@@ -365,7 +395,7 @@ For 4-20mA industrial transmitters.
   "alarm_deadband": 1,
   "safety_action": "low-flow-shutdown",
   "log": true,
-  "precision": 1,
+  "decimals": 1,
   "group": "Flow"
 }
 ```
@@ -387,16 +417,19 @@ For analog control outputs (0-10V setpoints).
 
 ```json
 "Firing_Rate_SP": {
+  "name": "Firing_Rate_SP",
   "physical_channel": "cDAQ9189-1A2B3C4Mod5/ao0",
   "channel_type": "voltage_output",
   "voltage_range": 10,
-  "units": "%",
-  "scale_min": 0,
-  "scale_max": 100,
-  "display_name": "Firing Rate Setpoint",
+  "unit": "%",
+  "scale_type": "map",
+  "pre_scaled_min": 0,
+  "pre_scaled_max": 10,
+  "scaled_min": 0,
+  "scaled_max": 100,
   "description": "Burner firing rate command (0-100%)",
   "log": true,
-  "precision": 0,
+  "decimals": 0,
   "group": "Control"
 }
 ```
@@ -406,8 +439,9 @@ For analog control outputs (0-10V setpoints).
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `voltage_range` | number | **Yes** | Output range: `5` or `10` |
-| `scale_min` | number | **Yes** | Engineering units at 0V |
-| `scale_max` | number | **Yes** | Engineering units at max voltage |
+| `scale_type` | string | No | Scaling: `"none"`, `"linear"`, `"map"` |
+
+See Voltage Input section above for `scale_slope`/`scale_offset` (linear) or `pre_scaled_min`/`pre_scaled_max`/`scaled_min`/`scaled_max` (map) fields.
 
 ---
 
@@ -417,17 +451,17 @@ For 4-20mA control outputs.
 
 ```json
 "Valve_Position_SP": {
+  "name": "Valve_Position_SP",
   "physical_channel": "cDAQ9189-1A2B3C4Mod5/ao2",
   "channel_type": "current_output",
   "current_range_ma": 20,
   "four_twenty_output": true,
-  "units": "%",
+  "unit": "%",
   "eng_units_min": 0,
   "eng_units_max": 100,
-  "display_name": "Valve Position Setpoint",
   "description": "Control valve position command",
   "log": true,
-  "precision": 0,
+  "decimals": 0,
   "group": "Control"
 }
 ```
@@ -440,9 +474,9 @@ For discrete on/off signals (switches, status).
 
 ```json
 "Flame_Detected": {
+  "name": "Flame_Detected",
   "physical_channel": "cDAQ9189-1A2B3C4Mod7/port0/line0",
   "channel_type": "digital_input",
-  "display_name": "Flame Detected",
   "description": "UV flame detector - TRUE when flame present",
   "invert": false,
   "log": true,
@@ -464,12 +498,12 @@ For discrete on/off control (valves, relays).
 
 ```json
 "Burner_Enable": {
+  "name": "Burner_Enable",
   "physical_channel": "cDAQ9189-1A2B3C4Mod6/port0/line0",
   "channel_type": "digital_output",
-  "display_name": "Burner Enable",
   "description": "Master burner enable relay - energized to run",
   "invert": false,
-  "initial_value": false,
+  "default_state": false,
   "log": true,
   "group": "Control"
 }
@@ -480,7 +514,7 @@ For discrete on/off control (valves, relays).
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `invert` | boolean | No | `false` | Invert the logic |
-| `initial_value` | boolean | No | `false` | Value on system startup |
+| `default_state` | boolean | No | `false` | Value on system startup |
 
 ---
 
@@ -488,15 +522,15 @@ For discrete on/off control (valves, relays).
 
 | Property | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `physical_channel` | string | **Yes** | - | NI-DAQmx device path |
-| `channel_type` | string | **Yes** | - | One of the types above |
-| `units` | string | No | `""` | Engineering units for display |
-| `display_name` | string | No | TAG name | Human-readable name |
-| `description` | string | No | `""` | Detailed description |
+| `physical_channel` | string | Yes for HW | - | NI-DAQmx device path |
+| `channel_type` | string | Yes | - | One of the types above |
+| `name` | string | Yes | - | TAG name (must match the dictionary key) |
+| `unit` | string | No | `""` | Engineering units for display |
+| `description` | string | No | `""` | Human-readable description |
 | `group` | string | No | `"Ungrouped"` | Logical group for organization |
 | `log` | boolean | No | `true` | Include in data recording |
 | `log_interval_ms` | number | No | system default | Recording interval override |
-| `precision` | number | No | `2` | Decimal places for display |
+| `decimals` | number | No | `2` | Decimal places for display |
 | `visible` | boolean | No | `true` | Show in channel lists |
 | `chartable` | boolean | No | `true` | Allow in trend charts |
 
@@ -509,8 +543,10 @@ For discrete on/off control (valves, relays).
 | `lolo_limit` | number | Low-low (critical) alarm threshold |
 | `hi_limit` | number | High alarm threshold |
 | `hihi_limit` | number | High-high (critical) alarm threshold |
-| `alarm_priority` | string | `"low"`, `"medium"`, `"high"`, `"critical"` |
+| `alarm_priority` | string | `"diagnostic"`, `"low"`, `"medium"`, `"high"`, `"critical"` |
 | `alarm_deadband` | number | Deadband to prevent alarm chatter |
+| `alarm_delay_sec` | number | On-delay: value must exceed limit for this duration before alarm triggers |
+| `alarm_clear_delay_sec` | number | Off-delay: value must be within limits for this duration before alarm clears |
 | `safety_action` | string | Reference to safety action to trigger |
 
 ### Physical Channel Path Format
@@ -576,7 +612,7 @@ Actions define what outputs to set when a safety condition is triggered.
 |-------|------|----------|-------------|
 | `name` | string | **Yes** | Human-readable action name |
 | `description` | string | No | What this action does |
-| `outputs` | object | **Yes** | Map of output channel TAG → value |
+| `outputs` | object | **Yes** | Map of output channel TAG to value |
 | `latching` | boolean | No | If true, requires manual reset |
 | `priority` | number | No | 0 = highest, higher numbers = lower priority |
 
@@ -661,8 +697,8 @@ Interlocks define conditions that trigger safety actions.
 **Examples:**
 ```
 Flame_Detected == false AND Burner_Enable == true
-TC001 > 500 OR TC002 > 500
-(PT001 < 10 OR PT001 > 100) AND Pump_Running == true
+TC-001 > 500 OR TC-002 > 500
+(PT-001 < 10 OR PT-001 > 100) AND Pump_Running == true
 NOT (SafetySwitch == true)
 ```
 
@@ -777,7 +813,7 @@ All widgets share these base properties:
 | `y` | number | **Yes** | Grid row position (0+) |
 | `w` | number | **Yes** | Width in grid columns |
 | `h` | number | **Yes** | Height in grid rows |
-| `title` | string | No | Widget title/header |
+| `label` | string | No | Widget label/header text |
 
 ### Grid System
 
@@ -789,13 +825,17 @@ All widgets share these base properties:
 **Typical Sizes:**
 | Widget Type | Minimum Size | Recommended Size |
 |-------------|--------------|------------------|
-| Title | 4×1 | 8-12×1 |
-| Numeric | 2×1 | 3×1 |
-| Gauge | 3×2 | 4×3 |
-| LED | 2×1 | 2-3×1 |
-| Toggle | 2×1 | 2-3×1 |
-| Chart | 8×3 | 12×5 |
-| Sparkline | 3×2 | 4×2 |
+| Title | 4x1 | 8-12x1 |
+| Numeric | 2x1 | 3x1 |
+| Gauge | 3x2 | 4x3 |
+| LED | 2x1 | 2-3x1 |
+| Toggle | 2x1 | 2-3x1 |
+| Chart | 8x3 | 12x5 |
+| Sparkline | 3x2 | 4x2 |
+| Action Button | 2x1 | 2-3x2 |
+| Heater Zone | 3x2 | 3-4x3 |
+| PID Loop | 3x2 | 3-4x3 |
+| Script Monitor | 3x3 | 4-6x4 |
 
 ---
 
@@ -821,7 +861,7 @@ Text labels and headers.
 |----------|------|--------|-------------|
 | `title` | string | - | Main text |
 | `subtitle` | string | - | Secondary text (smaller) |
-| `style.fontSize` | string | `"small"`, `"medium"`, `"large"` | Text size |
+| `style.fontSize` | string | `"small"`, `"medium"`, `"large"`, `"xlarge"` | Text size |
 | `style.textAlign` | string | `"left"`, `"center"`, `"right"` | Alignment |
 
 ---
@@ -836,7 +876,6 @@ Date and time display.
   "type": "clock",
   "x": 20, "y": 0, "w": 4, "h": 1,
   "showDate": true,
-  "showSeconds": true,
   "format24h": false
 }
 ```
@@ -844,7 +883,7 @@ Date and time display.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `showDate` | boolean | `true` | Display the date |
-| `showSeconds` | boolean | `false` | Show seconds |
+| `showElapsed` | boolean | `false` | Show elapsed session time |
 | `format24h` | boolean | `false` | Use 24-hour format |
 
 ---
@@ -857,11 +896,11 @@ Single channel value display.
 {
   "id": "w-temp-display",
   "type": "numeric",
-  "channel": "TC001",
+  "channel": "TC-001",
   "x": 0, "y": 1, "w": 3, "h": 1,
   "showLabel": true,
   "showUnit": true,
-  "precision": 1
+  "decimals": 1
 }
 ```
 
@@ -870,7 +909,7 @@ Single channel value display.
 | `channel` | string | **Required** | Channel TAG to display |
 | `showLabel` | boolean | `true` | Show channel label |
 | `showUnit` | boolean | `true` | Show engineering units |
-| `precision` | number | from channel | Decimal places |
+| `decimals` | number | from channel | Decimal places |
 
 ---
 
@@ -882,17 +921,12 @@ Circular gauge visualization.
 {
   "id": "w-pressure-gauge",
   "type": "gauge",
-  "channel": "PT001",
+  "channel": "PT-001",
   "x": 0, "y": 1, "w": 4, "h": 3,
   "minValue": 0,
   "maxValue": 100,
-  "showLimits": true,
-  "showValue": true,
-  "colorZones": [
-    { "min": 0, "max": 20, "color": "#ef4444" },
-    { "min": 20, "max": 80, "color": "#22c55e" },
-    { "min": 80, "max": 100, "color": "#ef4444" }
-  ]
+  "showAlarmStatus": true,
+  "showValue": true
 }
 ```
 
@@ -901,15 +935,14 @@ Circular gauge visualization.
 | `channel` | string | **Required** | Channel TAG |
 | `minValue` | number | `0` | Gauge minimum |
 | `maxValue` | number | `100` | Gauge maximum |
-| `showLimits` | boolean | `true` | Show alarm limits on gauge |
+| `showAlarmStatus` | boolean | `false` | Show alarm status indicator |
 | `showValue` | boolean | `true` | Show numeric value |
-| `colorZones` | array | - | Custom color ranges |
 
 ---
 
 ### Widget Type: bar_graph
 
-Horizontal bar graph.
+Horizontal or vertical bar graph.
 
 ```json
 {
@@ -919,13 +952,9 @@ Horizontal bar graph.
   "x": 0, "y": 1, "w": 6, "h": 1,
   "minValue": 0,
   "maxValue": 100,
-  "showLimits": true,
   "showValue": true,
-  "colorZones": [
-    { "max": 20, "color": "#ef4444" },
-    { "max": 80, "color": "#22c55e" },
-    { "max": 100, "color": "#eab308" }
-  ]
+  "orientation": "horizontal",
+  "barGraphStyle": "bar"
 }
 ```
 
@@ -934,11 +963,9 @@ Horizontal bar graph.
 | `channel` | string | **Required** | Channel TAG |
 | `minValue` | number | `0` | Bar minimum |
 | `maxValue` | number | `100` | Bar maximum |
-| `showLimits` | boolean | `true` | Show limit markers |
 | `showValue` | boolean | `true` | Show numeric value |
-| `colorZones` | array | - | Color by value range |
-
-**Note:** For `colorZones` in bar_graph, only `max` is needed (each zone goes from previous max to this max).
+| `orientation` | string | `"horizontal"` | `"horizontal"` or `"vertical"` |
+| `barGraphStyle` | string | `"bar"` | `"bar"`, `"tank"`, `"thermometer"` |
 
 ---
 
@@ -956,7 +983,7 @@ LED indicator for digital or threshold-based status.
   "onColor": "#22c55e",
   "offColor": "#ef4444",
   "threshold": null,
-  "invertThreshold": false
+  "invert": false
 }
 ```
 
@@ -967,7 +994,8 @@ LED indicator for digital or threshold-based status.
 | `onColor` | string | `"#22c55e"` | Color when ON (CSS color) |
 | `offColor` | string | `"#64748b"` | Color when OFF |
 | `threshold` | number | `null` | For analog: ON if value > threshold |
-| `invertThreshold` | boolean | `false` | Invert threshold logic |
+| `invert` | boolean | `false` | Invert threshold/digital logic |
+| `ledSize` | string | `"medium"` | `"small"`, `"medium"`, `"large"` |
 
 **Common Colors:**
 - Green (OK): `"#22c55e"`
@@ -1024,7 +1052,7 @@ Numeric input for analog outputs.
   "minValue": 0,
   "maxValue": 200,
   "step": 1,
-  "showSlider": true
+  "setpointStyle": "standard"
 }
 ```
 
@@ -1034,7 +1062,7 @@ Numeric input for analog outputs.
 | `minValue` | number | `0` | Minimum allowed value |
 | `maxValue` | number | `100` | Maximum allowed value |
 | `step` | number | `1` | Increment step size |
-| `showSlider` | boolean | `true` | Show slider control |
+| `setpointStyle` | string | `"standard"` | Visual style: `"standard"` or `"knob"` |
 
 ---
 
@@ -1046,7 +1074,7 @@ Multi-channel trend chart.
 {
   "id": "w-temp-chart",
   "type": "chart",
-  "channels": ["TC001", "TC002", "TC003", "TC004"],
+  "channels": ["TC-001", "TC-002", "TC-003", "TC-004"],
   "x": 0, "y": 1, "w": 12, "h": 5,
   "timeRange": 300,
   "showGrid": true,
@@ -1086,7 +1114,7 @@ Mini trend line for single channel.
   "x": 0, "y": 1, "w": 4, "h": 2,
   "historyLength": 60,
   "showValue": true,
-  "title": "Flow Trend"
+  "label": "Flow Trend"
 }
 ```
 
@@ -1107,7 +1135,7 @@ System overview panel.
   "id": "w-status",
   "type": "system_status",
   "x": 0, "y": 1, "w": 4, "h": 4,
-  "title": "System Status"
+  "label": "System Status"
 }
 ```
 
@@ -1124,10 +1152,10 @@ Active alarms list.
   "id": "w-alarms",
   "type": "alarm_summary",
   "x": 0, "y": 1, "w": 5, "h": 4,
-  "title": "Active Alarms",
+  "label": "Active Alarms",
   "maxItems": 10,
   "showAckButton": true,
-  "filterPriority": ["critical", "high"]
+  "filterPriority": "critical"
 }
 ```
 
@@ -1135,7 +1163,7 @@ Active alarms list.
 |----------|------|---------|-------------|
 | `maxItems` | number | `10` | Maximum alarms to show |
 | `showAckButton` | boolean | `true` | Show acknowledge button |
-| `filterPriority` | array | all | Filter by priority level |
+| `filterPriority` | string | all | Filter by priority level |
 
 ---
 
@@ -1148,7 +1176,7 @@ Safety interlock status panel.
   "id": "w-interlocks",
   "type": "interlock_status",
   "x": 0, "y": 1, "w": 4, "h": 4,
-  "title": "Safety Interlocks"
+  "label": "Safety Interlocks"
 }
 ```
 
@@ -1164,9 +1192,9 @@ Multi-channel value table.
 {
   "id": "w-table",
   "type": "value_table",
-  "channels": ["TC001", "TC002", "PT001", "FT001"],
+  "channels": ["TC-001", "TC-002", "PT-001", "FT-001"],
   "x": 0, "y": 1, "w": 6, "h": 4,
-  "title": "Process Values",
+  "label": "Process Values",
   "showAlarmStatus": true,
   "showUnits": true
 }
@@ -1189,12 +1217,638 @@ Visual separator line.
   "id": "w-div-1",
   "type": "divider",
   "x": 0, "y": 5, "w": 24, "h": 1,
-  "style": {
-    "color": "#3b82f6",
-    "thickness": 2
+  "lineColor": "#3b82f6",
+  "lineStyle": "solid"
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `lineColor` | string | `"#3b82f6"` | Line color |
+| `lineStyle` | string | `"solid"` | `"solid"`, `"dashed"`, `"dotted"` |
+
+---
+
+## Section 8: Additional Widget Types
+
+### Widget Type: action_button
+
+Configurable action button with multiple behaviors.
+
+```json
+{
+  "id": "w-start-btn",
+  "type": "action_button",
+  "x": 0, "y": 0, "w": 2, "h": 1,
+  "label": "START TEST",
+  "buttonColor": "#22c55e",
+  "buttonBehavior": "one_shot",
+  "buttonVisualStyle": "standard",
+  "requireConfirmation": true,
+  "buttonAction": {
+    "type": "system_command",
+    "command": "acquisition_start"
   }
 }
 ```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `label` | string | **Required** | Button text |
+| `buttonColor` | string | - | Button color |
+| `buttonBehavior` | string | `"one_shot"` | Mechanical action (see below) |
+| `buttonVisualStyle` | string | `"standard"` | Visual style (see below) |
+| `requireConfirmation` | boolean | `false` | Require confirmation dialog |
+| `buttonAction` | object | **Required** | Action to perform (see below) |
+
+**`buttonBehavior` values:**
+- `"momentary"` - Active while held, returns to off when released
+- `"toggle"` - Alternates state on each press
+- `"latching"` - Sets ON and stays until external reset
+- `"one_shot"` - Pulses once per press (default)
+
+**`buttonVisualStyle` values:**
+- `"standard"` - Default rectangular button
+- `"round"` - Circular button
+- `"square"` - Square button
+- `"emergency"` - Emergency stop style (red, prominent, round)
+- `"flat"` - Flat/minimal style
+
+**`buttonAction.type` values:**
+- `"mqtt_publish"` - Publish to MQTT topic (requires `topic`, `payload`)
+- `"digital_output"` - Set digital output (requires `channel`)
+- `"script_run"` - Run a script/sequence
+- `"script_oneshot"` - Run a script once
+- `"variable_set"` - Set a user variable to a value
+- `"variable_reset"` - Reset a user variable
+- `"system_command"` - System command (requires `command`)
+
+**System commands for `buttonAction.command`:**
+- `"acquisition_start"` / `"acquisition_stop"`
+- `"recording_start"` / `"recording_stop"`
+- `"alarm_acknowledge_all"`
+- `"latch_reset_all"`
+
+---
+
+### Widget Type: pid_loop
+
+PID control loop faceplate.
+
+```json
+{
+  "id": "w-pid",
+  "type": "pid_loop",
+  "x": 0, "y": 0, "w": 3, "h": 3,
+  "label": "Zone 1 PID"
+}
+```
+
+Displays PV (Process Variable), SP (Setpoint), CV (Control Variable), and MV (Manipulated Variable) for a PID control loop. PID loops are configured in the backend, not in the widget config.
+
+---
+
+### Widget Type: heater_zone
+
+Dual-loop temperature controller faceplate.
+
+```json
+{
+  "id": "w-zone1",
+  "type": "heater_zone",
+  "x": 0, "y": 0, "w": 3, "h": 2,
+  "pvChannel": "TC_Zone1_PV",
+  "spChannel": "TC_Zone1_SP",
+  "enableChannel": "Zone1_Enable",
+  "outputChannel": "Zone1_Output",
+  "spMin": 0,
+  "spMax": 500,
+  "temperatureUnit": "F",
+  "label": "Zone 1"
+}
+```
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `pvChannel` | string | **Yes** | Process value channel TAG |
+| `spChannel` | string | **Yes** | Setpoint channel TAG |
+| `enableChannel` | string | No | Enable/disable channel TAG |
+| `outputChannel` | string | No | Output percentage channel TAG |
+| `spMin` | number | No | Setpoint minimum |
+| `spMax` | number | No | Setpoint maximum |
+| `temperatureUnit` | string | No | `"F"` or `"C"` |
+
+---
+
+### Widget Type: recording_status
+
+Recording state display.
+
+```json
+{
+  "id": "w-rec",
+  "type": "recording_status",
+  "x": 0, "y": 0, "w": 3, "h": 2,
+  "label": "Recording"
+}
+```
+
+Shows recording state, filename, duration, and file size. No channel required.
+
+---
+
+### Widget Type: script_monitor
+
+Displays script-published values in a table or grid.
+
+```json
+{
+  "id": "w-scripts",
+  "type": "script_monitor",
+  "x": 0, "y": 0, "w": 4, "h": 4,
+  "label": "Script Values",
+  "items": [
+    { "tag": "py.PUE", "label": "PUE", "format": "number", "decimals": 2 },
+    { "tag": "py.COP", "label": "COP", "format": "number", "decimals": 1 }
+  ],
+  "columns": 2
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `items` | array | - | Script value definitions (see below) |
+| `columns` | number | `1` | Number of display columns: `1`, `2`, or `3` |
+| `showTimestamp` | boolean | `false` | Show last update timestamp |
+
+**Item fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tag` | string | Script output tag (e.g., `"py.PUE"`) |
+| `label` | string | Display label |
+| `format` | string | `"number"`, `"integer"`, `"percent"`, `"status"`, `"text"` |
+| `decimals` | number | Decimal places |
+| `unit` | string | Optional unit label |
+
+---
+
+### Widget Type: variable_input
+
+User variable input controls.
+
+```json
+{
+  "id": "w-vars",
+  "type": "variable_input",
+  "x": 0, "y": 0, "w": 3, "h": 3,
+  "label": "Test Parameters"
+}
+```
+
+Shows all user variables with appropriate input controls. No channel required.
+
+---
+
+### Widget Type: latch_switch
+
+Safety latch switch button.
+
+```json
+{
+  "id": "w-latch",
+  "type": "latch_switch",
+  "x": 0, "y": 0, "w": 2, "h": 2,
+  "label": "Safety Latch"
+}
+```
+
+---
+
+### Widget Type: scheduler_status
+
+Displays scheduler state including active schedules, next run time, and history.
+
+```json
+{
+  "id": "w-sched",
+  "type": "scheduler_status",
+  "x": 0, "y": 0, "w": 4, "h": 3,
+  "label": "Scheduler"
+}
+```
+
+---
+
+### Widget Type: crio_status
+
+Shows cRIO controller connection status, firmware version, and channel health.
+
+```json
+{
+  "id": "w-crio",
+  "type": "crio_status",
+  "x": 0, "y": 0, "w": 4, "h": 3,
+  "label": "cRIO Status"
+}
+```
+
+---
+
+### Widget Type: python_console
+
+Interactive Python (Pyodide) REPL console in the browser.
+
+```json
+{
+  "id": "w-console",
+  "type": "python_console",
+  "x": 0, "y": 0, "w": 6, "h": 5,
+  "label": "Python Console"
+}
+```
+
+---
+
+### Widget Type: script_output
+
+Shows the stdout/stderr output from running scripts.
+
+```json
+{
+  "id": "w-script-out",
+  "type": "script_output",
+  "x": 0, "y": 0, "w": 6, "h": 4,
+  "label": "Script Output"
+}
+```
+
+---
+
+### Widget Type: variable_explorer
+
+IPython-like variable inspector showing all live values.
+
+```json
+{
+  "id": "w-explorer",
+  "type": "variable_explorer",
+  "x": 0, "y": 0, "w": 5, "h": 4,
+  "label": "Variable Explorer"
+}
+```
+
+---
+
+### Widget Type: status_messages
+
+Scrolling system status message log.
+
+```json
+{
+  "id": "w-messages",
+  "type": "status_messages",
+  "x": 0, "y": 0, "w": 6, "h": 3,
+  "label": "System Messages"
+}
+```
+
+---
+
+### Widget Type: svg_symbol
+
+SCADA symbol display with optional live data binding.
+
+```json
+{
+  "id": "w-valve",
+  "type": "svg_symbol",
+  "x": 0, "y": 0, "w": 2, "h": 2,
+  "symbol": "solenoidValve",
+  "channel": "Valve_Main",
+  "showValue": true,
+  "label": "Main Valve"
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `symbol` | string | Symbol type from SCADA_SYMBOLS library |
+| `channel` | string | Optional channel binding for live data |
+| `showValue` | boolean | Show current value overlay |
+| `symbolSize` | string | `"small"`, `"medium"`, `"large"` |
+| `rotation` | number | `0`, `90`, `180`, `270` |
+
+---
+
+### Widget Type: image
+
+Static image display.
+
+```json
+{
+  "id": "w-logo",
+  "type": "image",
+  "x": 0, "y": 0, "w": 3, "h": 2,
+  "imageUrl": "https://example.com/logo.png",
+  "imageFit": "contain"
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `imageUrl` | string | **Required** | Image URL |
+| `imageFit` | string | `"contain"` | `"contain"`, `"cover"`, `"fill"`, `"none"` |
+
+---
+
+## Section 8b: ISA-101 HMI Controls (P&ID Canvas)
+
+ISA-101 HMI controls are HTML-based interactive components placed on the P&ID canvas (not dashboard widgets). They are added as P&ID symbols with `type` starting with `hmi_`. HMI controls render live data, support alarm coloring, and provide operator interaction in runtime mode.
+
+HMI controls are configured through P&ID symbol properties in the `layout.pidData.symbols` array.
+
+### Available HMI Control Types
+
+| Type | Name | Default Size | Description |
+|------|------|-------------|-------------|
+| `hmi_numeric` | Numeric Indicator | 120×50 | Value display with alarm coloring |
+| `hmi_led` | Status LED | 40×50 | Boolean on/off indicator |
+| `hmi_toggle` | Toggle Switch | 100×50 | Digital output ON/OFF control |
+| `hmi_setpoint` | Setpoint Control | 120×60 | Editable setpoint with min/max limits |
+| `hmi_bar` | Bar Indicator | 140×40 | Horizontal/vertical bar with alarm zones |
+| `hmi_gauge` | Arc Gauge | 100×100 | Circular gauge with alarm zones |
+| `hmi_multistate` | Multi-State | 120×40 | Multi-value state indicator (e.g., OFF/IDLE/RUN/FAULT) |
+| `hmi_button` | Command Button | 100×40 | Action button (MQTT publish, output set, system command) |
+| `hmi_selector` | Selector Switch | 140×50 | Multi-position selector (e.g., OFF/MAN/AUTO) |
+| `hmi_annunciator` | Annunciator | 120×50 | ISA-18.2 alarm annunciator tile |
+| `hmi_sparkline` | Trend Sparkline | 160×50 | Mini trend line with current value |
+| `hmi_valve_pos` | Valve Position | 80×80 | Valve position graphic (0-100%) |
+| `hmi_interlock` | Interlock Block | 200×80 | Safety interlock status block |
+
+### HMI Symbol Configuration Fields
+
+All HMI controls are P&ID symbols (`PidSymbol` type). Common fields:
+
+```json
+{
+  "id": "hmi-tt101",
+  "type": "hmi_numeric",
+  "x": 200,
+  "y": 150,
+  "width": 120,
+  "height": 50,
+  "label": "TT-101",
+  "channel": "TT-101",
+  "decimals": 1
+}
+```
+
+### HMI-Specific Config Fields
+
+These fields are only used when the symbol type starts with `hmi_`:
+
+| Field | Type | Default | Used By | Description |
+|-------|------|---------|---------|-------------|
+| `hmiMinValue` | number | `0` | bar, gauge, setpoint | Scale minimum |
+| `hmiMaxValue` | number | `100` | bar, gauge, setpoint | Scale maximum |
+| `hmiAlarmHigh` | number | - | numeric, bar, gauge | High alarm threshold (red zone) |
+| `hmiAlarmLow` | number | - | numeric, bar, gauge | Low alarm threshold (red zone) |
+| `hmiWarningHigh` | number | - | numeric, bar, gauge | High warning threshold (yellow zone) |
+| `hmiWarningLow` | number | - | numeric, bar, gauge | Low warning threshold (yellow zone) |
+| `hmiOrientation` | string | `"horizontal"` | bar | `"horizontal"` or `"vertical"` |
+| `hmiUnit` | string | - | numeric, bar, gauge | Unit label override |
+| `hmiStates` | array | - | multistate | State definitions (see below) |
+| `hmiSelectorPositions` | array | - | selector | Position definitions (see below) |
+| `hmiButtonAction` | object | - | button | Button action (same as widget `buttonAction`) |
+| `hmiSparklineSamples` | number | `60` | sparkline | Number of trend samples to display |
+
+### Multi-State Configuration
+
+```json
+"hmiStates": [
+  { "value": 0, "label": "OFF", "color": "#6b7280" },
+  { "value": 1, "label": "IDLE", "color": "#eab308" },
+  { "value": 2, "label": "RUNNING", "color": "#22c55e" },
+  { "value": 3, "label": "FAULT", "color": "#ef4444" }
+]
+```
+
+### Selector Switch Configuration
+
+```json
+"hmiSelectorPositions": [
+  { "value": 0, "label": "OFF" },
+  { "value": 1, "label": "MAN" },
+  { "value": 2, "label": "AUTO" }
+]
+```
+
+### HMI Example: Process Overview with Controls
+
+```json
+"pidData": {
+  "symbols": [
+    {
+      "id": "hmi-temp",
+      "type": "hmi_numeric",
+      "x": 100, "y": 50,
+      "width": 120, "height": 50,
+      "label": "Zone Temp",
+      "channel": "TT-101",
+      "decimals": 1,
+      "hmiUnit": "°F",
+      "hmiAlarmHigh": 500,
+      "hmiWarningHigh": 450,
+      "hmiWarningLow": 100,
+      "hmiAlarmLow": 50
+    },
+    {
+      "id": "hmi-valve",
+      "type": "hmi_valve_pos",
+      "x": 300, "y": 50,
+      "width": 80, "height": 80,
+      "label": "CV-101",
+      "channel": "CV-101_Pos",
+      "decimals": 0,
+      "hmiMinValue": 0,
+      "hmiMaxValue": 100
+    },
+    {
+      "id": "hmi-pump",
+      "type": "hmi_toggle",
+      "x": 500, "y": 50,
+      "width": 100, "height": 50,
+      "label": "Pump P-101",
+      "channel": "Pump_P101"
+    },
+    {
+      "id": "hmi-mode",
+      "type": "hmi_selector",
+      "x": 100, "y": 200,
+      "width": 140, "height": 50,
+      "label": "Control Mode",
+      "channel": "Control_Mode",
+      "hmiSelectorPositions": [
+        { "value": 0, "label": "OFF" },
+        { "value": 1, "label": "MAN" },
+        { "value": 2, "label": "AUTO" }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## Section 9: User Variables (userVariables)
+
+User variables are defined in the `userVariables` array of the project JSON. They provide runtime-computed or user-editable values for formulas, accumulators, timers, and more.
+
+```json
+"userVariables": [
+  {
+    "id": "var-1",
+    "name": "batch_total",
+    "displayName": "Batch Total Volume",
+    "variableType": "accumulator",
+    "units": "gal",
+    "value": 0,
+    "persistent": true,
+    "sourceChannel": "FT_Main",
+    "edgeType": "rate",
+    "sourceRateUnit": "per_minute",
+    "scaleFactor": 1,
+    "resetMode": "test_session"
+  }
+]
+```
+
+### Variable Types
+
+| Type | Description | Required Fields |
+|------|-------------|-----------------|
+| `constant` | Fixed value for formulas (e.g., calibration factors) | `value` |
+| `manual` | User-editable value | `value` |
+| `string` | Text value (batch ID, operator notes) | `stringValue` |
+| `accumulator` | Watches counter/rate channel for totalization | `sourceChannel`, `edgeType`, `scaleFactor` |
+| `counter` | Edge-triggered counter | `sourceChannel`, `edgeType` |
+| `timer` | Elapsed time counter (starts/stops via dashboard) | (none) |
+| `sum` | Running sum of channel values | `sourceChannel` |
+| `average` | Running average | `sourceChannel` |
+| `min` | Minimum value seen | `sourceChannel` |
+| `max` | Maximum value seen | `sourceChannel` |
+| `expression` | Formula-based calculation | `formula` |
+| `rate` | Rate of change (derivative) | `sourceChannel`, `rateWindowMs` |
+| `runtime` | Time above/below threshold | `sourceChannel`, `thresholdValue`, `thresholdOperator` |
+| `rolling` | Sliding window accumulator (e.g., last 24 hours) | `sourceChannel`, `rollingWindowS` |
+| `stddev` | Running standard deviation (Welford's algorithm) | `sourceChannel` |
+| `rms` | Root mean square (for AC, vibration) | `sourceChannel` |
+| `median` | Running median (reservoir sampling) | `sourceChannel` |
+| `peak_to_peak` | Difference between max and min | `sourceChannel` |
+| `dwell` | Time in a state/condition | `dwellCondition` |
+| `conditional_average` | Average only when condition is true | `sourceChannel`, `conditionChannel`, `conditionOperator`, `conditionValue` |
+| `cross_channel` | Min/max/delta across multiple channels | `sourceChannels`, `crossChannelOperation` |
+
+### Common Variable Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | string | **Yes** | - | Unique variable ID |
+| `name` | string | **Yes** | - | Variable name (used in formulas) |
+| `displayName` | string | **Yes** | - | Human-readable label |
+| `variableType` | string | **Yes** | - | One of the types above |
+| `units` | string | No | `""` | Engineering units |
+| `value` | number | No | `0` | Initial numeric value |
+| `persistent` | boolean | No | `false` | Survive service restart |
+| `resetMode` | string | **Yes** | - | When to reset (see below) |
+
+### Edge Types (for accumulator/counter)
+
+| Value | Description |
+|-------|-------------|
+| `"increment"` | Counter increased by any amount |
+| `"rising"` | 0 to 1 transition |
+| `"falling"` | 1 to 0 transition |
+| `"both"` | Any transition |
+| `"rate"` | Rate signal (4-20mA, voltage) - integrate over time |
+
+### Reset Modes
+
+| Value | Description |
+|-------|-------------|
+| `"manual"` | Only reset manually |
+| `"time_of_day"` | Reset at specific time each day (requires `resetTime`) |
+| `"elapsed"` | Reset after elapsed time (requires `resetElapsedS`) |
+| `"test_session"` | Reset when test session starts |
+| `"never"` | Never reset (persistent forever) |
+
+---
+
+## Section 10: Recording Configuration
+
+The `recording` object configures data recording behavior.
+
+```json
+"recording": {
+  "base_path": "./data",
+  "file_prefix": "test_data",
+  "file_format": "csv",
+  "include_timestamp": true,
+  "include_date": true,
+  "log_rate_hz": 1,
+  "decimation": 1,
+  "max_file_size_mb": 100,
+  "max_file_duration_s": 3600,
+  "split_files": true,
+  "mode": "manual",
+  "selected_channels": [],
+  "include_scripts": true,
+  "trigger_channel": "",
+  "trigger_condition": "above",
+  "trigger_value": 0,
+  "trigger_hysteresis": 0,
+  "pre_trigger_samples": 0,
+  "post_trigger_samples": 0
+}
+```
+
+### Recording Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `base_path` | string | `"./data"` | Directory for recording files |
+| `file_prefix` | string | `"test_data"` | Filename prefix |
+| `file_format` | string | `"csv"` | `"csv"` or `"tdms"` |
+| `include_timestamp` | boolean | `true` | Include timestamp in filename |
+| `include_date` | boolean | `true` | Include date in filename |
+| `log_rate_hz` | number | `1` | Recording rate in Hz |
+| `decimation` | number | `1` | Record every Nth sample |
+| `max_file_size_mb` | number | `100` | Maximum file size before rotation |
+| `max_file_duration_s` | number | `3600` | Maximum duration per file |
+| `split_files` | boolean | `true` | Auto-split files at size/duration limit |
+| `mode` | string | `"manual"` | Recording mode (see below) |
+| `selected_channels` | array | `[]` | Channel TAGs to record (empty = all) |
+| `include_scripts` | boolean | `true` | Include script-published values |
+
+### Recording Modes
+
+| Mode | Description |
+|------|-------------|
+| `"manual"` | Start/stop via dashboard buttons |
+| `"triggered"` | Auto-start when channel condition met |
+| `"scheduled"` | Start at scheduled time |
+
+### Triggered Mode Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_channel` | string | Channel TAG to monitor |
+| `trigger_condition` | string | `"above"`, `"below"`, `"change"` |
+| `trigger_value` | number | Threshold value |
+| `trigger_hysteresis` | number | Deadband to prevent re-triggering |
+| `pre_trigger_samples` | number | Samples to keep before trigger |
+| `post_trigger_samples` | number | Samples to record after trigger clears |
 
 ---
 
@@ -1224,94 +1878,133 @@ Visual separator line.
   },
   "channels": {
     "TC_Hot_In": {
+      "name": "TC_Hot_In",
       "physical_channel": "cDAQ9189-1234Mod1/ai0",
       "channel_type": "thermocouple",
       "thermocouple_type": "K",
-      "units": "degF",
-      "display_name": "Hot Side Inlet",
+      "unit": "degF",
+      "description": "Hot side inlet temperature",
       "alarm_enabled": true,
       "hi_limit": 200,
       "hihi_limit": 212,
       "alarm_priority": "high",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
       "group": "Temperatures"
     },
     "TC_Hot_Out": {
+      "name": "TC_Hot_Out",
       "physical_channel": "cDAQ9189-1234Mod1/ai1",
       "channel_type": "thermocouple",
       "thermocouple_type": "K",
-      "units": "degF",
-      "display_name": "Hot Side Outlet",
+      "unit": "degF",
+      "description": "Hot side outlet temperature",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
       "group": "Temperatures"
     },
     "TC_Cold_In": {
+      "name": "TC_Cold_In",
       "physical_channel": "cDAQ9189-1234Mod1/ai2",
       "channel_type": "thermocouple",
       "thermocouple_type": "K",
-      "units": "degF",
-      "display_name": "Cold Side Inlet",
+      "unit": "degF",
+      "description": "Cold side inlet temperature",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
       "group": "Temperatures"
     },
     "TC_Cold_Out": {
+      "name": "TC_Cold_Out",
       "physical_channel": "cDAQ9189-1234Mod1/ai3",
       "channel_type": "thermocouple",
       "thermocouple_type": "K",
-      "units": "degF",
-      "display_name": "Cold Side Outlet",
+      "unit": "degF",
+      "description": "Cold side outlet temperature",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
+      "group": "Temperatures"
+    },
+    "RTD_Ambient": {
+      "name": "RTD_Ambient",
+      "physical_channel": "cDAQ9189-1234Mod2/ai4",
+      "channel_type": "rtd",
+      "rtd_type": "Pt100",
+      "rtd_wiring": "3-wire",
+      "rtd_current": 0.001,
+      "rtd_resistance": 100,
+      "unit": "degF",
+      "description": "Ambient room temperature",
+      "log": true,
+      "decimals": 2,
       "group": "Temperatures"
     },
     "FT_Hot": {
+      "name": "FT_Hot",
       "physical_channel": "cDAQ9189-1234Mod2/ai0",
       "channel_type": "current_input",
       "current_range_ma": 20,
       "four_twenty_scaling": true,
-      "units": "GPM",
+      "unit": "GPM",
       "eng_units_min": 0,
       "eng_units_max": 50,
-      "display_name": "Hot Side Flow",
+      "description": "Hot side flow rate",
       "alarm_enabled": true,
       "lo_limit": 5,
       "alarm_priority": "medium",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
       "group": "Flow"
     },
     "FT_Cold": {
+      "name": "FT_Cold",
       "physical_channel": "cDAQ9189-1234Mod2/ai1",
       "channel_type": "current_input",
       "current_range_ma": 20,
       "four_twenty_scaling": true,
-      "units": "GPM",
+      "unit": "GPM",
       "eng_units_min": 0,
       "eng_units_max": 50,
-      "display_name": "Cold Side Flow",
+      "description": "Cold side flow rate",
       "alarm_enabled": true,
       "lo_limit": 5,
       "alarm_priority": "medium",
       "log": true,
-      "precision": 1,
+      "decimals": 1,
       "group": "Flow"
     },
+    "PT_Hot": {
+      "name": "PT_Hot",
+      "physical_channel": "cDAQ9189-1234Mod3/ai0",
+      "channel_type": "voltage_input",
+      "voltage_range": 10,
+      "terminal_config": "differential",
+      "unit": "psig",
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100,
+      "description": "Hot side pressure",
+      "log": true,
+      "decimals": 1,
+      "group": "Pressures"
+    },
     "Hot_Pump": {
-      "physical_channel": "cDAQ9189-1234Mod3/port0/line0",
+      "name": "Hot_Pump",
+      "physical_channel": "cDAQ9189-1234Mod4/port0/line0",
       "channel_type": "digital_output",
-      "display_name": "Hot Pump",
       "description": "Hot side circulation pump",
+      "default_state": false,
       "log": true,
       "group": "Control"
     },
     "Cold_Pump": {
-      "physical_channel": "cDAQ9189-1234Mod3/port0/line1",
+      "name": "Cold_Pump",
+      "physical_channel": "cDAQ9189-1234Mod4/port0/line1",
       "channel_type": "digital_output",
-      "display_name": "Cold Pump",
       "description": "Cold side circulation pump",
+      "default_state": false,
       "log": true,
       "group": "Control"
     }
@@ -1339,6 +2032,47 @@ Visual separator line.
         "delay_ms": 0
       }
     ]
+  },
+  "userVariables": [
+    {
+      "id": "var-hot-total",
+      "name": "hot_flow_total",
+      "displayName": "Hot Side Total Flow",
+      "variableType": "accumulator",
+      "units": "gal",
+      "value": 0,
+      "persistent": true,
+      "sourceChannel": "FT_Hot",
+      "edgeType": "rate",
+      "sourceRateUnit": "per_minute",
+      "scaleFactor": 1,
+      "resetMode": "test_session"
+    },
+    {
+      "id": "var-test-time",
+      "name": "test_duration",
+      "displayName": "Test Duration",
+      "variableType": "timer",
+      "units": "s",
+      "value": 0,
+      "persistent": false,
+      "resetMode": "test_session"
+    }
+  ],
+  "recording": {
+    "base_path": "./data",
+    "file_prefix": "hx_test",
+    "file_format": "csv",
+    "include_timestamp": true,
+    "include_date": true,
+    "log_rate_hz": 1,
+    "decimation": 1,
+    "max_file_size_mb": 100,
+    "max_file_duration_s": 3600,
+    "split_files": true,
+    "mode": "manual",
+    "selected_channels": [],
+    "include_scripts": true
   },
   "layout": {
     "gridColumns": 24,
@@ -1369,13 +2103,19 @@ Visual separator line.
             "x": 0, "y": 1, "w": 4, "h": 3
           },
           {
+            "id": "w-rec-status",
+            "type": "recording_status",
+            "x": 0, "y": 4, "w": 4, "h": 2,
+            "label": "Recording"
+          },
+          {
             "id": "w-gauge-hot-in",
             "type": "gauge",
             "channel": "TC_Hot_In",
             "x": 4, "y": 1, "w": 4, "h": 3,
             "minValue": 50,
             "maxValue": 250,
-            "showLimits": true
+            "showAlarmStatus": true
           },
           {
             "id": "w-gauge-hot-out",
@@ -1402,10 +2142,36 @@ Visual separator line.
             "maxValue": 150
           },
           {
+            "id": "w-start-btn",
+            "type": "action_button",
+            "x": 20, "y": 1, "w": 2, "h": 1,
+            "label": "START",
+            "buttonColor": "#22c55e",
+            "buttonBehavior": "one_shot",
+            "requireConfirmation": true,
+            "buttonAction": {
+              "type": "system_command",
+              "command": "acquisition_start"
+            }
+          },
+          {
+            "id": "w-stop-btn",
+            "type": "action_button",
+            "x": 22, "y": 1, "w": 2, "h": 1,
+            "label": "STOP",
+            "buttonColor": "#ef4444",
+            "buttonBehavior": "one_shot",
+            "requireConfirmation": true,
+            "buttonAction": {
+              "type": "system_command",
+              "command": "acquisition_stop"
+            }
+          },
+          {
             "id": "w-toggle-hot-pump",
             "type": "toggle",
             "channel": "Hot_Pump",
-            "x": 0, "y": 4, "w": 3, "h": 1,
+            "x": 4, "y": 4, "w": 3, "h": 1,
             "onLabel": "HOT PUMP ON",
             "offLabel": "HOT PUMP OFF"
           },
@@ -1413,7 +2179,7 @@ Visual separator line.
             "id": "w-toggle-cold-pump",
             "type": "toggle",
             "channel": "Cold_Pump",
-            "x": 3, "y": 4, "w": 3, "h": 1,
+            "x": 7, "y": 4, "w": 3, "h": 1,
             "onLabel": "COLD PUMP ON",
             "offLabel": "COLD PUMP OFF"
           },
@@ -1421,23 +2187,64 @@ Visual separator line.
             "id": "w-flow-hot",
             "type": "numeric",
             "channel": "FT_Hot",
-            "x": 6, "y": 4, "w": 3, "h": 1
+            "x": 10, "y": 4, "w": 3, "h": 1
           },
           {
             "id": "w-flow-cold",
             "type": "numeric",
             "channel": "FT_Cold",
-            "x": 9, "y": 4, "w": 3, "h": 1
+            "x": 13, "y": 4, "w": 3, "h": 1
+          },
+          {
+            "id": "w-ambient",
+            "type": "numeric",
+            "channel": "RTD_Ambient",
+            "x": 16, "y": 4, "w": 3, "h": 1,
+            "decimals": 2
           },
           {
             "id": "w-chart",
             "type": "chart",
             "channels": ["TC_Hot_In", "TC_Hot_Out", "TC_Cold_In", "TC_Cold_Out"],
-            "x": 0, "y": 5, "w": 24, "h": 6,
+            "x": 0, "y": 6, "w": 24, "h": 6,
             "timeRange": 300,
             "showGrid": true,
             "showLegend": true,
             "title": "Temperature Trends"
+          }
+        ]
+      },
+      {
+        "id": "safety",
+        "name": "Safety",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "w-safety-title",
+            "type": "title",
+            "title": "Safety Overview",
+            "x": 0, "y": 0, "w": 12, "h": 1,
+            "style": { "fontSize": "large" }
+          },
+          {
+            "id": "w-interlocks",
+            "type": "interlock_status",
+            "x": 0, "y": 1, "w": 6, "h": 4,
+            "label": "Safety Interlocks"
+          },
+          {
+            "id": "w-alarms",
+            "type": "alarm_summary",
+            "x": 6, "y": 1, "w": 6, "h": 4,
+            "label": "Active Alarms",
+            "maxItems": 10,
+            "showAckButton": true
+          },
+          {
+            "id": "w-latch",
+            "type": "latch_switch",
+            "x": 12, "y": 1, "w": 2, "h": 2,
+            "label": "Safety Reset"
           }
         ]
       }
@@ -1455,8 +2262,16 @@ When generating a project, ensure:
 - [ ] `type` is `"nisystem-project"`
 - [ ] `version` is `"2.0"`
 - [ ] All channel TAGs are unique
-- [ ] Channel TAGs use only alphanumeric and underscore
+- [ ] Channel TAGs use only alphanumeric, underscore, and dash characters
+- [ ] Channel `name` field matches the dictionary key
 - [ ] Physical channels are properly formatted
+- [ ] Field name is `unit` (singular), NOT `units`
+- [ ] Field name is `decimals`, NOT `precision`
+- [ ] Field name is `description` for human-readable text, NOT `display_name`
+- [ ] Field name is `default_state` for digital outputs, NOT `initial_value`
+- [ ] RTD uses `rtd_type` (`"Pt100"`, `"Pt500"`, `"Pt1000"`, `"custom"`), `rtd_wiring` (`"2-wire"`, `"3-wire"`, `"4-wire"`), `rtd_current`, `rtd_resistance`
+- [ ] Voltage inputs use `scale_type` with `scale_slope`/`scale_offset` (linear) or `pre_scaled_min`/`pre_scaled_max`/`scaled_min`/`scaled_max` (map), NOT `scale_min`/`scale_max`
+- [ ] Terminal config uses lowercase: `"differential"`, `"rse"`, `"nrse"`
 - [ ] All widget IDs are unique
 - [ ] Widgets reference valid channel TAGs
 - [ ] Safety actions reference valid output channels
@@ -1464,3 +2279,8 @@ When generating a project, ensure:
 - [ ] Page IDs are unique lowercase identifiers
 - [ ] Widget positions don't overlap excessively
 - [ ] Chart channels arrays don't exceed 8 items
+- [ ] Gauge widgets use `showAlarmStatus`, NOT `showLimits` or `colorZones`
+- [ ] LED widgets use `invert`, NOT `invertThreshold`
+- [ ] Setpoint widgets use `setpointStyle`, NOT `showSlider`
+- [ ] No `script`, `calculated`, or `virtual` channel types are used
+- [ ] Calculated values use Python scripts with `publish()`, not channels

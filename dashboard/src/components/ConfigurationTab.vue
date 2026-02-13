@@ -577,10 +577,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
           for (const ch of module.channels || []) {
             const assignedTo = usedChannels.get(ch.name)
             const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
+            const chType = ch.channel_type || ch.type || ch.category || ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${ch.type})${usageLabel}`,
-              type: ch.type,
+              label: `${ch.name} (${chType})${usageLabel}`,
+              type: chType,
               inUse: !!assignedTo
             })
           }
@@ -593,10 +594,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
         for (const ch of device.channels || []) {
           const assignedTo = usedChannels.get(ch.name)
           const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
+          const chType = ch.channel_type || ch.type || ch.category || ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${ch.type})${usageLabel}`,
-            type: ch.type,
+            label: `${ch.name} (${chType})${usageLabel}`,
+            type: chType,
             inUse: !!assignedTo
           })
         }
@@ -628,10 +630,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
           for (const ch of module.channels || []) {
             const assignedTo = usedChannels.get(ch.name)
             const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
+            const chType = ch.channel_type || ch.type || ch.category || ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${ch.type})${usageLabel}`,
-              type: ch.type,
+              label: `${ch.name} (${chType})${usageLabel}`,
+              type: chType,
               inUse: !!assignedTo
             })
           }
@@ -646,10 +649,11 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
         for (const ch of module.channels || []) {
           const assignedTo = usedChannels.get(ch.name)
           const usageLabel = assignedTo ? ` [USED BY: ${assignedTo}]` : ''
+          const chType = ch.channel_type || ch.type || ch.category || ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${ch.type})${usageLabel}`,
-            type: ch.type,
+            label: `${ch.name} (${chType})${usageLabel}`,
+            type: chType,
             inUse: !!assignedTo
           })
         }
@@ -708,12 +712,14 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
   }
 
   // Filter channels by compatible types
-  return allChannels.filter(ch =>
-    compatibleTypes.some(type =>
-      ch.type.toLowerCase().includes(type.toLowerCase()) ||
-      type.toLowerCase().includes(ch.type.toLowerCase())
+  return allChannels.filter(ch => {
+    if (!ch.type) return false
+    const chTypeLower = ch.type.toLowerCase()
+    return compatibleTypes.some(type =>
+      chTypeLower.includes(type.toLowerCase()) ||
+      type.toLowerCase().includes(chTypeLower)
     )
-  )
+  })
 }
 
 // Check if we have discovery data for the current source type

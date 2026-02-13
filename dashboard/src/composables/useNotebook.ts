@@ -41,9 +41,9 @@ export function useNotebook() {
     if (searchQuery.value) {
       const q = searchQuery.value.toLowerCase()
       result = result.filter(e =>
-        e.title.toLowerCase().includes(q) ||
-        e.content.toLowerCase().includes(q) ||
-        e.tags.some(t => t.toLowerCase().includes(q))
+        (e.title && e.title.toLowerCase().includes(q)) ||
+        (e.content && e.content.toLowerCase().includes(q)) ||
+        (e.tags && e.tags.some(t => t && t.toLowerCase().includes(q)))
       )
     }
 

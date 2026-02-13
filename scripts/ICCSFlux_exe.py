@@ -160,9 +160,42 @@ def load_mqtt_credentials():
 
 
 class QuietHTTPHandler(SimpleHTTPRequestHandler):
-    """HTTP handler that doesn't log every request"""
+    """HTTP handler for Vue SPA with proper MIME types and SPA fallback"""
+
+    # Ensure .js files get the correct MIME type (Windows registry can override)
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        '.js': 'application/javascript',
+        '.mjs': 'application/javascript',
+        '.css': 'text/css',
+        '.json': 'application/json',
+        '.svg': 'image/svg+xml',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf': 'font/ttf',
+    }
+
+    def do_GET(self):
+        """Serve files with SPA fallback — unknown paths serve index.html"""
+        # Try to serve the file normally first
+        path = self.translate_path(self.path)
+        if os.path.exists(path) and not os.path.isdir(path):
+            return super().do_GET()
+        # For directories, check for index.html
+        if os.path.isdir(path):
+            index = os.path.join(path, 'index.html')
+            if os.path.exists(index):
+                return super().do_GET()
+        # SPA fallback: serve index.html for any unmatched route
+        self.path = '/index.html'
+        return super().do_GET()
+
     def log_message(self, format, *args):
-        pass  # Suppress logging
+        pass  # Suppress routine request logging
+
+    def log_error(self, format, *args):
+        """Log errors so we can debug 404s and serving issues"""
+        print(f"[HTTP] ERROR: {format % args}")
 
 
 def is_port_available(port):
@@ -337,16 +370,29 @@ def start_web_server(port=5173):
         return None
 
 
+_cleanup_done = False
+
 def cleanup(signum=None, frame=None):
     """Clean shutdown of all services"""
-    global httpd
+    global httpd, _cleanup_done
 
-    print()
-    print("[STOP] Shutting down ICCSFlux...")
+    # Guard against double cleanup (atexit + signal can both fire)
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+
+    try:
+        print()
+        print("[STOP] Shutting down ICCSFlux...")
+    except Exception:
+        pass
 
     # Stop HTTP server
     if httpd:
-        httpd.shutdown()
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
 
     # Stop all subprocesses
     for proc in processes:
@@ -362,8 +408,14 @@ def cleanup(signum=None, frame=None):
     # Release single instance lock
     release_single_instance()
 
-    print("[  OK ] Shutdown complete")
-    sys.exit(0)
+    try:
+        print("[  OK ] Shutdown complete")
+    except Exception:
+        pass
+
+    # Only call sys.exit when invoked from signal handler, not from atexit
+    if signum is not None:
+        sys.exit(0)
 
 
 def main():
@@ -430,6 +482,28 @@ Example:
     # Set up signal handlers for clean shutdown
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
+
+    # Register atexit so cleanup runs even if the console window is closed
+    atexit.register(cleanup)
+
+    # On Windows, handle console close/logoff events (clicking X on console window)
+    if sys.platform == 'win32':
+        try:
+            kernel32 = ctypes.windll.kernel32
+            _CTRL_CLOSE_EVENT = 2
+            _CTRL_LOGOFF_EVENT = 5
+            _CTRL_SHUTDOWN_EVENT = 6
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+            def _console_handler(event):
+                if event in (_CTRL_CLOSE_EVENT, _CTRL_LOGOFF_EVENT, _CTRL_SHUTDOWN_EVENT):
+                    cleanup()
+                    return True
+                return False
+
+            kernel32.SetConsoleCtrlHandler(_console_handler, True)
+        except Exception:
+            pass  # Non-critical — Ctrl+C still works
 
     # Generate MQTT credentials on first run (before starting mosquitto)
     setup_mqtt_credentials()

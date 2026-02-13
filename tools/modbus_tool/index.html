@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Modbus Poll Tool</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --bg2: #16213e;
+  --bg3: #0f3460;
+  --surface: #1e2a4a;
+  --border: #2a3a5c;
+  --text: #e0e0e0;
+  --text2: #a0a0b0;
+  --accent: #4fc3f7;
+  --green: #66bb6a;
+  --red: #ef5350;
+  --orange: #ffa726;
+  --yellow: #ffee58;
+  --font: 'Consolas', 'Courier New', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 13px; height: 100vh; overflow: hidden; }
+
+/* Layout */
+.app { display: grid; grid-template-rows: 40px 1fr 200px 28px; height: 100vh; }
+.toolbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.toolbar h1 { font-size: 14px; font-weight: 600; color: var(--accent); margin-right: 16px; white-space: nowrap; }
+.main { display: grid; grid-template-columns: 300px 1fr; overflow: hidden; }
+.sidebar { background: var(--bg2); border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; }
+.content { overflow: auto; padding: 8px; }
+.bottom { background: var(--bg2); border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.statusbar { display: flex; align-items: center; gap: 16px; padding: 0 12px; background: var(--bg3); font-size: 11px; color: var(--text2); }
+
+/* Buttons */
+.btn { padding: 4px 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 12px; font-family: var(--font); border-radius: 3px; white-space: nowrap; }
+.btn:hover { background: var(--bg3); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-sm { padding: 2px 6px; font-size: 11px; }
+.btn-primary { background: var(--bg3); border-color: var(--accent); color: var(--accent); }
+.btn-danger { border-color: var(--red); color: var(--red); }
+.btn-success { border-color: var(--green); color: var(--green); }
+.btn-warning { border-color: var(--orange); color: var(--orange); }
+
+/* Inputs */
+input, select { padding: 3px 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: var(--font); font-size: 12px; border-radius: 3px; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+label { font-size: 11px; color: var(--text2); display: block; margin-bottom: 2px; }
+
+/* Sections */
+.section-title { font-size: 12px; font-weight: 600; color: var(--accent); padding: 6px 0 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+
+/* Connection card */
+.conn-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 6px; }
+.conn-card .name { font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.conn-card .detail { font-size: 11px; color: var(--text2); margin-top: 2px; }
+.conn-card .actions { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-green { background: var(--green); }
+.dot-red { background: var(--red); }
+.dot-gray { background: #666; }
+
+/* Poll card */
+.poll-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 6px; }
+.poll-card .name { font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.poll-card .detail { font-size: 11px; color: var(--text2); margin-top: 2px; }
+.poll-card .actions { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+.poll-card .log-badge { font-size: 10px; background: var(--red); color: #fff; padding: 1px 5px; border-radius: 8px; font-weight: 600; }
+
+/* Multi-poll register tables */
+.poll-section { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.poll-section-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: var(--bg3); cursor: pointer; user-select: none; }
+.poll-section-header .title { font-weight: 600; font-size: 12px; color: var(--accent); }
+.poll-section-header .info { font-size: 11px; color: var(--text2); margin-left: 12px; }
+.poll-section-body { max-height: 400px; overflow: auto; }
+
+/* Register table */
+.reg-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.reg-table th { background: var(--bg3); padding: 3px 6px; text-align: right; border: 1px solid var(--border); font-weight: 600; position: sticky; top: 0; z-index: 1; white-space: nowrap; font-size: 11px; }
+.reg-table th:first-child, .reg-table th:last-child { text-align: left; }
+.reg-table td { padding: 2px 6px; border: 1px solid var(--border); text-align: right; font-variant-numeric: tabular-nums; }
+.reg-table td:first-child { text-align: left; }
+.reg-table td:last-child { text-align: left; }
+.reg-table tr:hover td { background: rgba(79,195,247,0.08); }
+.reg-table .addr { color: var(--accent); font-weight: 600; }
+.reg-table .desc-cell { color: var(--text2); cursor: text; min-width: 80px; }
+.reg-table .desc-cell:focus { outline: 1px solid var(--accent); background: var(--surface); color: var(--text); }
+.reg-table .writable { cursor: pointer; }
+.reg-table .writable:hover { background: rgba(79,195,247,0.15); }
+
+/* Column toggle bar */
+.col-toggles { display: flex; gap: 2px; padding: 4px 8px; flex-wrap: wrap; align-items: center; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.col-toggles label { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text2); padding: 2px 6px; cursor: pointer; border: 1px solid transparent; border-radius: 3px; margin-bottom: 0; }
+.col-toggles label:hover { border-color: var(--border); }
+.col-toggles label.active { color: var(--accent); border-color: var(--accent); }
+.col-toggles input[type=checkbox] { accent-color: var(--accent); }
+.col-toggles .label-text { font-size: 11px; color: var(--text2); margin-right: 6px; font-weight: 600; }
+
+/* Traffic log */
+.traffic-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: var(--bg3); border-bottom: 1px solid var(--border); }
+.traffic-header span { font-size: 12px; font-weight: 600; color: var(--accent); }
+.traffic-log { flex: 1; overflow-y: auto; padding: 4px 8px; font-size: 11px; }
+.traffic-entry { padding: 1px 0; white-space: nowrap; }
+.traffic-tx { color: var(--orange); }
+.traffic-rx { color: var(--green); }
+.traffic-err { color: var(--red); }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; min-width: 360px; max-width: 500px; max-height: 90vh; overflow-y: auto; }
+.modal h3 { font-size: 14px; color: var(--accent); margin-bottom: 12px; }
+.modal .form-row { margin-bottom: 8px; }
+.modal .form-row input, .modal .form-row select { width: 100%; }
+.modal .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* Device info display */
+.device-info { font-size: 11px; padding: 4px 0; }
+.device-info dt { color: var(--text2); display: inline; }
+.device-info dd { color: var(--text); display: inline; margin-left: 4px; }
+
+/* Scanner */
+.progress-bar { height: 6px; background: var(--surface); border-radius: 3px; overflow: hidden; margin: 8px 0; }
+.progress-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
+
+/* Tabs in bottom panel */
+.bottom-tabs { display: flex; background: var(--bg3); }
+.bottom-tab { padding: 4px 12px; font-size: 11px; cursor: pointer; color: var(--text2); border-bottom: 2px solid transparent; }
+.bottom-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.bottom-content { flex: 1; overflow: hidden; }
+.bottom-pane { display: none; height: 100%; overflow-y: auto; }
+.bottom-pane.active { display: block; }
+
+/* Scanner pane */
+.scanner-form { display: flex; gap: 8px; align-items: flex-end; padding: 8px; flex-wrap: wrap; }
+.scanner-form .form-group { display: flex; flex-direction: column; }
+.scanner-results { padding: 4px 8px; overflow-y: auto; font-size: 11px; }
+
+/* Empty state */
+.empty { text-align: center; padding: 40px; color: var(--text2); }
+.empty h2 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <h1>Modbus Poll Tool</h1>
+    <button class="btn btn-sm" onclick="saveWorkspace()">Save</button>
+    <button class="btn btn-sm" onclick="loadWorkspaceDialog()">Load</button>
+    <input type="file" id="fileInput" accept=".json" style="display:none" onchange="loadWorkspaceFile(event)">
+    <div style="flex:1"></div>
+    <span id="wsStatus" style="font-size:11px;color:var(--text2)">Connecting...</span>
+  </div>
+
+  <!-- Main area -->
+  <div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="section-title">
+        Connections
+        <button class="btn btn-sm btn-primary" onclick="showConnModal()">+ Add</button>
+      </div>
+      <div id="connList"></div>
+
+      <div class="section-title" style="margin-top:12px">
+        Poll Definitions
+        <button class="btn btn-sm btn-primary" onclick="showPollModal()">+ Add</button>
+      </div>
+      <div id="pollList"></div>
+    </div>
+
+    <!-- Content: multi-poll view -->
+    <div class="content" id="mainContent">
+      <div class="empty" id="emptyState">
+        <h2>Modbus Poll Tool</h2>
+        <p>Add a connection and create a poll definition to start reading registers.</p>
+        <p style="margin-top:12px;font-size:11px;color:var(--text2)">1. Click "+ Add" under Connections<br>2. Connect to your device<br>3. Create a poll definition<br>4. Start polling</p>
+      </div>
+      <!-- Column visibility toggles -->
+      <div class="col-toggles" id="colToggles" style="display:none"></div>
+      <!-- Poll tables rendered here -->
+      <div id="pollTables"></div>
+    </div>
+  </div>
+
+  <!-- Bottom panel -->
+  <div class="bottom">
+    <div class="bottom-tabs">
+      <div class="bottom-tab active" onclick="switchBottomTab('traffic')">Traffic Log</div>
+      <div class="bottom-tab" onclick="switchBottomTab('scanner')">Scanner</div>
+    </div>
+    <div class="bottom-content">
+      <div class="bottom-pane active" id="pane-traffic">
+        <div class="traffic-header">
+          <span>Communication Log</span>
+          <div>
+            <label style="display:inline;margin-right:8px"><input type="checkbox" id="trafficAutoscroll" checked> Auto-scroll</label>
+            <button class="btn btn-sm" onclick="clearTraffic()">Clear</button>
+          </div>
+        </div>
+        <div class="traffic-log" id="trafficLog"></div>
+      </div>
+      <div class="bottom-pane" id="pane-scanner">
+        <div class="scanner-form">
+          <div class="form-group">
+            <label>Connection</label>
+            <select id="scanConn" style="width:140px"></select>
+          </div>
+          <div class="form-group">
+            <label>Slave ID</label>
+            <input type="number" id="scanSlave" value="1" min="1" max="247" style="width:60px">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="scanType" style="width:100px">
+              <option value="holding">Holding</option>
+              <option value="input">Input</option>
+              <option value="coil">Coil</option>
+              <option value="discrete">Discrete</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Start</label>
+            <input type="number" id="scanStart" value="0" min="0" max="65535" style="width:70px">
+          </div>
+          <div class="form-group">
+            <label>End</label>
+            <input type="number" id="scanEnd" value="99" min="0" max="65535" style="width:70px">
+          </div>
+          <button class="btn btn-primary" id="scanBtn" onclick="startScan()">Scan</button>
+          <button class="btn btn-danger" id="scanCancelBtn" onclick="cancelScan()" style="display:none">Cancel</button>
+        </div>
+        <div class="progress-bar" id="scanProgress" style="display:none;margin:0 8px">
+          <div class="progress-fill" id="scanFill" style="width:0%"></div>
+        </div>
+        <div class="scanner-results" id="scanResults"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="statusbar">
+    <span id="statusConnections">Connections: 0</span>
+    <span id="statusTx">TX: 0</span>
+    <span id="statusRx">RX: 0</span>
+    <span id="statusErrors">Errors: 0</span>
+    <div style="flex:1"></div>
+    <span>pymodbus</span>
+  </div>
+</div>
+
+<!-- Connection Modal -->
+<div class="modal-overlay" id="connModal">
+  <div class="modal">
+    <h3 id="connModalTitle">Add Connection</h3>
+    <input type="hidden" id="connEditId">
+    <div class="form-row">
+      <label>Name</label>
+      <input type="text" id="connName" value="New Device">
+    </div>
+    <div class="form-row">
+      <label>Type</label>
+      <select id="connType" onchange="toggleConnFields()">
+        <option value="tcp">Modbus TCP (Ethernet)</option>
+        <option value="rtu">Modbus RTU (Serial)</option>
+      </select>
+    </div>
+    <div id="tcpFields">
+      <div class="form-row">
+        <label>IP Address</label>
+        <input type="text" id="connIp" value="192.168.1.100">
+      </div>
+      <div class="form-row">
+        <label>Port</label>
+        <input type="number" id="connPort" value="502" min="1" max="65535">
+      </div>
+    </div>
+    <div id="rtuFields" style="display:none">
+      <div class="form-row">
+        <label>Serial Port</label>
+        <div style="display:flex;gap:4px">
+          <select id="connSerial" style="flex:1"></select>
+          <button class="btn btn-sm" onclick="refreshPorts()">Refresh</button>
+        </div>
+      </div>
+      <div class="form-row" style="display:flex;gap:8px">
+        <div style="flex:1"><label>Baud Rate</label>
+          <select id="connBaud" style="width:100%">
+            <option value="9600">9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+          </select>
+        </div>
+        <div style="flex:1"><label>Parity</label>
+          <select id="connParity" style="width:100%">
+            <option value="N">None</option>
+            <option value="E">Even</option>
+            <option value="O">Odd</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" style="display:flex;gap:8px">
+        <div style="flex:1"><label>Data Bits</label>
+          <select id="connDataBits" style="width:100%">
+            <option value="8">8</option>
+            <option value="7">7</option>
+          </select>
+        </div>
+        <div style="flex:1"><label>Stop Bits</label>
+          <select id="connStopBits" style="width:100%">
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="form-row" style="display:flex;gap:8px">
+      <div style="flex:1"><label>Timeout (s)</label>
+        <input type="number" id="connTimeout" value="1.0" step="0.1" min="0.1" max="30" style="width:100%">
+      </div>
+      <div style="flex:1"><label>Retries</label>
+        <input type="number" id="connRetries" value="3" min="0" max="10" style="width:100%">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('connModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveConnection()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Poll Modal -->
+<div class="modal-overlay" id="pollModal">
+  <div class="modal">
+    <h3 id="pollModalTitle">Add Poll Definition</h3>
+    <input type="hidden" id="pollEditId">
+    <div class="form-row">
+      <label>Name</label>
+      <input type="text" id="pollName" value="New Poll">
+    </div>
+    <div class="form-row">
+      <label>Connection</label>
+      <select id="pollConn" style="width:100%"></select>
+    </div>
+    <div class="form-row" style="display:flex;gap:8px">
+      <div style="flex:1"><label>Register Type</label>
+        <select id="pollRegType" style="width:100%">
+          <option value="holding">Holding (FC3)</option>
+          <option value="input">Input (FC4)</option>
+          <option value="coil">Coil (FC1)</option>
+          <option value="discrete">Discrete (FC2)</option>
+        </select>
+      </div>
+      <div style="flex:1"><label>Slave ID</label>
+        <input type="number" id="pollSlave" value="1" min="1" max="247" style="width:100%">
+      </div>
+    </div>
+    <div class="form-row" style="display:flex;gap:8px">
+      <div style="flex:1"><label>Start Address</label>
+        <input type="number" id="pollStart" value="0" min="0" max="65535" style="width:100%">
+      </div>
+      <div style="flex:1"><label>Count</label>
+        <input type="number" id="pollCount" value="10" min="1" max="125" style="width:100%">
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Scan Rate (ms)</label>
+      <input type="number" id="pollRate" value="1000" min="100" max="60000" style="width:100%">
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('pollModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="savePoll()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Write Register Modal -->
+<div class="modal-overlay" id="writeModal">
+  <div class="modal">
+    <h3>Write Register</h3>
+    <div class="form-row">
+      <label>Address</label>
+      <input type="number" id="writeAddr" readonly style="width:100%">
+    </div>
+    <div class="form-row">
+      <label>Current Raw Value</label>
+      <input type="text" id="writeCurrent" readonly style="width:100%;color:var(--text2)">
+    </div>
+    <div class="form-row">
+      <label>Data Type</label>
+      <select id="writeType" style="width:100%">
+        <option value="uint16">UINT16</option>
+        <option value="int16">INT16</option>
+        <option value="uint32">UINT32 (2 regs)</option>
+        <option value="int32">INT32 (2 regs)</option>
+        <option value="float32">FLOAT32 (2 regs)</option>
+        <option value="float64">FLOAT64 (4 regs)</option>
+      </select>
+    </div>
+    <div class="form-row" style="display:flex;gap:8px">
+      <div style="flex:1"><label>Byte Order</label>
+        <select id="writeByteOrder" style="width:100%">
+          <option value="big">Big Endian</option>
+          <option value="little">Little Endian</option>
+        </select>
+      </div>
+      <div style="flex:1"><label>Word Order</label>
+        <select id="writeWordOrder" style="width:100%">
+          <option value="big">Big Endian</option>
+          <option value="little">Little Endian</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <label>New Value</label>
+      <input type="number" id="writeValue" step="any" style="width:100%">
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('writeModal')">Cancel</button>
+      <button class="btn btn-danger" onclick="executeWrite()">Write</button>
+    </div>
+  </div>
+</div>
+
+<!-- Write Coil Modal -->
+<div class="modal-overlay" id="writeCoilModal">
+  <div class="modal">
+    <h3>Write Coil</h3>
+    <div class="form-row">
+      <label>Address</label>
+      <input type="number" id="writeCoilAddr" readonly style="width:100%">
+    </div>
+    <div class="form-row">
+      <label>Current Value</label>
+      <input type="text" id="writeCoilCurrent" readonly style="width:100%;color:var(--text2)">
+    </div>
+    <div class="form-row">
+      <label>New Value</label>
+      <select id="writeCoilValue" style="width:100%">
+        <option value="1">ON (1)</option>
+        <option value="0">OFF (0)</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('writeCoilModal')">Cancel</button>
+      <button class="btn btn-danger" onclick="executeWriteCoil()">Write</button>
+    </div>
+  </div>
+</div>
+
+<!-- Device Info Modal -->
+<div class="modal-overlay" id="deviceInfoModal">
+  <div class="modal">
+    <h3>Device Identification (FC43)</h3>
+    <div id="deviceInfoContent" style="min-height:60px"></div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeModal('deviceInfoModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+const state = {
+  connections: {},   // id -> {config, stats}
+  polls: {},         // id -> {config, running, logging}
+  pollData: {},      // poll_id -> {values, timestamp, ...}
+  ws: null,
+  wsReconnectDelay: 1000,
+  scanning: false,
+  // Column visibility (default sensible set)
+  columns: {
+    raw: true, signed: true, unsigned: false, hex: true,
+    int32be: false, uint32be: false,
+    float32be: true, float32le: false,
+    float64be: false, binary: false, ascii: false,
+  },
+};
+
+const COLUMN_DEFS = [
+  {key: 'raw',       label: 'Raw U16'},
+  {key: 'signed',    label: 'Signed'},
+  {key: 'unsigned',  label: 'Unsigned'},
+  {key: 'hex',       label: 'Hex'},
+  {key: 'int32be',   label: 'Int32 BE'},
+  {key: 'uint32be',  label: 'Uint32 BE'},
+  {key: 'float32be', label: 'Float32 BE'},
+  {key: 'float32le', label: 'Float32 LE'},
+  {key: 'float64be', label: 'Float64 BE'},
+  {key: 'binary',    label: 'Binary'},
+  {key: 'ascii',     label: 'ASCII'},
+];
+
+// ===== API helpers =====
+async function api(method, path, body) {
+  const opts = {method, headers: {'Content-Type': 'application/json'}};
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch('/api/' + path, opts);
+  return r.json();
+}
+
+// ===== WebSocket =====
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  state.ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  state.ws.onopen = () => {
+    document.getElementById('wsStatus').textContent = 'Connected';
+    document.getElementById('wsStatus').style.color = 'var(--green)';
+    state.wsReconnectDelay = 1000;
+  };
+
+  state.ws.onclose = () => {
+    document.getElementById('wsStatus').textContent = 'Disconnected';
+    document.getElementById('wsStatus').style.color = 'var(--red)';
+    setTimeout(connectWS, state.wsReconnectDelay);
+    state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 2, 30000);
+  };
+
+  state.ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'poll_data') handlePollData(msg);
+    else if (msg.type === 'connection_status') handleConnStatus(msg);
+    else if (msg.type === 'traffic') addTrafficEntry(msg);
+    else if (msg.type === 'scan_progress') handleScanProgress(msg);
+    else if (msg.type === 'scan_complete') handleScanComplete(msg);
+  };
+}
+
+// ===== WebSocket Handlers =====
+function handlePollData(msg) {
+  state.pollData[msg.poll_id] = msg;
+  updatePollTable(msg.poll_id);
+}
+
+function handleConnStatus(msg) {
+  if (state.connections[msg.connection_id]) {
+    state.connections[msg.connection_id].stats = msg.stats;
+    renderConnections();
+    updateStatusBar();
+  }
+}
+
+// ===== Client-side register decoding =====
+function decodeS16(val) {
+  return val > 32767 ? val - 65536 : val;
+}
+
+function decodeFloat32(r1, r2, bigEndian) {
+  const buf = new ArrayBuffer(4);
+  const v = new DataView(buf);
+  if (bigEndian) {
+    v.setUint16(0, r1, false);
+    v.setUint16(2, r2, false);
+    return v.getFloat32(0, false);
+  } else {
+    v.setUint16(0, r2, true);
+    v.setUint16(2, r1, true);
+    return v.getFloat32(0, true);
+  }
+}
+
+function decodeInt32BE(r1, r2) {
+  const buf = new ArrayBuffer(4);
+  const v = new DataView(buf);
+  v.setUint16(0, r1, false);
+  v.setUint16(2, r2, false);
+  return v.getInt32(0, false);
+}
+
+function decodeUint32BE(r1, r2) {
+  const buf = new ArrayBuffer(4);
+  const v = new DataView(buf);
+  v.setUint16(0, r1, false);
+  v.setUint16(2, r2, false);
+  return v.getUint32(0, false);
+}
+
+function decodeFloat64BE(r1, r2, r3, r4) {
+  const buf = new ArrayBuffer(8);
+  const v = new DataView(buf);
+  v.setUint16(0, r1, false);
+  v.setUint16(2, r2, false);
+  v.setUint16(4, r3, false);
+  v.setUint16(6, r4, false);
+  return v.getFloat64(0, false);
+}
+
+function formatCell(values, index, colKey) {
+  const val = values[index];
+  if (val === undefined || val === null) return '-';
+  switch (colKey) {
+    case 'raw':      return val.toString();
+    case 'unsigned': return val.toString();
+    case 'signed':   return decodeS16(val).toString();
+    case 'hex':      return val.toString(16).toUpperCase().padStart(4, '0');
+    case 'binary':   return val.toString(2).padStart(16, '0');
+    case 'int32be':
+      return (index + 1 < values.length) ? decodeInt32BE(val, values[index + 1]).toString() : '-';
+    case 'uint32be':
+      return (index + 1 < values.length) ? decodeUint32BE(val, values[index + 1]).toString() : '-';
+    case 'float32be':
+      if (index + 1 < values.length) { const f = decodeFloat32(val, values[index + 1], true); return isNaN(f) ? 'NaN' : f.toFixed(4); }
+      return '-';
+    case 'float32le':
+      if (index + 1 < values.length) { const f = decodeFloat32(val, values[index + 1], false); return isNaN(f) ? 'NaN' : f.toFixed(4); }
+      return '-';
+    case 'float64be':
+      if (index + 3 < values.length) { const f = decodeFloat64BE(val, values[index + 1], values[index + 2], values[index + 3]); return isNaN(f) ? 'NaN' : f.toFixed(6); }
+      return '-';
+    case 'ascii': {
+      const hi = (val >> 8) & 0xFF, lo = val & 0xFF;
+      const c1 = (hi >= 32 && hi < 127) ? String.fromCharCode(hi) : '.';
+      const c2 = (lo >= 32 && lo < 127) ? String.fromCharCode(lo) : '.';
+      return c1 + c2;
+    }
+    default: return val.toString();
+  }
+}
+
+// ===== Render: Connections =====
+function renderConnections() {
+  const el = document.getElementById('connList');
+  if (Object.keys(state.connections).length === 0) {
+    el.innerHTML = '<div style="color:var(--text2);font-size:11px;padding:8px">No connections configured</div>';
+    return;
+  }
+  el.innerHTML = Object.values(state.connections).map(c => {
+    const s = c.stats || {};
+    const dotClass = s.connected ? 'dot-green' : 'dot-red';
+    const detail = c.config.connection_type === 'tcp'
+      ? `${c.config.ip_address}:${c.config.port}`
+      : `${c.config.serial_port} @ ${c.config.baudrate}`;
+    const typeLabel = c.config.connection_type.toUpperCase();
+    return `<div class="conn-card">
+      <div class="name"><span class="dot ${dotClass}"></span> ${esc(c.config.name)}</div>
+      <div class="detail">${typeLabel} — ${esc(detail)}${s.last_error ? ' — <span style="color:var(--red)">' + esc(s.last_error) + '</span>' : ''}</div>
+      <div class="actions">
+        ${s.connected
+          ? `<button class="btn btn-sm btn-danger" onclick="disconnectConn('${c.config.id}')">Disconnect</button>`
+          : `<button class="btn btn-sm btn-success" onclick="connectConn('${c.config.id}')">Connect</button>`}
+        <button class="btn btn-sm" onclick="testConn('${c.config.id}')">Test</button>
+        <button class="btn btn-sm" onclick="identifyDevice('${c.config.id}')">Identify</button>
+        <button class="btn btn-sm" onclick="editConnection('${c.config.id}')">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteConnection('${c.config.id}')">Del</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ===== Render: Polls (sidebar) =====
+function renderPolls() {
+  const el = document.getElementById('pollList');
+  if (Object.keys(state.polls).length === 0) {
+    el.innerHTML = '<div style="color:var(--text2);font-size:11px;padding:8px">No polls configured</div>';
+    return;
+  }
+  el.innerHTML = Object.values(state.polls).map(p => {
+    const conn = state.connections[p.config.connection_id];
+    const connName = conn ? conn.config.name : '(unknown)';
+    const runIcon = p.running ? '<span style="color:var(--green)">&#9654;</span>' : '<span style="color:var(--text2)">&#9632;</span>';
+    const logBadge = p.logging ? ' <span class="log-badge">REC</span>' : '';
+    return `<div class="poll-card">
+      <div class="name">${runIcon} ${esc(p.config.name)}${logBadge}</div>
+      <div class="detail">${p.config.register_type} ${p.config.start_address}..${p.config.start_address + p.config.count - 1} @ ${p.config.scan_rate_ms}ms — slave ${p.config.slave_id} — ${esc(connName)}</div>
+      <div class="actions">
+        ${p.running
+          ? `<button class="btn btn-sm btn-danger" onclick="stopPollBtn('${p.config.id}')">Stop</button>`
+          : `<button class="btn btn-sm btn-success" onclick="startPollBtn('${p.config.id}')">Start</button>`}
+        ${p.logging
+          ? `<button class="btn btn-sm btn-danger" onclick="stopLogging('${p.config.id}')">Stop Log</button>`
+          : `<button class="btn btn-sm btn-warning" onclick="startLogging('${p.config.id}')">Log</button>`}
+        <button class="btn btn-sm" onclick="exportCsv('${p.config.id}')">CSV</button>
+        <button class="btn btn-sm" onclick="editPoll('${p.config.id}')">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="deletePoll('${p.config.id}')">Del</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ===== Render: Column toggles =====
+function renderColumnToggles() {
+  const el = document.getElementById('colToggles');
+  el.innerHTML = '<span class="label-text">Columns:</span>' + COLUMN_DEFS.map(c => {
+    const checked = state.columns[c.key] ? 'checked' : '';
+    const activeClass = state.columns[c.key] ? 'active' : '';
+    return `<label class="${activeClass}"><input type="checkbox" ${checked} onchange="toggleColumn('${c.key}', this.checked)"> ${c.label}</label>`;
+  }).join('');
+}
+
+function toggleColumn(key, visible) {
+  state.columns[key] = visible;
+  renderColumnToggles();
+  renderAllPollTables();
+}
+
+// ===== Render: Multi-poll tables =====
+function renderAllPollTables() {
+  const container = document.getElementById('pollTables');
+  const pollIds = Object.keys(state.polls);
+
+  if (pollIds.length === 0) {
+    container.innerHTML = '';
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('colToggles').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('colToggles').style.display = 'flex';
+
+  // Build visible columns list
+  const visCols = COLUMN_DEFS.filter(c => state.columns[c.key]);
+
+  container.innerHTML = pollIds.map(pid => {
+    const p = state.polls[pid];
+    const pc = p.config;
+    const data = state.pollData[pid];
+    const values = data ? data.values : [];
+    const descs = pc.descriptions || {};
+    const conn = state.connections[pc.connection_id];
+    const connName = conn ? conn.config.name : '?';
+    const isCoil = pc.register_type === 'coil' || pc.register_type === 'discrete';
+    const writable = pc.register_type === 'holding' || pc.register_type === 'coil';
+    const timeStr = data ? `${data.response_time_ms}ms — ${new Date(data.timestamp * 1000).toLocaleTimeString()}` : 'No data';
+    const runLabel = p.running ? '<span style="color:var(--green)">Running</span>' : '<span style="color:var(--text2)">Stopped</span>';
+    const logLabel = p.logging ? ' <span class="log-badge">REC</span>' : '';
+
+    // Header row
+    let headerHtml = '<th style="text-align:left">Addr</th>';
+    for (const col of visCols) headerHtml += `<th>${col.label}</th>`;
+    headerHtml += '<th style="text-align:left">Description</th>';
+
+    // Body rows
+    let bodyHtml = '';
+    for (let i = 0; i < pc.count; i++) {
+      const addr = pc.start_address + i;
+      const desc = descs[i] || descs[String(i)] || '';
+      const dblClick = writable
+        ? (isCoil ? `showWriteCoil('${pid}',${addr},${values[i]})` : `showWriteReg('${pid}',${addr},${values[i]})`)
+        : '';
+      const writableClass = writable ? 'writable' : '';
+
+      bodyHtml += `<tr ondblclick="${dblClick}" title="${writable ? 'Double-click to write' : 'Read-only'}">`;
+      bodyHtml += `<td class="addr">${addr}</td>`;
+      for (const col of visCols) {
+        const val = values.length > 0 ? formatCell(values, i, col.key) : '-';
+        bodyHtml += `<td class="${writableClass}">${val}</td>`;
+      }
+      bodyHtml += `<td class="desc-cell" contenteditable="true" data-poll="${pid}" data-idx="${i}" onblur="saveDescription(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(desc)}</td>`;
+      bodyHtml += '</tr>';
+    }
+
+    return `<div class="poll-section" id="poll-section-${pid}">
+      <div class="poll-section-header">
+        <div>
+          <span class="title">${esc(pc.name)}</span>${logLabel}
+          <span class="info">${pc.register_type} ${pc.start_address}..${pc.start_address + pc.count - 1} slave=${pc.slave_id} — ${esc(connName)} — ${runLabel}</span>
+        </div>
+        <span class="info">${timeStr}</span>
+      </div>
+      <div class="poll-section-body">
+        <table class="reg-table"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function updatePollTable(pollId) {
+  // Efficient update: just re-render the specific poll section's table body
+  const section = document.getElementById('poll-section-' + pollId);
+  if (!section) {
+    // Poll section doesn't exist yet, do a full render
+    renderAllPollTables();
+    return;
+  }
+
+  const p = state.polls[pollId];
+  if (!p) return;
+  const pc = p.config;
+  const data = state.pollData[pollId];
+  const values = data ? data.values : [];
+  const descs = pc.descriptions || {};
+  const isCoil = pc.register_type === 'coil' || pc.register_type === 'discrete';
+  const writable = pc.register_type === 'holding' || pc.register_type === 'coil';
+  const visCols = COLUMN_DEFS.filter(c => state.columns[c.key]);
+
+  // Update header info
+  const infoSpans = section.querySelectorAll('.poll-section-header .info');
+  if (infoSpans.length >= 2 && data) {
+    infoSpans[infoSpans.length - 1].textContent = `${data.response_time_ms}ms — ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
+  }
+
+  // Update table body — skip if a description cell is being edited
+  const activeEl = document.activeElement;
+  if (activeEl && activeEl.classList.contains('desc-cell') && activeEl.dataset.poll === pollId) {
+    // Don't re-render while user is editing a description — just update value cells
+    const rows = section.querySelectorAll('tbody tr');
+    rows.forEach((row, i) => {
+      const cells = row.querySelectorAll('td');
+      // cells: addr, [value cols...], description
+      let cellIdx = 1; // skip addr
+      for (const col of visCols) {
+        if (cellIdx < cells.length - 1) {
+          cells[cellIdx].textContent = values.length > 0 ? formatCell(values, i, col.key) : '-';
+        }
+        cellIdx++;
+      }
+    });
+    return;
+  }
+
+  const tbody = section.querySelector('tbody');
+  let bodyHtml = '';
+  for (let i = 0; i < pc.count; i++) {
+    const addr = pc.start_address + i;
+    const desc = descs[i] || descs[String(i)] || '';
+    const dblClick = writable
+      ? (isCoil ? `showWriteCoil('${pollId}',${addr},${values[i]})` : `showWriteReg('${pollId}',${addr},${values[i]})`)
+      : '';
+    const writableClass = writable ? 'writable' : '';
+
+    bodyHtml += `<tr ondblclick="${dblClick}" title="${writable ? 'Double-click to write' : 'Read-only'}">`;
+    bodyHtml += `<td class="addr">${addr}</td>`;
+    for (const col of visCols) {
+      const val = values.length > 0 ? formatCell(values, i, col.key) : '-';
+      bodyHtml += `<td class="${writableClass}">${val}</td>`;
+    }
+    bodyHtml += `<td class="desc-cell" contenteditable="true" data-poll="${pollId}" data-idx="${i}" onblur="saveDescription(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(desc)}</td>`;
+    bodyHtml += '</tr>';
+  }
+  tbody.innerHTML = bodyHtml;
+}
+
+// ===== Inline description editing =====
+let _descSaveTimer = null;
+const _pendingDescs = {};
+
+function saveDescription(cell) {
+  const pollId = cell.dataset.poll;
+  const idx = cell.dataset.idx;
+  const text = cell.textContent.trim();
+
+  // Buffer description changes and save debounced
+  if (!_pendingDescs[pollId]) _pendingDescs[pollId] = {};
+  _pendingDescs[pollId][idx] = text;
+
+  // Update local state immediately
+  const poll = state.polls[pollId];
+  if (poll) {
+    if (!poll.config.descriptions) poll.config.descriptions = {};
+    poll.config.descriptions[idx] = text;
+  }
+
+  // Debounced save to server
+  clearTimeout(_descSaveTimer);
+  _descSaveTimer = setTimeout(() => {
+    for (const pid of Object.keys(_pendingDescs)) {
+      const p = state.polls[pid];
+      if (p) {
+        api('POST', `polls/${pid}/descriptions`, p.config.descriptions || {});
+      }
+    }
+    for (const k of Object.keys(_pendingDescs)) delete _pendingDescs[k];
+  }, 500);
+}
+
+// ===== Status bar =====
+function updateStatusBar() {
+  let totalTx = 0, totalRx = 0, totalErr = 0, connected = 0, total = 0;
+  for (const c of Object.values(state.connections)) {
+    total++;
+    const s = c.stats || {};
+    if (s.connected) connected++;
+    totalTx += s.tx_count || 0;
+    totalRx += s.rx_count || 0;
+    totalErr += s.error_count || 0;
+  }
+  document.getElementById('statusConnections').textContent = `Connections: ${connected}/${total}`;
+  document.getElementById('statusTx').textContent = `TX: ${totalTx}`;
+  document.getElementById('statusRx').textContent = `RX: ${totalRx}`;
+  document.getElementById('statusErrors').textContent = `Errors: ${totalErr}`;
+}
+
+// ===== Connection actions =====
+async function connectConn(id) {
+  const r = await api('POST', `connections/${id}/connect`);
+  if (r.stats) {
+    state.connections[id].stats = r.stats;
+    renderConnections();
+    updateStatusBar();
+  }
+}
+
+async function disconnectConn(id) {
+  await api('POST', `connections/${id}/disconnect`);
+  state.connections[id].stats = {...(state.connections[id].stats || {}), connected: false};
+  renderConnections();
+  updateStatusBar();
+}
+
+async function testConn(id) {
+  const r = await api('POST', `connections/${id}/test`);
+  if (r.success) {
+    alert(`Connection OK!\nConnect: ${r.connect_ms}ms\nTest read: ${r.read_ok ? r.read_ms + 'ms' : 'Failed'}`);
+  } else {
+    alert(`Connection failed: ${r.error || 'Unknown error'}`);
+  }
+  await refreshData();
+}
+
+async function identifyDevice(connId) {
+  const el = document.getElementById('deviceInfoContent');
+  el.innerHTML = '<div style="color:var(--text2)">Reading device identification (FC43)...</div>';
+  openModal('deviceInfoModal');
+
+  const r = await api('POST', `connections/${connId}/identify`, {slave_id: 1});
+  if (r.success && r.info) {
+    let html = '<dl class="device-info">';
+    for (const [key, val] of Object.entries(r.info)) {
+      html += `<div style="padding:2px 0"><dt>${esc(key)}:</dt> <dd>${esc(val)}</dd></div>`;
+    }
+    html += '</dl>';
+    el.innerHTML = html;
+  } else {
+    el.innerHTML = `<div style="color:var(--red)">${esc(r.error || 'Device does not support identification')}</div>`;
+  }
+}
+
+async function deleteConnection(id) {
+  if (!confirm('Delete this connection? All associated polls will be removed.')) return;
+  await api('DELETE', `connections/${id}`);
+  delete state.connections[id];
+  for (const [pid, p] of Object.entries(state.polls)) {
+    if (p.config.connection_id === id) {
+      delete state.polls[pid];
+    }
+  }
+  renderConnections();
+  renderPolls();
+  renderAllPollTables();
+  updateStatusBar();
+}
+
+// ===== Connection modal =====
+function showConnModal(editId) {
+  document.getElementById('connEditId').value = editId || '';
+  document.getElementById('connModalTitle').textContent = editId ? 'Edit Connection' : 'Add Connection';
+  if (editId && state.connections[editId]) {
+    const c = state.connections[editId].config;
+    document.getElementById('connName').value = c.name;
+    document.getElementById('connType').value = c.connection_type;
+    document.getElementById('connIp').value = c.ip_address;
+    document.getElementById('connPort').value = c.port;
+    document.getElementById('connBaud').value = c.baudrate;
+    document.getElementById('connParity').value = c.parity;
+    document.getElementById('connDataBits').value = c.bytesize;
+    document.getElementById('connStopBits').value = c.stopbits;
+    document.getElementById('connTimeout').value = c.timeout;
+    document.getElementById('connRetries').value = c.retries;
+  } else {
+    document.getElementById('connName').value = 'New Device';
+    document.getElementById('connType').value = 'tcp';
+    document.getElementById('connIp').value = '192.168.1.100';
+    document.getElementById('connPort').value = '502';
+  }
+  toggleConnFields();
+  refreshPorts();
+  openModal('connModal');
+}
+
+function editConnection(id) { showConnModal(id); }
+
+function toggleConnFields() {
+  const type = document.getElementById('connType').value;
+  document.getElementById('tcpFields').style.display = type === 'tcp' ? 'block' : 'none';
+  document.getElementById('rtuFields').style.display = type === 'rtu' ? 'block' : 'none';
+}
+
+async function refreshPorts() {
+  const ports = await api('GET', 'serial-ports');
+  const sel = document.getElementById('connSerial');
+  sel.innerHTML = ports.map(p => `<option value="${esc(p.port)}">${esc(p.port)} — ${esc(p.description)}</option>`).join('');
+  if (ports.length === 0) sel.innerHTML = '<option value="COM1">COM1 (no ports detected)</option>';
+}
+
+async function saveConnection() {
+  const editId = document.getElementById('connEditId').value;
+  const body = {
+    name: document.getElementById('connName').value,
+    connection_type: document.getElementById('connType').value,
+    ip_address: document.getElementById('connIp').value,
+    port: parseInt(document.getElementById('connPort').value),
+    serial_port: document.getElementById('connSerial').value,
+    baudrate: parseInt(document.getElementById('connBaud').value),
+    parity: document.getElementById('connParity').value,
+    stopbits: parseInt(document.getElementById('connStopBits').value),
+    bytesize: parseInt(document.getElementById('connDataBits').value),
+    timeout: parseFloat(document.getElementById('connTimeout').value),
+    retries: parseInt(document.getElementById('connRetries').value),
+  };
+
+  let r;
+  if (editId) {
+    // Use PUT to update without dropping connection state
+    r = await api('PUT', `connections/${editId}`, body);
+    const stats = r.stats || state.connections[editId]?.stats || {connected: false, tx_count: 0, rx_count: 0, error_count: 0};
+    delete r.stats;
+    state.connections[editId] = {config: r, stats};
+  } else {
+    r = await api('POST', 'connections', body);
+    state.connections[r.id] = {config: r, stats: {connected: false, tx_count: 0, rx_count: 0, error_count: 0}};
+  }
+  closeModal('connModal');
+  renderConnections();
+  updateScanConnDropdown();
+  updateStatusBar();
+}
+
+// ===== Poll actions =====
+async function startPollBtn(id) {
+  await api('POST', `polls/${id}/start`);
+  state.polls[id].running = true;
+  renderPolls();
+  renderAllPollTables();
+}
+
+async function stopPollBtn(id) {
+  await api('POST', `polls/${id}/stop`);
+  state.polls[id].running = false;
+  renderPolls();
+  renderAllPollTables();
+}
+
+async function deletePoll(id) {
+  if (!confirm('Delete this poll?')) return;
+  await api('DELETE', `polls/${id}`);
+  delete state.polls[id];
+  delete state.pollData[id];
+  renderPolls();
+  renderAllPollTables();
+}
+
+// ===== Data logging =====
+async function startLogging(pollId) {
+  const r = await api('POST', `polls/${pollId}/log/start`);
+  if (r.ok) {
+    state.polls[pollId].logging = true;
+    renderPolls();
+    renderAllPollTables();
+    addLocalTraffic('INFO', `Logging started: ${r.filename || pollId}`);
+  }
+}
+
+async function stopLogging(pollId) {
+  await api('POST', `polls/${pollId}/log/stop`);
+  state.polls[pollId].logging = false;
+  renderPolls();
+  renderAllPollTables();
+  addLocalTraffic('INFO', `Logging stopped: ${pollId}`);
+}
+
+// ===== Poll modal =====
+function showPollModal(editId) {
+  document.getElementById('pollEditId').value = editId || '';
+  document.getElementById('pollModalTitle').textContent = editId ? 'Edit Poll' : 'Add Poll';
+
+  const connSel = document.getElementById('pollConn');
+  connSel.innerHTML = Object.values(state.connections).map(c =>
+    `<option value="${c.config.id}">${esc(c.config.name)}</option>`
+  ).join('');
+
+  if (editId && state.polls[editId]) {
+    const p = state.polls[editId].config;
+    document.getElementById('pollName').value = p.name;
+    connSel.value = p.connection_id;
+    document.getElementById('pollRegType').value = p.register_type;
+    document.getElementById('pollSlave').value = p.slave_id;
+    document.getElementById('pollStart').value = p.start_address;
+    document.getElementById('pollCount').value = p.count;
+    document.getElementById('pollRate').value = p.scan_rate_ms;
+  } else {
+    document.getElementById('pollName').value = 'New Poll';
+    document.getElementById('pollRegType').value = 'holding';
+    document.getElementById('pollSlave').value = '1';
+    document.getElementById('pollStart').value = '0';
+    document.getElementById('pollCount').value = '10';
+    document.getElementById('pollRate').value = '1000';
+  }
+  openModal('pollModal');
+}
+
+function editPoll(id) { showPollModal(id); }
+
+async function savePoll() {
+  const editId = document.getElementById('pollEditId').value;
+  const body = {
+    name: document.getElementById('pollName').value,
+    connection_id: document.getElementById('pollConn').value,
+    register_type: document.getElementById('pollRegType').value,
+    slave_id: parseInt(document.getElementById('pollSlave').value),
+    start_address: parseInt(document.getElementById('pollStart').value),
+    count: parseInt(document.getElementById('pollCount').value),
+    scan_rate_ms: parseInt(document.getElementById('pollRate').value),
+    enabled: true,
+  };
+
+  let r;
+  if (editId) {
+    r = await api('PUT', `polls/${editId}`, body);
+  } else {
+    r = await api('POST', 'polls', body);
+  }
+  const wasRunning = editId ? (state.polls[editId]?.running || false) : false;
+  const wasLogging = editId ? (state.polls[editId]?.logging || false) : false;
+  state.polls[r.id] = {config: r, running: wasRunning, logging: wasLogging};
+  closeModal('pollModal');
+  renderPolls();
+  renderAllPollTables();
+}
+
+// ===== Write =====
+let _writePollId = null;
+
+function showWriteReg(pollId, addr, currentVal) {
+  _writePollId = pollId;
+  document.getElementById('writeAddr').value = addr;
+  document.getElementById('writeCurrent').value = currentVal !== undefined ? currentVal : '-';
+  document.getElementById('writeValue').value = '';
+  openModal('writeModal');
+}
+
+function showWriteCoil(pollId, addr, currentVal) {
+  _writePollId = pollId;
+  document.getElementById('writeCoilAddr').value = addr;
+  document.getElementById('writeCoilCurrent').value = currentVal ? 'ON (1)' : 'OFF (0)';
+  document.getElementById('writeCoilValue').value = currentVal ? '0' : '1';
+  openModal('writeCoilModal');
+}
+
+async function executeWrite() {
+  const poll = state.polls[_writePollId];
+  if (!poll) return;
+  const r = await api('POST', 'write/register', {
+    connection_id: poll.config.connection_id,
+    slave_id: poll.config.slave_id,
+    address: parseInt(document.getElementById('writeAddr').value),
+    value: parseFloat(document.getElementById('writeValue').value),
+    data_type: document.getElementById('writeType').value,
+    byte_order: document.getElementById('writeByteOrder').value,
+    word_order: document.getElementById('writeWordOrder').value,
+  });
+  closeModal('writeModal');
+  if (r.success) {
+    addLocalTraffic('TX', `Write register ${document.getElementById('writeAddr').value} = ${document.getElementById('writeValue').value}`);
+  } else {
+    alert('Write failed: ' + (r.error || 'Unknown error'));
+  }
+}
+
+async function executeWriteCoil() {
+  const poll = state.polls[_writePollId];
+  if (!poll) return;
+  const r = await api('POST', 'write/coil', {
+    connection_id: poll.config.connection_id,
+    slave_id: poll.config.slave_id,
+    address: parseInt(document.getElementById('writeCoilAddr').value),
+    value: parseInt(document.getElementById('writeCoilValue').value),
+  });
+  closeModal('writeCoilModal');
+  if (r.success) {
+    addLocalTraffic('TX', `Write coil ${document.getElementById('writeCoilAddr').value} = ${document.getElementById('writeCoilValue').value}`);
+  } else {
+    alert('Write failed: ' + (r.error || 'Unknown error'));
+  }
+}
+
+// ===== Traffic log =====
+function addTrafficEntry(msg) {
+  const log = document.getElementById('trafficLog');
+  const ts = new Date(msg.timestamp * 1000).toLocaleTimeString('en-US', {hour12: false, fractionalSecondDigits: 3});
+  const cls = msg.direction === 'TX' ? 'traffic-tx' : 'traffic-rx';
+  const div = document.createElement('div');
+  div.className = `traffic-entry ${cls}`;
+  div.textContent = `${ts} ${msg.direction} [${msg.raw_hex}] ${msg.summary}`;
+  log.appendChild(div);
+  if (log.children.length > 1000) log.removeChild(log.firstChild);
+  if (document.getElementById('trafficAutoscroll').checked) {
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function addLocalTraffic(dir, summary) {
+  const log = document.getElementById('trafficLog');
+  const ts = new Date().toLocaleTimeString('en-US', {hour12: false, fractionalSecondDigits: 3});
+  const clsMap = {TX: 'traffic-tx', RX: 'traffic-rx', INFO: 'traffic-entry'};
+  const cls = clsMap[dir] || 'traffic-entry';
+  const div = document.createElement('div');
+  div.className = `traffic-entry ${cls}`;
+  div.textContent = `${ts} ${dir} ${summary}`;
+  log.appendChild(div);
+  if (document.getElementById('trafficAutoscroll').checked) {
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function clearTraffic() {
+  document.getElementById('trafficLog').innerHTML = '';
+  api('DELETE', 'traffic');
+}
+
+// ===== Scanner =====
+function updateScanConnDropdown() {
+  const sel = document.getElementById('scanConn');
+  sel.innerHTML = Object.values(state.connections).map(c =>
+    `<option value="${c.config.id}">${esc(c.config.name)}</option>`
+  ).join('');
+}
+
+async function startScan() {
+  const btn = document.getElementById('scanBtn');
+  const cancelBtn = document.getElementById('scanCancelBtn');
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  cancelBtn.style.display = 'inline-block';
+  state.scanning = true;
+  document.getElementById('scanProgress').style.display = 'block';
+  document.getElementById('scanFill').style.width = '0%';
+  document.getElementById('scanResults').innerHTML = '';
+
+  await api('POST', 'scan', {
+    connection_id: document.getElementById('scanConn').value,
+    slave_id: parseInt(document.getElementById('scanSlave').value),
+    register_type: document.getElementById('scanType').value,
+    start_address: parseInt(document.getElementById('scanStart').value),
+    end_address: parseInt(document.getElementById('scanEnd').value),
+  });
+}
+
+async function cancelScan() {
+  await api('POST', 'scan/cancel');
+  document.getElementById('scanCancelBtn').style.display = 'none';
+}
+
+function handleScanProgress(msg) {
+  const pct = (msg.current / msg.total * 100).toFixed(0);
+  document.getElementById('scanFill').style.width = pct + '%';
+  document.getElementById('scanResults').innerHTML =
+    `Scanned ${msg.current}/${msg.total} — Found ${msg.found.length} responding addresses`;
+}
+
+function handleScanComplete(msg) {
+  const btn = document.getElementById('scanBtn');
+  const cancelBtn = document.getElementById('scanCancelBtn');
+  btn.disabled = false;
+  btn.textContent = 'Scan';
+  cancelBtn.style.display = 'none';
+  state.scanning = false;
+  document.getElementById('scanProgress').style.display = 'none';
+
+  if (msg.error) {
+    document.getElementById('scanResults').innerHTML = `<span style="color:var(--red)">Error: ${esc(msg.error)}</span>`;
+    return;
+  }
+
+  const found = msg.found || [];
+  const cancelled = msg.cancelled ? ' (cancelled)' : '';
+
+  if (found.length === 0) {
+    document.getElementById('scanResults').innerHTML = `No responding registers found${cancelled}.`;
+    return;
+  }
+
+  let html = `<div style="margin-bottom:4px">Found ${found.length} responding addresses${cancelled}:</div>`;
+  html += '<table class="reg-table" style="font-size:11px"><thead><tr><th style="text-align:left">Address</th><th>Value</th><th>Hex</th><th>Signed</th></tr></thead><tbody>';
+  for (const f of found) {
+    const hex = typeof f.value === 'number' ? f.value.toString(16).toUpperCase().padStart(4, '0') : '-';
+    const signed = typeof f.value === 'number' ? decodeS16(f.value) : '-';
+    html += `<tr><td class="addr">${f.address}</td><td style="text-align:right">${f.value}</td><td style="text-align:right">${hex}</td><td style="text-align:right">${signed}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('scanResults').innerHTML = html;
+}
+
+// ===== Bottom tabs =====
+function switchBottomTab(name) {
+  document.querySelectorAll('.bottom-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.bottom-pane').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('pane-' + name).classList.add('active');
+}
+
+// ===== Workspace save/load =====
+async function saveWorkspace() {
+  const data = await api('POST', 'workspace/save');
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'modbus_workspace.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadWorkspaceDialog() {
+  document.getElementById('fileInput').click();
+}
+
+async function loadWorkspaceFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const data = JSON.parse(text);
+  await api('POST', 'workspace/load', data);
+  await refreshData();
+  event.target.value = '';
+}
+
+// ===== CSV export =====
+function exportCsv(pollId) {
+  if (!pollId) return;
+  window.open(`/api/export/csv/${pollId}`, '_blank');
+}
+
+// ===== Modal helpers =====
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('active');
+  });
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+  }
+});
+
+// ===== Escape HTML =====
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// ===== Initial data load =====
+async function refreshData() {
+  const [conns, polls] = await Promise.all([
+    api('GET', 'connections'),
+    api('GET', 'polls'),
+  ]);
+
+  state.connections = {};
+  for (const c of conns) {
+    const stats = c.stats || {};
+    delete c.stats;
+    state.connections[c.id] = {config: c, stats};
+  }
+
+  state.polls = {};
+  for (const p of polls) {
+    const running = p.running || false;
+    const logging = p.logging || false;
+    delete p.running;
+    delete p.logging;
+    state.polls[p.id] = {config: p, running, logging};
+  }
+
+  renderConnections();
+  renderPolls();
+  renderColumnToggles();
+  renderAllPollTables();
+  updateStatusBar();
+  updateScanConnDropdown();
+}
+
+// ===== Init =====
+refreshData();
+connectWS();
+</script>
+</body>
+</html>

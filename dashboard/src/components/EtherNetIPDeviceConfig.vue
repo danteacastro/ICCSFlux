@@ -281,7 +281,7 @@ const filteredTags = computed(() => {
   if (!tagFilter.value) return tagList.value
   const filter = tagFilter.value.toLowerCase()
   return tagList.value.filter(tag =>
-    tag.name.toLowerCase().includes(filter) ||
+    (tag.name && tag.name.toLowerCase().includes(filter)) ||
     tag.data_type?.toLowerCase().includes(filter)
   )
 })

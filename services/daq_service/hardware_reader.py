@@ -69,7 +69,7 @@ try:
     )
     import numpy as np
     NIDAQMX_AVAILABLE = True
-except ImportError:
+except Exception:
     NIDAQMX_AVAILABLE = False
 
 logger = logging.getLogger('HardwareReader')

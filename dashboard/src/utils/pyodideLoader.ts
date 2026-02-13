@@ -10,9 +10,10 @@
 
 import type { PyodideStatus } from '../types/python-scripts'
 
-// Import loadPyodide from the npm package
-// @ts-ignore - pyodide types may not be fully compatible
-import { loadPyodide as loadPyodideModule } from 'pyodide'
+// Pyodide is loaded dynamically at runtime (not statically imported)
+// to avoid bundling issues — the bare "pyodide" specifier can't be
+// resolved by the browser in production builds.
+let loadPyodideModule: any = null
 
 // Pyodide instance singleton
 let pyodideInstance: any = null
@@ -74,9 +75,22 @@ export async function loadPyodide(onProgress?: ProgressCallback): Promise<any> {
     try {
       onProgress?.('loading', 'Loading Pyodide runtime...', 10)
 
+      // Dynamically import pyodide — works in both dev (node_modules) and production (CDN fallback)
+      if (!loadPyodideModule) {
+        try {
+          const mod = await import('pyodide')
+          loadPyodideModule = mod.loadPyodide
+        } catch {
+          // Fallback: load from CDN via script tag
+          const cdnUrl = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs'
+          const mod = await import(/* @vite-ignore */ cdnUrl)
+          loadPyodideModule = mod.loadPyodide
+        }
+      }
+
       onProgress?.('loading', 'Initializing Python interpreter...', 30)
 
-      // Initialize Pyodide using the npm package
+      // Initialize Pyodide using the dynamically loaded module
       const pyodide = await loadPyodideModule({
         stdout: (text: string) => {
           console.log('[Pyodide stdout]', text)

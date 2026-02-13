@@ -53,7 +53,7 @@ const filteredSymbols = computed(() => {
   if (!searchQuery.value.trim()) return allSymbols.value
   const q = searchQuery.value.toLowerCase()
   return allSymbols.value.filter(s =>
-    s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)
+    (s.name && s.name.toLowerCase().includes(q)) || (s.category && s.category.toLowerCase().includes(q))
   )
 })
 

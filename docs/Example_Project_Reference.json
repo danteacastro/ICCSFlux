@@ -1,0 +1,1124 @@
+{
+  "type": "nisystem-project",
+  "version": "2.0",
+  "name": "Industrial Heat Exchanger Test Stand",
+  "description": "Shell-and-tube heat exchanger performance test system with 16 thermocouples, 4 pressure transmitters, 2 flow meters, PID control, and automated test sequences. Demonstrates all major ICCSFlux features including safety interlocks, user variables, recording, and multi-page dashboard.",
+  "created": "2026-02-12T00:00:00.000Z",
+  "modified": "2026-02-12T00:00:00.000Z",
+
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 10,
+    "publish_rate_hz": 4,
+    "simulation_mode": true,
+    "log_directory": "./data",
+    "system_name": "HX Test Stand",
+    "system_id": "HX-TEST-001",
+    "datalog_rate_ms": 1000,
+    "datalog_rearm": true,
+    "datalog_rearm_rate_sec": 3600
+  },
+
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+
+  "channels": {
+    "TT-101": {
+      "name": "TT-101",
+      "physical_channel": "cDAQ1Mod1/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Hot Side Inlet Temperature",
+      "group": "Hot Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1,
+      "alarm_enabled": true,
+      "hi_limit": 250,
+      "hihi_limit": 275,
+      "alarm_priority": "high",
+      "alarm_deadband": 3,
+      "safety_action": "high-temp-shutdown"
+    },
+    "TT-102": {
+      "name": "TT-102",
+      "physical_channel": "cDAQ1Mod1/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Hot Side Outlet Temperature",
+      "group": "Hot Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-103": {
+      "name": "TT-103",
+      "physical_channel": "cDAQ1Mod1/ai2",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Hot Side Shell Temperature 1",
+      "group": "Hot Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-104": {
+      "name": "TT-104",
+      "physical_channel": "cDAQ1Mod1/ai3",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Hot Side Shell Temperature 2",
+      "group": "Hot Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-201": {
+      "name": "TT-201",
+      "physical_channel": "cDAQ1Mod1/ai4",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Cold Side Inlet Temperature",
+      "group": "Cold Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1,
+      "alarm_enabled": true,
+      "lo_limit": 40,
+      "lolo_limit": 35,
+      "alarm_priority": "medium",
+      "alarm_deadband": 2
+    },
+    "TT-202": {
+      "name": "TT-202",
+      "physical_channel": "cDAQ1Mod1/ai5",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Cold Side Outlet Temperature",
+      "group": "Cold Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-203": {
+      "name": "TT-203",
+      "physical_channel": "cDAQ1Mod1/ai6",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Cold Side Shell Temperature 1",
+      "group": "Cold Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-204": {
+      "name": "TT-204",
+      "physical_channel": "cDAQ1Mod1/ai7",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Cold Side Shell Temperature 2",
+      "group": "Cold Side",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "TT-301": {
+      "name": "TT-301",
+      "physical_channel": "cDAQ1Mod2/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degF",
+      "description": "Ambient Temperature",
+      "group": "Environment",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "PT-101": {
+      "name": "PT-101",
+      "physical_channel": "cDAQ1Mod3/ai0",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "unit": "psig",
+      "description": "Hot Side Inlet Pressure",
+      "group": "Pressures",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1,
+      "alarm_enabled": true,
+      "hi_limit": 80,
+      "hihi_limit": 90,
+      "alarm_priority": "high",
+      "alarm_deadband": 2,
+      "safety_action": "high-pressure-shutdown"
+    },
+    "PT-102": {
+      "name": "PT-102",
+      "physical_channel": "cDAQ1Mod3/ai1",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "unit": "psig",
+      "description": "Hot Side Outlet Pressure",
+      "group": "Pressures",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "PT-201": {
+      "name": "PT-201",
+      "physical_channel": "cDAQ1Mod3/ai2",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "unit": "psig",
+      "description": "Cold Side Inlet Pressure",
+      "group": "Pressures",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "PT-202": {
+      "name": "PT-202",
+      "physical_channel": "cDAQ1Mod3/ai3",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "unit": "psig",
+      "description": "Cold Side Outlet Pressure",
+      "group": "Pressures",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1
+    },
+    "FT-101": {
+      "name": "FT-101",
+      "physical_channel": "cDAQ1Mod3/ai4",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 50,
+      "unit": "GPM",
+      "description": "Hot Side Flow Rate",
+      "group": "Flow",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1,
+      "alarm_enabled": true,
+      "lo_limit": 5,
+      "lolo_limit": 2,
+      "alarm_priority": "high",
+      "alarm_deadband": 1,
+      "safety_action": "low-flow-shutdown"
+    },
+    "FT-201": {
+      "name": "FT-201",
+      "physical_channel": "cDAQ1Mod3/ai5",
+      "channel_type": "current_input",
+      "current_range_ma": 20,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 50,
+      "unit": "GPM",
+      "description": "Cold Side Flow Rate",
+      "group": "Flow",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "decimals": 1,
+      "alarm_enabled": true,
+      "lo_limit": 5,
+      "lolo_limit": 2,
+      "alarm_priority": "high",
+      "alarm_deadband": 1
+    },
+    "Heater_SP": {
+      "name": "Heater_SP",
+      "physical_channel": "cDAQ1Mod4/ao0",
+      "channel_type": "voltage_output",
+      "unit": "degF",
+      "description": "Heater Setpoint (0-10V = 0-500F)",
+      "group": "Control",
+      "visible": true,
+      "log": true,
+      "decimals": 0,
+      "step": 5
+    },
+    "Valve_Hot": {
+      "name": "Valve_Hot",
+      "physical_channel": "cDAQ1Mod5/port0/line0",
+      "channel_type": "digital_output",
+      "description": "Hot Side Isolation Valve",
+      "group": "Control",
+      "visible": true,
+      "log": true,
+      "default_state": false
+    },
+    "Valve_Cold": {
+      "name": "Valve_Cold",
+      "physical_channel": "cDAQ1Mod5/port0/line1",
+      "channel_type": "digital_output",
+      "description": "Cold Side Isolation Valve",
+      "group": "Control",
+      "visible": true,
+      "log": true,
+      "default_state": false
+    },
+    "Pump_Hot": {
+      "name": "Pump_Hot",
+      "physical_channel": "cDAQ1Mod5/port0/line2",
+      "channel_type": "digital_output",
+      "description": "Hot Side Circulation Pump",
+      "group": "Control",
+      "visible": true,
+      "log": true,
+      "default_state": false
+    },
+    "Pump_Cold": {
+      "name": "Pump_Cold",
+      "physical_channel": "cDAQ1Mod5/port0/line3",
+      "channel_type": "digital_output",
+      "description": "Cold Side Circulation Pump",
+      "group": "Control",
+      "visible": true,
+      "log": true,
+      "default_state": false
+    },
+    "Alarm_Horn": {
+      "name": "Alarm_Horn",
+      "physical_channel": "cDAQ1Mod5/port0/line4",
+      "channel_type": "digital_output",
+      "description": "Audible Alarm Horn",
+      "group": "Safety",
+      "visible": true,
+      "log": true,
+      "default_state": false
+    },
+    "E_Stop": {
+      "name": "E_Stop",
+      "physical_channel": "cDAQ1Mod5/port0/line5",
+      "channel_type": "digital_input",
+      "description": "Emergency Stop Button (NC - normally HIGH)",
+      "group": "Safety",
+      "visible": true,
+      "log": true,
+      "invert": true
+    },
+    "Flow_Total": {
+      "name": "Flow_Total",
+      "physical_channel": "cDAQ1Mod6/ctr0",
+      "channel_type": "counter",
+      "counter_mode": "count_edges",
+      "edge": "rising",
+      "pulses_per_unit": 100,
+      "unit": "gal",
+      "description": "Hot Side Flow Totalizer",
+      "group": "Flow",
+      "visible": true,
+      "log": true,
+      "decimals": 0
+    }
+  },
+
+  "safety": {
+    "enabled": true,
+    "watchdog_timeout_sec": 5,
+    "actions": {
+      "emergency-shutdown": {
+        "name": "Emergency Shutdown",
+        "description": "Full system shutdown - all outputs to safe state",
+        "outputs": {
+          "Pump_Hot": false,
+          "Pump_Cold": false,
+          "Valve_Hot": false,
+          "Valve_Cold": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 0
+      },
+      "high-temp-shutdown": {
+        "name": "High Temperature Shutdown",
+        "description": "Stop pumps and close valves on overtemperature",
+        "outputs": {
+          "Pump_Hot": false,
+          "Pump_Cold": false,
+          "Valve_Hot": false,
+          "Valve_Cold": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "high-pressure-shutdown": {
+        "name": "High Pressure Shutdown",
+        "description": "Stop pumps on overpressure condition",
+        "outputs": {
+          "Pump_Hot": false,
+          "Pump_Cold": false,
+          "Alarm_Horn": true
+        },
+        "latching": true,
+        "priority": 1
+      },
+      "low-flow-shutdown": {
+        "name": "Low Flow Shutdown",
+        "description": "Stop heater on low flow to prevent thermal damage",
+        "outputs": {
+          "Alarm_Horn": true
+        },
+        "latching": false,
+        "priority": 2
+      }
+    },
+    "interlocks": [
+      {
+        "name": "Emergency Stop",
+        "description": "Manual emergency stop button pressed",
+        "condition": "E_Stop == true",
+        "action": "emergency-shutdown",
+        "delay_ms": 0
+      },
+      {
+        "name": "Hot Side Overtemperature",
+        "description": "Hot side inlet exceeds maximum safe temperature",
+        "condition": "TT-101 > 275",
+        "action": "high-temp-shutdown",
+        "delay_ms": 0
+      },
+      {
+        "name": "Hot Side Overpressure",
+        "description": "Hot side pressure exceeds design limit",
+        "condition": "PT-101 > 90",
+        "action": "high-pressure-shutdown",
+        "delay_ms": 0
+      },
+      {
+        "name": "Low Flow Protection",
+        "description": "Shut down if flow drops below minimum while pumps running",
+        "condition": "FT-101 < 2 AND Pump_Hot == true",
+        "action": "low-flow-shutdown",
+        "delay_ms": 5000
+      }
+    ]
+  },
+
+  "recording": {
+    "base_path": "./data",
+    "file_prefix": "hx_test",
+    "file_format": "csv",
+    "include_timestamp": true,
+    "include_date": true,
+    "log_rate_hz": 1,
+    "decimation": 1,
+    "max_file_size_mb": 100,
+    "max_file_duration_s": 3600,
+    "split_files": true,
+    "mode": "manual",
+    "selected_channels": [],
+    "include_scripts": true
+  },
+
+  "userVariables": [
+    {
+      "id": "var-hot-delta-t",
+      "name": "hot_delta_t",
+      "displayName": "Hot Side Delta-T",
+      "variableType": "expression",
+      "units": "degF",
+      "value": 0,
+      "persistent": false,
+      "formula": "tags['TT-101'] - tags['TT-102']",
+      "resetMode": "manual"
+    },
+    {
+      "id": "var-cold-delta-t",
+      "name": "cold_delta_t",
+      "displayName": "Cold Side Delta-T",
+      "variableType": "expression",
+      "units": "degF",
+      "value": 0,
+      "persistent": false,
+      "formula": "tags['TT-202'] - tags['TT-201']",
+      "resetMode": "manual"
+    },
+    {
+      "id": "var-flow-total",
+      "name": "test_volume",
+      "displayName": "Test Total Volume",
+      "variableType": "accumulator",
+      "units": "gal",
+      "value": 0,
+      "persistent": true,
+      "sourceChannel": "FT-101",
+      "edgeType": "rate",
+      "sourceRateUnit": "per_minute",
+      "scaleFactor": 1,
+      "resetMode": "test_session"
+    },
+    {
+      "id": "var-max-temp",
+      "name": "max_hot_inlet",
+      "displayName": "Max Hot Inlet Temp",
+      "variableType": "max",
+      "units": "degF",
+      "value": 0,
+      "persistent": false,
+      "sourceChannel": "TT-101",
+      "resetMode": "test_session"
+    },
+    {
+      "id": "var-run-hours",
+      "name": "pump_runtime",
+      "displayName": "Pump Run Time",
+      "variableType": "timer",
+      "units": "hr",
+      "value": 0,
+      "persistent": true,
+      "resetMode": "manual"
+    },
+    {
+      "id": "var-test-id",
+      "name": "test_id",
+      "displayName": "Test ID",
+      "variableType": "string",
+      "dataType": "string",
+      "units": "",
+      "value": 0,
+      "stringValue": "HX-TEST-001",
+      "persistent": true,
+      "resetMode": "manual"
+    },
+    {
+      "id": "var-batch-count",
+      "name": "batch_count",
+      "displayName": "Test Count",
+      "variableType": "counter",
+      "units": "",
+      "value": 0,
+      "persistent": true,
+      "sourceChannel": "Pump_Hot",
+      "edgeType": "rising",
+      "resetMode": "never"
+    }
+  ],
+
+  "pythonScripts": [
+    {
+      "id": "script-hx-calcs",
+      "name": "Heat Exchanger Calculations",
+      "description": "Real-time thermal performance calculations: heat duty, LMTD, U-value, effectiveness",
+      "enabled": true,
+      "runOnStartup": true,
+      "code": "import math\n\n# Water properties\nCp = 1.0  # BTU/lb-degF\nrho = 8.33  # lb/gal\n\nwhile session.active:\n    # Read temperatures\n    T_hot_in = tags['TT-101']\n    T_hot_out = tags['TT-102']\n    T_cold_in = tags['TT-201']\n    T_cold_out = tags['TT-202']\n    \n    # Read flow rates\n    F_hot = tags['FT-101']  # GPM\n    F_cold = tags['FT-201']  # GPM\n    \n    # Mass flow (lb/min)\n    m_hot = F_hot * rho\n    m_cold = F_cold * rho\n    \n    # Heat duty (BTU/min)\n    Q_hot = m_hot * Cp * (T_hot_in - T_hot_out) if m_hot > 0 else 0\n    Q_cold = m_cold * Cp * (T_cold_out - T_cold_in) if m_cold > 0 else 0\n    \n    # LMTD (Log Mean Temperature Difference)\n    dT1 = T_hot_in - T_cold_out\n    dT2 = T_hot_out - T_cold_in\n    if dT1 > 0 and dT2 > 0 and abs(dT1 - dT2) > 0.1:\n        LMTD = (dT1 - dT2) / math.log(dT1 / dT2)\n    elif dT1 > 0:\n        LMTD = dT1\n    else:\n        LMTD = 0\n    \n    # Effectiveness (NTU method)\n    Q_max = min(m_hot, m_cold) * Cp * (T_hot_in - T_cold_in) if min(m_hot, m_cold) > 0 else 1\n    effectiveness = (Q_hot / Q_max * 100) if Q_max > 0 else 0\n    \n    # Publish calculated values\n    publish('HX_Q_Hot', Q_hot, units='BTU/min', description='Hot side heat duty')\n    publish('HX_Q_Cold', Q_cold, units='BTU/min', description='Cold side heat duty')\n    publish('HX_LMTD', LMTD, units='degF', description='Log mean temperature difference')\n    publish('HX_Effectiveness', effectiveness, units='%', description='Heat exchanger effectiveness')\n    publish('HX_DeltaT_Hot', T_hot_in - T_hot_out, units='degF', description='Hot side delta-T')\n    publish('HX_DeltaT_Cold', T_cold_out - T_cold_in, units='degF', description='Cold side delta-T')\n    \n    await next_scan()"
+    }
+  ],
+
+  "scripts": {
+    "sequences": [
+      {
+        "id": "seq-startup",
+        "name": "System Startup",
+        "description": "Safe startup procedure: open valves, start pumps, verify flow",
+        "enabled": true,
+        "steps": [
+          {
+            "id": "s1", "type": "safetyCheck", "enabled": true,
+            "label": "Pre-start safety check",
+            "condition": "E_Stop == false",
+            "failAction": "abort",
+            "failMessage": "E-Stop is engaged - cannot start"
+          },
+          {
+            "id": "s2", "type": "message", "enabled": true,
+            "label": "Startup notification",
+            "message": "Starting HX test system...",
+            "severity": "info",
+            "pauseExecution": false
+          },
+          {
+            "id": "s3", "type": "setOutput", "enabled": true,
+            "label": "Open hot valve",
+            "channel": "Valve_Hot",
+            "value": true
+          },
+          {
+            "id": "s4", "type": "setOutput", "enabled": true,
+            "label": "Open cold valve",
+            "channel": "Valve_Cold",
+            "value": true
+          },
+          {
+            "id": "s5", "type": "delay", "enabled": true,
+            "label": "Wait for valves",
+            "duration": 3000,
+            "durationUnit": "ms"
+          },
+          {
+            "id": "s6", "type": "setOutput", "enabled": true,
+            "label": "Start hot pump",
+            "channel": "Pump_Hot",
+            "value": true
+          },
+          {
+            "id": "s7", "type": "setOutput", "enabled": true,
+            "label": "Start cold pump",
+            "channel": "Pump_Cold",
+            "value": true
+          },
+          {
+            "id": "s8", "type": "wait", "enabled": true,
+            "label": "Verify flow established",
+            "condition": "FT-101 > 5 AND FT-201 > 5",
+            "timeout": 30,
+            "timeoutAction": "abort"
+          },
+          {
+            "id": "s9", "type": "recording", "enabled": true,
+            "label": "Start recording",
+            "action": "start",
+            "filename": "hx_test"
+          },
+          {
+            "id": "s10", "type": "message", "enabled": true,
+            "label": "Startup complete",
+            "message": "System started successfully - flow verified",
+            "severity": "info",
+            "pauseExecution": false
+          }
+        ]
+      },
+      {
+        "id": "seq-shutdown",
+        "name": "System Shutdown",
+        "description": "Safe shutdown: stop heater, cool down, stop pumps, close valves",
+        "enabled": true,
+        "steps": [
+          {
+            "id": "d1", "type": "message", "enabled": true,
+            "label": "Shutdown start",
+            "message": "Initiating system shutdown...",
+            "severity": "info",
+            "pauseExecution": false
+          },
+          {
+            "id": "d2", "type": "setOutput", "enabled": true,
+            "label": "Disable heater",
+            "channel": "Heater_SP",
+            "value": 0
+          },
+          {
+            "id": "d3", "type": "recording", "enabled": true,
+            "label": "Stop recording",
+            "action": "stop"
+          },
+          {
+            "id": "d4", "type": "wait", "enabled": true,
+            "label": "Wait for cooldown",
+            "condition": "TT-101 < 120",
+            "timeout": 600,
+            "timeoutAction": "continue"
+          },
+          {
+            "id": "d5", "type": "setOutput", "enabled": true,
+            "label": "Stop hot pump",
+            "channel": "Pump_Hot",
+            "value": false
+          },
+          {
+            "id": "d6", "type": "setOutput", "enabled": true,
+            "label": "Stop cold pump",
+            "channel": "Pump_Cold",
+            "value": false
+          },
+          {
+            "id": "d7", "type": "delay", "enabled": true,
+            "label": "Wait for pumps to stop",
+            "duration": 2000,
+            "durationUnit": "ms"
+          },
+          {
+            "id": "d8", "type": "setOutput", "enabled": true,
+            "label": "Close hot valve",
+            "channel": "Valve_Hot",
+            "value": false
+          },
+          {
+            "id": "d9", "type": "setOutput", "enabled": true,
+            "label": "Close cold valve",
+            "channel": "Valve_Cold",
+            "value": false
+          },
+          {
+            "id": "d10", "type": "message", "enabled": true,
+            "label": "Shutdown complete",
+            "message": "System shutdown complete - all outputs safe",
+            "severity": "info",
+            "pauseExecution": false
+          }
+        ]
+      },
+      {
+        "id": "seq-performance-test",
+        "name": "Performance Test Sweep",
+        "description": "Sweep through 5 temperature setpoints, record steady-state data at each",
+        "enabled": true,
+        "steps": [
+          {
+            "id": "p1", "type": "callSequence", "enabled": true,
+            "label": "Run startup",
+            "sequenceId": "seq-startup",
+            "waitForCompletion": true
+          },
+          {
+            "id": "p2", "type": "setVariable", "enabled": true,
+            "label": "Init setpoint index",
+            "variableName": "spIndex",
+            "value": 0,
+            "isFormula": false
+          },
+          {
+            "id": "p3", "type": "loop", "enabled": true,
+            "label": "Setpoint sweep",
+            "iterations": 5,
+            "loopId": "sp-sweep"
+          },
+          {
+            "id": "p4", "type": "calculate", "enabled": true,
+            "label": "Calculate setpoint",
+            "expression": "100 + spIndex * 25",
+            "resultVar": "currentSP"
+          },
+          {
+            "id": "p5", "type": "ramp", "enabled": true,
+            "label": "Ramp to setpoint",
+            "targetChannel": "Heater_SP",
+            "monitorChannel": "TT-101",
+            "targetValue": 0,
+            "rampRate": 5,
+            "rampRateUnit": "degF/min",
+            "tolerance": 3
+          },
+          {
+            "id": "p6", "type": "message", "enabled": true,
+            "label": "At setpoint",
+            "message": "Reached setpoint ${currentSP}F - stabilizing for 5 minutes",
+            "severity": "info",
+            "pauseExecution": false
+          },
+          {
+            "id": "p7", "type": "soak", "enabled": true,
+            "label": "Stabilize",
+            "duration": 300,
+            "monitorChannel": "TT-101",
+            "tolerance": 3
+          },
+          {
+            "id": "p8", "type": "log", "enabled": true,
+            "label": "Log steady-state",
+            "message": "Steady state at SP={currentSP}F, PV={pv}F, Flow={flow}GPM",
+            "level": "info",
+            "values": {
+              "pv": "tags['TT-101']",
+              "flow": "tags['FT-101']"
+            }
+          },
+          {
+            "id": "p9", "type": "setVariable", "enabled": true,
+            "label": "Next setpoint",
+            "variableName": "spIndex",
+            "value": "spIndex + 1",
+            "isFormula": true
+          },
+          {
+            "id": "p10", "type": "endLoop", "enabled": true,
+            "label": "End sweep",
+            "loopId": "sp-sweep"
+          },
+          {
+            "id": "p11", "type": "callSequence", "enabled": true,
+            "label": "Run shutdown",
+            "sequenceId": "seq-shutdown",
+            "waitForCompletion": true
+          },
+          {
+            "id": "p12", "type": "message", "enabled": true,
+            "label": "Test complete",
+            "message": "Performance sweep test completed - 5 setpoints recorded",
+            "severity": "info",
+            "pauseExecution": true
+          }
+        ]
+      }
+    ]
+  },
+
+  "layout": {
+    "gridColumns": 24,
+    "rowHeight": 30,
+    "currentPageId": "overview",
+    "pages": [
+      {
+        "id": "overview",
+        "name": "Overview",
+        "order": 0,
+        "widgets": [
+          {
+            "id": "w-title",
+            "type": "title",
+            "x": 0, "y": 0, "w": 14, "h": 1,
+            "label": "Heat Exchanger Test Stand",
+            "fontSize": "large",
+            "textAlign": "left"
+          },
+          {
+            "id": "w-clock",
+            "type": "clock",
+            "x": 20, "y": 0, "w": 4, "h": 1,
+            "showDate": true,
+            "showElapsed": true,
+            "format24h": false
+          },
+          {
+            "id": "w-status",
+            "type": "system_status",
+            "x": 0, "y": 1, "w": 4, "h": 3
+          },
+          {
+            "id": "w-gauge-hot-in",
+            "type": "gauge",
+            "channel": "TT-101",
+            "x": 4, "y": 1, "w": 3, "h": 3,
+            "minValue": 50,
+            "maxValue": 300,
+            "label": "Hot Inlet",
+            "showAlarmStatus": true
+          },
+          {
+            "id": "w-gauge-hot-out",
+            "type": "gauge",
+            "channel": "TT-102",
+            "x": 7, "y": 1, "w": 3, "h": 3,
+            "minValue": 50,
+            "maxValue": 300,
+            "label": "Hot Outlet"
+          },
+          {
+            "id": "w-gauge-cold-in",
+            "type": "gauge",
+            "channel": "TT-201",
+            "x": 10, "y": 1, "w": 3, "h": 3,
+            "minValue": 32,
+            "maxValue": 200,
+            "label": "Cold Inlet"
+          },
+          {
+            "id": "w-gauge-cold-out",
+            "type": "gauge",
+            "channel": "TT-202",
+            "x": 13, "y": 1, "w": 3, "h": 3,
+            "minValue": 32,
+            "maxValue": 200,
+            "label": "Cold Outlet"
+          },
+          {
+            "id": "w-bar-flow-hot",
+            "type": "bar_graph",
+            "channel": "FT-101",
+            "x": 16, "y": 1, "w": 4, "h": 1,
+            "minValue": 0,
+            "maxValue": 50,
+            "label": "Hot Flow",
+            "showValue": true,
+            "orientation": "horizontal"
+          },
+          {
+            "id": "w-bar-flow-cold",
+            "type": "bar_graph",
+            "channel": "FT-201",
+            "x": 16, "y": 2, "w": 4, "h": 1,
+            "minValue": 0,
+            "maxValue": 50,
+            "label": "Cold Flow",
+            "showValue": true,
+            "orientation": "horizontal"
+          },
+          {
+            "id": "w-bar-press",
+            "type": "bar_graph",
+            "channel": "PT-101",
+            "x": 16, "y": 3, "w": 4, "h": 1,
+            "minValue": 0,
+            "maxValue": 100,
+            "label": "Hot Pressure",
+            "showValue": true,
+            "orientation": "horizontal"
+          },
+          {
+            "id": "w-rec-status",
+            "type": "recording_status",
+            "x": 20, "y": 1, "w": 4, "h": 3
+          },
+          {
+            "id": "w-divider-1",
+            "type": "divider",
+            "x": 0, "y": 4, "w": 24, "h": 1
+          },
+          {
+            "id": "w-toggle-hot-pump",
+            "type": "toggle",
+            "channel": "Pump_Hot",
+            "x": 0, "y": 5, "w": 3, "h": 1,
+            "onLabel": "HOT PUMP ON",
+            "offLabel": "HOT PUMP OFF",
+            "confirmOn": true
+          },
+          {
+            "id": "w-toggle-cold-pump",
+            "type": "toggle",
+            "channel": "Pump_Cold",
+            "x": 3, "y": 5, "w": 3, "h": 1,
+            "onLabel": "COLD PUMP ON",
+            "offLabel": "COLD PUMP OFF",
+            "confirmOn": true
+          },
+          {
+            "id": "w-led-hot-valve",
+            "type": "led",
+            "channel": "Valve_Hot",
+            "x": 6, "y": 5, "w": 2, "h": 1,
+            "label": "Hot Valve",
+            "onColor": "#22c55e",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w-led-cold-valve",
+            "type": "led",
+            "channel": "Valve_Cold",
+            "x": 8, "y": 5, "w": 2, "h": 1,
+            "label": "Cold Valve",
+            "onColor": "#22c55e",
+            "offColor": "#64748b"
+          },
+          {
+            "id": "w-setpoint",
+            "type": "setpoint",
+            "channel": "Heater_SP",
+            "x": 10, "y": 5, "w": 4, "h": 1,
+            "minValue": 0,
+            "maxValue": 500,
+            "step": 5,
+            "label": "Heater SP"
+          },
+          {
+            "id": "w-led-estop",
+            "type": "led",
+            "channel": "E_Stop",
+            "x": 14, "y": 5, "w": 2, "h": 1,
+            "label": "E-STOP",
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-btn-start",
+            "type": "action_button",
+            "x": 16, "y": 5, "w": 2, "h": 1,
+            "label": "START",
+            "buttonColor": "#22c55e",
+            "buttonBehavior": "one_shot",
+            "requireConfirmation": true,
+            "buttonAction": {
+              "type": "script_run",
+              "sequenceId": "seq-startup"
+            }
+          },
+          {
+            "id": "w-btn-stop",
+            "type": "action_button",
+            "x": 18, "y": 5, "w": 2, "h": 1,
+            "label": "STOP",
+            "buttonColor": "#ef4444",
+            "buttonBehavior": "one_shot",
+            "requireConfirmation": true,
+            "buttonAction": {
+              "type": "script_run",
+              "sequenceId": "seq-shutdown"
+            }
+          },
+          {
+            "id": "w-btn-sweep",
+            "type": "action_button",
+            "x": 20, "y": 5, "w": 4, "h": 1,
+            "label": "RUN PERF TEST",
+            "buttonColor": "#3b82f6",
+            "buttonBehavior": "one_shot",
+            "requireConfirmation": true,
+            "buttonAction": {
+              "type": "script_run",
+              "sequenceId": "seq-performance-test"
+            }
+          },
+          {
+            "id": "w-chart-temps",
+            "type": "chart",
+            "channels": ["TT-101", "TT-102", "TT-201", "TT-202"],
+            "x": 0, "y": 6, "w": 16, "h": 5,
+            "timeRange": 300,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "yAxisAuto": true,
+            "label": "Temperature Trends"
+          },
+          {
+            "id": "w-chart-flow",
+            "type": "chart",
+            "channels": ["FT-101", "FT-201"],
+            "x": 16, "y": 6, "w": 8, "h": 5,
+            "timeRange": 300,
+            "showGrid": true,
+            "showLegend": true,
+            "showDigitalDisplay": true,
+            "yAxisAuto": true,
+            "label": "Flow Trends"
+          }
+        ]
+      },
+      {
+        "id": "safety",
+        "name": "Safety",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "w-safety-title",
+            "type": "title",
+            "x": 0, "y": 0, "w": 12, "h": 1,
+            "label": "Safety & Interlocks",
+            "fontSize": "large"
+          },
+          {
+            "id": "w-interlocks",
+            "type": "interlock_status",
+            "x": 0, "y": 1, "w": 6, "h": 4,
+            "label": "Safety Interlocks"
+          },
+          {
+            "id": "w-alarms",
+            "type": "alarm_summary",
+            "x": 6, "y": 1, "w": 6, "h": 4,
+            "label": "Active Alarms",
+            "maxItems": 20,
+            "showAckButton": true
+          },
+          {
+            "id": "w-latch",
+            "type": "latch_switch",
+            "x": 12, "y": 1, "w": 4, "h": 3,
+            "label": "Safety Latch"
+          },
+          {
+            "id": "w-status-msgs",
+            "type": "status_messages",
+            "x": 16, "y": 1, "w": 8, "h": 4,
+            "label": "System Messages"
+          }
+        ]
+      },
+      {
+        "id": "data",
+        "name": "Data & Scripts",
+        "order": 2,
+        "widgets": [
+          {
+            "id": "w-data-title",
+            "type": "title",
+            "x": 0, "y": 0, "w": 12, "h": 1,
+            "label": "Data & Calculations",
+            "fontSize": "large"
+          },
+          {
+            "id": "w-value-table",
+            "type": "value_table",
+            "channels": ["TT-101", "TT-102", "TT-201", "TT-202", "PT-101", "PT-102", "PT-201", "PT-202", "FT-101", "FT-201"],
+            "x": 0, "y": 1, "w": 6, "h": 6,
+            "label": "All Process Values",
+            "showAlarmStatus": true,
+            "showUnits": true
+          },
+          {
+            "id": "w-script-monitor",
+            "type": "script_monitor",
+            "x": 6, "y": 1, "w": 6, "h": 4,
+            "label": "HX Calculations",
+            "items": [
+              { "tag": "py.HX_Q_Hot", "label": "Hot Duty", "unit": "BTU/min", "format": "number", "decimals": 0 },
+              { "tag": "py.HX_Q_Cold", "label": "Cold Duty", "unit": "BTU/min", "format": "number", "decimals": 0 },
+              { "tag": "py.HX_LMTD", "label": "LMTD", "unit": "degF", "format": "number", "decimals": 1 },
+              { "tag": "py.HX_Effectiveness", "label": "Effectiveness", "unit": "%", "format": "number", "decimals": 1 },
+              { "tag": "py.HX_DeltaT_Hot", "label": "Hot Delta-T", "unit": "degF", "format": "number", "decimals": 1 },
+              { "tag": "py.HX_DeltaT_Cold", "label": "Cold Delta-T", "unit": "degF", "format": "number", "decimals": 1 }
+            ],
+            "columns": 2
+          },
+          {
+            "id": "w-var-input",
+            "type": "variable_input",
+            "x": 12, "y": 1, "w": 4, "h": 4,
+            "label": "Test Parameters"
+          },
+          {
+            "id": "w-var-explorer",
+            "type": "variable_explorer",
+            "x": 16, "y": 1, "w": 4, "h": 4,
+            "label": "Variable Explorer"
+          },
+          {
+            "id": "w-scheduler",
+            "type": "scheduler_status",
+            "x": 20, "y": 1, "w": 4, "h": 4,
+            "label": "Scheduler"
+          }
+        ]
+      }
+    ]
+  }
+}

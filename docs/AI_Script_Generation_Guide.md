@@ -1815,3 +1815,300 @@ while session.active:
 
     await next_scan()
 ```
+
+---
+
+## Sequence Step Types Reference
+
+Sequences are defined in the project JSON under `scripts.sequences` and consist of ordered steps that execute server-side (survive browser disconnect). Each step is a JSON object with a `type` field that determines its behavior.
+
+### Base Step Fields
+
+Every sequence step has these common fields:
+
+```json
+{
+  "id": "step-1",
+  "type": "ramp",
+  "enabled": true,
+  "label": "Ramp to 200F",
+  "notes": "Optional documentation"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique step identifier |
+| `type` | string | Yes | Step type (see tables below) |
+| `enabled` | boolean | Yes | If `false`, step is skipped during execution |
+| `label` | string | No | Human-readable description shown in the UI |
+| `notes` | string | No | Optional documentation or comments |
+
+### Core Step Types
+
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| `ramp` | Ramp output to target value at specified rate | `targetChannel`, `monitorChannel`, `targetValue`, `rampRate`, `rampRateUnit`, `tolerance` |
+| `soak` | Hold at temperature for duration | `duration` (seconds), optional: `monitorChannel`, `targetValue`, `tolerance` |
+| `wait` | Wait for condition to become true | `condition` (formula string), `timeout` (seconds, 0=infinite), `timeoutAction`: `"abort"` / `"continue"` / `"alarm"` / `"retry"` / `"skip"` |
+| `setOutput` | Set digital/analog output | `channel`, `value` (number or boolean) |
+| `setVariable` | Set a sequence variable | `variableName`, `value`, `isFormula` (if true, evaluate value as formula) |
+| `delay` | Simple sleep/wait | `duration` (ms), `durationUnit`: `"ms"` / `"s"` / `"m"` / `"h"` |
+| `calculate` | Evaluate expression, store result | `expression`, `resultVar`, `precision` (optional) |
+| `log` | Log message for debugging | `message` (template with `{variables}`), `level`: `"debug"` / `"info"` / `"warn"` / `"error"` |
+| `message` | Display notification/message | `message`, `severity`: `"info"` / `"warning"` / `"error"`, `pauseExecution` (boolean) |
+| `recording` | Control data recording | `action`: `"start"` / `"stop"`, `filename` (optional) |
+| `safetyCheck` | Verify safety condition | `condition`, `failAction`: `"abort"` / `"pause"` / `"alarm"`, `failMessage` |
+| `callSequence` | Call another sequence | `sequenceId`, `waitForCompletion` (boolean) |
+
+### Loop Step Types
+
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| `loop` | Fixed iteration loop | `iterations`, `loopId` (unique, must match corresponding `endLoop`) |
+| `endLoop` | End of loop block | `loopId` |
+| `whileLoop` | Condition-based loop | `condition` (formula), `loopId`, `maxIterations` (safety limit) |
+| `endWhile` | End while loop | `loopId` |
+| `forEachLoop` | Iterate over items | `loopId`, `iteratorVar`, `source` (see ForEachSource below) |
+| `endForEach` | End for-each loop | `loopId` |
+| `repeatUntil` | Repeat until condition true | `condition`, `loopId`, `maxIterations`, `checkAfter` (do-while if true) |
+| `endRepeat` | End repeat block | `loopId` |
+| `break` | Exit current loop | `loopId` (optional, default: innermost loop) |
+| `continue` | Skip to next iteration | `loopId` (optional, default: innermost loop) |
+
+**ForEachSource types:**
+
+| Source Type | Fields | Description |
+|-------------|--------|-------------|
+| `channels` | `{ "type": "channels", "filter": "all" }` | Iterate over all channels |
+| `range` | `{ "type": "range", "start": 1, "end": 10, "step": 1 }` | Numeric range |
+| `array` | `{ "type": "array", "values": [1, 2, 3] }` | Explicit array of values |
+| `variable` | `{ "type": "variable", "variableName": "myList" }` | Values from a variable |
+
+### Conditional Step Types
+
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| `if` | Start conditional block | `condition` (formula), `ifId` (unique identifier) |
+| `elseIf` | Additional condition branch | `condition`, `ifId` (must match the opening `if`) |
+| `else` | Default branch | `ifId` |
+| `endIf` | End conditional block | `ifId` |
+| `switch` | Switch/case start | `expression`, `switchId` |
+| `case` | Case branch | `switchId`, `value`, `compareOperator` (default `"==="`) |
+| `defaultCase` | Default case branch | `switchId` |
+| `endSwitch` | End switch block | `switchId` |
+
+### Advanced Step Types
+
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| `parallel` | Run branches simultaneously | `parallelId`, `branches` (array of `{id, name, steps}`), `waitMode`: `"all"` / `"any"` / `"first"` |
+| `endParallel` | End parallel block | `parallelId` |
+| `goto` | Jump to step | `targetStepId`, `condition` (optional) |
+| `retry` | Retry wrapper | `retryId`, `maxRetries`, `retryDelayMs`, `onFailure`: `"abort"` / `"continue"` / `"goto"` |
+| `endRetry` | End retry block | `retryId` |
+| `callSequenceWithParams` | Call sequence with parameters | `sequenceId`, `parameters` (Record<string, any>), `waitForCompletion` |
+| `runDrawPattern` | Execute valve draw pattern | `drawPatternId`, `waitForCompletion` |
+| `singleDraw` | Single valve draw | `valve`, `flowChannel`, `volumeTarget`, `volumeUnit`, `maxDuration` |
+
+### Complete Sequence Example
+
+This example defines a thermal cycle test that runs 10 heating/cooling cycles with recording:
+
+```json
+{
+  "id": "thermal-cycle-test",
+  "name": "Thermal Cycle Test",
+  "description": "10 heating/cooling cycles with recording",
+  "enabled": true,
+  "steps": [
+    {
+      "id": "s1",
+      "type": "safetyCheck",
+      "enabled": true,
+      "label": "Pre-test safety",
+      "condition": "tags.Interlock_OK == true",
+      "failAction": "abort",
+      "failMessage": "Safety interlock not satisfied"
+    },
+    {
+      "id": "s2",
+      "type": "setVariable",
+      "enabled": true,
+      "label": "Init cycle counter",
+      "variableName": "cycleNum",
+      "value": 1,
+      "isFormula": false
+    },
+    {
+      "id": "s3",
+      "type": "recording",
+      "enabled": true,
+      "label": "Start recording",
+      "action": "start",
+      "filename": "thermal_cycle"
+    },
+    {
+      "id": "s4",
+      "type": "loop",
+      "enabled": true,
+      "label": "Cycle loop",
+      "iterations": 10,
+      "loopId": "cycle-loop"
+    },
+    {
+      "id": "s5",
+      "type": "message",
+      "enabled": true,
+      "label": "Cycle start",
+      "message": "Starting cycle ${cycleNum} of 10",
+      "severity": "info",
+      "pauseExecution": false
+    },
+    {
+      "id": "s6",
+      "type": "ramp",
+      "enabled": true,
+      "label": "Heat up",
+      "targetChannel": "Heater_SP",
+      "monitorChannel": "TC_Zone1",
+      "targetValue": 300,
+      "rampRate": 10,
+      "rampRateUnit": "degF/min",
+      "tolerance": 5
+    },
+    {
+      "id": "s7",
+      "type": "soak",
+      "enabled": true,
+      "label": "Hot soak",
+      "duration": 300,
+      "monitorChannel": "TC_Zone1",
+      "targetValue": 300,
+      "tolerance": 5
+    },
+    {
+      "id": "s8",
+      "type": "ramp",
+      "enabled": true,
+      "label": "Cool down",
+      "targetChannel": "Heater_SP",
+      "monitorChannel": "TC_Zone1",
+      "targetValue": 75,
+      "rampRate": 5,
+      "rampRateUnit": "degF/min",
+      "tolerance": 5
+    },
+    {
+      "id": "s9",
+      "type": "soak",
+      "enabled": true,
+      "label": "Cold soak",
+      "duration": 300
+    },
+    {
+      "id": "s10",
+      "type": "setVariable",
+      "enabled": true,
+      "label": "Increment cycle",
+      "variableName": "cycleNum",
+      "value": "cycleNum + 1",
+      "isFormula": true
+    },
+    {
+      "id": "s11",
+      "type": "endLoop",
+      "enabled": true,
+      "label": "End cycle loop",
+      "loopId": "cycle-loop"
+    },
+    {
+      "id": "s12",
+      "type": "recording",
+      "enabled": true,
+      "label": "Stop recording",
+      "action": "stop"
+    },
+    {
+      "id": "s13",
+      "type": "message",
+      "enabled": true,
+      "label": "Test complete",
+      "message": "All 10 thermal cycles completed successfully",
+      "severity": "info",
+      "pauseExecution": true
+    }
+  ]
+}
+```
+
+### Conditional Example
+
+Steps within an `if`/`else`/`endIf` block execute based on the evaluated condition:
+
+```json
+[
+  {
+    "id": "c1", "type": "if", "enabled": true,
+    "label": "Check temperature",
+    "condition": "tags.TC_Zone1 > 500",
+    "ifId": "temp-check"
+  },
+  {
+    "id": "c2", "type": "message", "enabled": true,
+    "label": "Over-temp warning",
+    "message": "Temperature exceeds 500F - reducing power",
+    "severity": "warning",
+    "pauseExecution": false
+  },
+  {
+    "id": "c3", "type": "setOutput", "enabled": true,
+    "label": "Reduce power",
+    "channel": "Heater_SP",
+    "value": 50
+  },
+  {
+    "id": "c4", "type": "else", "enabled": true,
+    "ifId": "temp-check"
+  },
+  {
+    "id": "c5", "type": "message", "enabled": true,
+    "label": "Temp OK",
+    "message": "Temperature within limits",
+    "severity": "info",
+    "pauseExecution": false
+  },
+  {
+    "id": "c6", "type": "endIf", "enabled": true,
+    "ifId": "temp-check"
+  }
+]
+```
+
+### Wait Step with Retry
+
+The `wait` step supports retry behavior when the condition is not met within the timeout:
+
+```json
+{
+  "id": "w1",
+  "type": "wait",
+  "enabled": true,
+  "label": "Wait for temperature",
+  "condition": "tags.TC_Zone1 >= 200",
+  "timeout": 600,
+  "timeoutAction": "retry",
+  "retryCount": 3,
+  "retryDelayMs": 5000,
+  "onFinalFailure": "abort"
+}
+```
+
+### Key Rules for Sequences
+
+1. **Block matching**: Every `loop`/`endLoop`, `if`/`endIf`, `while`/`endWhile`, `switch`/`endSwitch`, `parallel`/`endParallel`, `retry`/`endRetry`, `forEachLoop`/`endForEach`, and `repeatUntil`/`endRepeat` must have matching IDs (`loopId`, `ifId`, `switchId`, `parallelId`, `retryId`).
+2. **Step IDs must be unique** within a sequence.
+3. **Conditions** are formula strings evaluated against the current tag values (e.g., `"tags.TC001 > 150 && tags.PT001 < 50"`).
+4. **Disabled steps** (`"enabled": false`) are skipped during execution but preserved in the JSON.
+5. **Sequences run server-side** and survive browser disconnection -- they continue executing on the backend even if the dashboard is closed.
+6. **Safety checks** should be placed at the beginning of sequences to verify preconditions before any outputs are changed.

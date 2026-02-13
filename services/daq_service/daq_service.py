@@ -88,9 +88,8 @@ try:
     import nidaqmx
     from nidaqmx.constants import TerminalConfiguration, ThermocoupleType as NI_TCType
     NIDAQMX_AVAILABLE = True
-except ImportError:
+except Exception:
     NIDAQMX_AVAILABLE = False
-    print("nidaqmx not available - simulation mode only")
 
 
 # Configure logging

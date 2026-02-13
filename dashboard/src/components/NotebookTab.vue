@@ -55,8 +55,8 @@ const currentEntries = computed(() => {
   if (notebook.searchQuery.value) {
     const q = notebook.searchQuery.value.toLowerCase()
     entries = entries.filter(e =>
-      e.title.toLowerCase().includes(q) ||
-      e.content.toLowerCase().includes(q)
+      (e.title && e.title.toLowerCase().includes(q)) ||
+      (e.content && e.content.toLowerCase().includes(q))
     )
   }
 

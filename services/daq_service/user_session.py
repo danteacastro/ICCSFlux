@@ -250,13 +250,13 @@ class UserSessionManager:
         password is logged once at startup for first-time setup.
         """
         if not self.users:
-            # Generate random initial passwords
-            admin_pw = secrets.token_urlsafe(16)
+            # Fixed default passwords for initial setup
+            admin_pw = "iccsadmin1969"
             default_accounts = [
                 ("admin", admin_pw, UserRole.ADMIN, "Administrator"),
-                ("supervisor", secrets.token_urlsafe(16), UserRole.SUPERVISOR, "Supervisor"),
-                ("operator", secrets.token_urlsafe(16), UserRole.OPERATOR, "Operator"),
-                ("guest", secrets.token_urlsafe(12), UserRole.GUEST, "Guest"),
+                ("supervisor", "supervisor", UserRole.SUPERVISOR, "Supervisor"),
+                ("operator", "operator", UserRole.OPERATOR, "Operator"),
+                ("guest", "guest", UserRole.GUEST, "Guest"),
             ]
             for username, password, role, display_name in default_accounts:
                 self.create_user(
@@ -265,33 +265,8 @@ class UserSessionManager:
                     role=role,
                     display_name=display_name
                 )
-                # Flag all default accounts for mandatory password change
-                if username in self.users:
-                    self.users[username].must_change_password = True
 
-            # Write initial admin password to a secure file instead of logging it
-            cred_file = Path(__file__).parent.parent.parent / "data" / "initial_admin_password.txt"
-            try:
-                cred_file.parent.mkdir(parents=True, exist_ok=True)
-                cred_file.write_text(
-                    f"Initial admin password (delete this file after first login):\n{admin_pw}\n"
-                )
-                # Restrict file permissions on Unix
-                try:
-                    os.chmod(cred_file, 0o600)
-                except (OSError, AttributeError):
-                    pass
-                logger.warning(
-                    "Created default users with random passwords. "
-                    f"Admin password written to: {cred_file}"
-                )
-            except OSError:
-                # File write failed — do NOT log password to avoid plaintext in logs
-                logger.error(
-                    "Created default users but FAILED to write password file. "
-                    "Delete data/users.json and restart to regenerate credentials."
-                )
-            logger.info("All default accounts require password change on first login")
+            logger.info("Created default users with fixed passwords")
 
     def _hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""

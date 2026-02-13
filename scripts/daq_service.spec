@@ -6,17 +6,30 @@ Compiles the DAQ service to a standalone executable.
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 # Project paths
 PROJECT_ROOT = Path(SPECPATH).parent
 DAQ_DIR = PROJECT_ROOT / 'services' / 'daq_service'
+LAUNCHER_DIR = PROJECT_ROOT / 'launcher'
+
+# Collect all nidaqmx + nitypes submodules automatically (nidaqmx is conditionally imported)
+nidaqmx_imports = collect_submodules('nidaqmx')
+nitypes_imports = collect_submodules('nitypes')
+hightime_imports = collect_submodules('hightime')
+
+# Collect package metadata (.dist-info) needed by importlib.metadata.version() calls
+nidaqmx_meta = copy_metadata('nidaqmx')
+nitypes_meta = copy_metadata('nitypes')
+hightime_meta = copy_metadata('hightime')
+deprecation_meta = copy_metadata('deprecation')
 
 # Analysis
 a = Analysis(
     [str(DAQ_DIR / 'daq_service.py')],
-    pathex=[str(DAQ_DIR), str(PROJECT_ROOT / 'services')],
+    pathex=[str(DAQ_DIR), str(PROJECT_ROOT / 'services'), str(LAUNCHER_DIR), str(PROJECT_ROOT / 'tools')],
     binaries=[],
-    datas=[],
+    datas=nidaqmx_meta + nitypes_meta + hightime_meta + deprecation_meta,
     hiddenimports=[
         # Standard library
         'json',
@@ -61,6 +74,21 @@ a = Analysis(
         # Utilities
         'psutil',
 
+        # Single instance guard (from launcher/)
+        'single_instance',
+
+        # nidaqmx dependencies (pip packages required by nidaqmx 1.x)
+        'hightime',
+        'nitypes',
+        'nitypes.types',
+        'click',
+        'deprecation',
+        'tzlocal',
+        'decouple',
+
+        # Process simulator (tools/)
+        'process_simulator',
+
         # Industrial protocols
         'pymodbus',
         'pymodbus.client',
@@ -71,7 +99,7 @@ a = Analysis(
         # HTTP
         'requests',
         'httpx',
-    ],
+    ] + nidaqmx_imports + nitypes_imports + hightime_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -110,5 +138,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=str(PROJECT_ROOT / 'assets' / 'icons' / 'daq_service.ico'),
 )

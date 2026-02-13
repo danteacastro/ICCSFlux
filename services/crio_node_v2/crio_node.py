@@ -30,6 +30,7 @@ from .state_machine import State, StateTransition
 from .mqtt_interface import MQTTInterface, MQTTConfig
 from .safety import SafetyManager, AlarmConfig, AlarmEvent, AlarmState
 from .script_engine import ScriptEngine
+from .audit_trail import AuditTrail
 
 # Use hardware.py (complete: counter, pulse, relay, module auto-detect, TC caching).
 # hardware_v2 wraps daq_core but lacks counter/pulse/relay/auto-detect support.
@@ -37,6 +38,8 @@ from .hardware import HardwareInterface, HardwareConfig, create_hardware, DAQMX_
 from .config import ChannelConfig
 
 logger = logging.getLogger('cRIONode')
+
+__version__ = '2.1.0'
 
 
 class ScanTimingStats:
@@ -184,6 +187,7 @@ class CRIONodeV2:
 
     def __init__(self, config: NodeConfig):
         self.config = config
+        self._start_time = time.time()
 
         # State machine
         self.state = StateTransition(State.IDLE)
@@ -259,10 +263,17 @@ class CRIONodeV2:
         self._cached_mac_address = None
         self.config_timestamp: Optional[str] = None
 
+        # Audit trail (SHA-256 hash chain, append-only JSONL)
+        self.audit = AuditTrail(
+            audit_dir=os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'audit'),
+            node_id=self.node_id if hasattr(self, 'node_id') else 'crio'
+        )
+
         # Safety manager (owns alarms)
         self.safety = SafetyManager()
         self.safety.on_alarm = self._on_alarm_event
         self.safety.on_action = self._on_safety_action
+        self.safety.on_stop_session = lambda: self._cmd_acquire_stop({'reason': 'safety_action'})
         self._configure_safety_from_channels()
 
         # Script engine
@@ -533,6 +544,14 @@ class CRIONodeV2:
         elif '/alarm/' in topic or '/alarms/' in topic:
             if '/ack' in topic or '/acknowledge' in topic:
                 self._cmd_alarm_ack(payload)
+            elif '/shelve' in topic:
+                self._cmd_alarm_shelve(payload)
+            elif '/unshelve' in topic:
+                self._cmd_alarm_unshelve(payload)
+            elif '/out-of-service' in topic or '/out_of_service' in topic:
+                self._cmd_alarm_out_of_service(payload)
+            elif '/return-to-service' in topic or '/return_to_service' in topic:
+                self._cmd_alarm_return_to_service(payload)
 
         elif '/script/' in topic:
             self.script_engine.handle_command(topic, payload)
@@ -671,6 +690,7 @@ class CRIONodeV2:
             return
 
         logger.info(f"[AUDIT] Alarm ack: {channel} (source=mqtt)")
+        self.audit.log_event('alarm_ack', channel=channel)
         success = self.acknowledge_alarm(channel)
 
         # Publish acknowledgment response
@@ -680,6 +700,43 @@ class CRIONodeV2:
             'request_id': request_id,
             'timestamp': datetime.now().isoformat()
         })
+
+    def _cmd_alarm_shelve(self, payload: Dict[str, Any]):
+        """Handle alarm shelve command."""
+        channel = payload.get('channel', '')
+        duration_s = payload.get('duration_s', 3600.0)
+        operator = payload.get('operator', 'unknown')
+        if not channel:
+            return
+        success = self.safety.shelve_alarm(channel, duration_s, operator)
+        self.audit.log_event('alarm_shelve', channel=channel, operator=operator,
+                            details={'duration_s': duration_s})
+        logger.info(f"[AUDIT] Alarm shelve: {channel} duration={duration_s}s operator={operator} success={success}")
+
+    def _cmd_alarm_unshelve(self, payload: Dict[str, Any]):
+        """Handle alarm unshelve command."""
+        channel = payload.get('channel', '')
+        if not channel:
+            return
+        success = self.safety.unshelve_alarm(channel)
+        logger.info(f"[AUDIT] Alarm unshelve: {channel} success={success}")
+
+    def _cmd_alarm_out_of_service(self, payload: Dict[str, Any]):
+        """Handle alarm out-of-service command."""
+        channel = payload.get('channel', '')
+        operator = payload.get('operator', 'unknown')
+        if not channel:
+            return
+        success = self.safety.set_out_of_service(channel, operator)
+        logger.info(f"[AUDIT] Alarm OOS: {channel} operator={operator} success={success}")
+
+    def _cmd_alarm_return_to_service(self, payload: Dict[str, Any]):
+        """Handle alarm return-to-service command."""
+        channel = payload.get('channel', '')
+        if not channel:
+            return
+        success = self.safety.return_to_service(channel)
+        logger.info(f"[AUDIT] Alarm return-to-service: {channel} success={success}")
 
     def _cmd_safe_state(self, payload: Dict[str, Any]):
         """Handle atomic safe-state command from DAQ service.
@@ -1021,6 +1078,14 @@ class CRIONodeV2:
         logger.warning(f"Alarm {event.alarm_type.upper()}: {event.channel} = {event.value:.2f} "
                       f"(limit: {event.limit})")
 
+        # Audit trail
+        self.audit.log_event('alarm_trip', channel=event.channel, details={
+            'alarm_type': event.alarm_type,
+            'value': event.value,
+            'limit': event.limit,
+            'severity': event.severity.name,
+        })
+
         # Publish alarm event
         self.mqtt.publish("alarms/event", {
             'channel': event.channel,
@@ -1038,6 +1103,9 @@ class CRIONodeV2:
     def _on_safety_action(self, channel: str, action: str, value: float):
         """Callback when safety action triggered."""
         logger.warning(f"Safety action: {channel} -> {value} (from {action})")
+        self.audit.log_event('safety_trip', channel=channel, details={
+            'action': action, 'value': value
+        })
 
         # Execute output write
         success = self.hardware.write_output(channel, value)
@@ -1219,10 +1287,14 @@ class CRIONodeV2:
             self._cached_serial_number, self._cached_chassis_type, self._cached_mac_address = \
                 self._get_hardware_fingerprint()
 
+        import sys as _sys
         status = {
             'status': 'online',
             'node_type': 'crio',
             'node_id': self.config.node_id,
+            'version': __version__,
+            'python_version': _sys.version.split()[0],
+            'uptime_s': round(time.time() - self._start_time, 1),
             'acquiring': self.state.is_acquiring,
             'session_active': self.state.is_session_active,
             'channels': len(self.config.channels),

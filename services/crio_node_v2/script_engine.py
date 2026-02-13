@@ -29,6 +29,32 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger('cRIONode.Scripts')
 
 
+class TokenBucketRateLimiter:
+    """Token bucket rate limiter for script publish calls.
+
+    Allows burst up to `capacity` tokens, refills at `rate` tokens/second.
+    Thread-safe via GIL (float operations are atomic in CPython).
+    """
+
+    def __init__(self, rate: float = 4.0, capacity: float = 1.0):
+        self.rate = rate
+        self.capacity = capacity
+        self._tokens = capacity
+        self._last_check = time.time()
+
+    def allow(self) -> bool:
+        """Check if a request should be allowed. Consumes one token."""
+        now = time.time()
+        elapsed = now - self._last_check
+        self._last_check = now
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
 class SecurityError(Exception):
     """Raised when a script attempts to use blocked/unsafe functionality."""
     pass
@@ -1301,6 +1327,8 @@ class ScriptEngine:
             persistence=self._persistence,
             publish_fn=self._publish_vars
         )
+        # Per-channel rate limiters for script publish calls (4 Hz cap)
+        self._publish_rate_limiters: Dict[str, TokenBucketRateLimiter] = {}
 
     # =========================================================================
     # MQTT COMMAND HANDLER
@@ -1526,6 +1554,7 @@ class ScriptEngine:
         for script_id in list(self.scripts.keys()):
             if self._is_running(script_id):
                 self._stop_script(script_id)
+        self._publish_rate_limiters.clear()
 
     # =========================================================================
     # SCRIPT EXECUTION
@@ -1612,7 +1641,12 @@ class ScriptEngine:
             return self._node.state.is_output_locked(name)
 
         def publish_value(name: str, value: Any):
-            self._node.mqtt.publish("script/values", {name: value})
+            limiter = self._publish_rate_limiters.get(name)
+            if limiter is None:
+                limiter = TokenBucketRateLimiter(rate=4.0, capacity=1.0)
+                self._publish_rate_limiters[name] = limiter
+            if limiter.allow():
+                self._node.mqtt.publish("script/values", {name: value})
 
         def get_session_state() -> dict:
             status = self._node.state.get_status()

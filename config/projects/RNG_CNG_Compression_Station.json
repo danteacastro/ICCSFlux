@@ -1,0 +1,1164 @@
+{
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 10,
+    "publish_rate_hz": 4,
+    "simulation_mode": true,
+    "log_directory": "./data",
+    "system_name": "RNG Compression & CNG Fueling Station",
+    "system_id": "RNG-CNG-001",
+    "datalog_rate_ms": 1000,
+    "datalog_rearm": true,
+    "datalog_rearm_rate_sec": 3600
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "TT-101": {
+      "name": "TT-101",
+      "physical_channel": "cDAQ1Mod1/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Biogas Inlet",
+      "description": "Raw Biogas Inlet Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": 10,
+      "high_warning": 55,
+      "high_limit": 65
+    },
+    "TT-201": {
+      "name": "TT-201",
+      "physical_channel": "cDAQ1Mod1/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Compressor",
+      "description": "Stage 1 Compressor Discharge Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 130,
+      "high_limit": 150,
+      "safety_action": "compressor-overtemp"
+    },
+    "TT-202": {
+      "name": "TT-202",
+      "physical_channel": "cDAQ1Mod1/ai2",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Compressor",
+      "description": "Stage 2 Compressor Discharge Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 140,
+      "high_limit": 160,
+      "safety_action": "compressor-overtemp"
+    },
+    "TT-203": {
+      "name": "TT-203",
+      "physical_channel": "cDAQ1Mod1/ai3",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Compressor",
+      "description": "Intercooler Outlet Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 50,
+      "high_limit": 65
+    },
+    "TT-301": {
+      "name": "TT-301",
+      "physical_channel": "cDAQ1Mod1/ai4",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Gas Treatment",
+      "description": "Amine Absorber Inlet Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 45,
+      "high_limit": 55
+    },
+    "TT-302": {
+      "name": "TT-302",
+      "physical_channel": "cDAQ1Mod1/ai5",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Gas Treatment",
+      "description": "Amine Regenerator Reboiler Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": 105,
+      "high_warning": 125,
+      "high_limit": 135
+    },
+    "TT-303": {
+      "name": "TT-303",
+      "physical_channel": "cDAQ1Mod1/ai6",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Gas Treatment",
+      "description": "TEG Dehydration Contactor Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 30,
+      "high_limit": 40
+    },
+    "TT-401": {
+      "name": "TT-401",
+      "physical_channel": "cDAQ1Mod1/ai7",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Pipeline Injection",
+      "description": "Pipeline Injection Gas Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": 5,
+      "high_warning": 50
+    },
+    "TT-501": {
+      "name": "TT-501",
+      "physical_channel": "cDAQ1Mod2/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "CNG Storage",
+      "description": "CNG Storage Bank Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 50,
+      "high_limit": 65,
+      "safety_action": "cng-overpressure"
+    },
+    "TT-502": {
+      "name": "TT-502",
+      "physical_channel": "cDAQ1Mod2/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "CNG Dispenser",
+      "description": "CNG Dispenser Nozzle Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": -35,
+      "low_limit": -40
+    },
+    "PT-101": {
+      "name": "PT-101",
+      "physical_channel": "cDAQ1Mod3/ai0",
+      "channel_type": "current_input",
+      "unit": "kPa",
+      "group": "Biogas Inlet",
+      "description": "Biogas Inlet Pressure (from digester)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": -5,
+      "eng_units_max": 50,
+      "low_warning": 2,
+      "low_limit": 0.5,
+      "high_warning": 35,
+      "high_limit": 45
+    },
+    "PT-201": {
+      "name": "PT-201",
+      "physical_channel": "cDAQ1Mod3/ai1",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "Compressor",
+      "description": "Stage 1 Discharge Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 20,
+      "high_warning": 15,
+      "high_limit": 18
+    },
+    "PT-202": {
+      "name": "PT-202",
+      "physical_channel": "cDAQ1Mod3/ai2",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "Compressor",
+      "description": "Stage 2 Discharge Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 80,
+      "high_warning": 65,
+      "high_limit": 75
+    },
+    "PT-301": {
+      "name": "PT-301",
+      "physical_channel": "cDAQ1Mod3/ai3",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "Gas Treatment",
+      "description": "Amine Absorber Operating Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 80,
+      "high_warning": 60,
+      "high_limit": 70
+    },
+    "PT-401": {
+      "name": "PT-401",
+      "physical_channel": "cDAQ1Mod3/ai4",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "Pipeline Injection",
+      "description": "Pipeline Injection Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 70,
+      "low_warning": 30,
+      "low_limit": 25,
+      "high_warning": 60,
+      "high_limit": 65
+    },
+    "PT-501": {
+      "name": "PT-501",
+      "physical_channel": "cDAQ1Mod3/ai5",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "CNG Storage",
+      "description": "CNG Storage Bank Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 300,
+      "high_warning": 248,
+      "high_limit": 260,
+      "safety_action": "cng-overpressure"
+    },
+    "PT-502": {
+      "name": "PT-502",
+      "physical_channel": "cDAQ1Mod3/ai6",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "CNG Dispenser",
+      "description": "CNG Dispenser Outlet Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 250
+    },
+    "PDT-201": {
+      "name": "PDT-201",
+      "physical_channel": "cDAQ1Mod3/ai7",
+      "channel_type": "current_input",
+      "unit": "bar",
+      "group": "Compressor",
+      "description": "Compressor Oil Filter Differential Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 5,
+      "high_warning": 2.5,
+      "high_limit": 3.5
+    },
+    "FT-101": {
+      "name": "FT-101",
+      "physical_channel": "cDAQ1Mod4/ai0",
+      "channel_type": "current_input",
+      "unit": "SCFM",
+      "group": "Biogas Inlet",
+      "description": "Raw Biogas Inlet Flow Rate",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500,
+      "low_warning": 50,
+      "low_limit": 20
+    },
+    "FT-301": {
+      "name": "FT-301",
+      "physical_channel": "cDAQ1Mod4/ai1",
+      "channel_type": "current_input",
+      "unit": "SCFM",
+      "group": "Gas Treatment",
+      "description": "Treated Gas Flow Rate (post-scrubber)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500
+    },
+    "FT-401": {
+      "name": "FT-401",
+      "physical_channel": "cDAQ1Mod4/ai2",
+      "channel_type": "current_input",
+      "unit": "SCFM",
+      "group": "Pipeline Injection",
+      "description": "Pipeline Custody Transfer Flow (AGA-7 orifice)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500,
+      "low_warning": 10
+    },
+    "FT-501": {
+      "name": "FT-501",
+      "physical_channel": "cDAQ1Mod4/ai3",
+      "channel_type": "current_input",
+      "unit": "GGE/min",
+      "group": "CNG Dispenser",
+      "description": "CNG Dispensing Flow Rate",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 10
+    },
+    "AT-101": {
+      "name": "AT-101",
+      "physical_channel": "cDAQ1Mod4/ai4",
+      "channel_type": "current_input",
+      "unit": "%",
+      "group": "Gas Analysis",
+      "description": "Raw Biogas CH4 Concentration",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "low_warning": 45,
+      "low_limit": 35
+    },
+    "AT-102": {
+      "name": "AT-102",
+      "physical_channel": "cDAQ1Mod4/ai5",
+      "channel_type": "current_input",
+      "unit": "%",
+      "group": "Gas Analysis",
+      "description": "Raw Biogas CO2 Concentration",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 60,
+      "high_warning": 45,
+      "high_limit": 50
+    },
+    "AT-103": {
+      "name": "AT-103",
+      "physical_channel": "cDAQ1Mod4/ai6",
+      "channel_type": "current_input",
+      "unit": "ppm",
+      "group": "Gas Analysis",
+      "description": "Raw Biogas H2S Concentration",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 5000,
+      "high_warning": 2000,
+      "high_limit": 4000
+    },
+    "AT-301": {
+      "name": "AT-301",
+      "physical_channel": "cDAQ1Mod4/ai7",
+      "channel_type": "current_input",
+      "unit": "%",
+      "group": "Gas Analysis",
+      "description": "Treated Gas CH4 Purity",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 80,
+      "eng_units_max": 100,
+      "low_warning": 96,
+      "low_limit": 95,
+      "safety_action": "low-purity-block"
+    },
+    "AT-302": {
+      "name": "AT-302",
+      "physical_channel": "cDAQ1Mod5/ai0",
+      "channel_type": "current_input",
+      "unit": "ppm",
+      "group": "Gas Analysis",
+      "description": "Treated Gas H2S Content (pipeline spec < 4 ppm)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "high_warning": 3,
+      "high_limit": 4,
+      "safety_action": "h2s-shutdown"
+    },
+    "AT-401": {
+      "name": "AT-401",
+      "physical_channel": "cDAQ1Mod5/ai1",
+      "channel_type": "current_input",
+      "unit": "BTU/SCF",
+      "group": "Pipeline Injection",
+      "description": "Pipeline Gas Wobbe Index (heating value)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 900,
+      "eng_units_max": 1200,
+      "low_warning": 1000,
+      "low_limit": 970,
+      "high_warning": 1100,
+      "high_limit": 1150
+    },
+    "MT-101": {
+      "name": "MT-101",
+      "physical_channel": "cDAQ1Mod5/ai2",
+      "channel_type": "current_input",
+      "unit": "lb/MMSCF",
+      "group": "Gas Treatment",
+      "description": "Treated Gas Moisture Content",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 20,
+      "high_warning": 5,
+      "high_limit": 7
+    },
+    "VT-201": {
+      "name": "VT-201",
+      "physical_channel": "cDAQ1Mod5/ai3",
+      "channel_type": "voltage_input",
+      "unit": "mm/s",
+      "group": "Compressor",
+      "description": "Stage 1 Compressor Vibration (radial)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 25,
+      "high_warning": 7.1,
+      "high_limit": 11.2
+    },
+    "VT-202": {
+      "name": "VT-202",
+      "physical_channel": "cDAQ1Mod5/ai4",
+      "channel_type": "voltage_input",
+      "unit": "mm/s",
+      "group": "Compressor",
+      "description": "Stage 2 Compressor Vibration (radial)",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 25,
+      "high_warning": 7.1,
+      "high_limit": 11.2
+    },
+    "GD-101": {
+      "name": "GD-101",
+      "physical_channel": "cDAQ1Mod6/port0/line0",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Combustible Gas Detector - Compressor Building (%LEL)",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "gas-detection-shutdown"
+    },
+    "GD-102": {
+      "name": "GD-102",
+      "physical_channel": "cDAQ1Mod6/port0/line1",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Combustible Gas Detector - CNG Dispenser Area (%LEL)",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "gas-detection-shutdown"
+    },
+    "FD-101": {
+      "name": "FD-101",
+      "physical_channel": "cDAQ1Mod6/port0/line2",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "UV/IR Flame Detector - Compressor Room",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "fire-shutdown"
+    },
+    "PSL-201": {
+      "name": "PSL-201",
+      "physical_channel": "cDAQ1Mod6/port0/line3",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Compressor Lube Oil Low Pressure Switch",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "compressor-oil-shutdown"
+    },
+    "TSH-201": {
+      "name": "TSH-201",
+      "physical_channel": "cDAQ1Mod6/port0/line4",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Compressor High Temperature Switch (backup to TT-201/202)",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "compressor-overtemp"
+    },
+    "ESDPB-001": {
+      "name": "ESDPB-001",
+      "physical_channel": "cDAQ1Mod6/port0/line5",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Emergency Shutdown Pushbutton (Station Master ESD)",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "emergency-shutdown"
+    },
+    "ESDPB-002": {
+      "name": "ESDPB-002",
+      "physical_channel": "cDAQ1Mod6/port0/line6",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "CNG Dispenser ESD Pushbutton",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "invert": true,
+      "safety_action": "dispenser-shutdown"
+    },
+    "ZS-501": {
+      "name": "ZS-501",
+      "physical_channel": "cDAQ1Mod6/port0/line7",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "CNG Dispenser",
+      "description": "CNG Breakaway Coupling Status (connected/disconnected)",
+      "visible": true,
+      "log": true,
+      "chartable": true
+    },
+    "XV-101": {
+      "name": "XV-101",
+      "physical_channel": "cDAQ1Mod7/port0/line0",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Biogas Inlet Isolation Valve",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "XV-201": {
+      "name": "XV-201",
+      "physical_channel": "cDAQ1Mod7/port0/line1",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Compressor Suction Valve",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "XV-401": {
+      "name": "XV-401",
+      "physical_channel": "cDAQ1Mod7/port0/line2",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Pipeline Injection Valve (custody transfer)",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "XV-501": {
+      "name": "XV-501",
+      "physical_channel": "cDAQ1Mod7/port0/line3",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "CNG Dispenser Isolation Valve",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "K-201": {
+      "name": "K-201",
+      "physical_channel": "cDAQ1Mod7/port0/line4",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Compressor Motor Contactor",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "K-301": {
+      "name": "K-301",
+      "physical_channel": "cDAQ1Mod7/port0/line5",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Amine Circulation Pump Motor",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "SY-101": {
+      "name": "SY-101",
+      "physical_channel": "cDAQ1Mod7/port0/line6",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Emergency Vent Solenoid (fail-open to flare)",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "ALARM-HORN": {
+      "name": "ALARM-HORN",
+      "physical_channel": "cDAQ1Mod7/port0/line7",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Audible Alarm Horn",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "AO-VFD-201": {
+      "name": "AO-VFD-201",
+      "physical_channel": "cDAQ1Mod8/ao0",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "Compressor VFD Speed Command",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100
+    },
+    "AO-CV-301": {
+      "name": "AO-CV-301",
+      "physical_channel": "cDAQ1Mod8/ao1",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "Amine Flow Control Valve Position",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100
+    },
+    "AO-CV-401": {
+      "name": "AO-CV-401",
+      "physical_channel": "cDAQ1Mod8/ao2",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "Pipeline Injection Pressure Control Valve",
+      "visible": true,
+      "log": true,
+      "chartable": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100
+    }
+  },
+  "layout": {
+    "widgets": [],
+    "pages": [],
+    "gridColumns": 24,
+    "rowHeight": 80
+  },
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [],
+    "schedules": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": [],
+    "pythonScripts": [
+      {
+        "id": "script-gas-quality",
+        "name": "Gas Quality Monitor",
+        "code": "# Gas Quality Monitor\n# Tracks pipeline gas quality metrics and publishes derived values\n# Uses: SignalFilter, LookupTable, publish()\n\nif 'ch4_filt' not in vars:\n    vars['ch4_filt'] = SignalFilter(tau=30.0, dt=1.0)\n    vars['h2s_filt'] = SignalFilter(tau=10.0, dt=1.0)\n    vars['wobbe_filt'] = SignalFilter(tau=30.0, dt=1.0)\n    # CH4 % -> BTU/SCF heating value (approximate)\n    vars['btu_table'] = LookupTable([\n        (90, 910), (92, 930), (94, 950),\n        (96, 970), (97, 985), (98, 1000),\n        (99, 1010), (100, 1020)\n    ])\n\n# Smooth raw analyzer readings\nch4_purity = vars['ch4_filt'].update(tags['AT-301'])\nh2s_content = vars['h2s_filt'].update(tags['AT-302'])\nwobbe = vars['wobbe_filt'].update(tags['AT-401'])\n\n# Calculate heating value from CH4 purity\nbtu_value = vars['btu_table'](ch4_purity)\n\n# Gas recovery efficiency (treated flow / inlet flow)\ninlet_flow = tags['FT-101']\ntreated_flow = tags['FT-301']\nif inlet_flow > 10:\n    recovery_pct = (treated_flow / inlet_flow) * 100\nelse:\n    recovery_pct = 0\n\n# Pipeline specification compliance\n# FERC/utility specs: CH4 > 95%, H2S < 4 ppm, 970 < Wobbe < 1150\nspec_pass = 1 if (ch4_purity >= 95 and h2s_content < 4 and 970 <= wobbe <= 1150) else 0\n\npublish('CALC-BTU', btu_value, units='BTU/SCF')\npublish('CALC-Recovery', recovery_pct, units='%')\npublish('CALC-PipelineSpec', spec_pass)\npublish('CALC-CH4Smooth', ch4_purity, units='%')\npublish('CALC-H2SSmooth', h2s_content, units='ppm')\n",
+        "description": "Calculates BTU content, gas recovery efficiency, and pipeline spec compliance from analyzer readings",
+        "runMode": "acquisition",
+        "enabled": true
+      },
+      {
+        "id": "script-compressor-health",
+        "name": "Compressor Health Monitor",
+        "code": "# Compressor Health Monitor\n# Tracks compression ratio, efficiency, and predictive maintenance\n# Uses: TrendLine, RollingStats, SignalFilter, publish()\n\nif 'comp_trend' not in vars:\n    vars['comp_trend'] = TrendLine(window=600)  # 10 min window\n    vars['vib_stats'] = RollingStats(window=300)  # 5 min stats\n    vars['discharge_filt'] = SignalFilter(tau=5.0, dt=1.0)\n    vars['runtime'] = Accumulator(mode='time')  # Track runtime hours\n\ntrend = vars['comp_trend']\nvib_stats = vars['vib_stats']\n\n# Compression ratio (Stage 2 discharge / Stage 1 suction)\n# PT-101 is in kPa, PT-202 is in bar; convert to same units\nsuction_bar = tags['PT-101'] / 100.0  # kPa to bar\ndischarge_bar = tags['PT-202']\nif suction_bar > 0.5:\n    comp_ratio = discharge_bar / suction_bar\nelse:\n    comp_ratio = 0\n\n# Polytropic efficiency estimate (simplified)\n# Using temperature ratio vs pressure ratio\nt_suction = tags['TT-101'] + 273.15  # Convert to Kelvin\nt_discharge = tags['TT-202'] + 273.15\nif t_suction > 0 and comp_ratio > 1:\n    ideal_t_ratio = comp_ratio ** 0.28  # k-1/k for methane ~0.28\n    actual_t_ratio = t_discharge / t_suction\n    if actual_t_ratio > 1:\n        poly_eff = ((ideal_t_ratio - 1) / (actual_t_ratio - 1)) * 100\n        poly_eff = max(0, min(100, poly_eff))\n    else:\n        poly_eff = 0\nelse:\n    poly_eff = 0\n\n# Vibration trending\nvib_rms = (tags['VT-201'] + tags['VT-202']) / 2\nvib_stats.update(vib_rms)\ntrend.update(vib_rms)\ntrend_result = trend.get_result() if hasattr(trend, 'get_result') else {'slope': 0}\n\n# Track compressor runtime\nif tags['K-201'] == 1:\n    vars['runtime'].update(1)\n\npublish('CALC-CompRatio', comp_ratio)\npublish('CALC-PolyEff', poly_eff, units='%')\npublish('CALC-VibAvg', vib_rms, units='mm/s')\npublish('CALC-VibStdDev', vib_stats.std if hasattr(vib_stats, 'std') else 0, units='mm/s')\npublish('CALC-Runtime', vars['runtime'].value / 3600, units='hrs')\n",
+        "description": "Monitors compression ratio, polytropic efficiency, vibration trends, and runtime hours",
+        "runMode": "acquisition",
+        "enabled": true
+      },
+      {
+        "id": "script-production-totals",
+        "name": "RNG Production Totals",
+        "code": "# RNG Production Totals\n# Tracks daily and cumulative RNG production volumes\n# Uses: Accumulator, Counter, publish()\n\nif 'daily_vol' not in vars:\n    vars['daily_vol'] = Accumulator(mode='cumulative')  # Daily SCFM -> SCF\n    vars['total_vol'] = Accumulator(mode='cumulative')  # Lifetime total\n    vars['cng_dispensed'] = Accumulator(mode='cumulative')  # CNG dispensed\n    vars['fill_counter'] = Counter()  # CNG fill count\n    vars['cng_was_flowing'] = False\n    vars['last_hour'] = -1\n\n# Accumulate pipeline injection flow (SCFM -> SCF at 1 Hz)\npipeline_flow = tags['FT-401']\nif pipeline_flow > 1:  # Only count meaningful flow\n    scf_per_sample = pipeline_flow / 60.0  # SCFM to SCF/second\n    vars['daily_vol'].update(scf_per_sample)\n    vars['total_vol'].update(scf_per_sample)\n\n# Track CNG dispensing\ncng_flow = tags['FT-501']  # GGE/min\nif cng_flow > 0.1:\n    gge_per_sample = cng_flow / 60.0  # GGE/min to GGE/second\n    vars['cng_dispensed'].update(gge_per_sample)\n    if not vars['cng_was_flowing']:\n        vars['fill_counter'].increment()  # New fill started\n    vars['cng_was_flowing'] = True\nelse:\n    vars['cng_was_flowing'] = False\n\n# Convert SCF to therms (1 therm = 100,000 BTU, ~100 SCF of RNG)\ndaily_scf = vars['daily_vol'].value\ndaily_therms = daily_scf / 100.0\ndaily_mmbtu = daily_scf * 1010 / 1e6  # Assuming 1010 BTU/SCF\n\n# Hourly midnight reset check (simplified)\nimport_time = now()\ncurrent_hour = int(import_time) % 86400 // 3600\nif current_hour == 0 and vars['last_hour'] != 0:\n    vars['daily_vol'].reset()\nvars['last_hour'] = current_hour\n\npublish('CALC-DailySCF', daily_scf, units='SCF')\npublish('CALC-DailyTherms', daily_therms, units='therms')\npublish('CALC-DailyMMBTU', daily_mmbtu, units='MMBTU')\npublish('CALC-TotalSCF', vars['total_vol'].value, units='SCF')\npublish('CALC-CNGDispensed', vars['cng_dispensed'].value, units='GGE')\npublish('CALC-CNGFills', vars['fill_counter'].count)\n",
+        "description": "Tracks daily/cumulative RNG production volumes in SCF, therms, MMBTU, and CNG dispensing totals in GGE",
+        "runMode": "acquisition",
+        "enabled": true
+      },
+      {
+        "id": "script-amine-monitor",
+        "name": "Amine System Performance",
+        "code": "# Amine System Performance Monitor\n# Tracks H2S/CO2 removal efficiency and amine health\n# Uses: SignalFilter, RollingStats, publish()\n\nif 'co2_in_filt' not in vars:\n    vars['co2_in_filt'] = SignalFilter(tau=30.0, dt=1.0)\n    vars['h2s_in_filt'] = SignalFilter(tau=30.0, dt=1.0)\n    vars['h2s_out_filt'] = SignalFilter(tau=10.0, dt=1.0)\n    vars['reboiler_stats'] = RollingStats(window=300)\n\n# Inlet gas composition (raw biogas)\nco2_inlet = vars['co2_in_filt'].update(tags['AT-102'])\nh2s_inlet = vars['h2s_in_filt'].update(tags['AT-103'])\n\n# Outlet gas composition (treated)\nch4_outlet = tags['AT-301']\nh2s_outlet = vars['h2s_out_filt'].update(tags['AT-302'])\n\n# CO2 removal efficiency\n# Inlet CO2 -> residual CO2 = 100 - CH4 (approx, ignoring trace gases)\nco2_outlet = 100 - ch4_outlet\nif co2_inlet > 1:\n    co2_removal = ((co2_inlet - co2_outlet) / co2_inlet) * 100\nelse:\n    co2_removal = 0\n\n# H2S removal efficiency\nif h2s_inlet > 10:\n    h2s_removal = ((h2s_inlet - h2s_outlet) / h2s_inlet) * 100\nelse:\n    h2s_removal = 0\n\n# Reboiler temperature stability (amine regeneration quality)\nvars['reboiler_stats'].update(tags['TT-302'])\nreboiler_stable = 1 if vars['reboiler_stats'].std < 3.0 else 0\n\n# Amine circulation rate indicator\namine_valve = tags['AO-CV-301']  # Control valve %\n\npublish('CALC-CO2Removal', co2_removal, units='%')\npublish('CALC-H2SRemoval', h2s_removal, units='%')\npublish('CALC-ReboilerStable', reboiler_stable)\npublish('CALC-AmineValve', amine_valve, units='%')\n",
+        "description": "Monitors amine scrubber CO2/H2S removal efficiency and regenerator stability",
+        "runMode": "acquisition",
+        "enabled": true
+      }
+    ]
+  },
+  "recording": {
+    "config": {
+      "basePath": "./data",
+      "filePrefix": "rng_station",
+      "fileFormat": "csv",
+      "sampleInterval": 1000,
+      "sampleIntervalUnit": "ms",
+      "decimation": 1,
+      "rotationMode": "size",
+      "maxFileSize": 100,
+      "maxFileDuration": 3600,
+      "maxFileSamples": 10000,
+      "namingPattern": "timestamp",
+      "includeDate": true,
+      "includeTime": true,
+      "includeChannelsInName": false,
+      "sequentialStart": 1,
+      "sequentialPadding": 3,
+      "customSuffix": "",
+      "directoryStructure": "daily",
+      "experimentName": "RNG CNG Station Monitoring",
+      "writeMode": "buffered",
+      "bufferSize": 100,
+      "flushInterval": 5,
+      "onLimitReached": "rotate",
+      "circularMaxFiles": 10,
+      "mode": "manual",
+      "triggerChannel": "",
+      "triggerCondition": "above",
+      "triggerValue": 0,
+      "preTriggerSamples": 100,
+      "postTriggerSamples": 1000,
+      "scheduleEnabled": false,
+      "scheduleStart": "06:00",
+      "scheduleEnd": "22:00",
+      "scheduleDays": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ],
+      "csvEnabled": true,
+      "appendOnly": false,
+      "verifyOnClose": true,
+      "includeAuditMetadata": true,
+      "dbEnabled": false,
+      "dbHost": "localhost",
+      "dbPort": 5432,
+      "dbName": "iccsflux",
+      "dbUser": "iccsflux",
+      "dbPassword": "",
+      "dbTable": "recording_data",
+      "dbBatchSize": 50,
+      "dbTimescale": false,
+      "filenamePattern": "RNG_{timestamp}",
+      "maxFileSizeMb": 50
+    },
+    "selectedChannels": [
+      "TT-101",
+      "TT-201",
+      "TT-202",
+      "TT-203",
+      "TT-301",
+      "TT-302",
+      "TT-303",
+      "TT-401",
+      "TT-501",
+      "TT-502",
+      "PT-101",
+      "PT-201",
+      "PT-202",
+      "PT-301",
+      "PT-401",
+      "PT-501",
+      "PT-502",
+      "PDT-201",
+      "FT-101",
+      "FT-301",
+      "FT-401",
+      "FT-501",
+      "AT-101",
+      "AT-102",
+      "AT-103",
+      "AT-301",
+      "AT-302",
+      "AT-401",
+      "MT-101",
+      "VT-201",
+      "VT-202",
+      "AO-VFD-201",
+      "AO-CV-301",
+      "AO-CV-401"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": {
+      "TT-201": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 2,
+        "delay_sec": 3
+      },
+      "TT-202": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 2,
+        "delay_sec": 3
+      },
+      "PT-501": {
+        "enabled": true,
+        "priority": "critical",
+        "deadband": 5
+      },
+      "AT-301": {
+        "enabled": true,
+        "priority": "critical",
+        "deadband": 0.5
+      },
+      "AT-302": {
+        "enabled": true,
+        "priority": "critical",
+        "deadband": 0.2
+      },
+      "AT-401": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 10
+      },
+      "PT-101": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 1
+      },
+      "PT-201": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "PT-202": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 1
+      },
+      "FT-101": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 5
+      },
+      "VT-201": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "VT-202": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "MT-101": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "PDT-201": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.3
+      },
+      "TT-501": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 2
+      }
+    },
+    "interlocks": [
+      {
+        "name": "H2S Pipeline Spec Violation",
+        "condition": "AT-302 > 4",
+        "action": "h2s-shutdown",
+        "delay_ms": 5000,
+        "description": "Blocks pipeline injection if treated gas H2S exceeds 4 ppm (FERC tariff limit)"
+      },
+      {
+        "name": "Low CH4 Purity Block",
+        "condition": "AT-301 < 95",
+        "action": "low-purity-block",
+        "delay_ms": 10000,
+        "description": "Blocks pipeline injection if CH4 purity drops below 95% (utility interconnect agreement)"
+      },
+      {
+        "name": "Compressor Overtemperature",
+        "condition": "TT-201 > 150 OR TT-202 > 160",
+        "action": "compressor-overtemp",
+        "delay_ms": 3000,
+        "description": "Shuts down compressor if discharge temperature exceeds safe limits"
+      },
+      {
+        "name": "Gas Detection Emergency Shutdown",
+        "condition": "GD-101 == true OR GD-102 == true",
+        "action": "gas-detection-shutdown",
+        "delay_ms": 0,
+        "description": "Immediate station shutdown on combustible gas detection (>25% LEL)"
+      },
+      {
+        "name": "CNG Storage Overpressure",
+        "condition": "PT-501 > 260",
+        "action": "cng-overpressure",
+        "delay_ms": 2000,
+        "description": "Closes CNG dispenser valve and stops compressor if storage exceeds 260 bar"
+      },
+      {
+        "name": "Compressor Lube Oil Failure",
+        "condition": "PSL-201 == true AND K-201 == true",
+        "action": "compressor-oil-shutdown",
+        "delay_ms": 3000,
+        "description": "Trips compressor if lube oil pressure switch indicates low pressure while running"
+      },
+      {
+        "name": "Fire Detection Shutdown",
+        "condition": "FD-101 == true",
+        "action": "fire-shutdown",
+        "delay_ms": 0,
+        "description": "Immediate ESD on flame detection - isolates gas, opens vent to flare"
+      },
+      {
+        "name": "Station Master ESD",
+        "condition": "ESDPB-001 == true",
+        "action": "emergency-shutdown",
+        "delay_ms": 0,
+        "description": "Manual emergency shutdown - stops all equipment, isolates gas, activates alarm"
+      },
+      {
+        "name": "CNG Dispenser ESD",
+        "condition": "ESDPB-002 == true OR ZS-501 == false",
+        "action": "dispenser-shutdown",
+        "delay_ms": 0,
+        "description": "Shuts CNG dispenser on local ESD or breakaway coupling disconnect"
+      },
+      {
+        "name": "Biogas Supply Loss",
+        "condition": "FT-101 < 20 AND K-201 == true",
+        "action": "compressor-suction-loss",
+        "delay_ms": 15000,
+        "description": "Shuts compressor if inlet flow drops below minimum (prevents running dry)"
+      }
+    ],
+    "safetyActions": {
+      "emergency-shutdown": {
+        "description": "Master ESD - Full station shutdown",
+        "outputs": {
+          "XV-101": 0,
+          "XV-201": 0,
+          "XV-401": 0,
+          "XV-501": 0,
+          "K-201": 0,
+          "K-301": 0,
+          "SY-101": 1,
+          "ALARM-HORN": 1
+        }
+      },
+      "gas-detection-shutdown": {
+        "description": "Gas leak detected - isolate and vent",
+        "outputs": {
+          "XV-101": 0,
+          "XV-201": 0,
+          "XV-401": 0,
+          "XV-501": 0,
+          "K-201": 0,
+          "K-301": 0,
+          "SY-101": 1,
+          "ALARM-HORN": 1
+        }
+      },
+      "fire-shutdown": {
+        "description": "Fire detected - isolate gas sources",
+        "outputs": {
+          "XV-101": 0,
+          "XV-201": 0,
+          "XV-401": 0,
+          "XV-501": 0,
+          "K-201": 0,
+          "K-301": 0,
+          "SY-101": 1,
+          "ALARM-HORN": 1
+        }
+      },
+      "compressor-overtemp": {
+        "description": "Compressor overtemperature - stop compressor",
+        "outputs": {
+          "K-201": 0,
+          "XV-201": 0,
+          "ALARM-HORN": 1
+        }
+      },
+      "compressor-oil-shutdown": {
+        "description": "Compressor lube oil failure - stop compressor",
+        "outputs": {
+          "K-201": 0,
+          "ALARM-HORN": 1
+        }
+      },
+      "compressor-suction-loss": {
+        "description": "Biogas supply lost - stop compressor to prevent damage",
+        "outputs": {
+          "K-201": 0,
+          "XV-201": 0
+        }
+      },
+      "h2s-shutdown": {
+        "description": "H2S exceeds pipeline spec - block injection",
+        "outputs": {
+          "XV-401": 0,
+          "ALARM-HORN": 1
+        }
+      },
+      "low-purity-block": {
+        "description": "CH4 purity below pipeline spec - block injection",
+        "outputs": {
+          "XV-401": 0
+        }
+      },
+      "cng-overpressure": {
+        "description": "CNG storage overpressure - close dispenser and stop filling",
+        "outputs": {
+          "XV-501": 0,
+          "ALARM-HORN": 1
+        }
+      },
+      "dispenser-shutdown": {
+        "description": "CNG dispenser emergency - isolate dispenser",
+        "outputs": {
+          "XV-501": 0
+        }
+      },
+      "low-coolant-shutdown": {
+        "description": "Cooling system failure",
+        "outputs": {
+          "K-201": 0,
+          "ALARM-HORN": 1
+        }
+      }
+    },
+    "safeStateConfig": {
+      "XV-101": 0,
+      "XV-201": 0,
+      "XV-401": 0,
+      "XV-501": 0,
+      "K-201": 0,
+      "K-301": 0,
+      "SY-101": 1,
+      "ALARM-HORN": 0
+    },
+    "autoExecuteSafetyActions": true
+  },
+  "notebook": {
+    "entries": [],
+    "experiments": []
+  },
+  "name": "RNG CNG Compression Station",
+  "type": "nisystem-project",
+  "version": "2.0",
+  "config": "system.ini",
+  "created": "2026-02-10T12:00:00.000000",
+  "modified": "2026-02-10T15:32:38.815171"
+}
