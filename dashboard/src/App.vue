@@ -25,6 +25,9 @@ import GcAnalysisTab from './components/GcAnalysisTab.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
+import { useBrokerConfig } from './composables/useBrokerConfig'
+import BrokerConnectionDialog from './components/BrokerConnectionDialog.vue'
+import NodeStatusBar from './components/NodeStatusBar.vue'
 
 const store = useDashboardStore()
 const { theme, toggleTheme } = useTheme()
@@ -33,6 +36,7 @@ const projectFiles = useProjectFiles()
 const auth = useAuth()
 const playground = usePlayground()
 const windowSync = useWindowSync()
+const brokerConfig = useBrokerConfig()
 
 // Track if project has been loaded from backend (module-level for access in loadLastProject)
 let projectLoadHandled = false
@@ -42,6 +46,9 @@ let windowPositionCleanup: (() => void) | null = null
 
 // Login dialog state
 const showLoginDialog = ref(false)
+
+// Broker connection dialog
+const showBrokerDialog = ref(false)
 
 // GC tab visibility — hidden by default, toggle with Ctrl+F
 const showGcTab = ref(false)
@@ -350,8 +357,12 @@ function discardAutosaveAndStartFresh() {
 }
 
 onMounted(() => {
-  // Connect to MQTT broker via WebSocket (port 9002 per mosquitto_ws.conf)
-  mqtt.connect('ws://localhost:9002')
+  // Connect to MQTT broker via WebSocket
+  mqtt.connect(
+    brokerConfig.brokerUrl.value,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+  )
 
   // Wire up scripts MQTT handlers for hardware control
   scripts.setMqttHandlers({
@@ -578,7 +589,11 @@ function handleSessionStop() {
 function handleRetryConnection() {
   mqtt.disconnect()
   setTimeout(() => {
-    mqtt.connect('ws://localhost:9002')
+    mqtt.connect(
+      brokerConfig.brokerUrl.value,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+    )
   }, 100)
 }
 
@@ -716,6 +731,9 @@ async function handleManualSave() {
         </nav>
       </div>
 
+      <!-- Node status pills (between tabs and controls) -->
+      <NodeStatusBar />
+
       <div class="header-right">
         <!-- Control Bar integrated into header -->
         <ControlBar
@@ -756,6 +774,19 @@ async function handleManualSave() {
             </svg>
           </button>
         </div>
+
+        <!-- Broker Settings -->
+        <button
+          class="broker-toggle"
+          @click="showBrokerDialog = true"
+          :title="'Broker: ' + brokerConfig.brokerUrl.value"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+          <span v-if="brokerConfig.isRemoteBroker.value" class="remote-dot"></span>
+        </button>
 
         <!-- Theme Toggle -->
         <button
@@ -870,6 +901,12 @@ async function handleManualSave() {
         </div>
       </div>
     </Teleport>
+
+    <!-- Broker Connection Dialog -->
+    <BrokerConnectionDialog
+      v-model="showBrokerDialog"
+      @reconnect="handleRetryConnection"
+    />
 
     <!-- Login Dialog -->
     <LoginDialog
@@ -1368,6 +1405,37 @@ async function handleManualSave() {
 }
 
 /* Theme Toggle */
+.broker-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.broker-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.broker-toggle .remote-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b82f6;
+}
+
 .theme-toggle {
   display: flex;
   align-items: center;

@@ -223,6 +223,19 @@ export function useScripts() {
     loadWatchdogs()
   }
 
+  // Force reload all scripts from localStorage (used by node context switching)
+  function reloadFromStorage() {
+    loadCalculatedParams()
+    loadSequences()
+    loadSchedules()
+    loadAlarms()
+    loadTransformations()
+    loadTriggers()
+    loadFunctionBlocks()
+    loadDrawPatterns()
+    loadWatchdogs()
+  }
+
   function loadCalculatedParams() {
     try {
       const stored = localStorage.getItem('nisystem-scripts')
@@ -3765,6 +3778,7 @@ export function useScripts() {
 
     // Persistence
     loadAll,
+    reloadFromStorage,
     saveCalculatedParams,
     saveSequences,
     saveAlarms,

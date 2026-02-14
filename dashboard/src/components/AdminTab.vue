@@ -25,6 +25,11 @@
         </button>
       </div>
 
+      <!-- Nodes Section -->
+      <div v-if="activeSection === 'nodes'" class="section-panel">
+        <NodeManagerPanel />
+      </div>
+
       <!-- User Management Section -->
       <div v-if="activeSection === 'users'" class="section-panel">
         <div class="panel-header">
@@ -388,6 +393,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../composables/useAuth'
+import NodeManagerPanel from './NodeManagerPanel.vue'
 
 const {
   currentUser,
@@ -416,6 +422,7 @@ const canManageUsers = computed(() => isAdmin.value)
 
 // Section navigation - filtered by permissions
 const allSections = [
+  { id: 'nodes', icon: '🖥️', label: 'Nodes', requiresAdmin: false },
   { id: 'users', icon: '👥', label: 'Users', requiresAdmin: true },
   { id: 'audit', icon: '📋', label: 'Audit Trail', requiresAdmin: false },
   { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false }
@@ -423,7 +430,7 @@ const allSections = [
 const sections = computed(() =>
   allSections.filter(s => !s.requiresAdmin || canManageUsers.value)
 )
-const activeSection = ref(canManageUsers.value ? 'users' : 'audit')
+const activeSection = ref(canManageUsers.value ? 'users' : 'nodes')
 
 // User management state
 const showCreateUserDialog = ref(false)

@@ -7,6 +7,7 @@ import { useSOE } from './useSOE'
 
 // Stale data threshold in milliseconds
 const STALE_DATA_THRESHOLD_MS = 10000 // 10 seconds
+const NODE_OFFLINE_THRESHOLD_MS = 15000 // 15 seconds without message = offline
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
 const COMMAND_ACK_TIMEOUT_MS = 5000
@@ -109,6 +110,22 @@ const watchdogStatus = ref<{
 const knownNodes = ref<Map<string, NodeInfo>>(new Map())
 const activeNodeId = ref<string | null>(null)  // Currently focused node (null = all nodes)
 
+// Per-node status map (full SystemStatus per node, not just NodeInfo)
+const nodeStatuses = ref<Map<string, SystemStatus>>(new Map())
+
+// Node staleness check — marks nodes offline when no message received for 15s
+let _nodeStalenessInterval: ReturnType<typeof setInterval> | null = null
+if (!_nodeStalenessInterval) {
+  _nodeStalenessInterval = setInterval(() => {
+    const now = Date.now()
+    for (const [nodeId, node] of knownNodes.value) {
+      if (node.status === 'online' && (now - node.lastSeen) > NODE_OFFLINE_THRESHOLD_MS) {
+        knownNodes.value.set(nodeId, { ...node, status: 'offline' })
+      }
+    }
+  }, 5000)
+}
+
 // cRIO config version tracking for sync indicator
 // expected: hash sent with last push, reported: hash cRIO reports in status, local: hash of current dashboard config
 const crioConfigVersions = ref<Map<string, { expected: string; reported: string; local: string }>>(new Map())
@@ -123,7 +140,8 @@ const alarmCallbacks: ((alarm: AlarmCallbackPayload, event: 'triggered' | 'updat
 const systemUpdateCallbacks: ((result: SystemUpdateCallbackPayload) => void)[] = []
 
 // Generic topic subscriptions (shared) - payload is intentionally `unknown` since topics vary
-const topicCallbacks: Map<string, ((payload: unknown) => void)[]> = new Map()
+// Second arg (topic) is optional for backwards compatibility
+const topicCallbacks: Map<string, ((payload: unknown, topic?: string) => void)[]> = new Map()
 
 /**
  * Check if a topic matches an MQTT-style pattern with wildcards
@@ -290,6 +308,11 @@ export function useMqtt(prefix: string = 'nisystem') {
             const versionData = crioConfigVersions.value.get(nodeId)
             const isSynced = !versionData?.expected || versionData.expected === versionData.reported
 
+            // Detect node type: prefer explicit payload, then existing, then prefix heuristic
+            const detectedNodeType = payload.node_type
+              || existingNode?.nodeType
+              || (nodeId.startsWith('crio') ? 'crio' : nodeId.startsWith('opto22') ? 'opto22' : nodeId.startsWith('gc') ? 'gc' : 'daq')
+
             knownNodes.value.set(nodeId, {
               nodeId,
               nodeName: payload.node_name || existingNode?.nodeName || nodeId,
@@ -298,7 +321,14 @@ export function useMqtt(prefix: string = 'nisystem') {
               simulationMode: payload.simulation_mode ?? existingNode?.simulationMode ?? false,
               configVersion: reportedVersion,
               expectedVersion: versionData?.expected || existingNode?.expectedVersion,
-              configSynced: isSynced
+              configSynced: isSynced,
+              // Enriched fields from status payloads
+              nodeType: detectedNodeType,
+              projectMode: payload.project_mode || existingNode?.projectMode,
+              acquiring: payload.acquiring ?? existingNode?.acquiring,
+              recording: payload.recording ?? existingNode?.recording,
+              channelCount: payload.channel_count ?? existingNode?.channelCount,
+              safetyState: payload.safety_state || existingNode?.safetyState,
             })
           }
         } catch (e) {
@@ -455,7 +485,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       try {
         for (const [pattern, callbacks] of topicCallbacks.entries()) {
           if (topicMatchesPattern(topic, pattern)) {
-            callbacks.forEach(cb => cb(payload))
+            callbacks.forEach(cb => cb(payload, topic))
           }
         }
       } catch (e) {
@@ -487,13 +517,21 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleChannelValue(channelName: string, payload: any, nodeId?: string) {
-    // Don't process channel data when not acquiring
-    if (!systemStatus.value?.acquiring) return
-
     const effectiveNodeId = nodeId || payload.node_id || 'node-001'
 
+    // Filter by active node — when a specific node is selected, ignore data from other nodes
+    // This prevents cross-node contamination in the dashboard
+    if (activeNodeId.value && effectiveNodeId !== activeNodeId.value) return
+
+    // Check if THIS node is acquiring (per-node check, not global systemStatus)
+    // This allows data from multiple acquiring nodes simultaneously
+    const nodeInfo = knownNodes.value.get(effectiveNodeId)
+    const nodeAcquiring = nodeInfo?.acquiring ?? systemStatus.value?.acquiring
+    if (!nodeAcquiring) return
+
     // Check channel ownership - prevent value collision between nodes
-    // If a channel is owned by a cRIO node, don't let main DAQ overwrite it
+    // If a channel is owned by a different node, don't overwrite it
+    // (handles redundancy: same channel name from two PCs reading same hardware)
     const owner = channelOwners.get(channelName)
     if (owner && owner !== effectiveNodeId) {
       // This channel is owned by a different node, skip update
@@ -559,13 +597,18 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleBatchChannelValues(payload: Record<string, { value: number, timestamp: number }>, nodeId?: string) {
-    // Don't process channel data when not acquiring
-    if (!systemStatus.value?.acquiring) return
-
     // Handle batched channel values from cRIO nodes
     // cRIO publishes with physical channel names (e.g., "Mod5/ai0") when no config is pushed
     // Dashboard needs to map these back to TAG names using channelConfigs
     const effectiveNodeId = nodeId || 'crio-001'
+
+    // Filter by active node — when a specific node is selected, ignore data from other nodes
+    if (activeNodeId.value && effectiveNodeId !== activeNodeId.value) return
+
+    // Check if THIS node is acquiring (per-node check, not global systemStatus)
+    const nodeInfo = knownNodes.value.get(effectiveNodeId)
+    const nodeAcquiring = nodeInfo?.acquiring ?? systemStatus.value?.acquiring
+    if (!nodeAcquiring) return
 
     const aggregatedData: Record<string, number> = {}
 
@@ -699,14 +742,16 @@ export function useMqtt(prefix: string = 'nisystem') {
       status.node_id = nodeId || status.node_id
     }
 
-    // Only update main systemStatus from the local DAQ service (node-001)
-    // cRIO nodes have their own status which shouldn't affect the main dashboard state
+    // Store per-node status
     const effectiveNodeId = nodeId || status.node_id || 'node-001'
-    if (effectiveNodeId === 'node-001' || !effectiveNodeId.startsWith('crio')) {
+    nodeStatuses.value.set(effectiveNodeId, status)
+
+    // Update global systemStatus from the active node, or from the default DAQ node
+    const targetNodeId = activeNodeId.value || 'node-001'
+    if (effectiveNodeId === targetNodeId) {
       systemStatus.value = status
       statusCallbacks.forEach(cb => cb(status))
     }
-    // For cRIO nodes, knownNodes registry is updated above but systemStatus is not affected
   }
 
   function handleScriptValues(payload: Record<string, any>) {
@@ -1408,7 +1453,7 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Default: Goes to the main DAQ service (node-001)
    * Pass nodeId to target a specific remote node (e.g., cRIO)
    */
-  function sendNodeCommand(command: string, payload?: any, nodeId: string = 'node-001') {
+  function sendNodeCommand(command: string, payload?: any, nodeId: string = activeNodeId.value || 'node-001') {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
@@ -1452,17 +1497,17 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Subscribe to a specific topic with a callback
    * Returns an unsubscribe function
    */
-  function subscribe<T = unknown>(topic: string, callback: (payload: T) => void): () => void {
+  function subscribe<T = unknown>(topic: string, callback: (payload: T, topic?: string) => void): () => void {
     if (!topicCallbacks.has(topic)) {
       topicCallbacks.set(topic, [])
     }
-    topicCallbacks.get(topic)!.push(callback as (payload: unknown) => void)
+    topicCallbacks.get(topic)!.push(callback as (payload: unknown, topic?: string) => void)
 
     // Return unsubscribe function
     return () => {
       const callbacks = topicCallbacks.get(topic)
       if (callbacks) {
-        const idx = callbacks.indexOf(callback as (payload: unknown) => void)
+        const idx = callbacks.indexOf(callback as (payload: unknown, topic?: string) => void)
         if (idx > -1) {
           callbacks.splice(idx, 1)
         }
@@ -2161,8 +2206,24 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Multi-node support
     knownNodes,
     activeNodeId,
+    nodeStatuses,
     setActiveNode: (nodeId: string | null) => {
+      const previousNodeId = activeNodeId.value
       activeNodeId.value = nodeId
+
+      // Clear channel values and ownership on node switch to prevent cross-node data
+      if (previousNodeId !== nodeId) {
+        channelValues.value = {}
+        channelOwners.clear()
+      }
+
+      // When switching active node, update systemStatus from stored per-node status
+      const targetId = nodeId || 'node-001'
+      const cached = nodeStatuses.value.get(targetId)
+      if (cached) {
+        systemStatus.value = cached
+        statusCallbacks.forEach(cb => cb(cached))
+      }
     },
     getNodeList: () => Array.from(knownNodes.value.values()),
 

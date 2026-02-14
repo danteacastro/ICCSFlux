@@ -220,9 +220,10 @@ describe('AdminTab', () => {
       })
 
       const sectionButtons = wrapper.findAll('.section-btn')
-      expect(sectionButtons.length).toBe(3)
+      expect(sectionButtons.length).toBe(4)
 
       const buttonTexts = sectionButtons.map(b => b.text())
+      expect(buttonTexts).toContain('🖥️ Nodes')
       expect(buttonTexts).toContain('👥 Users')
       expect(buttonTexts).toContain('📋 Audit Trail')
       expect(buttonTexts).toContain('📦 Archives')
@@ -250,7 +251,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       expect(wrapper.find('.section-btn.active').text()).toContain('Audit Trail')
@@ -265,7 +266,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       expect(wrapper.find('.section-btn.active').text()).toContain('Archives')
@@ -386,7 +387,7 @@ describe('AdminTab', () => {
       })
 
       // Switch to audit section
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       expect(wrapper.find('.audit-filters').exists()).toBe(true)
@@ -402,7 +403,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       expect(wrapper.text()).toContain('Refresh')
@@ -418,7 +419,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       const headerTexts = wrapper.findAll('th').map(h => h.text())
@@ -438,7 +439,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       expect(wrapper.text()).toContain('admin')
@@ -460,7 +461,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       expect(wrapper.find('.archive-info').exists()).toBe(true)
@@ -476,7 +477,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('Total Archives')
@@ -492,7 +493,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('10 Years')
@@ -508,7 +509,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('session_2024-06-15.csv')
@@ -597,7 +598,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[2]
+      const archivesButton = wrapper.findAll('.section-btn')[3]
       await archivesButton.trigger('click')
 
       // 1024000 bytes = ~1000 KB or ~1 MB
@@ -613,7 +614,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[1]
+      const auditButton = wrapper.findAll('.section-btn')[2]
       await auditButton.trigger('click')
 
       // Should show truncated checksum with ...

@@ -316,6 +316,13 @@ export interface NodeInfo {
   configVersion?: string      // Reported by cRIO node in status
   expectedVersion?: string    // What PC expects from last push
   configSynced?: boolean      // configVersion === expectedVersion
+  // Enriched fields from status payload
+  nodeType?: 'daq' | 'crio' | 'opto22' | 'gc'
+  projectMode?: 'cdaq' | 'crio' | 'opto22'
+  acquiring?: boolean
+  recording?: boolean
+  channelCount?: number
+  safetyState?: 'normal' | 'warning' | 'tripped' | 'emergency'
 }
 
 export interface GCNodeConfig {

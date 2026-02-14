@@ -3413,6 +3413,9 @@ Unit conversions:
             client.subscribe(f"{base}/project/get")
             client.subscribe(f"{base}/project/get-current")
 
+            # Multi-instance management
+            client.subscribe(f"{base}/system/create-instance")
+
             # Subscribe to user variable/playground topics
             client.subscribe(f"{base}/variables/create")
             client.subscribe(f"{base}/variables/update")
@@ -4185,6 +4188,10 @@ Unit conversions:
             self._handle_project_autosave_discard()
         elif topic == f"{base}/project/autosave/check":
             self._handle_project_autosave_check()
+
+        # === MULTI-INSTANCE MANAGEMENT ===
+        elif topic == f"{base}/system/create-instance":
+            self._handle_create_instance(payload)
 
         # === USER VARIABLES / PLAYGROUND ===
         elif topic == f"{base}/variables/create":
@@ -5524,6 +5531,7 @@ Unit conversions:
             # Multi-node identification
             "node_id": self.config.system.node_id,
             "node_name": self.config.system.node_name,
+            "node_type": "daq",
             # Project mode (cdaq = PC is PLC, crio = cRIO is PLC/HMI split)
             "project_mode": self.config.system.project_mode.value,
             "simulation_mode": self.config.system.simulation_mode or not NIDAQMX_AVAILABLE,
@@ -7211,6 +7219,76 @@ Unit conversions:
     def _handle_project_autosave_check(self):
         """Check if autosave file exists and publish status"""
         self._publish_autosave_status()
+
+    def _handle_create_instance(self, payload):
+        """Create a config file for a new DAQ service instance.
+
+        Receives: { node_id, node_name, simulation_mode }
+        Creates: config/system_{node_id}.ini
+        Responds with config path and launch command.
+        """
+        base = self.get_topic_base()
+        try:
+            node_id = payload.get('node_id', '').strip()
+            node_name = payload.get('node_name', '').strip() or node_id
+            simulation_mode = payload.get('simulation_mode', True)
+
+            if not node_id:
+                self.mqtt_client.publish(
+                    f"{base}/system/create-instance/response",
+                    json.dumps({"success": False, "error": "node_id is required"})
+                )
+                return
+
+            # Sanitize node_id for filename
+            safe_id = node_id.replace(' ', '_').replace('/', '-')
+            config_dir = Path(self.config_path).parent
+            new_config_path = config_dir / f"system_{safe_id}.ini"
+
+            if new_config_path.exists():
+                self.mqtt_client.publish(
+                    f"{base}/system/create-instance/response",
+                    json.dumps({
+                        "success": False,
+                        "error": f"Config already exists: {new_config_path.name}"
+                    })
+                )
+                return
+
+            # Copy current config as template and update node-specific fields
+            import configparser as _cp
+            cfg = _cp.ConfigParser()
+            cfg.read(self.config_path)
+
+            if not cfg.has_section('system'):
+                cfg.add_section('system')
+
+            cfg.set('system', 'node_id', node_id)
+            cfg.set('system', 'node_name', node_name)
+            cfg.set('system', 'simulation_mode', str(simulation_mode).lower())
+
+            with open(new_config_path, 'w') as f:
+                cfg.write(f)
+
+            launch_cmd = f"python -m services.daq_service.daq_service -c {new_config_path}"
+
+            logger.info(f"[MULTI-INSTANCE] Created config for {node_id}: {new_config_path}")
+
+            self.mqtt_client.publish(
+                f"{base}/system/create-instance/response",
+                json.dumps({
+                    "success": True,
+                    "node_id": node_id,
+                    "config_path": str(new_config_path),
+                    "launch_command": launch_cmd
+                })
+            )
+        except Exception as e:
+            logger.error(f"[MULTI-INSTANCE] Failed to create instance: {e}", exc_info=True)
+            self.mqtt_client.publish(
+                f"{base}/system/create-instance/response",
+                json.dumps({"success": False, "error": str(e)})
+            )
 
     def _publish_autosave_status(self):
         """Publish autosave status to MQTT"""
@@ -13622,8 +13700,18 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Enforce single instance
-    instance = SingleInstance("NISystemDAQService")
+    # Read node_id from config to create per-node instance lock
+    # This allows multiple DAQ service instances on the same PC (different configs)
+    # Default lock name stays "NISystemDAQService" for backward compatibility
+    # Only use per-node lock when node_id is explicitly set in config
+    import configparser as _cp
+    _cfg = _cp.ConfigParser()
+    _cfg.read(args.config)
+    _node_id = _cfg.get('system', 'node_id', fallback=None)
+
+    # Enforce single instance — per-node lock if node_id is set, else original lock name
+    _lock_name = f"NISystemDAQService_{_node_id}" if _node_id else "NISystemDAQService"
+    instance = SingleInstance(_lock_name)
     if not instance.acquire():
         if args.force:
             logger.warning("Another DAQ service instance detected. Force mode enabled - attempting cleanup...")
