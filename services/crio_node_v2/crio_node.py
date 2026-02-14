@@ -16,6 +16,7 @@ The main loop follows the pattern:
 
 import json
 import logging
+import math
 import os
 import queue
 import signal
@@ -279,6 +280,9 @@ class CRIONodeV2:
         # Script engine
         self.script_engine = ScriptEngine(self)
 
+        # Stale value warning tracking
+        self._stale_warned: set = set()
+
         # Watchdog output toggle state
         self._watchdog_output_state = False
         self._watchdog_output_last_toggle = 0.0
@@ -394,6 +398,7 @@ class CRIONodeV2:
         _loop_count = 0
 
         _consecutive_errors = 0
+        _recovery_attempts = 0
         next_scan_time = time.time()
 
         while not self._shutdown.is_set():
@@ -418,7 +423,7 @@ class CRIONodeV2:
                 t_safety_end = time.time()
 
                 # 4. COMMUNICATION WATCHDOG (if configured)
-                if self.state.is_acquiring and self.config.comm_watchdog_timeout_s > 0:
+                if self.config.comm_watchdog_timeout_s > 0:
                     self._check_comm_watchdog()
 
                 # 5. WATCHDOG OUTPUT TOGGLE (if configured)
@@ -433,7 +438,7 @@ class CRIONodeV2:
                     # Advance by interval (not now) to maintain steady cadence
                     # despite sleep jitter. Reset if we fell behind by >1 interval.
                     self._last_publish_time += self._publish_interval
-                    if now - self._last_publish_time > self._publish_interval:
+                    if abs(now - self._last_publish_time) > self._publish_interval:
                         self._last_publish_time = now
                     published = True
                 t_pub_end = time.time()
@@ -451,14 +456,31 @@ class CRIONodeV2:
                 # After 10 consecutive errors, stop acquisition permanently
                 # (do NOT reset counter — require operator intervention)
                 if _consecutive_errors >= 10:
-                    logger.critical(
-                        f"[LOOP] {_consecutive_errors} consecutive errors — "
-                        f"stopping acquisition. Manual restart required."
-                    )
+                    logger.critical(f"[LOOP] {_consecutive_errors} consecutive errors — "
+                                   f"attempting recovery with backoff...")
                     self.hardware.set_safe_state()
                     self.state.to(State.IDLE)
                     self._publish_status()
-                    break  # Exit main loop — require manual restart
+                    # Exponential backoff: 5s, 10s, 20s, max 60s
+                    backoff = min(60, 5 * (2 ** (_recovery_attempts)))
+                    _recovery_attempts += 1
+                    logger.info(f"[LOOP] Recovery attempt #{_recovery_attempts}, waiting {backoff}s...")
+                    self._shutdown.wait(backoff)
+                    if self._shutdown.is_set():
+                        break
+                    # Try to restart
+                    try:
+                        if self.hardware.start():
+                            self.state.to(State.ACQUIRING)
+                            _consecutive_errors = 0
+                            _recovery_attempts = 0
+                            logger.info("[LOOP] Recovery successful — resuming acquisition")
+                        else:
+                            logger.error("[LOOP] Recovery failed — will retry after backoff")
+                    except Exception as re:
+                        logger.error(f"[LOOP] Recovery exception: {re}")
+                    self._publish_status()
+                    continue
                 # Set timing defaults so sleep still works after error
                 t_read_end = t_read_start = t_safety_end = t_pub_end = time.time()
                 published = False
@@ -832,17 +854,12 @@ class CRIONodeV2:
 
         # Full config push replaces ALL channels (not merge)
         # This prevents duplicate physical channels when channel names differ
-        old_channels = set(self.config.channels.keys())
-        new_channels = set(channels_data.keys())
-        channels_changed = old_channels != new_channels
+        old_channel_names = set(self.config.channels.keys())
+        new_channel_names = set(channels_data.keys())
+        channels_changed = old_channel_names != new_channel_names
 
-        # Clear existing channels and replace with new ones
-        # CRITICAL: Hold values_lock while modifying channels to prevent
-        # main loop from iterating a partially-modified dict
-        with self.values_lock:
-            self.config.channels.clear()
-            self.channel_values.clear()
-
+        # Build new channels dict outside the lock, then swap atomically
+        new_channels = {}
         for name, ch_data in channels_data.items():
             channel_type = ch_data.get('channel_type', 'analog_input')
             # Default thermocouple_type to 'K' for thermocouple channels if not specified
@@ -850,7 +867,7 @@ class CRIONodeV2:
             if channel_type == 'thermocouple' and not tc_type:
                 tc_type = 'K'
 
-            self.config.channels[name] = ChannelConfig(
+            new_channels[name] = ChannelConfig(
                 name=name,
                 physical_channel=ch_data.get('physical_channel', ''),
                 channel_type=channel_type,
@@ -904,6 +921,12 @@ class CRIONodeV2:
                 momentary_pulse_ms=ch_data.get('momentary_pulse_ms', 0),
                 safety_action=ch_data.get('safety_action')
             )
+
+        # Atomically swap channels under lock to prevent race with main loop
+        with self.values_lock:
+            self.config.channels.clear()
+            self.config.channels.update(new_channels)
+            self.channel_values.clear()
 
         # Update watchdog output config if provided
         wd = payload.get('watchdog_output')
@@ -1270,27 +1293,34 @@ class CRIONodeV2:
                 ts = entry.get('timestamp', 0)
                 if isinstance(ts, (int, float)) and (now - ts) > self.STALE_VALUE_THRESHOLD_S:
                     entry['quality'] = 'stale'
-                    if not getattr(self, '_stale_warned', set()):
-                        self._stale_warned = set()
                     if ch not in self._stale_warned:
                         logger.warning(f"Channel {ch} value is stale ({now - ts:.1f}s old)")
                         self._stale_warned.add(ch)
-                elif ch in getattr(self, '_stale_warned', set()):
+                else:
                     self._stale_warned.discard(ch)
+                # Mark NaN values as bad quality
+                val = entry.get('value')
+                if isinstance(val, float) and math.isnan(val):
+                    entry['quality'] = 'bad'
                 batch[ch] = entry
 
             # Cap _stale_warned to prevent unbounded growth if channels are removed
-            if hasattr(self, '_stale_warned') and len(self._stale_warned) > 500:
+            if len(self._stale_warned) > 500:
                 self._stale_warned = set(list(self._stale_warned)[:500])
 
-            # Include output values
-            for ch, val in self.output_values.items():
-                batch[ch] = {
-                    'value': val,
-                    'timestamp': now,
-                    'quality': 'good',
-                    'type': 'output'
-                }
+            # Include output values (snapshot to avoid race with output writes)
+            output_snapshot = dict(self.output_values)
+
+        for ch, val in output_snapshot.items():
+            quality = 'good'
+            if isinstance(val, float) and math.isnan(val):
+                quality = 'bad'
+            batch[ch] = {
+                'value': val,
+                'timestamp': now,
+                'quality': quality,
+                'type': 'output'
+            }
 
         self.mqtt.publish("channels/batch", batch)
 

@@ -837,6 +837,20 @@ const digitalInputChannels = computed(() => {
     .map(([name]) => ({ name }))  // TAG only
 })
 
+// Get counter channels (counter, counter_input, counter_output)
+const counterChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, cfg]) => ['counter', 'counter_input', 'counter_output'].includes(cfg.channel_type))
+    .map(([name, cfg]) => ({ name, unit: cfg.unit || 'counts' }))
+})
+
+// Get frequency input channels
+const frequencyChannels = computed(() => {
+  return Object.entries(store.channels)
+    .filter(([_, cfg]) => cfg.channel_type === 'frequency_input')
+    .map(([name, cfg]) => ({ name, unit: cfg.unit || 'Hz' }))
+})
+
 // Get analog output channels
 const analogOutputChannels = computed(() => {
   return Object.entries(store.channels)

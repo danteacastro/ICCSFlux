@@ -99,6 +99,15 @@ class ChannelSimulator:
         elif ch.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
             self.state.value = ch.default_value
 
+        elif ch.channel_type == ChannelType.COUNTER_OUTPUT:
+            self.state.value = getattr(ch, 'default_value', 0.0)
+            self.state.frequency = getattr(ch, 'pulse_frequency', 1000.0)
+
+        elif ch.channel_type == ChannelType.PULSE_OUTPUT:
+            self.state.value = getattr(ch, 'default_value', 0.0)
+            self.state.frequency = getattr(ch, 'pulse_frequency', 1000.0)
+            self.state.duty_cycle = getattr(ch, 'pulse_duty_cycle', 50.0)
+
         self.state.last_update = time.time()
 
     def read(self) -> float:
@@ -130,13 +139,22 @@ class ChannelSimulator:
         elif ch.channel_type in (ChannelType.RESISTANCE, ChannelType.RESISTANCE_INPUT):
             return self._simulate_resistance(dt)
 
-        elif ch.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
+        elif ch.channel_type in (ChannelType.COUNTER, ChannelType.COUNTER_INPUT):
             return self._simulate_counter(dt)
+
+        elif ch.channel_type == ChannelType.FREQUENCY_INPUT:
+            return self._simulate_frequency(dt)
 
         elif ch.channel_type == ChannelType.DIGITAL_INPUT:
             return self._simulate_digital_input()
 
         elif ch.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+            return self.state.value
+
+        elif ch.channel_type == ChannelType.COUNTER_OUTPUT:
+            return self.state.value
+
+        elif ch.channel_type == ChannelType.PULSE_OUTPUT:
             return self.state.value
 
         return 0.0
@@ -150,6 +168,10 @@ class ChannelSimulator:
             return True
 
         elif ch.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+            self.state.value = float(value)
+            return True
+
+        elif ch.channel_type in (ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
             self.state.value = float(value)
             return True
 
@@ -392,6 +414,22 @@ class ChannelSimulator:
 
         return round(self.state.value, 2)
 
+    def _simulate_frequency(self, dt: float) -> float:
+        """Simulate frequency input - returns instantaneous frequency (Hz), not accumulated count."""
+        ch = self.channel
+        base_freq = getattr(ch, 'default_value', 60.0) or 60.0
+
+        # Slowly varying frequency to simulate real-world drift
+        self.state.trend += random.gauss(0, 0.05 * dt)
+        self.state.trend = max(-1, min(1, self.state.trend))
+
+        # Apply trend to base frequency
+        freq = base_freq * (0.95 + 0.1 * (self.state.trend + 1) / 2)
+
+        # Add measurement noise (~2%)
+        noise = random.gauss(0, base_freq * 0.02)
+        return round(freq + noise, 2)
+
     def _simulate_digital_input(self) -> float:
         """Simulate digital input with occasional state changes"""
         ch = self.channel
@@ -410,8 +448,8 @@ class ChannelSimulator:
 
         for keyword in safety_keywords:
             if keyword in name_lower:
-                # Safety input - always OK (1.0)
-                return 1.0
+                # Safety input - default OK (1.0), allow override via config
+                return getattr(ch, 'default_value', 1.0) if hasattr(ch, 'default_value') and ch.default_value is not None else 1.0
 
         # Limit switches occasionally trigger
         if 'limit' in name_lower:

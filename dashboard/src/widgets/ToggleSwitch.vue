@@ -64,6 +64,21 @@ const statusText = computed(() => {
   return ''
 })
 
+// Channel type validation
+const isValidToggleChannel = computed(() => {
+  const type = channelConfig.value?.channel_type
+  return type === 'digital_output' || type === 'modbus_coil'
+})
+
+const channelTypeWarning = computed(() => {
+  if (!props.channel) return null
+  if (!channelConfig.value) return null
+  if (isValidToggleChannel.value) return null
+  const type = channelConfig.value.channel_type
+  if (type === 'digital_input') return 'Read-only: digital input channel'
+  return `Incompatible channel type: ${type}`
+})
+
 // Confirmation state
 const showConfirm = ref(false)
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
@@ -153,6 +168,9 @@ onUnmounted(() => clearConfirmTimer())
     </div>
 
     <InterlockBlockOverlay v-if="isBlocked" :blocked-by="blockStatus.blockedBy" />
+    <div v-if="channelTypeWarning" class="channel-type-warning" :title="channelTypeWarning">
+      {{ channelTypeWarning }}
+    </div>
   </div>
 </template>
 
@@ -312,5 +330,15 @@ onUnmounted(() => clearConfirmTimer())
 
 .confirm-btn.no {
   background: #6b7280;
+}
+
+.channel-type-warning {
+  font-size: 10px;
+  color: var(--status-warning, #eab308);
+  text-align: center;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

@@ -168,6 +168,13 @@ const digitalDisplayValues = computed(() => {
   return currentValues.value.filter(v => v.visible).slice(0, 4)  // Max 4 in header
 })
 
+// Check if channel type should use stepped (staircase) visualization
+function isSteppedChannel(channelName: string): boolean {
+  const config = store.channels[channelName]
+  if (!config) return false
+  return ['digital_input', 'digital_output', 'counter', 'counter_input', 'counter_output', 'frequency_input', 'modbus_coil'].includes(config.channel_type)
+}
+
 function initChart() {
   if (!chartContainer.value) return
 
@@ -219,12 +226,14 @@ function initChart() {
       { label: 'Time' },
       ...props.channels.map((ch, i) => {
         const visible = isChannelVisible(ch)
+        const stepped = isSteppedChannel(ch)
         return {
           label: ch,  // TAG is the only identifier
           stroke: getChannelColor(ch, i),
           width: getChannelLineWidth(ch),
           show: visible,
-          spanGaps: true,
+          spanGaps: !stepped,
+          paths: stepped ? uPlot.paths.stepped!({ align: 1 }) : undefined,
           value: (_self: uPlot, rawValue: number | null) => {
             if (rawValue === null || rawValue === undefined) return '--'
             return rawValue.toFixed(2)

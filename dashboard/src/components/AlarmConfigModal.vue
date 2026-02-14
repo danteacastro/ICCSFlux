@@ -387,99 +387,110 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
 
         <!-- THRESHOLDS TAB -->
         <div v-if="activeTab === 'thresholds'" class="tab-content">
-          <!-- Info banner -->
-          <div class="info-banner">
+          <!-- Digital input notice -->
+          <div v-if="isDigitalInput" class="digital-alarm-notice">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
             </svg>
-            <span>Alarm thresholds are defined in <strong>Configuration Tab → Channel Settings</strong>. This shows the current limits for reference.</span>
+            <span>Digital inputs use state-based alarms only. Configure in the <strong>Timing</strong> tab under <strong>Digital Input Alarm</strong>.</span>
           </div>
 
-          <div class="threshold-diagram">
-            <div class="threshold-bar">
-              <div class="zone critical-high" :style="{ height: channelConfig?.hihi_limit != null ? '20%' : '0' }">
-                <span v-if="channelConfig?.hihi_limit != null">HiHi: {{ channelConfig.hihi_limit }}</span>
-              </div>
-              <div class="zone warning-high" :style="{ height: channelConfig?.hi_limit != null ? '15%' : '0' }">
-                <span v-if="channelConfig?.hi_limit != null">Hi: {{ channelConfig.hi_limit }}</span>
-              </div>
-              <div class="zone normal">Normal</div>
-              <div class="zone warning-low" :style="{ height: channelConfig?.lo_limit != null ? '15%' : '0' }">
-                <span v-if="channelConfig?.lo_limit != null">Lo: {{ channelConfig.lo_limit }}</span>
-              </div>
-              <div class="zone critical-low" :style="{ height: channelConfig?.lolo_limit != null ? '20%' : '0' }">
-                <span v-if="channelConfig?.lolo_limit != null">LoLo: {{ channelConfig.lolo_limit }}</span>
-              </div>
+          <!-- Analog threshold content (hidden for digital inputs) -->
+          <template v-if="!isDigitalInput">
+            <!-- Info banner -->
+            <div class="info-banner">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+              </svg>
+              <span>Alarm thresholds are defined in <strong>Configuration Tab → Channel Settings</strong>. This shows the current limits for reference.</span>
             </div>
-          </div>
 
-          <div class="threshold-display">
-            <!-- Channel Limits (Read-only) -->
-            <div class="section-header">Channel Alarm Limits (Read-only)</div>
-
-            <div class="limits-grid">
-              <!-- HiHi (Critical High) -->
-              <div class="limit-item critical">
-                <span class="threshold-badge critical">HiHi</span>
-                <span class="limit-label">Critical High</span>
-                <span class="limit-value">
-                  {{ channelConfig?.hihi_limit != null ? `${channelConfig.hihi_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
-                </span>
-              </div>
-
-              <!-- Hi (Warning High) -->
-              <div class="limit-item warning">
-                <span class="threshold-badge warning">Hi</span>
-                <span class="limit-label">High Warning</span>
-                <span class="limit-value">
-                  {{ channelConfig?.hi_limit != null ? `${channelConfig.hi_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
-                </span>
-              </div>
-
-              <!-- Lo (Warning Low) -->
-              <div class="limit-item warning">
-                <span class="threshold-badge warning">Lo</span>
-                <span class="limit-label">Low Warning</span>
-                <span class="limit-value">
-                  {{ channelConfig?.lo_limit != null ? `${channelConfig.lo_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
-                </span>
-              </div>
-
-              <!-- LoLo (Critical Low) -->
-              <div class="limit-item critical">
-                <span class="threshold-badge critical">LoLo</span>
-                <span class="limit-label">Critical Low</span>
-                <span class="limit-value">
-                  {{ channelConfig?.lolo_limit != null ? `${channelConfig.lolo_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
-                </span>
+            <div class="threshold-diagram">
+              <div class="threshold-bar">
+                <div class="zone critical-high" :style="{ height: channelConfig?.hihi_limit != null ? '20%' : '0' }">
+                  <span v-if="channelConfig?.hihi_limit != null">HiHi: {{ channelConfig.hihi_limit }}</span>
+                </div>
+                <div class="zone warning-high" :style="{ height: channelConfig?.hi_limit != null ? '15%' : '0' }">
+                  <span v-if="channelConfig?.hi_limit != null">Hi: {{ channelConfig.hi_limit }}</span>
+                </div>
+                <div class="zone normal">Normal</div>
+                <div class="zone warning-low" :style="{ height: channelConfig?.lo_limit != null ? '15%' : '0' }">
+                  <span v-if="channelConfig?.lo_limit != null">Lo: {{ channelConfig.lo_limit }}</span>
+                </div>
+                <div class="zone critical-low" :style="{ height: channelConfig?.lolo_limit != null ? '20%' : '0' }">
+                  <span v-if="channelConfig?.lolo_limit != null">LoLo: {{ channelConfig.lolo_limit }}</span>
+                </div>
               </div>
             </div>
 
-            <div class="divider"></div>
+            <div class="threshold-display">
+              <!-- Channel Limits (Read-only) -->
+              <div class="section-header">Channel Alarm Limits (Read-only)</div>
 
-            <!-- Deadband (Editable - this is alarm behavior, not threshold) -->
-            <div class="section-header">Alarm Behavior</div>
+              <div class="limits-grid">
+                <!-- HiHi (Critical High) -->
+                <div class="limit-item critical">
+                  <span class="threshold-badge critical">HiHi</span>
+                  <span class="limit-label">Critical High</span>
+                  <span class="limit-value">
+                    {{ channelConfig?.hihi_limit != null ? `${channelConfig.hihi_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
+                  </span>
+                </div>
 
-            <div class="form-row">
-              <label class="form-label">
-                Deadband / Hysteresis
-                <span class="info-icon" title="Prevents alarm chatter at threshold boundary">?</span>
-              </label>
-              <div class="input-with-unit">
-                <input
-                  type="number"
-                  v-model.number="formData.deadband"
-                  class="form-input"
-                  min="0"
-                  step="0.1"
-                />
-                <span class="unit">{{ channelConfig?.unit || '' }}</span>
+                <!-- Hi (Warning High) -->
+                <div class="limit-item warning">
+                  <span class="threshold-badge warning">Hi</span>
+                  <span class="limit-label">High Warning</span>
+                  <span class="limit-value">
+                    {{ channelConfig?.hi_limit != null ? `${channelConfig.hi_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
+                  </span>
+                </div>
+
+                <!-- Lo (Warning Low) -->
+                <div class="limit-item warning">
+                  <span class="threshold-badge warning">Lo</span>
+                  <span class="limit-label">Low Warning</span>
+                  <span class="limit-value">
+                    {{ channelConfig?.lo_limit != null ? `${channelConfig.lo_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
+                  </span>
+                </div>
+
+                <!-- LoLo (Critical Low) -->
+                <div class="limit-item critical">
+                  <span class="threshold-badge critical">LoLo</span>
+                  <span class="limit-label">Critical Low</span>
+                  <span class="limit-value">
+                    {{ channelConfig?.lolo_limit != null ? `${channelConfig.lolo_limit} ${channelConfig?.unit || ''}` : 'Not set' }}
+                  </span>
+                </div>
               </div>
-              <span class="form-hint">
-                Value must drop below (threshold - deadband) before alarm clears
-              </span>
+
+              <div class="divider"></div>
+
+              <!-- Deadband (Editable - this is alarm behavior, not threshold) -->
+              <div class="section-header">Alarm Behavior</div>
+
+              <div class="form-row">
+                <label class="form-label">
+                  Deadband / Hysteresis
+                  <span class="info-icon" title="Prevents alarm chatter at threshold boundary">?</span>
+                </label>
+                <div class="input-with-unit">
+                  <input
+                    type="number"
+                    v-model.number="formData.deadband"
+                    class="form-input"
+                    min="0"
+                    step="0.1"
+                  />
+                  <span class="unit">{{ channelConfig?.unit || '' }}</span>
+                </div>
+                <span class="form-hint">
+                  Value must drop below (threshold - deadband) before alarm clears
+                </span>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
 
         <!-- TIMING TAB -->
@@ -1309,6 +1320,33 @@ const behaviorOptions: { value: AlarmBehavior; label: string; description: strin
   height: 1px;
   background: var(--border-color);
   margin: 8px 0;
+}
+
+/* Digital Alarm Notice (Thresholds tab) */
+.digital-alarm-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px 20px;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 6px;
+}
+
+.digital-alarm-notice svg {
+  color: #eab308;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.digital-alarm-notice span {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.digital-alarm-notice strong {
+  color: #eab308;
 }
 
 /* Digital Alarm Section */

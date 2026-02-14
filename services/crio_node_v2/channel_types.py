@@ -107,7 +107,7 @@ class ChannelType(str, Enum):
             cls.DIGITAL_OUTPUT.value: 'digital_output',
             cls.COUNTER_INPUT.value: 'counter_input',
             cls.COUNTER_OUTPUT.value: 'counter_output',
-            cls.FREQUENCY_INPUT.value: 'counter_input',
+            cls.FREQUENCY_INPUT.value: 'frequency_input',
             cls.PULSE_OUTPUT.value: 'counter_output',
 
             # Legacy aliases (backwards compatibility)

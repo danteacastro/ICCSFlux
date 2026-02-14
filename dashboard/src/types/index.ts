@@ -149,6 +149,7 @@ export interface ChannelConfig {
   strain_gage_factor?: number  // Gage factor (default 2.0)
   gage_factor?: number         // Alias for strain_gage_factor (UI)
   strain_resistance?: number   // Nominal gage resistance in Ohms (default 350)
+  nominal_resistance?: number  // Bridge nominal resistance (default 350)
 
   // IEPE-specific
   iepe_coupling?: 'AC' | 'DC'
@@ -156,11 +157,14 @@ export interface ChannelConfig {
   iepe_sensitivity?: number    // mV/g or mV/Pa (default 100.0)
   sensitivity?: number         // Alias for iepe_sensitivity (UI)
   iepe_current?: number        // Excitation current in Amps (default 0.004)
+  excitation_current?: number  // Alias for iepe_current (UI)
 
   // Counter-specific
   counter_mode?: 'count_edges' | 'count' | 'frequency' | 'period' | 'pulse_width'
   edge?: 'rising' | 'falling'
   counter_edge?: 'rising' | 'falling'  // Backend uses this name
+  initial_count?: number       // Initial counter value (default 0)
+  direction?: 'up' | 'down'   // Count direction
   pulses_per_unit?: number     // e.g., 100 pulses = 1 gallon
   counter_reset_on_read?: boolean  // For totalizer mode
   counter_min_freq?: number    // Minimum expected frequency in Hz (for nidaqmx)
@@ -169,11 +173,18 @@ export interface ChannelConfig {
   // Resistance-specific
   resistance_range?: number    // Maximum expected resistance in Ohms
   resistance_wiring?: '2-wire' | '4-wire'
+  excitation_current_ma?: number  // Excitation current in mA (resistance measurement)
 
   // Pulse/Counter output specific
   pulse_frequency?: number     // Output frequency in Hz
   pulse_duty_cycle?: number    // Duty cycle 0-100%
   pulse_idle_state?: 'LOW' | 'HIGH'  // Idle level
+  idle_state?: string          // Alias for pulse_idle_state (UI)
+
+  // Frequency input specific
+  min_frequency?: number       // Minimum expected frequency in Hz
+  max_frequency?: number       // Maximum expected frequency in Hz
+  filter_enable?: boolean      // Enable hardware filter
 
   // Relay specific (digital_output subtype metadata)
   relay_type?: 'none' | 'spst' | 'spdt' | 'ssr'  // Relay subtype (informational)
@@ -197,8 +208,17 @@ export interface ChannelConfig {
 
   // Ranges
   voltage_range?: number | string  // Can be number or string like "±10V"
+  voltage_range_min?: number   // Voltage output min range (default -10)
+  voltage_range_max?: number   // Voltage output max range (default 10)
+  raw_min?: number             // Raw input minimum (for scaling display)
+  raw_max?: number             // Raw input maximum (for scaling display)
   current_range_ma?: number
+  current_range_ma_min?: number  // Current output min range (default 4)
+  current_range_ma_max?: number  // Current output max range (default 20)
   ao_range?: string  // Analog output range (e.g., '5V', '10V', 'pm10V')
+
+  // Scaling type (alternative naming)
+  scaling_type?: string        // Alias for scale_type (used by output channels)
 
   // Digital I/O
   invert?: boolean

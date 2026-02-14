@@ -13197,18 +13197,29 @@ Unit conversions:
                         raw_values.update(self.hardware_reader.read_all())
 
                     # Read from Modbus devices (if configured)
-                    if self.modbus_reader:
-                        modbus_values = self.modbus_reader.read_all()
-                        raw_values.update(modbus_values)
+                    try:
+                        if self.modbus_reader:
+                            modbus_values = self.modbus_reader.read_all()
+                            if modbus_values:
+                                raw_values.update(modbus_values)
+                    except Exception as e:
+                        logger.error(f"[SCAN] Modbus read failed: {e}")
 
                     # Read from external data sources (REST API, OPC-UA, etc.)
-                    if self.data_source_manager:
-                        data_source_values = self.data_source_manager.get_all_values()
-                        raw_values.update(data_source_values)
+                    try:
+                        if self.data_source_manager:
+                            data_source_values = self.data_source_manager.get_all_values()
+                            if data_source_values:
+                                raw_values.update(data_source_values)
+                    except Exception as e:
+                        logger.error(f"[SCAN] Data source read failed: {e}")
 
                     # Apply scaling and update values under lock
                     # Track which channels have valid values for safety/alarm processing
                     valid_channels = set()
+
+                    # Snapshot channel config to prevent race with config updates
+                    channel_config_snapshot = dict(self.config.channels)
 
                     with self.values_lock:
                         for name, raw_value in raw_values.items():
@@ -13216,8 +13227,11 @@ Unit conversions:
                             validated_raw, status = validate_and_clamp(raw_value)
 
                             # Apply scaling based on channel configuration
-                            if name in self.config.channels:
-                                channel = self.config.channels[name]
+                            try:
+                                channel = channel_config_snapshot.get(name)
+                            except (KeyError, RuntimeError):
+                                channel = None  # Channel removed during scan
+                            if channel is not None:
                                 # Don't apply scaling to output channels - they store engineering units directly
                                 if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
                                                                ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
@@ -13264,7 +13278,7 @@ Unit conversions:
                                 continue
 
                             # Check if this is a cRIO channel that cRIO handles
-                            channel = self.config.channels.get(name)
+                            channel = channel_config_snapshot.get(name)
                             is_crio_channel = channel and channel.is_crio if channel else False
 
                             # Skip safety/alarm processing for cRIO channels in CRIO mode
@@ -13282,26 +13296,41 @@ Unit conversions:
                                     logger.debug(f"Alarm manager error for {name}: {e}")
 
                     # Process user variables (accumulators, timers, stats, etc.)
-                    if self.user_variables:
-                        self.user_variables.process_scan(self.channel_values)
-                        # Process formula blocks (must be after process_scan so user vars are updated)
-                        self.user_variables.process_formula_blocks(self.channel_values)
+                    try:
+                        if self.user_variables:
+                            self.user_variables.process_scan(self.channel_values)
+                            # Process formula blocks (must be after process_scan so user vars are updated)
+                            self.user_variables.process_formula_blocks(self.channel_values)
+                    except Exception as e:
+                        logger.error(f"[SCAN] User variables evaluation failed: {e}")
 
                     # Process PID control loops (deterministic timing critical)
-                    if self.pid_engine:
-                        self.pid_engine.process_scan(self.channel_values, scan_interval)
+                    try:
+                        if self.pid_engine:
+                            self.pid_engine.process_scan(self.channel_values, scan_interval)
+                    except Exception as e:
+                        logger.error(f"[SCAN] PID engine update failed: {e}")
 
                     # Process automation triggers
-                    if self.trigger_engine:
-                        self.trigger_engine.process_scan(self.channel_values)
+                    try:
+                        if self.trigger_engine:
+                            self.trigger_engine.process_scan(self.channel_values)
+                    except Exception as e:
+                        logger.error(f"[SCAN] Trigger engine evaluation failed: {e}")
 
                     # Process watchdogs (channel health monitoring)
-                    if self.watchdog_engine:
-                        self.watchdog_engine.process_scan(self.channel_values, self.channel_timestamps)
+                    try:
+                        if self.watchdog_engine:
+                            self.watchdog_engine.process_scan(self.channel_values, self.channel_timestamps)
+                    except Exception as e:
+                        logger.error(f"[SCAN] Watchdog engine check failed: {e}")
 
                     # Evaluate safety interlocks (backend-authoritative safety logic)
-                    if self.safety_manager:
-                        self.safety_manager.evaluate_all()
+                    try:
+                        if self.safety_manager:
+                            self.safety_manager.evaluate_all()
+                    except Exception as e:
+                        logger.error(f"[SCAN] Safety manager evaluation failed: {e}")
 
                 except Exception as e:
                     logger.error(f"Error in scan loop: {e}", exc_info=True)
@@ -13314,7 +13343,7 @@ Unit conversions:
             # Sleep until next epoch-anchored target (prevents cumulative drift)
             sleep_time = max(0, next_scan_time - time.time())
             # If we fell behind by more than one interval, reset to prevent burst catch-up
-            if time.time() - next_scan_time > scan_interval:
+            if time.time() - next_scan_time >= scan_interval:
                 next_scan_time = time.time()
             time.sleep(sleep_time)
 
@@ -13458,7 +13487,7 @@ Unit conversions:
             # Sleep until next epoch-anchored target (prevents cumulative drift)
             sleep_time = max(0, next_publish_time - time.time())
             # If we fell behind by more than one interval, reset to prevent burst catch-up
-            if time.time() - next_publish_time > publish_interval:
+            if time.time() - next_publish_time >= publish_interval:
                 next_publish_time = time.time()
             time.sleep(sleep_time)
 

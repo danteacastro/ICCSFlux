@@ -3183,35 +3183,91 @@ function openChannelConfig(channelName: string) {
       }
       break
     case 'strain':
+    case 'strain_input':
       moduleConfig = {
-        bridge_config: 'full',
-        nominal_resistance: 350,
-        gage_factor: 2.0,
-        excitation_voltage: 2.5,
-        units: 'strain',
+        bridge_config: config.bridge_config || 'full',
+        nominal_resistance: config.nominal_resistance ?? 350,
+        gage_factor: config.gage_factor ?? 2.0,
+        excitation_voltage: config.excitation_voltage ?? 2.5,
+        units: config.unit || 'strain',
       }
       break
     case 'iepe':
+    case 'iepe_input':
       moduleConfig = {
-        coupling: 'AC',
-        excitation_current: 4,
-        sensitivity: 100,
-        units: 'g',
+        coupling: config.coupling || 'AC',
+        excitation_current: config.excitation_current ?? 4,
+        sensitivity: config.sensitivity ?? 100,
+        units: config.unit || 'g',
       }
       break
     case 'counter':
+    case 'counter_input':
       moduleConfig = {
-        mode: 'count_edges',
-        edge: 'rising',
-        initial_count: 0,
-        count_direction: 'up',
+        mode: config.counter_mode || 'count_edges',
+        edge: config.counter_edge || 'rising',
+        initial_count: config.initial_count ?? 0,
+        count_direction: config.direction || 'up',
       }
       break
     case 'resistance':
+    case 'resistance_input':
       moduleConfig = {
-        wiring: '4-wire',
-        excitation_current: 1000,
-        range: '100',
+        wiring: config.wiring || config.rtd_wiring || '2-wire',
+        excitation_current_ma: config.excitation_current_ma ?? 1.0,
+        resistance_range: config.resistance_range ?? 1000,
+      }
+      break
+    case 'voltage_output':
+    case 'analog_output':
+      moduleConfig = {
+        voltage_range_min: config.voltage_range_min ?? config.raw_min ?? -10,
+        voltage_range_max: config.voltage_range_max ?? config.raw_max ?? 10,
+        scaling_type: config.scaling_type || 'none',
+        scale_slope: config.scale_slope ?? 1,
+        scale_offset: config.scale_offset ?? 0,
+        scaled_min: config.scaled_min ?? config.pre_scaled_min ?? -10,
+        scaled_max: config.scaled_max ?? config.pre_scaled_max ?? 10,
+      }
+      break
+    case 'current_output':
+      moduleConfig = {
+        current_range_ma_min: config.current_range_ma_min ?? 4,
+        current_range_ma_max: config.current_range_ma_max ?? 20,
+        four_twenty_scaling: config.four_twenty_scaling ?? true,
+        scaled_min: config.scaled_min ?? config.eng_units_min ?? 0,
+        scaled_max: config.scaled_max ?? config.eng_units_max ?? 100,
+      }
+      break
+    case 'bridge_input':
+      moduleConfig = {
+        bridge_config: config.bridge_config || 'full',
+        excitation_voltage: config.excitation_voltage ?? 2.5,
+        nominal_resistance: config.nominal_resistance ?? 350,
+        scaling_type: config.scaling_type || 'none',
+        scale_slope: config.scale_slope ?? 1,
+        scale_offset: config.scale_offset ?? 0,
+      }
+      break
+    case 'frequency_input':
+      moduleConfig = {
+        min_frequency: config.min_frequency ?? 1,
+        max_frequency: config.max_frequency ?? 100000,
+        edge: config.edge || 'rising',
+        filter_enable: config.filter_enable ?? false,
+      }
+      break
+    case 'counter_output':
+      moduleConfig = {
+        initial_count: config.initial_count ?? 0,
+        direction: config.direction || 'up',
+      }
+      break
+    case 'pulse_output':
+      moduleConfig = {
+        frequency: config.pulse_frequency ?? 1000,
+        duty_cycle: config.pulse_duty_cycle ?? 50,
+        idle_state: config.idle_state || 'low',
       }
       break
     case 'digital_input':
@@ -3372,6 +3428,86 @@ function saveChannelConfig() {
     config.digital_expected_state = mc.di_alarm_expected_state ? 'HIGH' : 'LOW'
     config.digital_debounce_ms = mc.di_alarm_debounce_ms ?? 100
     config.digital_invert = mc.di_alarm_invert ?? false
+  }
+
+  // Strain types
+  if (['strain', 'strain_input'].includes(channelType)) {
+    config.bridge_config = mc.bridge_config
+    config.gage_factor = mc.gage_factor
+    config.excitation_voltage = mc.excitation_voltage
+  }
+
+  // IEPE types
+  if (['iepe', 'iepe_input'].includes(channelType)) {
+    config.coupling = mc.coupling
+    config.sensitivity = mc.sensitivity
+    config.excitation_current = mc.excitation_current
+  }
+
+  // Counter types
+  if (['counter', 'counter_input'].includes(channelType)) {
+    config.counter_mode = mc.mode
+    config.counter_edge = mc.edge
+    config.initial_count = mc.initial_count
+    config.direction = mc.count_direction
+  }
+
+  // Resistance types
+  if (['resistance', 'resistance_input'].includes(channelType)) {
+    config.wiring = mc.wiring
+    config.excitation_current_ma = mc.excitation_current_ma
+    config.resistance_range = mc.resistance_range
+  }
+
+  // Bridge input
+  if (channelType === 'bridge_input') {
+    config.bridge_config = mc.bridge_config
+    config.excitation_voltage = mc.excitation_voltage
+    config.nominal_resistance = mc.nominal_resistance
+    config.scaling_type = mc.scaling_type
+    config.scale_slope = mc.scale_slope
+    config.scale_offset = mc.scale_offset
+  }
+
+  // Frequency input
+  if (channelType === 'frequency_input') {
+    config.min_frequency = mc.min_frequency
+    config.max_frequency = mc.max_frequency
+    config.edge = mc.edge
+    config.filter_enable = mc.filter_enable
+  }
+
+  // Voltage output
+  if (['voltage_output', 'analog_output'].includes(channelType)) {
+    config.voltage_range_min = mc.voltage_range_min
+    config.voltage_range_max = mc.voltage_range_max
+    config.scaling_type = mc.scaling_type
+    config.scale_slope = mc.scale_slope
+    config.scale_offset = mc.scale_offset
+    config.scaled_min = mc.scaled_min
+    config.scaled_max = mc.scaled_max
+  }
+
+  // Current output
+  if (channelType === 'current_output') {
+    config.current_range_ma_min = mc.current_range_ma_min
+    config.current_range_ma_max = mc.current_range_ma_max
+    config.four_twenty_scaling = mc.four_twenty_scaling
+    config.scaled_min = mc.scaled_min
+    config.scaled_max = mc.scaled_max
+  }
+
+  // Counter output
+  if (channelType === 'counter_output') {
+    config.initial_count = mc.initial_count
+    config.direction = mc.direction
+  }
+
+  // Pulse output
+  if (channelType === 'pulse_output') {
+    config.pulse_frequency = mc.frequency
+    config.pulse_duty_cycle = mc.duty_cycle
+    config.idle_state = mc.idle_state
   }
 
   // Include new_name if renaming the channel
@@ -3774,6 +3910,7 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'strain':
+    case 'strain_input':
       return [
         ...baseColumns,
         { key: 'bridge', label: 'BRIDGE', width: '80px' },
@@ -3782,6 +3919,7 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'iepe':
+    case 'iepe_input':
       return [
         ...baseColumns,
         { key: 'coupling', label: 'COUPLING', width: '70px' },
@@ -3790,6 +3928,7 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'counter':
+    case 'counter_input':
       return [
         ...baseColumns,
         { key: 'mode', label: 'MODE', width: '100px' },
@@ -3808,11 +3947,12 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'resistance':
+    case 'resistance_input':
       return [
         ...baseColumns,
         { key: 'wiring', label: 'WIRING', width: '70px' },
-        { key: 'range', label: 'RANGE', width: '80px' },
-        { key: 'value', label: 'VALUE', width: '100px' },
+        { key: 'range', label: 'RANGE (Ω)', width: '80px', align: 'center' },
+        { key: 'value', label: 'VALUE', width: '100px', align: 'right' },
       ]
     case 'digital_input':
     case 'digital_output':
@@ -3852,6 +3992,28 @@ const tableColumns = computed(() => {
         { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
         { key: 'value', label: 'VALUE', width: '100px' },
+      ]
+    case 'bridge_input':
+      return [
+        ...baseColumns,
+        { key: 'bridge_config', label: 'BRIDGE', width: '70px', align: 'center' },
+        { key: 'excitation_voltage', label: 'EXCIT (V)', width: '80px', align: 'center' },
+        { key: 'value', label: 'VALUE', width: '100px', align: 'right' },
+      ]
+    case 'frequency_input':
+      return [
+        ...baseColumns,
+        { key: 'edge', label: 'EDGE', width: '70px', align: 'center' },
+        { key: 'min_frequency', label: 'MIN (Hz)', width: '80px', align: 'center' },
+        { key: 'max_frequency', label: 'MAX (Hz)', width: '80px', align: 'center' },
+        { key: 'value', label: 'VALUE', width: '100px', align: 'right' },
+      ]
+    case 'counter_output':
+      return [
+        ...baseColumns,
+        { key: 'initial_count', label: 'INIT COUNT', width: '80px', align: 'center' },
+        { key: 'direction', label: 'DIR', width: '60px', align: 'center' },
+        { key: 'value', label: 'VALUE', width: '100px', align: 'right' },
       ]
     default:
       return [

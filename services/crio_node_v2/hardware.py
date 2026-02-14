@@ -560,7 +560,7 @@ class NIDAQmxHardware(HardwareInterface):
                 do_by_module.setdefault(module, []).append(ch)
             elif internal_type == 'analog_output':
                 ao_by_module.setdefault(module, []).append(ch)
-            elif internal_type == 'counter_input':
+            elif internal_type in ('counter_input', 'frequency_input'):
                 ctr_in_channels.append(ch)
             elif internal_type == 'counter_output':
                 ctr_out_channels.append(ch)
@@ -699,6 +699,40 @@ class NIDAQmxHardware(HardwareInterface):
                         min_val=0.0,
                         max_val=ch.resistance_range
                     )
+                elif actual_type in ('iepe', 'iepe_input'):
+                    # IEPE accelerometer/microphone channel (e.g., NI 9230-9234, 9250, 9251)
+                    try:
+                        logger.info(f"Creating IEPE channel: {ch.name} ({full_path}) "
+                                   f"sensitivity={getattr(ch, 'sensitivity', 100.0)}mV/g")
+                        task.ai_channels.add_ai_accel_chan(
+                            full_path,
+                            sensitivity=getattr(ch, 'sensitivity', 100.0),
+                            sensitivity_units=nidaqmx.constants.AccelSensitivityUnits.M_VOLTS_PER_G,
+                            current_excit_source=nidaqmx.constants.ExcitationSource.INTERNAL,
+                            current_excit_val=getattr(ch, 'excitation_current', 0.002),
+                        )
+                    except Exception:
+                        # Fallback to voltage if IEPE not supported
+                        logger.warning(f"IEPE setup failed for {ch.name}, falling back to voltage")
+                        task.ai_channels.add_ai_voltage_chan(full_path, min_val=-5.0, max_val=5.0)
+                elif actual_type == 'bridge_input':
+                    # Bridge/Wheatstone bridge input (e.g., NI 9237, 9219)
+                    try:
+                        logger.info(f"Creating bridge channel: {ch.name} ({full_path}) "
+                                   f"excitation={getattr(ch, 'excitation_voltage', 2.5)}V")
+                        task.ai_channels.add_ai_bridge_chan(
+                            full_path,
+                            min_val=-0.002,
+                            max_val=0.002,
+                            units=nidaqmx.constants.BridgeUnits.M_VOLTS_PER_VOLT,
+                            bridge_config=nidaqmx.constants.BridgeConfiguration.FULL_BRIDGE,
+                            voltage_excit_source=nidaqmx.constants.ExcitationSource.INTERNAL,
+                            voltage_excit_val=getattr(ch, 'excitation_voltage', 2.5),
+                        )
+                    except Exception:
+                        # Fallback to voltage if bridge not supported
+                        logger.warning(f"Bridge setup failed for {ch.name}, falling back to voltage")
+                        task.ai_channels.add_ai_voltage_chan(full_path, min_val=-0.1, max_val=0.1)
                 else:
                     # Voltage input (default for voltage_input, strain_input, etc.)
                     # cRIO C Series modules have fixed terminal config - use DEFAULT
@@ -995,6 +1029,10 @@ class NIDAQmxHardware(HardwareInterface):
                         # Apply scaling (4-20mA, map, linear, or pass-through)
                         value = apply_scaling(ch_config, raw_value)
 
+                        # Detect NaN values from hardware (open TC, broken sensor, etc.)
+                        if isinstance(value, float) and math.isnan(value):
+                            logger.warning(f"[HW] NaN value from {ch_name} — marking as bad quality")
+
                         result[ch_name] = (value, now)
 
                         # Cache value for slow tasks
@@ -1260,6 +1298,11 @@ class NIDAQmxHardware(HardwareInterface):
                     return None
 
         return None
+
+    @property
+    def failed_channels(self) -> set:
+        """Return the set of channels that failed during task creation."""
+        return set(self._failed_channels)
 
 
 def create_hardware(config: HardwareConfig, use_mock: bool = False) -> HardwareInterface:
