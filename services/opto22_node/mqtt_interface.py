@@ -186,6 +186,19 @@ class SystemMQTT:
     def wait_for_connection(self, timeout: float = 10.0) -> bool:
         return self._connected.wait(timeout)
 
+    def reconnect(self):
+        """Force reconnection. paho auto-reconnects normally but this
+        provides an explicit trigger for manual recovery."""
+        if self._shutdown.is_set():
+            return
+        if self._client:
+            try:
+                self._client.reconnect()
+            except Exception as e:
+                logger.warning(f"System MQTT reconnect failed: {e}")
+        else:
+            self.connect()
+
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         is_success = (reason_code == 0) if isinstance(reason_code, int) else not reason_code.is_failure
         if is_success:
@@ -306,6 +319,18 @@ class GroovMQTT:
 
     def wait_for_connection(self, timeout: float = 10.0) -> bool:
         return self._connected.wait(timeout)
+
+    def reconnect(self):
+        """Force reconnection to groov Manage MQTT."""
+        if self._shutdown.is_set():
+            return
+        if self._client:
+            try:
+                self._client.reconnect()
+            except Exception as e:
+                logger.warning(f"groov MQTT reconnect failed: {e}")
+        else:
+            self.connect()
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         is_success = (reason_code == 0) if isinstance(reason_code, int) else not reason_code.is_failure

@@ -310,6 +310,7 @@ class DeviceDiscovery:
 
     def __init__(self):
         self._last_result: Optional[DiscoveryResult] = None
+        self._last_scan_time: float = 0
         # Track cRIO nodes that have registered via MQTT
         self._crio_nodes: Dict[str, CRIONode] = {}
         self._crio_lock = __import__('threading').Lock()
@@ -689,6 +690,7 @@ class DeviceDiscovery:
             result.message += f", {len(gc_nodes)} GC nodes ({gc_channels} remote channels)"
 
         self._last_result = result
+        self._last_scan_time = __import__('time').time()
         return result
 
     def _scan_real_hardware(self, timestamp: str) -> DiscoveryResult:
@@ -1030,6 +1032,18 @@ class DeviceDiscovery:
                 pass
         return 0
 
+    def is_stale(self, max_age_s: float = 300.0) -> bool:
+        """Check if discovery results are stale (older than max_age_s seconds)."""
+        if not self._last_result:
+            return True
+        return (__import__('time').time() - self._last_scan_time) > max_age_s
+
+    def get_scan_age(self) -> Optional[float]:
+        """Get age of last discovery scan in seconds, or None if never scanned."""
+        if not self._last_scan_time:
+            return None
+        return __import__('time').time() - self._last_scan_time
+
     def get_available_channels(self) -> List[Dict]:
         """
         Get flat list of all available physical channels from last scan.
@@ -1042,6 +1056,10 @@ class DeviceDiscovery:
 
         if not self._last_result:
             return []
+
+        age = self.get_scan_age()
+        if age and age > 300:
+            logger.warning(f"Discovery results are {age:.0f}s old — consider re-scanning")
 
         channels = []
 

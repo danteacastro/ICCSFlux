@@ -56,7 +56,7 @@ The main backend service running on the Windows PC.
 |------|-----|---------|
 | `services/daq_service/hardware_reader.py` | 1,967 | NI-DAQmx continuous buffered acquisition. Supports: TC, RTD, strain, IEPE, voltage, current, DIO, counter |
 | `services/daq_service/simulator.py` | 584 | Synthetic data generator (ramps, sine, noise, pulse) for testing without hardware |
-| `services/daq_service/device_discovery.py` | 1,129 | NI hardware enumeration + module database (cDAQ, cRIO, PXI, USB) |
+| `services/daq_service/device_discovery.py` | 1,160 | NI hardware enumeration + module database (cDAQ, cRIO, PXI, USB). Cache staleness: `is_stale()`, `get_scan_age()` |
 | `services/daq_service/modbus_reader.py` | 881 | Modbus TCP/RTU client (holding/input registers, coils, discretes) |
 | `services/daq_service/opcua_source.py` | 542 | OPC-UA client with value subscriptions |
 | `services/daq_service/rest_reader.py` | 566 | REST API polling (supports BASIC, BEARER, API_KEY, OAUTH2 auth) |
@@ -75,7 +75,7 @@ The main backend service running on the Windows PC.
 | File | LOC | Purpose |
 |------|-----|---------|
 | `services/daq_service/alarm_manager.py` | 1,810 | ISA-18.2 alarms: deadband, on/off delays, rate-of-change, grouping, shelving, latch |
-| `services/daq_service/safety_manager.py` | 1,279 | Backend-authoritative interlocks: condition evaluation, trip actions, latch/reset |
+| `services/daq_service/safety_manager.py` | 1,462 | IEC 61511 interlocks with latch state machine (SAFE/ARMED/TRIPPED). Classes: `InterlockCondition`, `InterlockControl`, `Interlock`, `InterlockStatus`, `SafeStateConfig`, `InterlockHistoryEntry`. Condition types: `channel_value`, `digital_input`, `alarm_active`, `no_active_alarms`, `acquiring`, `mqtt_connected`, `daq_connected`, `variable_value`, `expression`. Features: per-interlock bypass with expiry, demand counting, proof test tracking, SIL rating, `channel_offline` detection, `has_offline_channels` flag. Config push auto-filters interlocks to edge nodes |
 | `services/daq_service/pid_engine.py` | 605 | PID control loops: auto/manual/cascade, anti-windup, derivative-on-PV, bumpless transfer |
 | `services/daq_service/trigger_engine.py` | 628 | Automation triggers: value threshold, time, schedule, state change → actions |
 | `services/daq_service/sequence_manager.py` | 552 | Server-side sequences (survive browser disconnect): steps, loops, conditionals, waits |
@@ -105,12 +105,12 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| `services/crio_node_v2/crio_node.py` | 1,730 | Main cRIO service: event loop, MQTT commands, hardware read, script exec, safety checks |
+| `services/crio_node_v2/crio_node.py` | 1,760 | Main cRIO service: event loop, MQTT commands, hardware read, script exec, safety checks. Error threshold 3, safety write retry, hardware health publishing |
 | `services/crio_node_v2/script_engine.py` | 1,777 | Script sandbox (same API as DAQ service). 4 Hz rate limiting via TokenBucketRateLimiter. **MUST keep blocked lists in sync with script_manager.py** |
-| `services/crio_node_v2/hardware.py` | 1,178 | NI-DAQmx abstraction for cRIO modules. Falls back to MockHardware if nidaqmx unavailable |
+| `services/crio_node_v2/hardware.py` | 1,195 | NI-DAQmx abstraction for cRIO modules. Falls back to MockHardware if nidaqmx unavailable. IndexError guard on partial DI/AI reads (hot-unplug safe) |
 | `services/crio_node_v2/state_machine.py` | 215 | cRIO state machine: IDLE → ACQUIRING → SESSION |
 | `services/crio_node_v2/mqtt_interface.py` | 337 | paho-mqtt wrapper with auto-reconnect and TLS |
-| `services/crio_node_v2/safety.py` | 378+ | ISA-18.2 alarms: shelving (SHELVED/OUT_OF_SERVICE), off-delay, rate-of-change, expanded safety actions (dict + legacy string format) |
+| `services/crio_node_v2/safety.py` | 1,855 | ISA-18.2 alarms + IEC 61511 interlocks. Alarms: shelving (SHELVED/OUT_OF_SERVICE), off-delay, rate-of-change, COMM_FAIL for missing channels, alarm flood detection, safety actions (dict + legacy string). Interlocks: condition evaluation, latch state machine (SAFE/ARMED/TRIPPED), `channel_offline` flag, safe state per channel, bypass with expiry, demand counting. Output blocking prevents script/MQTT override of safety-held outputs. **Synced to opto22_node/safety.py** |
 | `services/crio_node_v2/config.py` | 520 | Config loading and channel scaling |
 | `services/crio_node_v2/channel_types.py` | 299 | Channel type definitions and NI module mappings |
 | `services/crio_node_v2/audit_trail.py` | ~150 | Lightweight audit trail: SHA-256 hash chain, append-only JSONL, 10 MB rotation with gzip |
@@ -123,10 +123,10 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| `services/opto22_node/opto22_node.py` | 1,139 | Main service orchestrator: dual MQTT, scan loop, command dispatch |
+| `services/opto22_node/opto22_node.py` | 1,350 | Main service orchestrator: dual MQTT, scan loop, command dispatch, stale I/O detection, groov MQTT health monitoring |
 | `services/opto22_node/state_machine.py` | ~200 | States: IDLE → CONNECTING_MQTT → ACQUIRING → SESSION |
-| `services/opto22_node/mqtt_interface.py` | ~350 | Dual MQTT: SystemMQTT (NISystem) + GroovMQTT (groov Manage) |
-| `services/opto22_node/hardware.py` | ~400 | groov MQTT subscriber + REST API fallback. Unified HardwareInterface |
+| `services/opto22_node/mqtt_interface.py` | ~375 | Dual MQTT: SystemMQTT (NISystem) + GroovMQTT (groov Manage). Both have `reconnect()` |
+| `services/opto22_node/hardware.py` | ~310 | GroovIOSubscriber (MQTT I/O with stale detection) + GroovRestFallback (REST API). HardwareInterface auto-wires groov MQTT → subscriber |
 | `services/opto22_node/config.py` | ~500 | NodeConfig, ChannelConfig, groov MQTT + REST settings |
 | `services/opto22_node/channel_types.py` | ~300 | ChannelType enum + Opto22 module database (GRV-series) |
 
@@ -135,7 +135,7 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 | File | LOC | Purpose |
 |------|-----|---------|
 | `services/opto22_node/script_engine.py` | ~1,800 | Script sandbox (same API as DAQ service). 4 Hz rate limiting. **MUST keep blocked lists in sync with script_manager.py** |
-| `services/opto22_node/safety.py` | ~400 | ISA-18.2 alarms: shelving, off-delay, rate-of-change, interlock trip actions |
+| `services/opto22_node/safety.py` | 1,855 | Synced copy of cRIO safety.py (logger='Opto22Node'). ISA-18.2 alarms + IEC 61511 interlocks, COMM_FAIL, channel_offline. **MUST stay in sync with crio_node_v2/safety.py** |
 | `services/opto22_node/audit_trail.py` | ~150 | SHA-256 hash chain, append-only JSONL, 10 MB rotation |
 
 **Autonomous engines (Opto22-unique):**
@@ -329,10 +329,10 @@ Registry: `constants/hmiControls.ts` (350+ lines) — HMI control catalog with S
 
 ### Section 20: Testing
 
-**477 unit tests** (no external deps required):
+**558 unit tests** (no external deps required):
 
 ```bash
-python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/test_security_and_resilience.py tests/test_crio_script_engine_unit.py tests/test_recording_manager.py tests/test_session_and_recording.py tests/test_script_helpers.py -v
+python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/test_security_and_resilience.py tests/test_crio_script_engine_unit.py tests/test_recording_manager.py tests/test_session_and_recording.py tests/test_script_helpers.py tests/test_safety_manager.py tests/test_hot_unplug_resilience.py -v
 ```
 
 | File | Tests | Coverage |
@@ -344,6 +344,10 @@ python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/t
 | `test_recording_manager.py` | 37 | Recording config, start/stop, decimation, time interval, channel selection, script values, filenames, directories, buffered/immediate mode, triggered recording, file rotation by samples, thread safety |
 | `test_session_and_recording.py` | 63 | Session state validation (start guards, alarm checks), variable resets, timer management, callbacks (scheduler, recording, sequences), timeout, ALCOA+ integrity (SHA-256, tamper detection, read-only), rotation (size, samples, stop mode), circular mode, acquisition cascade |
 | `test_script_helpers.py` | 104 | SignalFilter (EMA, tau/dt, convergence), LookupTable (interpolation, clamping, sorting), RampSoak (ramp/soak/reset), TrendLine (regression, predict, time_to_value), RingBuffer (wrap, stats, clear), PeakDetector (height/distance filtering, area), SpectralAnalysis (FFT, pure-Python fallback), SPCChart (Xbar/R, Western Electric rules, Cp/Cpk), BiquadFilter (LP/HP/BP/notch, cascade), DataLog (publish, marks), cRIO DAQ-only stubs |
+| `test_safety_manager.py` | 47 | Interlock latch state machine (SAFE/ARMED/TRIPPED), condition evaluation (channel_value, digital_input, operators, delay), InterlockCondition/Control/Interlock serialization (to_dict, from_dict with camelCase↔snake_case compat), bypass with expiry, trip/reset system, auto-trip on interlock failure, output blocking, history recording, persistence, SafeStateConfig |
+| `test_hot_unplug_resilience.py` | 34 | COMM_FAIL alarm (trigger, clear, dedup, shelve respect), channel_offline flag (DAQ + node), has_offline_channels in InterlockStatus, discovery staleness (is_stale, get_scan_age), Opto22 GroovIOSubscriber (stale detection, topic mapping, payload extraction), Opto22 HardwareInterface (construction, wiring, health) |
+
+**Safety integration tests** (require MQTT broker): `python -m pytest tests/test_safety_interlocks.py -v` — 18 tests covering alarm lifecycle (latch, auto-clear, timed), acknowledge/reset, shelving, session interlocks, output blocking, first-out tracking, alarm history
 
 **Integration tests** (require MQTT broker + DAQ service): `python -m pytest tests/`
 
@@ -487,6 +491,80 @@ Recording:
 Safety:
   values → SafetyManager → Interlock evaluation → Trip actions (MQTT commands)
 ```
+
+## Safety & Interlock Architecture
+
+The safety system runs at three levels: DAQ service (backend-authoritative), cRIO node, and Opto22 node. All three share the same interlock data structures with camelCase↔snake_case serialization compatibility.
+
+### Three-Tier Safety
+
+| Layer | File | Role |
+|-------|------|------|
+| DAQ Service | `safety_manager.py` | Backend-authoritative. Evaluates all interlocks, manages latch state, pushes interlocks to edge nodes via config. Has full condition type set including `mqtt_connected`, `variable_value`, `expression` |
+| cRIO Node | `crio_node_v2/safety.py` | Local safety. Evaluates interlocks independently (survives PC disconnect). Condition types: `channel_value`, `digital_input`, `alarm_active`, `no_active_alarms`, `acquiring` |
+| Opto22 Node | `opto22_node/safety.py` | Identical to cRIO (synced copy with different logger) |
+
+### Interlock Config Push (DAQ → Edge Nodes)
+
+The DAQ service pushes interlocks to edge nodes during config sync (`_push_crio_channel_config()`):
+- Filters interlocks: only those with controls targeting the node's channels, or `stop_session` controls
+- Includes `safe_state_config` with per-channel safe values
+- Interlocks are included in the config hash for version tracking
+- Edge nodes deserialize via `from_dict()` which accepts both camelCase (DAQ format) and snake_case (node format)
+
+```
+DAQ Service (safety_manager.py)         Edge Nodes (cRIO/Opto22 safety.py)
+─────────────────────────────           ──────────────────────────────────
+InterlockCondition.to_dict()    ──MQTT──>  InterlockCondition.from_dict()
+  uses 'type', camelCase                   accepts both camelCase + snake_case
+InterlockControl.to_dict()      ──MQTT──>  InterlockControl.from_dict()
+  uses 'type', 'setValue'                  accepts 'type'/'setValue' + 'control_type'/'set_value'
+SafeStateConfig.to_dict()       ──MQTT──>  SafeStateConfig.from_dict()
+  category-based format                   accepts both category-based + per-channel
+```
+
+### Interlock Evaluation
+- **Conditions**: `channel_value`, `digital_input`, `alarm_active`, `no_active_alarms`, `acquiring` (edge); plus `mqtt_connected`, `daq_connected`, `not_recording`, `variable_value`, `expression` (DAQ only)
+- **Logic**: AND (all must pass) or OR (any can pass), with per-condition on-delay
+- **Latch states**: SAFE → ARMED → TRIPPED (IEC 61511)
+- **Controls**: `set_output` (write channel value), `stop_session` (halt acquisition)
+- **Bypass**: Per-interlock, with optional auto-expiry timer
+- **Demand tracking**: Counts satisfied→unsatisfied transitions per interlock
+- **Output blocking**: Safety-held outputs (from alarms) and interlock-held outputs cannot be overridden by scripts or MQTT commands
+- **Evaluation order**: Alarms first → COMM_FAIL detection → interlock evaluation (so `alarm_active` conditions see current state)
+
+### COMM_FAIL Alarm
+When `check_all(channel_values, configured_channels=set)` is called with a set of expected channels, any channel in `configured_channels` but missing from `channel_values` triggers a CRITICAL COMM_FAIL alarm. The alarm auto-clears when the channel reappears. Respects shelving (shelved channels don't trigger COMM_FAIL). Does not duplicate (fires once, stays active until cleared).
+
+### channel_offline Flag
+When an interlock condition references a channel with no value (None), the evaluation result includes `channel_offline: True`. This propagates to `has_offline_channels` in the interlock status (DAQ: `InterlockStatus.has_offline_channels`, serialized as `hasOfflineChannels`; nodes: `has_offline_channels` key in status dict). Distinguishes hardware failures from legitimate process condition failures.
+
+### Safety File Sync
+`crio_node_v2/safety.py` and `opto22_node/safety.py` are identical except for the logger name. When modifying safety logic, **edit cRIO first, then copy to Opto22** and change `logger = logging.getLogger('cRIONode')` to `logging.getLogger('Opto22Node')`.
+
+### Interlock Commands (cRIO/Opto22)
+
+Edge nodes accept these MQTT commands on `{base}/commands/interlock`:
+- `arm_latch` / `disarm_latch` — arm/disarm the safety latch
+- `bypass_interlock` / `unbypass_interlock` — per-interlock bypass with duration
+- `acknowledge_trip` / `reset_trip` — trip acknowledgment and reset
+- `safe_state` — apply safe state to all configured outputs
+
+## Hot-Unplug Resilience
+
+The system handles hardware module disconnection during operation:
+
+| Scenario | Behavior |
+|----------|----------|
+| Module unplugged mid-read (cRIO) | DI/AI loops guard `i >= len(values)`, return NaN for missing channels |
+| Module unplugged mid-read (Opto22) | groov MQTT stops publishing; GroovIOSubscriber detects stale channels via `get_stale_channels(timeout_s)` |
+| Safety channel goes offline | COMM_FAIL alarm fires (CRITICAL), safety actions execute if configured |
+| Interlock channel goes offline | Condition fails with `channel_offline=True`, interlock trips if ARMED |
+| Discovery after unplug | `is_stale(max_age_s)` warns if results are old; `get_scan_age()` reports age |
+| cRIO consecutive errors | After 3 errors (not 10), sets safe state, publishes `status/degraded`, attempts recovery with exponential backoff |
+| Safety write fails | Single retry after 50ms; if still fails, publishes `safety/write_failure` to MQTT |
+| groov MQTT disconnects | Detected in main loop, logged, published to `status/groov_mqtt` |
+| Hardware health | Published in status messages: `hardware_health` dict with healthy/error_count/stale_channels |
 
 ## Frontend Dependencies
 

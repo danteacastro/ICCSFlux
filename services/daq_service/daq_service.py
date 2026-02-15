@@ -5577,7 +5577,9 @@ Unit conversions:
                 "enabled": self.config.system.watchdog_output_enabled,
                 "channel": self.config.system.watchdog_output_channel,
                 "rate_hz": self.config.system.watchdog_output_rate_hz
-            }
+            },
+            # Hardware health
+            "hardware_health": self.hardware_reader.get_health_status() if self.hardware_reader else None,
         }
 
         self.mqtt_client.publish(
@@ -9422,11 +9424,36 @@ Unit conversions:
                         'alarm_message': getattr(action, 'alarm_message', '')
                     }
 
+        # Build interlocks for this node (filter to interlocks with controls on node channels)
+        node_interlocks = []
+        if self.safety_manager:
+            crio_channel_names = set(crio_channels.keys())
+            for interlock in self.safety_manager.get_all_interlocks():
+                # Include if any control targets a channel on this node
+                has_node_control = any(
+                    ctrl.channel in crio_channel_names
+                    for ctrl in interlock.controls
+                    if ctrl.channel
+                )
+                # Also include stop_session controls (no channel, applicable everywhere)
+                has_stop = any(
+                    ctrl.control_type == 'stop_session'
+                    for ctrl in interlock.controls
+                )
+                if has_node_control or has_stop:
+                    node_interlocks.append(interlock.to_dict())
+
+        # Build safe state config for this node
+        safe_state_data = None
+        if self.safety_manager:
+            safe_state_data = self.safety_manager.safe_state_config.to_dict()
+
         # Generate config version hash (includes channels + safety_actions + rates)
         import hashlib
         config_for_hash = {
             'channels': crio_channels,
             'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
             'scan_rate_hz': self.config.system.scan_rate_hz,
             'publish_rate_hz': self.config.system.publish_rate_hz
         }
@@ -9438,6 +9465,7 @@ Unit conversions:
         config_data = {
             'channels': crio_channels,
             'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
             'scripts': [],
             'safe_state_outputs': [],
             'scan_rate_hz': self.config.system.scan_rate_hz,
@@ -9450,6 +9478,8 @@ Unit conversions:
             'timestamp': datetime.now().isoformat(),
             'config_version': config_hash
         }
+        if safe_state_data:
+            config_data['safe_state_config'] = safe_state_data
 
         # Track this push for ACK/retry logic
         with self._crio_push_lock:
@@ -9465,7 +9495,7 @@ Unit conversions:
 
         topic = f"{mqtt_base}/nodes/{node_id}/config/full"
         self.mqtt_client.publish(topic, json.dumps(config_data), qos=1)
-        logger.info(f"Pushed {len(crio_channels)} channels + {len(safety_actions_data)} safety actions to cRIO {node_id} (version: {config_hash})")
+        logger.info(f"Pushed {len(crio_channels)} channels + {len(safety_actions_data)} safety actions + {len(node_interlocks)} interlocks to cRIO {node_id} (version: {config_hash})")
 
         # Clean up any stale channel values after config push
         self._cleanup_stale_channel_values()
@@ -13195,6 +13225,20 @@ Unit conversions:
                         raw_values.update(self.simulator.read_all())
                     elif self.hardware_reader:
                         raw_values.update(self.hardware_reader.read_all())
+                        # Check hardware reader health
+                        if not self.hardware_reader.is_healthy():
+                            if not getattr(self, '_reader_degraded_notified', False):
+                                logger.error("[SCAN] Hardware reader unhealthy — values may be stale")
+                                self._reader_degraded_notified = True
+                                base = self.get_topic_base()
+                                self.mqtt_client.publish(
+                                    f"{base}/status/hardware_degraded",
+                                    json.dumps({
+                                        'health': self.hardware_reader.get_health_status(),
+                                        'timestamp': datetime.now().isoformat(),
+                                    }), qos=1)
+                        else:
+                            self._reader_degraded_notified = False
 
                     # Read from Modbus devices (if configured)
                     try:

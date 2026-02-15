@@ -270,11 +270,14 @@ class CRIONodeV2:
             node_id=self.node_id if hasattr(self, 'node_id') else 'crio'
         )
 
-        # Safety manager (owns alarms)
-        self.safety = SafetyManager()
+        # Safety manager (owns alarms + interlocks)
+        safety_data_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'safety')
+        self.safety = SafetyManager(data_dir=safety_data_dir)
         self.safety.on_alarm = self._on_alarm_event
         self.safety.on_action = self._on_safety_action
         self.safety.on_stop_session = lambda: self._cmd_acquire_stop({'reason': 'safety_action'})
+        self.safety.on_interlock_action = self._on_safety_action
+        self.safety.on_publish = self._on_safety_publish
         self._configure_safety_from_channels()
 
         # Script engine
@@ -346,6 +349,9 @@ class CRIONodeV2:
             logger.warning("Scripts did not stop within 5s timeout during shutdown")
 
         self._shutdown.set()
+
+        # Persist safety state before shutdown
+        self.safety.save_all()
 
         # Transition to IDLE (stops hardware)
         self.state.to(State.IDLE)
@@ -453,13 +459,19 @@ class CRIONodeV2:
             except Exception as e:
                 _consecutive_errors += 1
                 logger.error(f"[LOOP] Error in main loop: {e}", exc_info=(_consecutive_errors <= 3))
-                # After 10 consecutive errors, stop acquisition permanently
-                # (do NOT reset counter — require operator intervention)
-                if _consecutive_errors >= 10:
+                # After 3 consecutive errors, stop acquisition and attempt recovery
+                # (reduced from 10 — faster response to hardware failures)
+                if _consecutive_errors >= 3:
                     logger.critical(f"[LOOP] {_consecutive_errors} consecutive errors — "
                                    f"attempting recovery with backoff...")
                     self.hardware.set_safe_state()
                     self.state.to(State.IDLE)
+                    self.mqtt.publish("status/degraded", {
+                        'reason': 'consecutive_errors',
+                        'error_count': _consecutive_errors,
+                        'recovery_attempt': _recovery_attempts + 1,
+                        'timestamp': time.time(),
+                    }, qos=1)
                     self._publish_status()
                     # Exponential backoff: 5s, 10s, 20s, max 60s
                     backoff = min(60, 5 * (2 ** (_recovery_attempts)))
@@ -592,6 +604,9 @@ class CRIONodeV2:
             elif '/return-to-service' in topic or '/return_to_service' in topic:
                 self._cmd_alarm_return_to_service(payload)
 
+        elif '/interlock/' in topic:
+            self._handle_interlock_command(topic, payload)
+
         elif '/script/' in topic:
             self.script_engine.handle_command(topic, payload)
 
@@ -705,6 +720,13 @@ class CRIONodeV2:
             self._publish_command_ack(channel, False, f"Output safety-held by alarm on {alarm_ch}")
             return
 
+        # Check interlock hold (output held by tripped interlock)
+        if self.safety.is_interlock_held(channel):
+            reason = self.safety.get_output_block_reason(channel)
+            logger.warning(f"Output {channel} blocked: {reason}")
+            self._publish_command_ack(channel, False, reason)
+            return
+
         # Write to hardware
         success = self.hardware.write_output(channel, value)
 
@@ -780,20 +802,28 @@ class CRIONodeV2:
     def _cmd_safe_state(self, payload: Dict[str, Any]):
         """Handle atomic safe-state command from DAQ service.
 
-        Sets ALL outputs to safe state in a single call, rather than
-        relying on individual per-channel output commands over MQTT.
+        Sets ALL outputs to their configured safe values using SafeStateConfig
+        for per-channel granularity. Channels not in SafeStateConfig fall back
+        to their ChannelConfig.default_value.
         """
         reason = payload.get('reason', 'command') if isinstance(payload, dict) else 'command'
         request_id = payload.get('request_id', '')
         logger.critical(f"[SAFE STATE] Atomic safe-state command received - reason: {reason}")
 
-        self.hardware.set_safe_state()
-
-        # Update output value cache to reflect safe state
+        # Per-channel safe state using configurable values
         with self.values_lock:
             for ch_name, ch_config in self.config.channels.items():
                 if 'output' in ch_config.channel_type:
-                    self.output_values[ch_name] = ch_config.default_value
+                    safe_value = self.safety.get_channel_safe_value(
+                        ch_name, ch_config.default_value)
+                    self.hardware.write_output(ch_name, safe_value)
+                    self.output_values[ch_name] = safe_value
+
+        # Check if safe state config says to stop session
+        safe_cfg = self.safety.get_safe_state_config()
+        if safe_cfg.stop_session:
+            if self.state.state == State.SESSION:
+                self.state.to(State.ACQUIRING)
 
         # Publish confirmation back to DAQ service
         self.mqtt.publish("safety/safe-state/ack", {
@@ -802,10 +832,10 @@ class CRIONodeV2:
             'request_id': request_id,
             'timestamp': datetime.now().isoformat()
         })
-        logger.critical("[SAFE STATE] All outputs set to safe state (atomic)")
+        logger.critical("[SAFE STATE] All outputs set to safe state (per-channel)")
 
         # Publish updated output values so DAQ service gets confirmation
-        self._publish_all_values()
+        self._publish_values()
 
     def _cmd_config_full(self, payload: Dict[str, Any]):
         """Handle full config push from DAQ."""
@@ -941,6 +971,14 @@ class CRIONodeV2:
         # Reconfigure safety manager with new alarm settings
         self.safety.clear_all()
         self._configure_safety_from_channels()
+
+        # Load interlock and safe state configuration from config push
+        if 'interlocks' in payload:
+            self.safety.configure_interlocks(payload['interlocks'])
+            logger.info(f"Configured {len(payload['interlocks'])} interlocks from config push")
+        if 'safe_state_config' in payload:
+            self.safety.configure_safe_state(payload['safe_state_config'])
+            logger.info("Safe state config updated from config push")
 
         # Update config version - echo from payload if provided (hash from DAQ service)
         # This ensures DAQ and cRIO agree on config version for validation
@@ -1121,7 +1159,8 @@ class CRIONodeV2:
                               for ch, data in self.channel_values.items()}
 
         # Check alarms (SafetyManager handles state, actions, callbacks)
-        self.safety.check_all(values_snapshot)
+        configured = set(self.config.channels.keys()) if self.config else set()
+        self.safety.check_all(values_snapshot, configured_channels=configured)
 
     def _on_alarm_event(self, event: AlarmEvent):
         """Callback when alarm state changes."""
@@ -1157,8 +1196,18 @@ class CRIONodeV2:
             'action': action, 'value': value
         })
 
-        # Execute output write
+        # Execute output write (with retry for safety-critical actions)
         success = self.hardware.write_output(channel, value)
+        if not success:
+            logger.error(f"Safety write FAILED for {channel}={value}, retrying...")
+            time.sleep(0.05)
+            success = self.hardware.write_output(channel, value)
+            if not success:
+                logger.critical(f"Safety write FAILED TWICE for {channel}={value}")
+                self.mqtt.publish("safety/write_failure", {
+                    'channel': channel, 'value': value, 'action': action,
+                    'timestamp': datetime.now().isoformat(),
+                }, qos=1)
 
         if success:
             with self.values_lock:
@@ -1187,6 +1236,88 @@ class CRIONodeV2:
             'success': success,
             'timestamp': datetime.now().isoformat()
         })
+
+    def _on_safety_publish(self, topic: str, payload: Dict):
+        """Callback for safety manager to publish MQTT messages (interlock events, flood alerts)."""
+        self.mqtt.publish(topic, payload)
+
+    def _handle_interlock_command(self, topic: str, payload: Dict[str, Any]):
+        """Route interlock commands from MQTT."""
+        if '/configure' in topic:
+            interlocks = payload.get('interlocks', [])
+            self.safety.configure_interlocks(interlocks)
+            self.audit.log_event('interlock_configure', details={'count': len(interlocks)})
+            self.mqtt.publish("interlock/configure/ack", {
+                'success': True, 'count': len(interlocks),
+                'timestamp': datetime.now().isoformat()
+            })
+
+        elif '/arm' in topic:
+            user = payload.get('user', 'mqtt')
+            success, msg = self.safety.arm_latch(user)
+            self.audit.log_event('interlock_arm', details={'success': success, 'user': user, 'message': msg})
+            self.mqtt.publish("interlock/arm/ack", {
+                'success': success, 'message': msg,
+                'timestamp': datetime.now().isoformat()
+            })
+
+        elif '/disarm' in topic:
+            user = payload.get('user', 'mqtt')
+            self.safety.disarm_latch(user)
+            self.audit.log_event('interlock_disarm', details={'user': user})
+            self.mqtt.publish("interlock/disarm/ack", {
+                'success': True,
+                'timestamp': datetime.now().isoformat()
+            })
+
+        elif '/bypass' in topic:
+            interlock_id = payload.get('interlock_id', '')
+            bypass = payload.get('bypass', True)
+            user = payload.get('user', 'mqtt')
+            reason = payload.get('reason', '')
+            duration = payload.get('max_duration_s')
+            success, msg = self.safety.bypass_interlock(
+                interlock_id, bypass, user, reason, duration)
+            self.audit.log_event('interlock_bypass', details={
+                'interlock_id': interlock_id, 'bypass': bypass,
+                'user': user, 'reason': reason, 'success': success
+            })
+            self.mqtt.publish("interlock/bypass/ack", {
+                'success': success, 'message': msg,
+                'interlock_id': interlock_id,
+                'timestamp': datetime.now().isoformat()
+            })
+
+        elif '/acknowledge' in topic:
+            interlock_id = payload.get('interlock_id', '')
+            user = payload.get('user', 'mqtt')
+            success = self.safety.acknowledge_trip(interlock_id, user)
+            self.audit.log_event('interlock_acknowledge', details={
+                'interlock_id': interlock_id, 'user': user, 'success': success
+            })
+
+        elif '/reset' in topic:
+            user = payload.get('user', 'mqtt')
+            success, msg = self.safety.reset_trip(user)
+            self.audit.log_event('interlock_reset', details={
+                'success': success, 'user': user, 'message': msg
+            })
+            self.mqtt.publish("interlock/reset/ack", {
+                'success': success, 'message': msg,
+                'timestamp': datetime.now().isoformat()
+            })
+
+        elif '/status' in topic:
+            status = self.safety.get_interlock_status()
+            self.mqtt.publish("interlock/status", status)
+
+        elif '/safe_state_config' in topic or '/safe-state-config' in topic:
+            self.safety.configure_safe_state(payload)
+            self.audit.log_event('safe_state_config', details=payload)
+            self.mqtt.publish("interlock/safe_state_config/ack", {
+                'success': True,
+                'timestamp': datetime.now().isoformat()
+            })
 
     def _publish_alarm_status(self):
         """Publish current alarm summary."""
@@ -1367,6 +1498,10 @@ class CRIONodeV2:
             'scan_rate_hz': self.config.scan_rate_hz,
             'publish_rate_hz': self.config.publish_rate_hz,
             'scan_timing': self._scan_timing.to_dict(),
+            'hardware_health': {
+                'healthy': self.hardware.is_healthy() if hasattr(self.hardware, 'is_healthy') else True,
+                'error_count': getattr(self.hardware, '_error_count', 0),
+            },
         }
 
         self.mqtt.publish("status/system", status, retain=True)
@@ -1382,6 +1517,11 @@ class CRIONodeV2:
         }
 
         self.mqtt.publish("heartbeat", heartbeat)
+
+        # Publish interlock status if interlocks are configured
+        if self.safety._interlocks:
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
     def _publish_session_status(self):
         """Publish session status."""
@@ -1446,12 +1586,14 @@ class CRIONodeV2:
         logger.info("Starting hardware acquisition")
         self._scan_timing.reset()
         self.hardware.start()
+        self.safety._acquiring = True
         # Auto-start acquisition-mode scripts
         self.script_engine.auto_start('acquisition')
 
     def _on_exit_acquiring(self, old_state, new_state, payload):
         """Called when exiting ACQUIRING state (to IDLE only)."""
         if new_state == State.IDLE:
+            self.safety._acquiring = False
             # Auto-stop acquisition-mode scripts
             self.script_engine.auto_stop('acquisition')
             logger.info("Stopping hardware acquisition")

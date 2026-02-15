@@ -227,10 +227,29 @@ class HardwareInterface:
     Provides the same get_values() / write_output() interface as cRIO hardware.
     """
 
-    def __init__(self, io_subscriber: GroovIOSubscriber,
+    def __init__(self, io_subscriber: GroovIOSubscriber = None,
                  rest_fallback: Optional[GroovRestFallback] = None,
-                 output_write_fn: Optional[Callable[[str, float], bool]] = None):
-        self.io = io_subscriber
+                 output_write_fn: Optional[Callable[[str, float], bool]] = None,
+                 # Alternative construction kwargs (from opto22_node):
+                 groov_mqtt=None,
+                 rest_host: Optional[str] = None,
+                 rest_port: int = 443,
+                 api_key: Optional[str] = None,
+                 topic_mapping: Optional[Dict[str, str]] = None):
+        # If constructed with groov_mqtt kwarg, build internal objects
+        if io_subscriber is None and groov_mqtt is not None:
+            io_subscriber = GroovIOSubscriber(topic_mapping=topic_mapping or {})
+            # Wire groov MQTT → subscriber (2-arg callback: topic, payload)
+            groov_mqtt.on_io_data = io_subscriber.on_io_message
+        if rest_fallback is None and rest_host:
+            try:
+                rest_fallback = GroovRestFallback(
+                    host=rest_host, port=rest_port, api_key=api_key)
+            except Exception as e:
+                logger.warning(f"REST fallback unavailable: {e}")
+                rest_fallback = None
+
+        self.io = io_subscriber or GroovIOSubscriber()
         self._rest = rest_fallback
         self._output_write_fn = output_write_fn
         self._output_values: Dict[str, float] = {}
@@ -257,3 +276,29 @@ class HardwareInterface:
     def get_output_values(self) -> Dict[str, float]:
         with self._lock:
             return dict(self._output_values)
+
+    def map_topic_to_channel(self, topic: str) -> Optional[str]:
+        """Map a groov MQTT topic to an NISystem channel name."""
+        return self.io._resolve_channel_name(topic)
+
+    def get_system_info(self) -> Optional[Dict[str, Any]]:
+        """Get system info from groov REST API."""
+        if self._rest:
+            try:
+                return self._rest.read_all_modules()
+            except Exception:
+                pass
+        return None
+
+    def get_stale_channels(self, timeout_s: float = 10.0) -> List[str]:
+        """Proxy to GroovIOSubscriber stale detection."""
+        return self.io.get_stale_channels(timeout_s)
+
+    def get_last_update_times(self) -> Dict[str, float]:
+        """Get actual data arrival timestamps (not scan timestamps)."""
+        with self.io._lock:
+            return dict(self.io._last_update)
+
+    def is_healthy(self) -> bool:
+        """Check if we're receiving data from any source."""
+        return self.io.channel_count > 0

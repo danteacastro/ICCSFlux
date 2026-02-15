@@ -189,12 +189,14 @@ class Opto22NodeService:
             node_id='opto22'
         )
 
-        # Safety manager (ISA-18.2 with shelving, off-delay, ROC)
-        self.safety = SafetyManager(
-            on_alarm_event=self._on_alarm_event,
-            on_safety_action=self._on_safety_action,
-        )
+        # Safety manager (ISA-18.2 with shelving, off-delay, ROC, interlocks)
+        safety_dir = str(config_dir / 'safety')
+        self.safety = SafetyManager(data_dir=safety_dir)
+        self.safety.on_alarm = self._on_alarm_event
+        self.safety.on_action = self._on_safety_action
         self.safety.on_stop_session = lambda: self._stop_session('safety_action')
+        self.safety.on_interlock_action = self._on_safety_action
+        self.safety.on_publish = self._on_safety_publish
 
         # PID engine
         self.pid_engine = PIDEngine(on_set_output=self._set_output_internal)
@@ -284,6 +286,10 @@ class Opto22NodeService:
             **details
         })
 
+    def _on_safety_publish(self, topic: str, payload: Dict):
+        """Callback for safety manager to publish MQTT messages (interlock events, flood alerts)."""
+        self._publish(self._topic(topic), payload)
+
     def _publish_pid_status(self, loop_id: str, status: Dict):
         """Callback to publish PID loop status."""
         self._publish(self._topic(f'pid/{loop_id}/status'), status)
@@ -333,43 +339,42 @@ class Opto22NodeService:
 
         # System MQTT (NISystem Mosquitto broker)
         sys_config = MQTTConfig(
-            broker=self.config.mqtt_broker,
-            port=self.config.mqtt_port,
+            broker_host=self.config.mqtt_broker,
+            broker_port=self.config.mqtt_port,
             username=self.config.mqtt_username,
             password=self.config.mqtt_password,
             client_id=f"opto22-{self.config.node_id}",
+            base_topic=self.config.mqtt_base_topic or 'nisystem',
+            node_id=self.config.node_id,
         )
         self.system_mqtt = SystemMQTT(sys_config)
         self.system_mqtt.on_connect = self._on_system_mqtt_connect
         self.system_mqtt.on_message = self._on_mqtt_message
-        self.system_mqtt.will_set(
-            self._topic('status/system'),
-            json.dumps({'status': 'offline', 'node_type': 'opto22'}),
-            qos=1, retain=True
-        )
+        # Will message is set automatically inside SystemMQTT.connect()
         self.system_mqtt.connect()
 
         # groov Manage MQTT (for I/O data) — only if configured
         if self.config.groov_mqtt_host:
             groov_config = GroovMQTTConfig(
-                broker=self.config.groov_mqtt_host,
-                port=self.config.groov_mqtt_port,
+                broker_host=self.config.groov_mqtt_host,
+                broker_port=self.config.groov_mqtt_port,
                 username=self.config.groov_mqtt_username,
                 password=self.config.groov_mqtt_password,
-                use_tls=self.config.groov_mqtt_tls,
-                io_topic_patterns=self.config.groov_io_topic_patterns or ['groov/io/#'],
+                tls_enabled=getattr(self.config, 'groov_mqtt_tls', False),
+                io_topic_patterns=getattr(self.config, 'groov_io_topic_patterns', None) or ['groov/io/#'],
             )
             self.groov_mqtt = GroovMQTT(groov_config)
-            self.groov_mqtt.on_io_data = self._on_groov_io_data
             self.groov_mqtt.connect()
 
         # Hardware interface (wraps groov MQTT + REST fallback)
+        # HardwareInterface wires groov MQTT → GroovIOSubscriber internally
         self.hardware = HardwareInterface(
             groov_mqtt=self.groov_mqtt,
-            rest_host=self.config.groov_rest_host,
-            rest_port=self.config.groov_rest_port,
-            api_key=self.config.groov_rest_api_key,
-            topic_mapping=self.config.topic_mapping,
+            rest_host=getattr(self.config, 'groov_rest_host', None),
+            rest_port=getattr(self.config, 'groov_rest_port', 443),
+            api_key=getattr(self.config, 'groov_rest_api_key', None),
+            topic_mapping=getattr(self.config, 'topic_mapping', None),
+            output_write_fn=self._write_groov_output,
         )
 
     def _on_system_mqtt_connect(self):
@@ -394,14 +399,31 @@ class Opto22NodeService:
         self._publish_status()
         logger.info("System MQTT connected and subscribed")
 
-    def _on_groov_io_data(self, topic: str, value: float, timestamp: float):
-        """Callback when groov Manage publishes I/O data."""
-        # Map groov topic to NISystem channel name
-        channel_name = self.hardware.map_topic_to_channel(topic) if self.hardware else None
-        if channel_name:
-            with self.values_lock:
-                self.channel_values[channel_name] = value
-                self.channel_timestamps[channel_name] = timestamp
+    def _write_groov_output(self, channel: str, value: float) -> bool:
+        """Write output value to groov hardware via REST API."""
+        if self.hardware and self.hardware._rest:
+            # Use REST API for output writes (more reliable than MQTT for control)
+            topic = self.hardware.io._reverse_mapping.get(channel) if self.hardware.io else None
+            if topic:
+                # Parse module/channel from topic: "groov/io/mod0/ch0" → (0, 0)
+                parts = topic.split('/')
+                try:
+                    mod_idx = int(parts[2].replace('mod', ''))
+                    ch_idx = int(parts[3].replace('ch', ''))
+                    return self.hardware._rest.write_channel(mod_idx, ch_idx, value)
+                except (IndexError, ValueError) as e:
+                    logger.warning(f"Cannot parse groov topic '{topic}' for write: {e}")
+        # Fallback: publish via groov MQTT
+        if self.groov_mqtt and self.groov_mqtt.is_connected():
+            topic = self.hardware.io._reverse_mapping.get(channel) if self.hardware and self.hardware.io else None
+            if topic:
+                try:
+                    self.groov_mqtt._client.publish(f"{topic}/set", str(value))
+                    return True
+                except Exception as e:
+                    logger.warning(f"groov MQTT write failed for {channel}: {e}")
+        logger.warning(f"No write path available for output {channel}")
+        return False
 
     # =========================================================================
     # MQTT MESSAGE DISPATCH
@@ -459,10 +481,12 @@ class Opto22NodeService:
                 if self.config.publish_rate_hz != old_publish_rate:
                     logger.info(f"Publish rate updated: {old_publish_rate} Hz -> {self.config.publish_rate_hz} Hz")
 
-                # Load safety config
+                # Load safety config (alarms, interlocks, safe state)
                 self.safety.load_config({
                     'alarms': payload.get('alarms', []),
-                    'safety_actions': payload.get('safety_actions', {})
+                    'safety_actions': payload.get('safety_actions', {}),
+                    'interlocks': payload.get('interlocks', []),
+                    'safe_state_config': payload.get('safe_state_config', {}),
                 })
 
                 # Load engine configs
@@ -538,6 +562,13 @@ class Opto22NodeService:
                         'channel': ch, 'reason': 'session_locked'
                     })
                     return
+                # Safety hold check (alarm or interlock)
+                if self.safety.is_output_blocked(ch):
+                    reason = self.safety.get_output_block_reason(ch)
+                    self._publish(self._topic('command/blocked'), {
+                        'channel': ch, 'reason': reason
+                    })
+                    return
                 self._set_output_internal(ch, float(value) if value is not None else 0.0)
 
     def _handle_script(self, topic: str, payload: Dict):
@@ -596,6 +627,76 @@ class Opto22NodeService:
             action = payload.get('action', '')
             if action:
                 self._set_safe_state(f"manual:{payload.get('reason', 'command')}")
+
+        # Interlock commands
+        elif '/interlock/configure' in topic:
+            interlocks = payload.get('interlocks', [])
+            self.safety.configure_interlocks(interlocks)
+            self.audit.log_event('interlock_configure', '', {'count': len(interlocks)})
+            self._publish(self._topic('interlock/configure/ack'), {
+                'success': True, 'count': len(interlocks),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif '/interlock/arm' in topic:
+            user = payload.get('user', 'remote')
+            success, msg = self.safety.arm_latch(user)
+            self.audit.log_event('interlock_arm', '', {'success': success, 'user': user, 'message': msg})
+            self._publish(self._topic('interlock/arm/ack'), {
+                'success': success, 'message': msg,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif '/interlock/disarm' in topic:
+            user = payload.get('user', 'remote')
+            self.safety.disarm_latch(user)
+            self.audit.log_event('interlock_disarm', '', {'user': user})
+            self._publish(self._topic('interlock/disarm/ack'), {
+                'success': True,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif '/interlock/bypass' in topic:
+            interlock_id = payload.get('interlock_id', '')
+            bypass = payload.get('bypass', True)
+            user = payload.get('user', 'remote')
+            reason = payload.get('reason', '')
+            duration = payload.get('max_duration_s')
+            success, msg = self.safety.bypass_interlock(
+                interlock_id, bypass, user, reason, duration)
+            self.audit.log_event('interlock_bypass', '', {
+                'interlock_id': interlock_id, 'bypass': bypass,
+                'user': user, 'reason': reason, 'success': success
+            })
+            self._publish(self._topic('interlock/bypass/ack'), {
+                'success': success, 'message': msg,
+                'interlock_id': interlock_id,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif '/interlock/acknowledge' in topic:
+            interlock_id = payload.get('interlock_id', '')
+            user = payload.get('user', 'remote')
+            success = self.safety.acknowledge_trip(interlock_id, user)
+            self.audit.log_event('interlock_acknowledge', '', {
+                'interlock_id': interlock_id, 'user': user, 'success': success
+            })
+        elif '/interlock/reset' in topic:
+            user = payload.get('user', 'remote')
+            success, msg = self.safety.reset_trip(user)
+            self.audit.log_event('interlock_reset', '', {
+                'success': success, 'user': user, 'message': msg
+            })
+            self._publish(self._topic('interlock/reset/ack'), {
+                'success': success, 'message': msg,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif '/interlock/status' in topic:
+            status = self.safety.get_interlock_status()
+            self._publish(self._topic('interlock/status'), status)
+        elif '/interlock/safe_state_config' in topic or '/interlock/safe-state-config' in topic:
+            self.safety.configure_safe_state(payload)
+            self.audit.log_event('safe_state_config', '', payload)
+            self._publish(self._topic('interlock/safe_state_config/ack'), {
+                'success': True,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
 
     def _handle_session(self, topic: str, payload: Dict):
         """Handle session commands."""
@@ -745,18 +846,30 @@ class Opto22NodeService:
     # =========================================================================
 
     def _set_safe_state(self, reason: str = 'command'):
-        """Set all outputs to safe state."""
+        """Set all outputs to their configured safe values.
+
+        Uses SafeStateConfig for per-channel granularity. Channels not in
+        SafeStateConfig fall back to their ChannelConfig.default_value, then 0.0.
+        """
         logger.warning(f"Setting outputs to SAFE STATE — reason: {reason}")
         if not self.config or not self.hardware:
             return
         for ch_name, ch_cfg in self.config.channels.items():
             if ch_cfg.channel_type in ('digital_output', 'analog_output',
                                        'voltage_output', 'current_output'):
+                safe_value = self.safety.get_channel_safe_value(
+                    ch_name, getattr(ch_cfg, 'default_value', 0.0))
                 try:
-                    self.hardware.write_output(ch_name, 0.0)
-                    logger.info(f"  {ch_name} -> 0 (safe)")
+                    self.hardware.write_output(ch_name, safe_value)
+                    self.output_values[ch_name] = safe_value
+                    logger.info(f"  {ch_name} -> {safe_value} (safe)")
                 except Exception as e:
                     logger.error(f"  Failed to set {ch_name} safe: {e}")
+
+        # Check if safe state config says to stop session
+        safe_cfg = self.safety.get_safe_state_config()
+        if safe_cfg.stop_session and self._session_active:
+            self._stop_session('safe_state')
 
         self.audit.log_event('safe_state', '', {'reason': reason})
         self._publish(self._topic('status/safe-state'), {
@@ -802,6 +915,7 @@ class Opto22NodeService:
             return
         logger.info("Starting acquisition...")
         self._acquiring.set()
+        self.safety._acquiring = True
         self.state_machine.transition(Opto22State.ACQUIRING)
 
         self.scan_thread = threading.Thread(
@@ -831,6 +945,7 @@ class Opto22NodeService:
 
         logger.info("Stopping acquisition...")
         self._acquiring.clear()
+        self.safety._acquiring = False
         if self.scan_thread and self.scan_thread.is_alive():
             self.scan_thread.join(timeout=2.0)
 
@@ -846,6 +961,7 @@ class Opto22NodeService:
         to the end of the previous scan.
         """
         next_scan_time = time.time()
+        _scan_count = 0
 
         while self._acquiring.is_set():
             # Calculate intervals dynamically to pick up runtime rate changes
@@ -858,13 +974,28 @@ class Opto22NodeService:
                 self._pet_watchdog()
                 now = time.time()
 
+                _scan_count += 1
+
                 # Read hardware values (from groov MQTT subscriber or REST fallback)
                 if self.hardware:
                     hw_values = self.hardware.get_values()
+                    # Use actual data arrival timestamps, not scan time
+                    io_timestamps = self.hardware.get_last_update_times()
                     with self.values_lock:
                         for name, val in hw_values.items():
                             self.channel_values[name] = val
-                            self.channel_timestamps[name] = now
+                            self.channel_timestamps[name] = io_timestamps.get(name, now)
+
+                    # Periodic stale channel check (every 10 scans)
+                    if _scan_count % 10 == 0:
+                        stale = self.hardware.get_stale_channels(timeout_s=10.0)
+                        if stale:
+                            logger.warning(f"Stale I/O channels ({len(stale)}): {stale[:5]}")
+                            self._publish(self._topic('status/stale_channels'), {
+                                'channels': stale,
+                                'count': len(stale),
+                                'timestamp': time.time(),
+                            })
 
                 # Include output values
                 with self.values_lock:
@@ -885,7 +1016,8 @@ class Opto22NodeService:
                     ts_snap = dict(self.channel_timestamps)
 
                 # Safety checks (ISA-18.2 alarms + interlocks)
-                self.safety.check_all(values_snap)
+                configured = set(self.config.channels.keys()) if self.config else set()
+                self.safety.check_all(values_snap, configured_channels=configured)
 
                 # PID control
                 dt = time.time() - loop_start
@@ -953,6 +1085,11 @@ class Opto22NodeService:
             'scan_rate_hz': self.config.scan_rate_hz if self.config else 0,
             'publish_rate_hz': self.config.publish_rate_hz if self.config else 0,
             'scan_timing': self._scan_timing.to_dict(),
+            'hardware_health': {
+                'groov_mqtt_connected': self.groov_mqtt.is_connected() if self.groov_mqtt else False,
+                'stale_channels': self.hardware.get_stale_channels(10.0) if self.hardware else [],
+                'channel_count': self.hardware.io.channel_count if self.hardware else 0,
+            },
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }, retain=True)
 
@@ -981,6 +1118,11 @@ class Opto22NodeService:
             'node_type': 'opto22',
             'node_id': self.config.node_id if self.config else 'opto22-001',
         })
+
+        # Publish interlock status if interlocks are configured
+        if self.safety._interlocks:
+            self._publish(self._topic('interlock/status'),
+                          self.safety.get_interlock_status())
 
     # =========================================================================
     # CONFIG PERSISTENCE
@@ -1110,6 +1252,17 @@ class Opto22NodeService:
                     logger.info("System MQTT disconnected — reconnecting...")
                     self.system_mqtt.reconnect()
 
+                # Check groov MQTT health (I/O data source)
+                if self.groov_mqtt and not self.groov_mqtt.is_connected():
+                    if not getattr(self, '_groov_disconnect_logged', False):
+                        logger.warning("groov MQTT disconnected — I/O data will be stale")
+                        self._groov_disconnect_logged = True
+                        self._publish(self._topic('status/groov_mqtt'), {
+                            'connected': False, 'timestamp': time.time(),
+                        })
+                elif self.groov_mqtt:
+                    self._groov_disconnect_logged = False
+
                 # PC contact timeout
                 if time.time() - self.last_pc_contact > 30 and self.pc_connected:
                     logger.warning("Lost contact with PC — continuing standalone")
@@ -1139,6 +1292,7 @@ class Opto22NodeService:
         """Graceful shutdown."""
         logger.info("Shutting down Opto22 Node Service...")
         self._running.clear()
+        self.safety.save_all()
         self._stop_acquisition()
 
         if self.script_engine:

@@ -967,6 +967,11 @@ class NIDAQmxHardware(HardwareInterface):
                     logger.info(f"[DI_READ] {task_key}: raw values = {values[:5]}{'...' if len(values) > 5 else ''}")
 
                 for i, ch_name in enumerate(self._di_channels[task_key]):
+                    if i >= len(values):
+                        logger.warning(f"[DI_READ] {task_key}: Missing value for {ch_name} "
+                                       f"(got {len(values)}/{len(self._di_channels[task_key])}) — module unplug?")
+                        result[ch_name] = (float('nan'), now)
+                        continue
                     ch_config = self.config.channels.get(ch_name)
                     value = 1.0 if values[i] else 0.0
                     if ch_config and ch_config.invert:
@@ -1023,6 +1028,11 @@ class NIDAQmxHardware(HardwareInterface):
                         self._last_slow_read[task_key] = now
 
                     for i, ch_name in enumerate(self._ai_channels[task_key]):
+                        if i >= len(values):
+                            logger.warning(f"[AI_READ] {task_key}: Missing value for {ch_name} "
+                                           f"(got {len(values)}/{len(self._ai_channels[task_key])}) — module unplug?")
+                            result[ch_name] = (float('nan'), now)
+                            continue
                         ch_config = self.config.channels.get(ch_name)
                         raw_value = values[i]
 
