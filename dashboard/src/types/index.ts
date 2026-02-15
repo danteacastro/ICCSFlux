@@ -84,6 +84,7 @@ export type WidgetType =
   | 'image'
   | 'gc_chromatogram'
   | 'gc_overview'
+  | 'small_multiples'
 
 export interface ChannelConfig {
   name: string                    // TAG - the only identifier (ISA-5.1 compliant)
@@ -533,6 +534,56 @@ export interface ChartThreshold {
   style?: 'solid' | 'dashed' | 'dotted'  // Line style (default: dashed)
 }
 
+// ============================================================================
+// Historian Types (Data Viewer)
+// ============================================================================
+
+export interface HistorianTag {
+  name: string
+  unit: string
+  first_ts: number | null   // epoch seconds
+  last_ts: number | null     // epoch seconds
+  point_count: number
+}
+
+export interface HistorianPanel {
+  id: string
+  channels: string[]
+  yAxisAuto: boolean
+  yAxisMin?: number
+  yAxisMax?: number
+  collapsed: boolean
+  showTable: boolean
+  height?: number            // panel chart height in px (default 280)
+}
+
+export interface HistorianTimeRange {
+  preset?: string            // '1h', '6h', '12h', '24h', '7d', '30d'
+  start?: number             // custom range start (unix ms)
+  end?: number               // custom range end (unix ms)
+}
+
+export interface HistorianQueryResult {
+  success: boolean
+  error?: string
+  timestamps: number[]       // epoch seconds (for uPlot)
+  series: Record<string, (number | null)[]>
+  channels: string[]
+  total_points: number
+  decimated: boolean
+}
+
+export interface HistorianStats {
+  db_size_bytes: number
+  total_points: number
+  channel_count: number
+  oldest_ts: number | null
+  newest_ts: number | null
+  retention_days: number
+  points_written: number
+  write_errors: number
+}
+
 export type ButtonActionType =
   | 'mqtt_publish'      // Publish to MQTT topic
   | 'digital_output'    // Set digital output (pulse or toggle)
@@ -616,6 +667,13 @@ export interface WidgetConfig {
   plotStyles?: ChartPlotStyle[]
   // Cursor configuration
   cursors?: ChartCursor[]
+  // TrendChart enhancements (Grafana-inspired)
+  interpolation?: 'linear' | 'smooth' | 'stepBefore' | 'stepAfter'
+  fillOpacity?: number          // 0-100, default 0
+  tooltipMode?: 'single' | 'all' | 'hidden'
+  connectNulls?: 'never' | 'always' | 'threshold'
+  connectNullsThreshold?: number
+  cursorSyncGroup?: string
   // Display options
   decimals?: number
   showUnit?: boolean
@@ -702,7 +760,7 @@ export interface WidgetConfig {
       highColor?: string
     }
   }>
-  columns?: 1 | 2 | 3
+  columns?: number
   showTimestamp?: boolean
   refreshRate?: number
   // Styling
@@ -1374,7 +1432,8 @@ export const WIDGET_DEFAULTS: Record<WidgetType, Partial<WidgetConfig>> = {
   status_messages: { w: 3, h: 2, minW: 2, minH: 2 },
   image: { w: 2, h: 2, minW: 1, minH: 1 },
   gc_chromatogram: { w: 4, h: 4, minW: 3, minH: 3 },
-  gc_overview: { w: 6, h: 4, minW: 3, minH: 3 }
+  gc_overview: { w: 6, h: 4, minW: 3, minH: 3 },
+  small_multiples: { w: 4, h: 3, minW: 2, minH: 2 }
 }
 
 // Preset colors for widgets (expanded palette)

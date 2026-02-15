@@ -38,6 +38,7 @@ export const widgetComponents: Record<string, ReturnType<typeof defineAsyncCompo
   image: defineAsyncComponent(() => import('./ImageWidget.vue')),
   gc_chromatogram: defineAsyncComponent(() => import('./GcChromatogramWidget.vue')),
   gc_overview: defineAsyncComponent(() => import('./GcOverviewWidget.vue')),
+  small_multiples: defineAsyncComponent(() => import('./SmallMultiplesWidget.vue')),
 }
 
 export function getWidgetComponent(type: WidgetType | string) {
@@ -325,5 +326,15 @@ export const availableWidgets: WidgetTypeInfo[] = [
     description: 'Multi-GC instrument overview with run queue',
     needsChannel: false,
     defaultSize: { w: 6, h: 4 }
+  },
+
+  // === MONITORING ===
+  {
+    type: 'small_multiples',
+    name: 'Small Multiples',
+    icon: '▣',
+    description: 'Grid of sparklines for monitoring many channels at once',
+    needsChannel: false,
+    defaultSize: { w: 4, h: 3 }
   }
 ]

@@ -38,6 +38,13 @@ const props = defineProps<{
   // Historical mode
   historicalMode?: boolean  // If true, show historical data instead of live
   historicalFile?: string   // Selected recording file
+  // Grafana-inspired enhancements
+  interpolation?: 'linear' | 'smooth' | 'stepBefore' | 'stepAfter'
+  fillOpacity?: number           // 0-100, default 0
+  tooltipMode?: 'single' | 'all' | 'hidden'  // default 'single'
+  connectNulls?: 'never' | 'always' | 'threshold'
+  connectNullsThreshold?: number // seconds
+  cursorSyncGroup?: string       // shared sync key for cross-chart crosshair
 }>()
 
 const emit = defineEmits<{
@@ -108,6 +115,16 @@ const showContextMenu = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 
+// Tooltip state (Grafana-style floating tooltip)
+const tooltipVisible = ref(false)
+const tooltipX = ref(0)
+const tooltipY = ref(0)
+const tooltipTime = ref('')
+const tooltipValues = ref<{ name: string; value: string; color: string; unit: string }[]>([])
+
+// Legend isolation state (Grafana-style click=isolate)
+const isolatedSeriesIdx = ref<number | null>(null)
+
 // Data buffer: [timestamps, ...channelData]
 const dataBuffer = ref<(number | null)[][]>([[]])
 const maxPoints = computed(() => props.historySize || 86400)
@@ -166,6 +183,49 @@ const currentValues = computed(() => {
 const digitalDisplayValues = computed(() => {
   if (!props.showDigitalDisplay) return []
   return currentValues.value.filter(v => v.visible).slice(0, 4)  // Max 4 in header
+})
+
+// Legend stats: Min / Max / Avg / Last / Delta across visible data
+const legendStats = computed(() => {
+  if (!props.showLegend) return null
+  const buffer = dataBuffer.value
+  if (!buffer[0] || buffer[0].length === 0) return null
+
+  const stats: { channel: string; min: number | null; max: number | null; avg: number | null; last: number | null; delta: number | null; color: string }[] = []
+
+  for (let i = 0; i < props.channels.length; i++) {
+    const arr = buffer[i + 1]
+    if (!arr || arr.length === 0) {
+      stats.push({ channel: props.channels[i]!, min: null, max: null, avg: null, last: null, delta: null, color: getChannelColor(props.channels[i]!, i) })
+      continue
+    }
+
+    let min = Infinity, max = -Infinity, sum = 0, count = 0, last: number | null = null
+    for (let j = 0; j < arr.length; j++) {
+      const v = arr[j]
+      if (v !== null && v !== undefined && isFinite(v)) {
+        if (v < min) min = v
+        if (v > max) max = v
+        sum += v
+        count++
+        last = v
+      }
+    }
+
+    if (count === 0) {
+      stats.push({ channel: props.channels[i]!, min: null, max: null, avg: null, last: null, delta: null, color: getChannelColor(props.channels[i]!, i) })
+    } else {
+      stats.push({
+        channel: props.channels[i]!,
+        min, max,
+        avg: sum / count,
+        last,
+        delta: max - min,
+        color: getChannelColor(props.channels[i]!, i)
+      })
+    }
+  }
+  return stats
 })
 
 // Check if channel type should use stepped (staircase) visualization
@@ -227,13 +287,40 @@ function initChart() {
       ...props.channels.map((ch, i) => {
         const visible = isChannelVisible(ch)
         const stepped = isSteppedChannel(ch)
+        const color = getChannelColor(ch, i)
+
+        // Determine paths (interpolation)
+        let paths: uPlot.Series.PathBuilder | undefined
+        if (stepped) {
+          paths = uPlot.paths.stepped!({ align: 1 })
+        } else if (props.interpolation === 'smooth') {
+          paths = uPlot.paths.spline!()
+        } else if (props.interpolation === 'stepBefore') {
+          paths = uPlot.paths.stepped!({ align: -1 })
+        } else if (props.interpolation === 'stepAfter') {
+          paths = uPlot.paths.stepped!({ align: 1 })
+        }
+
+        // Determine spanGaps (connect nulls)
+        let spanGaps: boolean | number = !stepped
+        if (props.connectNulls === 'never') spanGaps = false
+        else if (props.connectNulls === 'always') spanGaps = true
+
+        // Fill opacity — hex alpha appended to color
+        let fill: string | undefined
+        if (props.fillOpacity && props.fillOpacity > 0 && !stepped) {
+          const alpha = Math.round((props.fillOpacity / 100) * 255).toString(16).padStart(2, '0')
+          fill = `${color}${alpha}`
+        }
+
         return {
           label: ch,  // TAG is the only identifier
-          stroke: getChannelColor(ch, i),
+          stroke: color,
           width: getChannelLineWidth(ch),
           show: visible,
-          spanGaps: !stepped,
-          paths: stepped ? uPlot.paths.stepped!({ align: 1 }) : undefined,
+          spanGaps,
+          paths,
+          fill,
           value: (_self: uPlot, rawValue: number | null) => {
             if (rawValue === null || rawValue === undefined) return '--'
             return rawValue.toFixed(2)
@@ -403,10 +490,16 @@ function initChart() {
         y: false
       },
       sync: {
-        key: props.widgetId,
+        key: props.cursorSyncGroup || props.widgetId,
       }
     },
     hooks: {
+      init: [
+        (u) => {
+          // Double-click on chart overlay resets zoom
+          u.over.addEventListener('dblclick', () => { resetZoom() })
+        }
+      ],
       setSelect: [
         (u) => {
           if (toolMode.value === 'zoom' && u.select.width > 0) {
@@ -421,8 +514,15 @@ function initChart() {
       ],
       setCursor: [
         (u) => {
+          // Cursor tool: update values panel
           if (toolMode.value === 'cursor' && u.cursor.idx !== null && u.cursor.idx !== undefined) {
             updateCursorValues(u)
+          }
+          // Floating tooltip (Grafana-style): show all series values at cursor
+          if (props.tooltipMode !== 'hidden' && u.cursor.idx !== null && u.cursor.idx !== undefined) {
+            updateTooltip(u)
+          } else {
+            tooltipVisible.value = false
           }
         }
       ],
@@ -459,6 +559,44 @@ function updateCursorValues(u: uPlot) {
   } else {
     activeCursors.value[0] = { id: 'main', x: timestamp, values }
   }
+}
+
+// ========== FLOATING TOOLTIP ==========
+
+function updateTooltip(u: uPlot) {
+  const idx = u.cursor.idx!
+  const left = u.cursor.left!
+  const top = u.cursor.top!
+
+  // Position tooltip near cursor but offset to avoid covering data
+  tooltipX.value = left + 16
+  tooltipY.value = top - 10
+
+  // Timestamp
+  const ts = dataBuffer.value[0]?.[idx]
+  if (ts) {
+    const d = new Date(ts * 1000)
+    tooltipTime.value = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 1 } as Intl.DateTimeFormatOptions)
+  }
+
+  // Series values
+  const vals: typeof tooltipValues.value = []
+  for (let i = 0; i < props.channels.length; i++) {
+    const ch = props.channels[i]!
+    const v = dataBuffer.value[i + 1]?.[idx]
+    const config = store.channels[ch]
+    // In 'single' mode, only show the closest series (first with data)
+    // In 'all' mode, show all series
+    if (props.tooltipMode === 'single' && vals.length > 0 && v === null) continue
+    vals.push({
+      name: ch.replace(/^py\./, ''),
+      value: v !== null && v !== undefined ? v.toFixed(2) : '--',
+      color: getChannelColor(ch, i),
+      unit: config?.unit || ''
+    })
+  }
+  tooltipValues.value = vals
+  tooltipVisible.value = vals.length > 0
 }
 
 // ========== THRESHOLD/REFERENCE LINES ==========
@@ -1236,15 +1374,41 @@ watch(() => props.yAxisMin, (val) => { if (val !== undefined) localYMin.value = 
 watch(() => props.yAxisMax, (val) => { if (val !== undefined) localYMax.value = val })
 watch(() => props.timeRange, (val) => { if (val !== undefined) activeTimeRange.value = val })
 
-// Toggle channel visibility
-function toggleChannelVisibility(channel: string) {
-  // This would update plotStyles - for now just re-render
-  if (chart) {
-    const seriesIdx = props.channels.indexOf(channel) + 1
-    if (seriesIdx > 0 && chart.series[seriesIdx]) {
-      chart.setSeries(seriesIdx, { show: !chart.series[seriesIdx].show })
+// Grafana-style legend click behavior
+function handleLegendClick(channel: string, event: MouseEvent) {
+  if (!chart) return
+  const seriesIdx = props.channels.indexOf(channel) + 1
+  if (seriesIdx <= 0) return
+
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl/Cmd+Click: toggle this series
+    chart.setSeries(seriesIdx, { show: !chart.series[seriesIdx]?.show })
+    isolatedSeriesIdx.value = null
+  } else {
+    // Click: isolate (solo) this series — hide all others
+    if (isolatedSeriesIdx.value === seriesIdx) {
+      // Already isolated — show all
+      for (let i = 1; i < chart.series.length; i++) {
+        chart.setSeries(i, { show: true })
+      }
+      isolatedSeriesIdx.value = null
+    } else {
+      // Isolate: show only clicked, hide others
+      for (let i = 1; i < chart.series.length; i++) {
+        chart.setSeries(i, { show: i === seriesIdx })
+      }
+      isolatedSeriesIdx.value = seriesIdx
     }
   }
+}
+
+// Double-click legend: show all series
+function handleLegendDblClick() {
+  if (!chart) return
+  for (let i = 1; i < chart.series.length; i++) {
+    chart.setSeries(i, { show: true })
+  }
+  isolatedSeriesIdx.value = null
 }
 </script>
 
@@ -1605,6 +1769,21 @@ function toggleChannelVisibility(channel: string) {
         </div>
         <div class="y-axis-editor-hint">Enter to apply • Esc to cancel</div>
       </div>
+
+      <!-- Floating Tooltip (Grafana-style) -->
+      <div
+        v-if="tooltipVisible && tooltipMode !== 'hidden'"
+        class="chart-tooltip"
+        :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }"
+      >
+        <div class="tooltip-time">{{ tooltipTime }}</div>
+        <div v-for="tv in tooltipValues" :key="tv.name" class="tooltip-row">
+          <span class="tooltip-dot" :style="{ background: tv.color }"></span>
+          <span class="tooltip-name">{{ tv.name }}</span>
+          <span class="tooltip-val">{{ tv.value }}</span>
+          <span v-if="tv.unit" class="tooltip-unit">{{ tv.unit }}</span>
+        </div>
+      </div>
     </div>
 
     <!-- X-Axis Scrollbar (for history navigation) -->
@@ -1641,14 +1820,16 @@ function toggleChannelVisibility(channel: string) {
       </div>
     </div>
 
-    <!-- Custom Legend with visibility toggles -->
+    <!-- Custom Legend with Grafana-style click behavior -->
     <div class="custom-legend" v-if="showLegend !== false && currentValues.length > 0">
       <div
         v-for="ch in currentValues"
         :key="ch.channel"
         class="legend-item"
         :class="{ hidden: !ch.visible }"
-        @click="toggleChannelVisibility(ch.channel)"
+        @click="handleLegendClick(ch.channel, $event)"
+        @dblclick.prevent="handleLegendDblClick"
+        title="Click: isolate | Ctrl+Click: toggle | DblClick: show all"
       >
         <span class="legend-color" :style="{ background: ch.visible ? ch.color : '#444' }"></span>
         <span class="legend-name">{{ ch.name }}</span>
@@ -1656,6 +1837,22 @@ function toggleChannelVisibility(channel: string) {
           {{ ch.value !== undefined && ch.value !== null ? ch.value.toFixed(2) : '--' }}
           <span v-if="ch.unit && ch.value !== undefined && ch.value !== null" class="legend-unit">{{ ch.unit }}</span>
         </span>
+      </div>
+      <!-- Legend Stats Row -->
+      <div v-if="legendStats && legendStats.length > 0" class="legend-stats-row">
+        <template v-for="st in legendStats" :key="st.channel">
+          <span class="legend-stat" :style="{ color: st.color }">
+            <span class="stat-label">Min:</span>{{ st.min !== null ? st.min.toFixed(1) : '--' }}
+            <span class="stat-sep">|</span>
+            <span class="stat-label">Max:</span>{{ st.max !== null ? st.max.toFixed(1) : '--' }}
+            <span class="stat-sep">|</span>
+            <span class="stat-label">Avg:</span>{{ st.avg !== null ? st.avg.toFixed(1) : '--' }}
+            <span class="stat-sep">|</span>
+            <span class="stat-label">Last:</span>{{ st.last !== null ? st.last.toFixed(2) : '--' }}
+            <span class="stat-sep">|</span>
+            <span class="stat-label delta">&#916;:</span>{{ st.delta !== null ? st.delta.toFixed(1) : '--' }}
+          </span>
+        </template>
       </div>
     </div>
 
@@ -2487,5 +2684,98 @@ function toggleChannelVisibility(channel: string) {
   color: #a78bfa;
   min-width: 150px;
   text-align: right;
+}
+
+/* ========== FLOATING TOOLTIP (Grafana-style) ========== */
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 150;
+  background: var(--bg-widget, #1a1a2e);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', monospace;
+  min-width: 120px;
+  max-width: 250px;
+}
+
+.tooltip-time {
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-size: 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 3px;
+}
+
+.tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+}
+
+.tooltip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tooltip-name {
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tooltip-val {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.tooltip-unit {
+  color: var(--text-muted);
+  font-size: 0.55rem;
+}
+
+/* ========== LEGEND STATS ROW ========== */
+
+.legend-stats-row {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.6rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.legend-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.stat-label {
+  opacity: 0.6;
+  font-size: 0.55rem;
+  margin-right: 1px;
+}
+
+.stat-label.delta {
+  font-weight: 700;
+}
+
+.stat-sep {
+  color: var(--text-muted);
+  opacity: 0.3;
+  margin: 0 2px;
 }
 </style>

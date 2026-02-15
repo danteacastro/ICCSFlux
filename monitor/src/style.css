@@ -1,0 +1,240 @@
+/* ICCSFlux Fleet Monitor - Global Styles */
+/* Fonts loaded via <link> in index.html */
+@import "tailwindcss";
+
+:root {
+  /* === Dark theme (default) === */
+
+  /* Backgrounds - layered from darkest to lightest */
+  --bg-primary: #0a0a14;
+  --bg-secondary: #0f0f1a;
+  --bg-widget: #1a1a2e;
+  --bg-elevated: #16213e;
+  --bg-surface: #1e293b;
+  --bg-input: #0f0f1a;
+  --bg-hover: #334155;
+  --bg-active: #3a3a5a;
+  --bg-overlay: rgba(0, 0, 0, 0.85);
+  --bg-overlay-light: rgba(0, 0, 0, 0.7);
+
+  /* Borders */
+  --border-color: #2a2a4a;
+  --border-light: #3a3a5a;
+  --border-heavy: #475569;
+
+  /* Text */
+  --text-primary: #ffffff;
+  --text-bright: #e2e8f0;
+  --text-secondary: #a0a0b0;
+  --text-muted: #666680;
+  --text-dim: #64748b;
+  --text-disabled: #475569;
+
+  /* Accent / Brand */
+  --color-accent: #3b82f6;
+  --color-accent-light: #60a5fa;
+  --color-accent-dark: #2563eb;
+  --color-accent-bg: rgba(59, 130, 246, 0.1);
+  --color-accent-glow: rgba(59, 130, 246, 0.4);
+  --color-accent-border: rgba(59, 130, 246, 0.2);
+
+  /* Status colors */
+  --color-success: #22c55e;
+  --color-success-light: #4ade80;
+  --color-success-dark: #16a34a;
+  --color-success-bg: rgba(34, 197, 94, 0.1);
+  --color-warning: #fbbf24;
+  --color-warning-dark: #d97706;
+  --color-warning-bg: rgba(251, 191, 36, 0.1);
+  --color-error: #ef4444;
+  --color-error-light: #f87171;
+  --color-error-dark: #dc2626;
+  --color-error-bg: rgba(239, 68, 68, 0.15);
+  --color-info: #3b82f6;
+
+  /* Buttons */
+  --btn-bg: #1a1a2e;
+  --btn-hover: #2a2a4a;
+  --btn-active: #3a3a5a;
+  --btn-secondary-bg: #374151;
+  --btn-secondary-hover: #4b5563;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.5);
+
+  /* Special surfaces */
+  --connection-ok-bg: #14532d;
+  --connection-ok-text: #86efac;
+  --connection-fail-bg: #7f1d1d;
+  --connection-fail-text: #fca5a5;
+
+  /* Status indicator backgrounds */
+  --indicator-danger-bg: #7f1d1d;
+  --indicator-danger-text: #fca5a5;
+  --indicator-warning-bg: #78350f;
+  --indicator-warning-text: #fbbf24;
+  --indicator-success-bg: #14532d;
+  --indicator-success-text: #86efac;
+
+  /* Panel / overlay surfaces */
+  --bg-panel: rgba(15, 15, 26, 0.95);
+  --bg-panel-row: rgba(30, 30, 50, 0.5);
+  --bg-status-pill: rgba(0, 0, 0, 0.3);
+
+  /* State backgrounds */
+  --bg-armed: #1a2e1a;
+  --bg-tripped: #2e1a1a;
+  --bg-alarm-pulse: #3f1515;
+
+  /* Typography */
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* === Light theme === */
+[data-theme="light"] {
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-widget: #ffffff;
+  --bg-elevated: #f0f4f8;
+  --bg-surface: #ffffff;
+  --bg-input: #f5f5f7;
+  --bg-hover: #e5e7eb;
+  --bg-active: #d1d5db;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --bg-overlay-light: rgba(0, 0, 0, 0.4);
+
+  --border-color: #d1d5db;
+  --border-light: #e5e7eb;
+  --border-heavy: #9ca3af;
+
+  --text-primary: #1a1a2e;
+  --text-bright: #374151;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --text-dim: #6b7280;
+  --text-disabled: #9ca3af;
+
+  --color-accent: #2563eb;
+  --color-accent-light: #3b82f6;
+  --color-accent-dark: #1d4ed8;
+  --color-accent-bg: rgba(37, 99, 235, 0.08);
+  --color-accent-glow: rgba(37, 99, 235, 0.25);
+  --color-accent-border: rgba(37, 99, 235, 0.2);
+
+  --color-success: #16a34a;
+  --color-success-light: #22c55e;
+  --color-success-dark: #15803d;
+  --color-success-bg: rgba(22, 163, 74, 0.08);
+  --color-warning: #d97706;
+  --color-warning-dark: #b45309;
+  --color-warning-bg: rgba(217, 119, 6, 0.08);
+  --color-error: #dc2626;
+  --color-error-light: #ef4444;
+  --color-error-dark: #b91c1c;
+  --color-error-bg: rgba(220, 38, 38, 0.08);
+  --color-info: #2563eb;
+
+  --btn-bg: #e5e7eb;
+  --btn-hover: #d1d5db;
+  --btn-active: #9ca3af;
+  --btn-secondary-bg: #e5e7eb;
+  --btn-secondary-hover: #d1d5db;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.15);
+
+  --connection-ok-bg: #dcfce7;
+  --connection-ok-text: #15803d;
+  --connection-fail-bg: #fef2f2;
+  --connection-fail-text: #b91c1c;
+
+  --indicator-danger-bg: #fef2f2;
+  --indicator-danger-text: #b91c1c;
+  --indicator-warning-bg: #fffbeb;
+  --indicator-warning-text: #92400e;
+  --indicator-success-bg: #dcfce7;
+  --indicator-success-text: #15803d;
+
+  --bg-panel: rgba(255, 255, 255, 0.95);
+  --bg-panel-row: rgba(0, 0, 0, 0.04);
+  --bg-status-pill: rgba(0, 0, 0, 0.06);
+
+  --bg-armed: #f0fdf4;
+  --bg-tripped: #fef2f2;
+  --bg-alarm-pulse: #fee2e2;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #c1c5cb;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}
+
+/* Reset for buttons */
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* Input styling */
+input, select, textarea {
+  font-family: inherit;
+}
+
+/* Monospace for values */
+.mono {
+  font-family: 'JetBrains Mono', monospace;
+}

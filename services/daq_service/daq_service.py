@@ -68,6 +68,7 @@ from trigger_engine import TriggerEngine
 from watchdog_engine import WatchdogEngine
 from device_discovery import DeviceDiscovery
 from recording_manager import RecordingManager, RecordingConfig, PostgreSQLWriter
+from historian import Historian
 from dependency_tracker import DependencyTracker, EntityType
 from scaling import apply_scaling, reverse_scaling, get_scaling_info, validate_scaling_config, is_valid_value, validate_and_clamp
 from user_variables import UserVariableManager
@@ -374,6 +375,7 @@ class DAQService:
         self._load_config()
         self._init_scheduler()
         self._init_recording_manager()
+        self._init_historian()
         self._init_dependency_tracker()
         self._init_sequence_manager()
         self._init_script_manager()
@@ -907,6 +909,19 @@ class DAQService:
         )
         self.recording_manager.on_status_change = self._publish_system_status
         logger.info("Recording manager initialized")
+
+    def _init_historian(self):
+        """Initialize the SQLite historian for continuous background data recording."""
+        try:
+            db_dir = os.path.join(self.config.system.log_directory, 'historian')
+            os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, 'historian.db')
+            retention = self.config.dataviewer.retention_days
+            self.historian = Historian(db_path, retention_days=retention)
+            self.historian.prune()
+        except Exception as e:
+            logger.error(f"Historian initialization failed: {e}")
+            self.historian = None
 
     def _init_dependency_tracker(self):
         """Initialize the dependency tracker"""
@@ -3388,6 +3403,12 @@ Unit conversions:
             client.subscribe(f"{base}/recording/file-info")
             client.subscribe(f"{base}/recording/db-test")
 
+            # Subscribe to historian topics
+            client.subscribe(f"{base}/historian/query")
+            client.subscribe(f"{base}/historian/tags")
+            client.subscribe(f"{base}/historian/export")
+            client.subscribe(f"{base}/historian/stats")
+
             # Subscribe to Azure IoT Hub topics
             client.subscribe(f"{base}/azure/config")
             client.subscribe(f"{base}/azure/config/get")
@@ -4130,6 +4151,16 @@ Unit conversions:
             self._handle_recording_file_info(payload)
         elif topic == f"{base}/recording/db-test":
             self._handle_recording_db_test(payload)
+
+        # === HISTORIAN ===
+        elif topic == f"{base}/historian/query":
+            self._handle_historian_query(payload)
+        elif topic == f"{base}/historian/tags":
+            self._handle_historian_tags()
+        elif topic == f"{base}/historian/export":
+            self._handle_historian_export(payload)
+        elif topic == f"{base}/historian/stats":
+            self._handle_historian_stats()
 
         # === AZURE IOT HUB ===
         elif topic == f"{base}/azure/config":
@@ -5278,6 +5309,101 @@ Unit conversions:
             }),
             retain=True
         )
+
+    # =========================================================================
+    # HISTORIAN COMMAND HANDLERS
+    # =========================================================================
+
+    def _handle_historian_query(self, payload: Any):
+        """Query historical data from the SQLite historian."""
+        base = self.get_topic_base()
+        if not self.historian:
+            self.mqtt_client.publish(f"{base}/historian/query/response",
+                                     json.dumps({"success": False, "error": "Historian not available"}))
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(f"{base}/historian/query/response",
+                                     json.dumps({"success": False, "error": "Invalid payload"}))
+            return
+
+        channels = payload.get('channels', [])
+        start_ms = int(payload.get('start_ms', 0))
+        end_ms = int(payload.get('end_ms', int(time.time() * 1000)))
+        max_points = int(payload.get('max_points', 2000))
+        panel_id = payload.get('_panel_id')
+
+        result = self.historian.query(channels, start_ms, end_ms, max_points)
+        if panel_id:
+            result['_panel_id'] = panel_id
+        self.mqtt_client.publish(f"{base}/historian/query/response", json.dumps(result))
+
+    def _handle_historian_tags(self):
+        """Return available historian tags with time ranges."""
+        base = self.get_topic_base()
+        if not self.historian:
+            self.mqtt_client.publish(f"{base}/historian/tags/response",
+                                     json.dumps({"success": False, "tags": []}))
+            return
+
+        tags = self.historian.get_available_tags()
+        self.mqtt_client.publish(f"{base}/historian/tags/response",
+                                 json.dumps({"success": True, "tags": tags}))
+
+    def _handle_historian_export(self, payload: Any):
+        """Export historian data as CSV."""
+        base = self.get_topic_base()
+        if not self.historian:
+            self.mqtt_client.publish(f"{base}/historian/export/response",
+                                     json.dumps({"success": False, "error": "Historian not available"}))
+            return
+
+        if not isinstance(payload, dict):
+            self.mqtt_client.publish(f"{base}/historian/export/response",
+                                     json.dumps({"success": False, "error": "Invalid payload"}))
+            return
+
+        channels = payload.get('channels', [])
+        start_ms = int(payload.get('start_ms', 0))
+        end_ms = int(payload.get('end_ms', int(time.time() * 1000)))
+        panel_id = payload.get('_panel_id')
+
+        csv_data = self.historian.export_csv(channels, start_ms, end_ms)
+
+        # Safety cap: if CSV > 5 MB, truncate and warn (MQTT not suited for huge payloads)
+        max_csv_bytes = 5 * 1024 * 1024
+        truncated = False
+        if len(csv_data) > max_csv_bytes:
+            # Keep header + as many complete rows as fit
+            lines = csv_data.split('\n')
+            header = lines[0] if lines else ''
+            kept = [header]
+            size = len(header) + 1
+            for line in lines[1:]:
+                size += len(line) + 1
+                if size > max_csv_bytes:
+                    break
+                kept.append(line)
+            csv_data = '\n'.join(kept)
+            truncated = True
+
+        response: dict = {"success": True, "csv": csv_data, "truncated": truncated}
+        if panel_id:
+            response['_panel_id'] = panel_id
+        self.mqtt_client.publish(f"{base}/historian/export/response",
+                                 json.dumps(response))
+
+    def _handle_historian_stats(self):
+        """Return historian database statistics."""
+        base = self.get_topic_base()
+        if not self.historian:
+            self.mqtt_client.publish(f"{base}/historian/stats/response",
+                                     json.dumps({"success": False, "error": "Historian not available"}))
+            return
+
+        stats = self.historian.get_stats()
+        stats['success'] = True
+        self.mqtt_client.publish(f"{base}/historian/stats/response", json.dumps(stats))
 
     # =========================================================================
     # AZURE IOT HUB COMMAND HANDLERS
@@ -13483,6 +13609,14 @@ Unit conversions:
 
                         self.recording_manager.write_sample(values, channel_configs)
 
+                    # Historian: silent 1 Hz write of ALL channels (unconditional)
+                    if self.historian:
+                        try:
+                            units_map = {k: v.get('units', '') for k, v in channel_configs.items()} if channel_configs else {}
+                            self.historian.write_batch(int(time.time() * 1000), values, units=units_map)
+                        except Exception:
+                            pass  # Historian errors must never affect the publish loop
+
                     # Note: Azure IoT Hub streaming is handled by external azure_uploader_service
                     # which subscribes to nisystem/nodes/+/channels/values topics directly
 
@@ -13639,6 +13773,11 @@ Unit conversions:
         if self.recording_manager and self.recording_manager.recording:
             logger.info("Flushing recording buffer...")
             self.recording_manager.stop()
+
+        # Close historian database
+        if self.historian:
+            logger.info("Closing historian database...")
+            self.historian.close()
 
         # Send stop command to external Azure uploader service
         if self._get_azure_config():

@@ -604,6 +604,7 @@ def create_data_directories():
     (data_dir / "recordings").mkdir(exist_ok=True)
     (data_dir / "logs").mkdir(exist_ok=True)
     (data_dir / "audit").mkdir(exist_ok=True)
+    (data_dir / "historian").mkdir(exist_ok=True)
 
     log("Data directories created", "OK")
     return True

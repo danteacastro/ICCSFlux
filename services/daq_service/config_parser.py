@@ -170,6 +170,11 @@ class SystemConfig:
 
 
 @dataclass
+class DataViewerConfig:
+    retention_days: int = 30
+
+
+@dataclass
 class ChassisConfig:
     name: str
     chassis_type: str
@@ -432,6 +437,7 @@ class SafetyActionConfig:
 @dataclass
 class NISystemConfig:
     system: SystemConfig
+    dataviewer: DataViewerConfig
     chassis: Dict[str, ChassisConfig]
     modules: Dict[str, ModuleConfig]
     channels: Dict[str, ChannelConfig]
@@ -555,6 +561,12 @@ def load_config(config_path: str) -> NISystemConfig:
         except ValueError:
             logger.warning(f"Unknown project_mode '{mode_str}', defaulting to 'cdaq'")
             system.project_mode = ProjectMode.CDAQ
+
+    # Parse dataviewer config (from system.ini [dataviewer] section)
+    dataviewer = DataViewerConfig()
+    if 'dataviewer' in parser:
+        dv_section = parser['dataviewer']
+        dataviewer.retention_days = int(dv_section.get('retention_days', dataviewer.retention_days))
 
     # Parse chassis configs
     chassis = {}
@@ -708,6 +720,7 @@ def load_config(config_path: str) -> NISystemConfig:
 
     return NISystemConfig(
         system=system,
+        dataviewer=dataviewer,
         chassis=chassis,
         modules=modules,
         channels=channels,

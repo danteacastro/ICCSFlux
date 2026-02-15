@@ -22,6 +22,7 @@ import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import GcAnalysisTab from './components/GcAnalysisTab.vue'
+import DataViewerTab from './components/DataViewerTab.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
@@ -62,6 +63,7 @@ const tabComponents: Record<string, Component> = {
   configuration: markRaw(ConfigurationTab),
   scripts: markRaw(ScriptsTab),
   data: markRaw(DataTab),
+  data_viewer: markRaw(DataViewerTab),
   safety: markRaw(SafetyTab),
   notebook: markRaw(NotebookTab),
   gc_analysis: markRaw(GcAnalysisTab),
@@ -90,6 +92,7 @@ const tabAccess = {
   configuration: computed(() => true),
   scripts: computed(() => true),
   data: computed(() => true),
+  data_viewer: computed(() => true),
   safety: computed(() => true),
   notebook: computed(() => true),
   gc_analysis: computed(() => true),
@@ -673,6 +676,17 @@ async function handleManualSave() {
               <line x1="6" y1="20" x2="6" y2="14"/>
             </svg>
             Data
+          </button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'data_viewer' }"
+            @click="switchTab('data_viewer')"
+            title="Data Viewer"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
+            </svg>
+            Viewer
           </button>
           <button
             class="tab-btn"

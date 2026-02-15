@@ -1420,6 +1420,49 @@ const selectedChartChannels = computed(() => {
             </div>
           </template>
 
+          <!-- Small Multiples specific -->
+          <template v-if="widgetType === 'small_multiples'">
+            <div class="form-group">
+              <label>Channels</label>
+              <div class="channel-checkboxes">
+                <label v-for="[name, config] in availableChannels" :key="name" class="channel-checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="localWidget.channels?.includes(name)"
+                    @change="toggleChannel(name, ($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>{{ name }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group half">
+                <label>Columns</label>
+                <select v-model.number="localWidget.columns">
+                  <option :value="2">2</option>
+                  <option :value="3">3</option>
+                  <option :value="4">4</option>
+                  <option :value="5">5</option>
+                  <option :value="6">6</option>
+                </select>
+              </div>
+              <div class="form-group half">
+                <label>History (samples)</label>
+                <input type="number" v-model.number="localWidget.historyLength" placeholder="60" min="10" max="300" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Decimal Places</label>
+              <input type="number" v-model.number="localWidget.decimals" placeholder="1" min="0" max="6" />
+            </div>
+            <div class="form-group checkbox">
+              <label>
+                <input type="checkbox" v-model="localWidget.showUnits" />
+                Show Units
+              </label>
+            </div>
+          </template>
+
           <!-- Alarm Summary specific -->
           <template v-if="widgetType === 'alarm_summary'">
             <div class="form-group">
@@ -1550,7 +1593,7 @@ const selectedChartChannels = computed(() => {
           </template>
 
           <!-- Common Appearance Section (for widgets that support background colors) -->
-          <template v-if="['numeric', 'bar_graph', 'setpoint', 'gauge', 'sparkline', 'led', 'alarm_summary', 'value_table', 'clock', 'system_status', 'recording_status', 'interlock_status', 'scheduler_status', 'crio_status', 'latch_switch', 'pid_loop'].includes(widgetType)">
+          <template v-if="['numeric', 'bar_graph', 'setpoint', 'gauge', 'sparkline', 'led', 'alarm_summary', 'value_table', 'clock', 'system_status', 'recording_status', 'interlock_status', 'scheduler_status', 'crio_status', 'latch_switch', 'pid_loop', 'small_multiples'].includes(widgetType)">
             <div class="config-section">
               <div class="section-header">Appearance</div>
               <div class="form-group">

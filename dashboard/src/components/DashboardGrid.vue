@@ -177,6 +177,7 @@ function getWidgetProps(widgetId: string): Record<string, unknown> {
   if (widget.showUnits !== undefined) props.showUnits = widget.showUnits
   if (widget.showStatus !== undefined) props.showStatus = widget.showStatus
   if (widget.maxRows !== undefined) props.maxRows = widget.maxRows
+  if (widget.columns !== undefined) props.columns = widget.columns
 
   // Gauge/BarGraph/Sparkline props
   if (widget.minValue !== undefined) props.minValue = widget.minValue
