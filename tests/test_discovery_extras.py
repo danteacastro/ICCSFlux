@@ -19,12 +19,12 @@ import threading
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'daq_service'))
 
-from daq_service.device_discovery import (
+from device_discovery import (
     DeviceDiscovery, NI_MODULE_DATABASE, ModuleCategory,
 )
-from daq_service.config_parser import (
+from config_parser import (
     ChannelConfig, ChannelType, HardwareSource, ProjectMode,
 )
 

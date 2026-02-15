@@ -26,12 +26,42 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
-          python -m pytest tests/ -v --tb=short `
-            --ignore=tests/test_crio_integration.py `
-            --ignore=tests/test_comprehensive_system.py `
-            --ignore=tests/test_lab_experiment.py
+          python -m pytest -v --tb=short `
+            tests/test_daq_orchestration.py `
+            tests/test_longevity.py `
+            tests/test_security_and_resilience.py `
+            tests/test_crio_script_engine_unit.py `
+            tests/test_recording_manager.py `
+            tests/test_session_and_recording.py `
+            tests/test_script_helpers.py `
+            tests/test_hardware_reader.py `
+            tests/test_safety_manager.py `
+            tests/test_safety_interlocks.py `
+            tests/test_hot_unplug_resilience.py `
+            tests/test_discovery_extras.py `
+            tests/test_crio_discovery_e2e.py `
+            tests/test_scaling.py `
+            tests/test_user_session.py `
+            tests/test_user_variables.py `
+            tests/test_pid_engine.py `
+            tests/test_sequence_manager.py `
+            tests/test_trigger_engine.py `
+            tests/test_audit_trail.py `
+            tests/test_scheduler.py `
+            tests/test_project_manager.py `
+            tests/test_archive_manager.py `
+            tests/test_dependency_tracker.py `
+            tests/test_backup_logger.py `
+            tests/test_watchdog_engine.py `
+            tests/test_counter.py `
+            tests/test_helpers.py `
+            tests/test_gc_analysis.py `
+            tests/test_gc_node_orchestration.py `
+            tests/test_gc_scheduler.py `
+            tests/test_gc_qc.py `
+            tests/test_calibration_manager.py
 
   dashboard-tests:
     name: Dashboard Tests (Vue/TypeScript)

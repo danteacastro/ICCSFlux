@@ -19,13 +19,13 @@ import os
 import sys
 from datetime import datetime, timezone
 
-# Ensure services are importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services'))
+# Ensure daq_service modules are importable
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'daq_service'))
 
-from daq_service.device_discovery import (
+from device_discovery import (
     DeviceDiscovery, CRIONode, Module, PhysicalChannel, ModuleCategory
 )
-from daq_service.config_parser import (
+from config_parser import (
     ProjectMode, HardwareSource, ChannelConfig, ChannelType, SystemConfig
 )
 
@@ -852,7 +852,7 @@ class TestModuleCategoryMapping:
         ("NI 9239", ModuleCategory.VOLTAGE_INPUT),
         # Current input modules (7)
         ("NI 9203", ModuleCategory.CURRENT_INPUT),
-        ("NI 9207", ModuleCategory.CURRENT_INPUT),
+        ("NI 9207", ModuleCategory.VOLTAGE_INPUT),  # combo module: ai0-7 V, ai8-15 I
         ("NI 9208", ModuleCategory.CURRENT_INPUT),
         ("NI 9227", ModuleCategory.CURRENT_INPUT),
         ("NI 9246", ModuleCategory.CURRENT_INPUT),
@@ -909,14 +909,14 @@ class TestModuleCategoryMapping:
     ])
     def test_module_database_mapping(self, model, expected_category):
         """NI module model should map to correct ModuleCategory."""
-        from daq_service.device_discovery import NI_MODULE_DATABASE
+        from device_discovery import NI_MODULE_DATABASE
         entry = NI_MODULE_DATABASE.get(model)
         assert entry is not None, f"Module {model} should be in NI_MODULE_DATABASE"
         assert entry["category"] == expected_category
 
     def test_all_database_entries_covered(self):
         """Verify the parametrized test covers every entry in NI_MODULE_DATABASE."""
-        from daq_service.device_discovery import NI_MODULE_DATABASE
+        from device_discovery import NI_MODULE_DATABASE
         assert len(NI_MODULE_DATABASE) == 66, \
             f"Expected 66 modules in database, got {len(NI_MODULE_DATABASE)}"
 
