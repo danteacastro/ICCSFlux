@@ -18,24 +18,29 @@ from config_parser import (
     ChannelType, ThermocoupleType
 )
 
-# Mock nidaqmx/numpy before importing hardware_reader
-# Save originals so we can restore after import (prevents mock leaking to other tests)
-_saved_modules = {}
-for _mod in ('nidaqmx', 'nidaqmx.constants', 'nidaqmx.stream_readers', 'numpy'):
-    _saved_modules[_mod] = sys.modules.get(_mod)
-    sys.modules[_mod] = MagicMock()
+# Mock nidaqmx/numpy before importing hardware_reader, then restore all mocks
+# to prevent leaking into other test files (e.g. device_discovery tests)
+_mocked = ('nidaqmx', 'nidaqmx.constants', 'nidaqmx.stream_readers', 'numpy')
+_saved = {m: sys.modules.get(m) for m in _mocked}
+for m in _mocked:
+    sys.modules[m] = MagicMock()
 
+import hardware_reader
 from hardware_reader import (
     get_terminal_config, get_cjc_source, TC_TYPE_MAP,
     DEFAULT_SAMPLE_RATE_HZ, BUFFER_SIZE
 )
 
-# Restore original modules (or remove mocks) so other test files aren't affected
-for _mod, _orig in _saved_modules.items():
-    if _orig is not None:
-        sys.modules[_mod] = _orig
+# Restore all original modules (remove mocks)
+for m, orig in _saved.items():
+    if orig is not None:
+        sys.modules[m] = orig
     else:
-        sys.modules.pop(_mod, None)
+        sys.modules.pop(m, None)
+
+# hardware_reader captured mock references at import time — force NIDAQMX_AVAILABLE=True
+# so get_terminal_config/get_cjc_source don't bail with None
+hardware_reader.NIDAQMX_AVAILABLE = True
 
 
 class TestConstants:
