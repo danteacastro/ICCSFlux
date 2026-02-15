@@ -72,7 +72,7 @@ class TestInterlockCondition:
         """Test creation from dictionary"""
         d = {
             'id': 'cond-2',
-            'type': 'digital_state',
+            'type': 'digital_input',
             'channel': 'switch_1',
             'value': True,
             'invert': True
@@ -80,7 +80,7 @@ class TestInterlockCondition:
 
         condition = InterlockCondition.from_dict(d)
         assert condition.id == "cond-2"
-        assert condition.condition_type == "digital_state"
+        assert condition.condition_type == "digital_input"
         assert condition.channel == "switch_1"
         assert condition.value is True
         assert condition.invert is True

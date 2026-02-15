@@ -251,6 +251,7 @@ class InterlockStatus:
     trip_acknowledged: bool = False
     trip_acknowledged_by: Optional[str] = None
     trip_acknowledged_at: Optional[str] = None
+    has_offline_channels: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -263,6 +264,7 @@ class InterlockStatus:
             'priority': self.priority,
             'silRating': self.sil_rating,
             'requiresAcknowledgment': self.requires_acknowledgment,
+            'hasOfflineChannels': self.has_offline_channels,
         }
         if self.requires_acknowledgment:
             d['tripAcknowledged'] = self.trip_acknowledged
@@ -590,7 +592,8 @@ class SafetyManager:
             else:
                 value = self._get_channel_value(condition.channel)
                 if value is None:
-                    result['reason'] = f'Channel {condition.channel} has no value'
+                    result['reason'] = f'Channel {condition.channel} has no value (OFFLINE?)'
+                    result['channel_offline'] = True
                 else:
                     satisfied = self._compare_values(value, condition.operator, condition.value)
                     result = {
@@ -605,7 +608,8 @@ class SafetyManager:
             else:
                 value = self._get_channel_value(condition.channel)
                 if value is None:
-                    result['reason'] = f'Channel {condition.channel} has no value'
+                    result['reason'] = f'Channel {condition.channel} has no value (OFFLINE?)'
+                    result['channel_offline'] = True
                 else:
                     raw_state = value != 0
                     actual_state = not raw_state if condition.invert else raw_state
@@ -779,12 +783,15 @@ class SafetyManager:
             results.append(result['satisfied'])
 
             if not result['satisfied']:
-                failed_conditions.append({
+                fail_info = {
                     'condition': condition.to_dict(),
                     'currentValue': result.get('current_value'),
                     'reason': result.get('reason', ''),
                     'delayRemaining': result.get('delay_remaining')
-                })
+                }
+                if result.get('channel_offline'):
+                    fail_info['channel_offline'] = True
+                failed_conditions.append(fail_info)
 
         # Apply logic
         if interlock.condition_logic == 'OR':
@@ -810,6 +817,7 @@ class SafetyManager:
 
         self._previous_states[interlock.id] = satisfied
 
+        has_offline = any(fc.get('channel_offline') for fc in failed_conditions)
         return InterlockStatus(
             id=interlock.id,
             name=interlock.name,
@@ -823,6 +831,7 @@ class SafetyManager:
             trip_acknowledged=ack_state.get('acknowledged', False),
             trip_acknowledged_by=ack_state.get('user'),
             trip_acknowledged_at=ack_state.get('timestamp'),
+            has_offline_channels=has_offline,
         )
 
     # ========================================================================
