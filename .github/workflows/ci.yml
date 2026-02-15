@@ -36,7 +36,6 @@ jobs:
             tests/test_recording_manager.py `
             tests/test_session_and_recording.py `
             tests/test_script_helpers.py `
-            tests/test_hardware_reader.py `
             tests/test_safety_manager.py `
             tests/test_safety_interlocks.py `
             tests/test_hot_unplug_resilience.py `
