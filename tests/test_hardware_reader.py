@@ -19,6 +19,8 @@ from config_parser import (
 )
 
 # Mock nidaqmx before importing hardware_reader
+# Save any real numpy so we can restore it after import (prevents mock leaking to other tests)
+_real_numpy = sys.modules.get('numpy')
 sys.modules['nidaqmx'] = MagicMock()
 sys.modules['nidaqmx.constants'] = MagicMock()
 sys.modules['nidaqmx.stream_readers'] = MagicMock()
@@ -26,8 +28,14 @@ sys.modules['numpy'] = MagicMock()
 
 from hardware_reader import (
     get_terminal_config, get_cjc_source, TC_TYPE_MAP,
-    SAMPLE_RATE_HZ, BUFFER_SIZE
+    DEFAULT_SAMPLE_RATE_HZ, BUFFER_SIZE
 )
+
+# Restore real numpy (or remove mock) so pytest.approx works in other test files
+if _real_numpy is not None:
+    sys.modules['numpy'] = _real_numpy
+else:
+    del sys.modules['numpy']
 
 
 class TestConstants:
@@ -35,7 +43,7 @@ class TestConstants:
 
     def test_sample_rate(self):
         """Test default sample rate"""
-        assert SAMPLE_RATE_HZ == 10
+        assert DEFAULT_SAMPLE_RATE_HZ == 10
 
     def test_buffer_size(self):
         """Test default buffer size"""
@@ -355,11 +363,11 @@ class TestHardwareReaderMocked:
         # since actual implementation requires hardware
 
         # Key points:
-        # 1. Hardware samples continuously at SAMPLE_RATE_HZ
+        # 1. Hardware samples continuously at DEFAULT_SAMPLE_RATE_HZ
         # 2. Background thread reads from buffer
         # 3. read_all() returns cached values instantly
 
-        assert SAMPLE_RATE_HZ == 10  # Hardware sample rate
+        assert DEFAULT_SAMPLE_RATE_HZ == 10  # Hardware sample rate
         assert BUFFER_SIZE == 100    # Buffer holds 10 seconds of data
 
     def test_thread_safety_design(self):

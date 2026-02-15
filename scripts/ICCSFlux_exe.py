@@ -508,6 +508,29 @@ Example:
     # Generate MQTT credentials on first run (before starting mosquitto)
     setup_mqtt_credentials()
 
+    # Generate TLS certificates on first run (before starting mosquitto)
+    tls_dir = ROOT / "config" / "tls"
+    if not (tls_dir / "ca.crt").exists():
+        print("[SETUP] Generating TLS certificates (first-run)...")
+        try:
+            # PyInstaller bundles generate_tls_certs.py into _MEIPASS/scripts/
+            # Dev mode has it at ROOT/scripts/
+            bundle_dir = getattr(sys, '_MEIPASS', None)
+            if bundle_dir:
+                scripts_path = str(Path(bundle_dir) / "scripts")
+            else:
+                scripts_path = str(ROOT / "scripts")
+            sys.path.insert(0, scripts_path)
+            from generate_tls_certs import generate_certificates
+            if generate_certificates(tls_dir):
+                print("[  OK ] TLS certificates generated")
+            else:
+                print("[WARN] TLS certificate generation failed — TLS listener will be unavailable")
+        except Exception as e:
+            print(f"[WARN] TLS certificate generation failed: {e}")
+        finally:
+            sys.path.pop(0)
+
     # Start services
     start_mosquitto()
     time.sleep(1)

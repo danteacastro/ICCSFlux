@@ -398,12 +398,77 @@ The DAQ service runs on the PC and is started separately (not via device.bat).
 - Use `TerminalConfiguration.DEFAULT` to let DAQmx auto-select
 - Thermocouple channels need `channel_type == 'thermocouple'` check before using thermocouple setup
 
+## Startup & Auto-Setup
+
+Both dev and portable modes auto-generate everything on first run — no manual steps required.
+
+### Auto-Generated on First Run
+
+| Item | Generator | Output |
+|------|-----------|--------|
+| MQTT credentials | `scripts/mqtt_credentials.py` | `config/mqtt_credentials.json`, `config/mosquitto_passwd`, `dashboard/.env.local` |
+| TLS certificates | `scripts/generate_tls_certs.py` | `config/tls/ca.crt`, `ca.key`, `server.crt`, `server.key` (10-year validity, SAN includes hostname + all local IPs) |
+| Azure IoT venv (dev only) | Desktop startup bat | `azure-venv/` with `paho-mqtt<2.0` + `azure-iot-device` (installed offline from `vendor/azure-packages/`) |
+| Admin password | DAQ service first run | `data/initial_admin_password.txt` (chmod 600) |
+
+### MQTT Listeners (mosquitto.conf)
+
+| Port | Bind | Transport | Auth | Purpose |
+|------|------|-----------|------|---------|
+| 1883 | 127.0.0.1 | TCP | Authenticated | Local services (DAQ, watchdog, Azure uploader) |
+| 8883 | 0.0.0.0 | TCP + TLS | Authenticated | Remote nodes (cRIO, Opto22, GC) |
+| 9002 | 127.0.0.1 | WebSocket | Anonymous | Dashboard (app-level auth via useAuth.ts) |
+| 9003 | 0.0.0.0 | WebSocket | Authenticated | Remote dashboards (supervisor PCs) |
+
+### Service MQTT Connection Methods
+
+| Service | Port | Transport | Credentials |
+|---------|------|-----------|-------------|
+| DAQ Service | 1883 | TCP | Env vars `MQTT_USERNAME`/`MQTT_PASSWORD` → fallback `config/mqtt_credentials.json` |
+| Watchdog | 1883 | TCP | Same credential chain as DAQ service |
+| Azure Uploader | 1883 | TCP | Same credential chain as DAQ service |
+| Dashboard (browser) | 9002 | WebSocket | Anonymous (port is localhost-only) |
+| cRIO/Opto22 nodes | 8883 | TCP + TLS | Credentials from config push, CA cert deployed via deploy scripts |
+
+### Dev Startup (`NISystem Start.bat`)
+
+8-step startup sequence:
+1. Kill previous NISystem windows
+2. Clean up old processes (mosquitto, DAQ, watchdog, vite)
+3. Auto-generate MQTT credentials (idempotent)
+4. Auto-generate TLS certificates (if missing)
+5. Start MQTT Broker (Mosquitto)
+6. Start DAQ Service (with MQTT credentials via env vars)
+7. Start Watchdog (with MQTT credentials via env vars)
+8. Start Azure IoT Uploader (isolated `azure-venv/`, auto-created from `vendor/azure-packages/`)
+9. Start Frontend (Vite dev server)
+
+### Portable Startup (`ICCSFlux.exe`)
+
+Same auto-setup sequence compiled into the launcher:
+1. `setup_mqtt_credentials()` — generates credentials + mosquitto passwd file (PBKDF2-SHA512 in Python, no external tools)
+2. `generate_tls_certs()` — `cryptography` library bundled in exe via PyInstaller
+3. Start Mosquitto (bundled in `mosquitto/` dir)
+4. Start DAQService.exe (credentials via env vars)
+5. Start AzureUploader.exe (if present, credentials via env vars)
+6. Start HTTP server (serves `www/` dashboard on port 5173)
+
+### Azure IoT SDK Isolation
+
+The Azure IoT SDK (`azure-iot-device`) requires `paho-mqtt<2.0`, which conflicts with the main project's `paho-mqtt>=2.0`. Both dev and portable handle this:
+
+- **Dev**: Isolated `azure-venv/` created on first startup from `vendor/azure-packages/` (offline, no internet)
+- **Portable**: `AzureUploader.exe` compiled from isolated build venv (`build/azure-venv/`). Ships as standalone binary with paho-mqtt 1.x baked in
+- **Vendor packages**: `vendor/azure-packages/` contains `azure-iot-device-2.14.0`, `paho-mqtt-1.6.1`, and all transitive dependencies as wheels
+
 ## MQTT Security Decisions
 
-- Port 1883 binds to 0.0.0.0 (NOT 127.0.0.1) — required for cRIO communication over USB Ethernet
-- Authentication + ACL is enforced on TCP listener — credentials auto-generated at first run
-- TLS is not enabled — acceptable because traffic stays on isolated plant network or direct USB Ethernet link
+- Port 1883 binds to 127.0.0.1 — local services only (DAQ, watchdog, Azure uploader)
+- Port 8883 binds to 0.0.0.0 with TLS — for remote cRIO/Opto22/GC nodes over network
+- Authentication + ACL enforced on all authenticated listeners — credentials auto-generated at first run
+- TLS certificates auto-generated with 10-year validity and machine-specific SANs
 - WebSocket 9002 is localhost-only and anonymous — dashboard uses app-level auth (useAuth.ts)
+- WebSocket 9003 is network-accessible and authenticated — for remote dashboards on LAN
 - Data only leaves the machine via Azure IoT Hub (HTTPS) or local SQL Server — never through MQTT
 
 ## Script Sandbox

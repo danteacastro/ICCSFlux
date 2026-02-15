@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import os
 import time
 import signal
 import sys
@@ -111,19 +112,33 @@ class DAQWatchdog:
             self.mqtt_client.disconnect()
 
     def _setup_mqtt(self):
-        """Setup MQTT connection via WebSocket (same as frontend dashboard)"""
+        """Setup MQTT connection via TCP (same as DAQ service)"""
         import uuid
-        # Use WebSocket transport on port 9002 to match frontend connection
-        mqtt_ws_port = 9002
         client_id = f"daq_watchdog_{uuid.uuid4().hex[:8]}"
         self.mqtt_client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
             client_id=client_id,
-            transport='websockets'
         )
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._on_mqtt_message
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
+
+        # MQTT Authentication — env vars, then auto-generated credential file
+        mqtt_user = os.environ.get('MQTT_USERNAME')
+        mqtt_pass = os.environ.get('MQTT_PASSWORD')
+        if not mqtt_user or not mqtt_pass:
+            cred_file = os.path.join('config', 'mqtt_credentials.json')
+            if os.path.exists(cred_file):
+                try:
+                    with open(cred_file) as f:
+                        creds = json.load(f)
+                    mqtt_user = creds.get('backend', {}).get('username')
+                    mqtt_pass = creds.get('backend', {}).get('password')
+                except Exception as e:
+                    logger.warning(f"Could not read MQTT credentials: {e}")
+        if mqtt_user and mqtt_pass:
+            self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
+            logger.info(f"MQTT authentication enabled for user: {mqtt_user}")
 
         # Set will message - if watchdog dies unexpectedly, broker publishes this
         base = self.config.mqtt_base_topic
@@ -141,7 +156,7 @@ class DAQWatchdog:
         try:
             self.mqtt_client.connect(
                 self.config.mqtt_broker,
-                mqtt_ws_port,
+                self.config.mqtt_port,
                 keepalive=30
             )
             self.mqtt_client.loop_start()
