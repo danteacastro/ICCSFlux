@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"Web server port (default: {DEFAULT_PORT})")
     parser.add_argument("-v", "--version", action="version",
-                        version="ICCSFlux Fleet Monitor 1.0")
+                        version="ICCSFlux Fleet Monitor 0.1.0-alpha")
     args = parser.parse_args()
 
     if not WWW.exists():

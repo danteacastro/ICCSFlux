@@ -140,12 +140,27 @@ def assemble_package():
     except Exception:
         commit = "unknown"
 
+    # Compute SHA-256 hash of the exe (for SentinelOne / EDR whitelisting)
+    import hashlib
+    exe_path = BUILD_DIR / "FleetMonitor.exe"
+    exe_hash = ""
+    if exe_path.exists():
+        sha = hashlib.sha256()
+        with open(exe_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                sha.update(chunk)
+        exe_hash = sha.hexdigest()
+        log(f"SHA-256: {exe_hash}", "OK")
+
     from datetime import datetime, timezone
-    (BUILD_DIR / "VERSION.txt").write_text(
+    version_text = (
         f"ICCSFlux Fleet Monitor\n"
         f"Build: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
         f"Commit: {commit}\n"
     )
+    if exe_hash:
+        version_text += f"SHA-256: {exe_hash}\n"
+    (BUILD_DIR / "VERSION.txt").write_text(version_text)
 
     # Calculate total size
     total = sum(f.stat().st_size for f in BUILD_DIR.rglob('*') if f.is_file())
