@@ -313,11 +313,26 @@ class ModbusConnection:
                 self._handle_exception(e, f"read_{reg_type}_registers({address}, {count})")
                 return None
 
+    # Modbus exception code descriptions (standard protocol)
+    EXCEPTION_CODES = {
+        1: 'ILLEGAL_FUNCTION',
+        2: 'ILLEGAL_DATA_ADDRESS',
+        3: 'ILLEGAL_DATA_VALUE',
+        4: 'SLAVE_DEVICE_FAILURE',
+        5: 'ACKNOWLEDGE',
+        6: 'SLAVE_DEVICE_BUSY',
+        8: 'MEMORY_PARITY_ERROR',
+        10: 'GATEWAY_PATH_UNAVAILABLE',
+        11: 'GATEWAY_TARGET_FAILED',
+    }
+
     def _handle_error(self, result, operation: str):
-        """Handle Modbus error response"""
+        """Handle Modbus error response with detailed exception codes"""
         self.error_count += 1
         if isinstance(result, ExceptionResponse):
-            self.last_error = f"Modbus exception {result.exception_code}: {operation}"
+            code = result.exception_code
+            code_name = self.EXCEPTION_CODES.get(code, f'UNKNOWN_{code}')
+            self.last_error = f"{code_name} (code {code}): {operation}"
         else:
             self.last_error = f"Modbus error: {operation}"
         logger.warning(f"{self.config.name}: {self.last_error}")
@@ -330,12 +345,13 @@ class ModbusConnection:
     def _handle_exception(self, e: Exception, operation: str):
         """Handle Python exception during Modbus operation"""
         self.error_count += 1
-        self.last_error = f"{operation}: {str(e)}"
-        logger.error(f"{self.config.name}: {self.last_error}")
-
         if isinstance(e, ConnectionException):
+            self.last_error = f"CONNECTION_LOST: {operation}"
             self.connected = False
             logger.warning(f"{self.config.name}: Connection lost, will retry on next read")
+        else:
+            self.last_error = f"EXCEPTION: {operation}: {str(e)}"
+        logger.error(f"{self.config.name}: {self.last_error}")
 
 
 class ModbusReader:
@@ -454,14 +470,14 @@ class ModbusReader:
             }
             data_type = data_type_map.get(data_type_str.lower(), ModbusDataType.FLOAT32)
 
-            # Get slave ID: explicit channel config > module slot > default 1
+            # Get slave ID: explicit channel config > device default (1)
+            # Never fall back to module.slot — slot is chassis position, not Modbus unit ID
             explicit_slave_id = getattr(channel, 'modbus_slave_id', None)
             if explicit_slave_id is not None:
                 slave_id = explicit_slave_id
-            elif hasattr(module, 'slave_id'):
-                slave_id = getattr(module, 'slave_id', module.slot)
             else:
                 slave_id = 1
+                logger.debug(f"Channel {name}: no explicit modbus_slave_id, using default 1")
 
             # Batch reading config
             register_count = getattr(channel, 'modbus_register_count', None)
@@ -768,6 +784,24 @@ class ModbusReader:
                 else:
                     raw_value = float(value)
 
+                # Bounds check: prevent overflow for integer data types
+                DATA_TYPE_BOUNDS = {
+                    ModbusDataType.INT16: (-32768, 32767),
+                    ModbusDataType.UINT16: (0, 65535),
+                    ModbusDataType.INT32: (-2147483648, 2147483647),
+                    ModbusDataType.UINT32: (0, 4294967295),
+                }
+                bounds = DATA_TYPE_BOUNDS.get(config.data_type)
+                if bounds is not None:
+                    lo, hi = bounds
+                    if raw_value < lo or raw_value > hi:
+                        logger.error(
+                            f"Write overflow for {channel_name}: raw value {raw_value} "
+                            f"exceeds {config.data_type.value} range [{lo}, {hi}]"
+                        )
+                        return False
+                    raw_value = int(raw_value)
+
                 # Encode and write
                 registers = self._encode_value(raw_value, config.data_type,
                                                config.byte_order, config.word_order)
@@ -798,12 +832,79 @@ class ModbusReader:
         pass
 
     def add_channel(self, channel: ChannelConfig):
-        """
-        Add a new channel dynamically.
-        For Modbus, this would require re-parsing the channel config.
-        """
-        logger.warning(f"Dynamic channel addition not fully supported in ModbusReader. "
-                      f"Channel {channel.name} will need service restart to take effect.")
+        """Add a new Modbus channel dynamically without requiring service restart."""
+        if channel.channel_type not in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+            return  # Not a Modbus channel, ignore
+
+        name = channel.name
+
+        # Get module and chassis
+        module = self.config.modules.get(channel.module)
+        if not module:
+            logger.warning(f"add_channel: module not found for {name}")
+            return
+
+        chassis_name = module.chassis
+        if chassis_name not in self.connections:
+            logger.warning(f"add_channel: no Modbus connection for chassis {chassis_name}")
+            return
+
+        # Parse physical_channel for register info
+        try:
+            parts = channel.physical_channel.split(':')
+            if len(parts) >= 3 and parts[0].lower() == 'modbus':
+                reg_type_str = parts[1].lower()
+                address = int(parts[2])
+            else:
+                reg_type_str = getattr(channel, 'modbus_register_type', 'holding')
+                address = getattr(channel, 'modbus_address', int(channel.physical_channel))
+        except (ValueError, AttributeError):
+            logger.error(f"add_channel: invalid config for {name}: {channel.physical_channel}")
+            return
+
+        reg_type_map = {
+            'holding': ModbusRegisterType.HOLDING,
+            'input': ModbusRegisterType.INPUT,
+            'coil': ModbusRegisterType.COIL,
+            'discrete': ModbusRegisterType.DISCRETE,
+        }
+        reg_type = reg_type_map.get(reg_type_str, ModbusRegisterType.HOLDING)
+
+        data_type_str = getattr(channel, 'modbus_data_type', 'float32')
+        data_type_map = {
+            'int16': ModbusDataType.INT16, 'uint16': ModbusDataType.UINT16,
+            'int32': ModbusDataType.INT32, 'uint32': ModbusDataType.UINT32,
+            'float32': ModbusDataType.FLOAT32, 'float64': ModbusDataType.FLOAT64,
+            'bool': ModbusDataType.BOOL,
+        }
+        data_type = data_type_map.get(data_type_str.lower(), ModbusDataType.FLOAT32)
+
+        explicit_slave_id = getattr(channel, 'modbus_slave_id', None)
+        slave_id = explicit_slave_id if explicit_slave_id is not None else 1
+
+        modbus_config = ModbusChannelConfig(
+            channel_name=name,
+            device_name=chassis_name,
+            slave_id=slave_id,
+            register_type=reg_type,
+            address=address,
+            data_type=data_type,
+            byte_order=getattr(channel, 'modbus_byte_order', 'big'),
+            word_order=getattr(channel, 'modbus_word_order', 'big'),
+            scale=getattr(channel, 'modbus_scale', 1.0),
+            offset=getattr(channel, 'modbus_offset', 0.0),
+            is_output=channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL,
+            register_count=getattr(channel, 'modbus_register_count', None),
+            register_index=getattr(channel, 'modbus_register_index', 0)
+        )
+
+        with self.lock:
+            self.channel_configs[name] = modbus_config
+            self.channel_values[name] = 0.0
+            if modbus_config.is_output:
+                self.output_values[name] = 0.0
+
+        logger.info(f"Dynamically added Modbus channel: {name} -> {chassis_name}/{reg_type_str}:{address}")
 
     def remove_channel(self, channel_name: str):
         """Remove a channel dynamically."""
@@ -828,15 +929,27 @@ class ModbusReader:
         logger.info("Modbus reader closed")
 
     def get_connection_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all Modbus connections"""
+        """Get status of all Modbus connections with detailed error info"""
         status = {}
         for name, conn in self.connections.items():
-            status[name] = {
+            entry: Dict[str, Any] = {
                 'connected': conn.connected,
                 'error_count': conn.error_count,
                 'last_error': conn.last_error,
                 'last_successful_read': conn.last_successful_read,
             }
+            # Parse structured error type from last_error for frontend display
+            if conn.last_error:
+                error = conn.last_error
+                if error.startswith('CONNECTION_LOST'):
+                    entry['error_type'] = 'connection'
+                elif error.startswith('EXCEPTION'):
+                    entry['error_type'] = 'exception'
+                elif any(error.startswith(code_name) for code_name in conn.EXCEPTION_CODES.values()):
+                    entry['error_type'] = 'modbus_exception'
+                else:
+                    entry['error_type'] = 'unknown'
+            status[name] = entry
         return status
 
     def __enter__(self):
