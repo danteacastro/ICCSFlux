@@ -24,6 +24,7 @@ import LoginDialog from './components/LoginDialog.vue'
 import GcAnalysisTab from './components/GcAnalysisTab.vue'
 import DataViewerTab from './components/DataViewerTab.vue'
 import LogViewerTab from './components/LogViewerTab.vue'
+import OperationalReportTab from './components/OperationalReportTab.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
@@ -66,6 +67,7 @@ const tabComponents: Record<string, Component> = {
   data: markRaw(DataTab),
   data_viewer: markRaw(DataViewerTab),
   log_viewer: markRaw(LogViewerTab),
+  reports: markRaw(OperationalReportTab),
   safety: markRaw(SafetyTab),
   notebook: markRaw(NotebookTab),
   gc_analysis: markRaw(GcAnalysisTab),
@@ -96,6 +98,7 @@ const tabAccess = {
   data: computed(() => true),
   data_viewer: computed(() => true),
   log_viewer: computed(() => true),
+  reports: computed(() => true),
   safety: computed(() => true),
   notebook: computed(() => true),
   gc_analysis: computed(() => true),
@@ -147,7 +150,7 @@ function updateUrlNavigation(view: string, pageId: string) {
 
 // Restore activeTab from URL on startup (before any watches fire)
 const urlView = getViewFromUrl()
-if (urlView && ['overview', 'configuration', 'scripts', 'data', 'data_viewer', 'log_viewer', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
+if (urlView && ['overview', 'configuration', 'scripts', 'data', 'data_viewer', 'log_viewer', 'reports', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
   activeTab.value = urlView
 }
 
@@ -703,6 +706,19 @@ async function handleManualSave() {
               <line x1="7" y1="16" x2="13" y2="16"/>
             </svg>
             Logs
+          </button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'reports' }"
+            @click="switchTab('reports')"
+            title="Operational Reports"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+              <rect x="9" y="3" width="6" height="4" rx="1"/>
+              <line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/>
+            </svg>
+            Reports
           </button>
           <button
             class="tab-btn"
