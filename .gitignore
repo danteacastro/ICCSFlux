@@ -87,3 +87,9 @@ Thumbs.db
 mosquitto_passwd
 **/users.json
 .env.production
+
+# TLS certificates (auto-generated per machine)
+config/tls/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
