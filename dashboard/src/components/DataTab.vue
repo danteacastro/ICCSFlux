@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
-import { useDashboardStore } from '../stores/dashboard'
+import { useDashboardStore, toBackendRecordingConfig } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
@@ -443,84 +443,12 @@ function startRecording() {
     return
   }
 
-  const cfg = recordingConfig.value
-
-  // Build config for backend
-  const config = {
-    // File settings
-    base_path: cfg.basePath,
-    file_prefix: cfg.filePrefix,
-    file_format: cfg.fileFormat,
-
-    // Logging rate
-    sample_interval: cfg.sampleInterval,
-    sample_interval_unit: cfg.sampleIntervalUnit,
-    decimation: cfg.decimation,
-
-    // File Rotation Strategy
-    rotation_mode: cfg.rotationMode,
-    max_file_size_mb: cfg.maxFileSize,
-    max_file_duration_s: cfg.maxFileDuration,
-    max_file_samples: cfg.maxFileSamples,
-
-    // Naming Convention
-    naming_pattern: cfg.namingPattern,
-    include_date: cfg.includeDate,
-    include_time: cfg.includeTime,
-    include_channels_in_name: cfg.includeChannelsInName,
-    sequential_start: cfg.sequentialStart,
-    sequential_padding: cfg.sequentialPadding,
-    custom_suffix: cfg.customSuffix,
-
-    // Directory Organization
-    directory_structure: cfg.directoryStructure,
-    experiment_name: cfg.experimentName,
-
-    // Buffer/Write Strategy
-    write_mode: cfg.writeMode,
-    buffer_size: cfg.bufferSize,
-    flush_interval_s: cfg.flushInterval,
-
-    // On Limit Reached
-    on_limit_reached: cfg.onLimitReached,
-    circular_max_files: cfg.circularMaxFiles,
-
-    // Recording Mode
-    mode: cfg.mode,
-    selected_channels: selectAllChannels.value ? [] : selectedChannels.value,
-    include_scripts: true,
-
-    // Triggered Mode
-    trigger_channel: cfg.triggerChannel,
-    trigger_condition: cfg.triggerCondition,
-    trigger_value: cfg.triggerValue,
-    pre_trigger_samples: cfg.preTriggerSamples,
-    post_trigger_samples: cfg.postTriggerSamples,
-
-    // Scheduled Mode
-    schedule_start: cfg.scheduleStart,
-    schedule_end: cfg.scheduleEnd,
-    schedule_days: cfg.scheduleDays,
-
-    // File Reuse
-    reuse_file: cfg.reuseFile,
-
-    // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11)
-    append_only: cfg.appendOnly,
-    verify_on_close: cfg.verifyOnClose,
-    include_audit_metadata: cfg.includeAuditMetadata,
-
-    // PostgreSQL Database Storage
-    db_enabled: cfg.dbEnabled,
-    db_host: cfg.dbHost,
-    db_port: cfg.dbPort,
-    db_name: cfg.dbName,
-    db_user: cfg.dbUser,
-    db_password: cfg.dbPassword,
-    db_table: cfg.dbTable,
-    db_batch_size: cfg.dbBatchSize,
-    db_timescale: cfg.dbTimescale
-  }
+  // Convert frontend config (camelCase) to backend format (snake_case)
+  const config = toBackendRecordingConfig(
+    recordingConfig.value,
+    selectedChannels.value,
+    selectAllChannels.value,
+  )
 
   // Update config then start recording
   mqtt.updateRecordingConfig(config)
@@ -557,13 +485,77 @@ function deleteFile(filename: string) {
   }
 }
 
-// Download recorded file
+// Download recorded file via MQTT read + browser CSV download
+const downloadingFile = ref<string | null>(null)
+let downloadCleanup: (() => void) | null = null
+let downloadTimeoutId: ReturnType<typeof setTimeout> | null = null
+
 function downloadFile(filename: string) {
-  // For now, show the file path - actual download would need HTTP endpoint
-  const file = mqtt.recordedFiles.value.find(f => f.name === filename)
-  if (file) {
-    showFeedback('info', `File path: ${file.path}`)
+  if (downloadingFile.value) {
+    showFeedback('warning', 'A download is already in progress')
+    return
   }
+
+  downloadingFile.value = filename
+  showFeedback('info', `Requesting ${filename}...`)
+
+  // Clean up any prior download state
+  if (downloadCleanup) { downloadCleanup(); downloadCleanup = null }
+  if (downloadTimeoutId) { clearTimeout(downloadTimeoutId); downloadTimeoutId = null }
+
+  downloadCleanup = mqtt.onRecordingRead((result: any) => {
+    // Clear timeout immediately on response
+    if (downloadTimeoutId) { clearTimeout(downloadTimeoutId); downloadTimeoutId = null }
+    downloadingFile.value = null
+    if (downloadCleanup) { downloadCleanup(); downloadCleanup = null }
+
+    if (!result.success) {
+      showFeedback('error', `Download failed: ${result.error || 'Unknown error'}`)
+      return
+    }
+
+    if (!result.data || result.data.length === 0) {
+      showFeedback('warning', 'File is empty — no data to download')
+      return
+    }
+
+    // Build CSV from response data
+    const channels: string[] = result.channels || []
+    const header = ['timestamp', ...channels].join(',')
+    const rows = result.data.map((row: { timestamp: string; values: Record<string, number | null> }) => {
+      const vals = channels.map(ch => {
+        const v = row.values[ch]
+        return v != null ? String(v) : ''
+      })
+      return [row.timestamp, ...vals].join(',')
+    })
+
+    const csv = [header, ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    showFeedback('success', `Downloaded ${filename} (${result.sample_count} samples)`)
+  })
+
+  // Send read command (no decimation for download — full resolution)
+  mqtt.readRecordingFile(filename, { decimation: 1, max_samples: 500000 })
+
+  // Timeout after 30s
+  downloadTimeoutId = setTimeout(() => {
+    if (downloadingFile.value === filename) {
+      downloadingFile.value = null
+      if (downloadCleanup) { downloadCleanup(); downloadCleanup = null }
+      showFeedback('error', 'Download timed out')
+    }
+    downloadTimeoutId = null
+  }, 30000)
 }
 
 // Azure IoT Hub methods
@@ -669,6 +661,8 @@ onUnmounted(() => {
   if (unsubscribeRecordingResponse) unsubscribeRecordingResponse()
   if (dbTestTimeoutId) clearTimeout(dbTestTimeoutId)
   if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId)
+  if (downloadCleanup) { downloadCleanup(); downloadCleanup = null }
+  if (downloadTimeoutId) { clearTimeout(downloadTimeoutId); downloadTimeoutId = null }
 })
 
 // Format helpers
@@ -719,10 +713,9 @@ onMounted(() => {
   unsubscribeRecordingResponse = mqtt.onRecordingResponse((response) => {
     if (response.success) {
       showFeedback('success', response.message)
-      // Refresh file list after operations
-      if (response.message?.includes('Deleted') || response.message?.includes('stopped')) {
-        mqtt.listRecordedFiles()
-      }
+      // Always refresh file list after any successful recording operation
+      // (covers delete, stop, rotation, etc.)
+      mqtt.listRecordedFiles()
     } else {
       showFeedback('error', response.message || 'Recording operation failed')
     }
@@ -1726,11 +1719,19 @@ const scheduleDayLabels = [
                   </span>
                 </div>
                 <div class="file-actions">
-                  <button class="icon-btn" @click.stop="downloadFile(file.name)" title="Download">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <button
+                    class="icon-btn"
+                    @click.stop="downloadFile(file.name)"
+                    :disabled="downloadingFile === file.name"
+                    :title="downloadingFile === file.name ? 'Downloading...' : 'Download'"
+                  >
+                    <svg v-if="downloadingFile !== file.name" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                       <polyline points="7 10 12 15 17 10"/>
                       <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin">
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                     </svg>
                   </button>
                   <button class="icon-btn danger" @click.stop="deleteFile(file.name)" title="Delete">
@@ -2288,6 +2289,11 @@ const scheduleDayLabels = [
 .feedback-message.error {
   background: var(--indicator-danger-bg);
   color: var(--indicator-danger-text);
+}
+
+.feedback-message.warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
 }
 
 .feedback-message.info {
@@ -3826,5 +3832,14 @@ const scheduleDayLabels = [
 
 .db-status-box .status-value.connected {
   color: var(--color-success);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

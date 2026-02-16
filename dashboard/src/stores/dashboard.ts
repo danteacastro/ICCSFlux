@@ -20,7 +20,8 @@ import type {
   PidCommand,
   PidGroup,
   PidTemplate,
-  PidLayerInfo
+  PidLayerInfo,
+  BackendRecordingConfig,
 } from '../types'
 
 // Recording configuration interface
@@ -140,6 +141,68 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   dbTable: 'recording_data',
   dbBatchSize: 50,
   dbTimescale: false
+}
+
+/**
+ * Convert frontend RecordingConfig (camelCase) to backend format (snake_case).
+ * Single source of truth for the field mapping — used by DataTab.startRecording()
+ * and anywhere else that sends config to the backend.
+ */
+export function toBackendRecordingConfig(
+  cfg: RecordingConfig,
+  selectedChannels: string[],
+  selectAll: boolean,
+): BackendRecordingConfig {
+  return {
+    base_path: cfg.basePath,
+    file_prefix: cfg.filePrefix,
+    file_format: cfg.fileFormat,
+    sample_interval: cfg.sampleInterval,
+    sample_interval_unit: cfg.sampleIntervalUnit,
+    decimation: cfg.decimation,
+    rotation_mode: cfg.rotationMode,
+    max_file_size_mb: cfg.maxFileSize,
+    max_file_duration_s: cfg.maxFileDuration,
+    max_file_samples: cfg.maxFileSamples,
+    naming_pattern: cfg.namingPattern,
+    include_date: cfg.includeDate,
+    include_time: cfg.includeTime,
+    include_channels_in_name: cfg.includeChannelsInName,
+    sequential_start: cfg.sequentialStart,
+    sequential_padding: cfg.sequentialPadding,
+    custom_suffix: cfg.customSuffix,
+    directory_structure: cfg.directoryStructure,
+    experiment_name: cfg.experimentName,
+    write_mode: cfg.writeMode,
+    buffer_size: cfg.bufferSize,
+    flush_interval_s: cfg.flushInterval,
+    on_limit_reached: cfg.onLimitReached,
+    circular_max_files: cfg.circularMaxFiles,
+    mode: cfg.mode,
+    selected_channels: selectAll ? [] : selectedChannels,
+    include_scripts: true,
+    trigger_channel: cfg.triggerChannel,
+    trigger_condition: cfg.triggerCondition,
+    trigger_value: cfg.triggerValue,
+    pre_trigger_samples: cfg.preTriggerSamples,
+    post_trigger_samples: cfg.postTriggerSamples,
+    schedule_start: cfg.scheduleStart,
+    schedule_end: cfg.scheduleEnd,
+    schedule_days: cfg.scheduleDays,
+    reuse_file: cfg.reuseFile,
+    append_only: cfg.appendOnly,
+    verify_on_close: cfg.verifyOnClose,
+    include_audit_metadata: cfg.includeAuditMetadata,
+    db_enabled: cfg.dbEnabled,
+    db_host: cfg.dbHost,
+    db_port: cfg.dbPort,
+    db_name: cfg.dbName,
+    db_user: cfg.dbUser,
+    db_password: cfg.dbPassword,
+    db_table: cfg.dbTable,
+    db_batch_size: cfg.dbBatchSize,
+    db_timescale: cfg.dbTimescale,
+  }
 }
 
 export const useDashboardStore = defineStore('dashboard', () => {
