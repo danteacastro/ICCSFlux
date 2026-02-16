@@ -372,8 +372,7 @@ const effectiveSampleRate = computed(() => {
   if (recordingConfig.value.sampleIntervalUnit === 'milliseconds') {
     intervalSeconds = recordingConfig.value.sampleInterval / 1000
   }
-  const baseRate = intervalSeconds > 0 ? 1 / intervalSeconds : 0
-  return baseRate / recordingConfig.value.decimation
+  return intervalSeconds > 0 ? 1 / intervalSeconds : 0
 })
 
 // Generate preview filename based on naming pattern
@@ -432,8 +431,16 @@ const estimatedSizePerHour = computed(() => {
   return bytesPerHour / (1024 * 1024) // MB
 })
 
-// Start Recording
+// Start/Stop Recording
 const isRecordingOp = ref(false)
+let recordingOpTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+function setRecordingOp() {
+  isRecordingOp.value = true
+  if (recordingOpTimeoutId) clearTimeout(recordingOpTimeoutId)
+  // Fallback timeout — reset if no response within 10s
+  recordingOpTimeoutId = setTimeout(() => { isRecordingOp.value = false; recordingOpTimeoutId = null }, 10000)
+}
 
 function startRecording() {
   if (isRecordingOp.value) return
@@ -441,6 +448,31 @@ function startRecording() {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
+  }
+
+  // Validate channel selection
+  const channelCount = selectAllChannels.value ? allChannelNames.value.length : selectedChannels.value.length
+  if (channelCount === 0) {
+    showFeedback('error', 'Select at least one tag to record')
+    return
+  }
+
+  // Validate triggered mode
+  if (recordingConfig.value.mode === 'triggered' && !recordingConfig.value.triggerChannel) {
+    showFeedback('error', 'Select a trigger tag for triggered recording mode')
+    return
+  }
+
+  // Validate scheduled mode
+  if (recordingConfig.value.mode === 'scheduled') {
+    if (!recordingConfig.value.scheduleStart || !recordingConfig.value.scheduleEnd) {
+      showFeedback('error', 'Set start and end times for scheduled recording')
+      return
+    }
+    if (recordingConfig.value.scheduleDays.length === 0) {
+      showFeedback('error', 'Select at least one day for scheduled recording')
+      return
+    }
   }
 
   // Convert frontend config (camelCase) to backend format (snake_case)
@@ -454,20 +486,18 @@ function startRecording() {
   mqtt.updateRecordingConfig(config)
 
   // Use the system command to start recording
-  isRecordingOp.value = true
+  setRecordingOp()
   mqtt.startRecording()
   showFeedback('info', 'Starting recording...')
-  setTimeout(() => { isRecordingOp.value = false }, 3000)
 }
 
 // Stop Recording
 function stopRecording() {
   if (isRecordingOp.value) return
   if (!requireEditPermission()) return
-  isRecordingOp.value = true
+  setRecordingOp()
   mqtt.stopRecording()
   showFeedback('info', 'Stopping recording...')
-  setTimeout(() => { isRecordingOp.value = false }, 3000)
 }
 
 // Load recorded files list
@@ -661,6 +691,7 @@ onUnmounted(() => {
   if (unsubscribeRecordingResponse) unsubscribeRecordingResponse()
   if (dbTestTimeoutId) clearTimeout(dbTestTimeoutId)
   if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId)
+  if (recordingOpTimeoutId) { clearTimeout(recordingOpTimeoutId); recordingOpTimeoutId = null }
   if (downloadCleanup) { downloadCleanup(); downloadCleanup = null }
   if (downloadTimeoutId) { clearTimeout(downloadTimeoutId); downloadTimeoutId = null }
 })
@@ -711,6 +742,11 @@ onMounted(() => {
 
   // Listen for recording responses (store unsubscribe for cleanup)
   unsubscribeRecordingResponse = mqtt.onRecordingResponse((response) => {
+    // Reset recording op guard on any response (replaces blind timeout)
+    if (isRecordingOp.value) {
+      isRecordingOp.value = false
+      if (recordingOpTimeoutId) { clearTimeout(recordingOpTimeoutId); recordingOpTimeoutId = null }
+    }
     if (response.success) {
       showFeedback('success', response.message)
       // Always refresh file list after any successful recording operation
@@ -736,13 +772,13 @@ const displayedFiles = computed(() => {
 
 // Schedule days labels
 const scheduleDayLabels = [
-  { id: 'mon', label: 'M' },
-  { id: 'tue', label: 'T' },
-  { id: 'wed', label: 'W' },
-  { id: 'thu', label: 'T' },
-  { id: 'fri', label: 'F' },
-  { id: 'sat', label: 'S' },
-  { id: 'sun', label: 'S' },
+  { id: 'mon', label: 'Mo' },
+  { id: 'tue', label: 'Tu' },
+  { id: 'wed', label: 'We' },
+  { id: 'thu', label: 'Th' },
+  { id: 'fri', label: 'Fr' },
+  { id: 'sat', label: 'Sa' },
+  { id: 'sun', label: 'Su' },
 ]
 </script>
 
@@ -918,17 +954,13 @@ const scheduleDayLabels = [
                 <option value="milliseconds">Milliseconds</option>
               </select>
             </div>
-            <div class="form-group" style="flex: 1;">
-              <label>Decimal Points</label>
-              <input type="number" v-model.number="recordingConfig.decimation" min="1" max="100" :disabled="configLocked" title="Precision for recorded values" />
-            </div>
           </div>
 
           <div class="rate-info">
             <div class="rate-row">
               <span>Effective rate:</span>
               <strong>{{ effectiveSampleRate.toFixed(3) }} Hz</strong>
-              <span class="rate-detail">(1 sample every {{ recordingConfig.sampleIntervalUnit === 'milliseconds' ? (recordingConfig.sampleInterval * recordingConfig.decimation) + 'ms' : (recordingConfig.sampleInterval * recordingConfig.decimation).toFixed(2) + 's' }})</span>
+              <span class="rate-detail">(1 sample every {{ recordingConfig.sampleIntervalUnit === 'milliseconds' ? recordingConfig.sampleInterval + 'ms' : recordingConfig.sampleInterval + 's' }})</span>
             </div>
             <div class="rate-row">
               <span>Est. file size:</span>
@@ -2939,7 +2971,7 @@ const scheduleDayLabels = [
 }
 
 .day-btn {
-  width: 32px;
+  width: 36px;
   height: 32px;
   background: var(--btn-bg);
   border: 1px solid var(--border-color);

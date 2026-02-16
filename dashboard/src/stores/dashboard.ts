@@ -159,7 +159,7 @@ export function toBackendRecordingConfig(
     file_format: cfg.fileFormat,
     sample_interval: cfg.sampleInterval,
     sample_interval_unit: cfg.sampleIntervalUnit,
-    decimation: cfg.decimation,
+    decimation: 1,  // Decimation handled by sample interval — always send 1
     rotation_mode: cfg.rotationMode,
     max_file_size_mb: cfg.maxFileSize,
     max_file_duration_s: cfg.maxFileDuration,
