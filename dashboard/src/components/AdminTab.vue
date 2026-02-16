@@ -391,7 +391,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../composables/useAuth'
 import NodeManagerPanel from './NodeManagerPanel.vue'
 
@@ -487,6 +487,15 @@ function editUser(user: User) {
 }
 
 const isDeletingUser = ref(false)
+let deleteTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+// Reset delete guard when user list refreshes (backend confirmed the mutation)
+watch(users, () => {
+  if (isDeletingUser.value) {
+    isDeletingUser.value = false
+    if (deleteTimeoutId) { clearTimeout(deleteTimeoutId); deleteTimeoutId = null }
+  }
+})
 
 function confirmDeleteUser(user: User) {
   if (isDeletingUser.value) return
@@ -500,7 +509,8 @@ function performDeleteUser() {
     const username = userToDelete.value.username
     userToDelete.value = null
     deleteUser(username)
-    setTimeout(() => { isDeletingUser.value = false }, 2000)
+    // Fallback timeout in case response never arrives
+    deleteTimeoutId = setTimeout(() => { isDeletingUser.value = false; deleteTimeoutId = null }, 10000)
   }
 }
 

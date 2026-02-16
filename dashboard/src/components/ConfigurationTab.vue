@@ -1987,40 +1987,11 @@ function closeDiscoveryPanel() {
   mqtt.cancelScan()
 }
 
-// Handle discovery result
-mqtt.onDiscovery((result) => {
-  console.log('[ConfigTab] onDiscovery callback fired:', result?.success, result?.total_channels)
-  // If user explicitly closed the panel, don't process late-arriving results
-  if (userClosedDiscovery.value) {
-    console.debug('[ConfigTab] Ignoring discovery result - user closed panel')
-    return
-  }
-  if (result.success) {
-    const totalChannels = result.total_channels || 0
-    const chassisCount = result.chassis?.length || 0
-    const crioCount = result.crio_nodes?.length || 0
-    const opto22Count = result.opto22_nodes?.length || 0
-    const parts = []
-    if (chassisCount > 0) parts.push(`${chassisCount} cDAQ`)
-    if (crioCount > 0) parts.push(`${crioCount} cRIO`)
-    if (opto22Count > 0) parts.push(`${opto22Count} Opto22`)
-    const deviceText = parts.length > 0 ? parts.join(', ') : 'No devices'
-    showFeedback('success', `Found ${deviceText}, ${totalChannels} channels`)
-    // Auto-expand all on successful discovery
-    expandAllDiscovery()
-  } else {
-    showFeedback('error', result.error || result.message || 'Discovery failed')
-  }
-})
-
-// Handle cRIO response (push config result)
-mqtt.onCrioResponse((result) => {
-  if (result.success) {
-    showFeedback('success', result.message || 'Config pushed to cRIO')
-  } else {
-    showFeedback('error', result.message || 'Failed to push config to cRIO')
-  }
-})
+// MQTT callback unsub functions (registered in onMounted, cleaned up in onBeforeUnmount)
+let unsubDiscovery: (() => void) | null = null
+let unsubCrioResponse: (() => void) | null = null
+let unsubConfigUpdate: (() => void) | null = null
+let unsubSystemUpdate: (() => void) | null = null
 
 // Push current project config to a cRIO node
 function pushConfigToCrio(node: any) {
@@ -3828,8 +3799,8 @@ function loadFromFile() {
   checkUnsavedChanges(doLoad)
 }
 
-// Listen for config update responses
-mqtt.onConfigUpdate((response) => {
+// Config update handler (registered in onMounted via unsubConfigUpdate)
+function handleConfigUpdateResponse(response: any) {
   console.log('[ConfigTab] Config update response:', response)
   // Only show feedback for actual success/failure responses, not data responses
   // Data responses like { configs: [...] } don't have success field
@@ -3860,7 +3831,7 @@ mqtt.onConfigUpdate((response) => {
   if (response.configs) {
     availableConfigs.value = response.configs as unknown as string[]
   }
-})
+}
 
 // Get column headers based on active tab
 const tableColumns = computed(() => {
@@ -4030,8 +4001,41 @@ const tableColumns = computed(() => {
 onMounted(() => {
   initializeEnableStates()
 
-  // Register callback for system settings update response
-  mqtt.onSystemUpdate((result: any) => {
+  // Register MQTT callbacks (capture unsub functions for cleanup)
+  unsubDiscovery = mqtt.onDiscovery((result) => {
+    console.log('[ConfigTab] onDiscovery callback fired:', result?.success, result?.total_channels)
+    if (userClosedDiscovery.value) {
+      console.debug('[ConfigTab] Ignoring discovery result - user closed panel')
+      return
+    }
+    if (result.success) {
+      const totalChannels = result.total_channels || 0
+      const chassisCount = result.chassis?.length || 0
+      const crioCount = result.crio_nodes?.length || 0
+      const opto22Count = result.opto22_nodes?.length || 0
+      const parts = []
+      if (chassisCount > 0) parts.push(`${chassisCount} cDAQ`)
+      if (crioCount > 0) parts.push(`${crioCount} cRIO`)
+      if (opto22Count > 0) parts.push(`${opto22Count} Opto22`)
+      const deviceText = parts.length > 0 ? parts.join(', ') : 'No devices'
+      showFeedback('success', `Found ${deviceText}, ${totalChannels} channels`)
+      expandAllDiscovery()
+    } else {
+      showFeedback('error', result.error || result.message || 'Discovery failed')
+    }
+  })
+
+  unsubCrioResponse = mqtt.onCrioResponse((result) => {
+    if (result.success) {
+      showFeedback('success', result.message || 'Config pushed to cRIO')
+    } else {
+      showFeedback('error', result.message || 'Failed to push config to cRIO')
+    }
+  })
+
+  unsubConfigUpdate = mqtt.onConfigUpdate(handleConfigUpdateResponse)
+
+  unsubSystemUpdate = mqtt.onSystemUpdate((result: any) => {
     if (result.success) {
       showFeedback('success', `System settings updated: Scan ${result.scan_rate_hz} Hz, Publish ${result.publish_rate_hz} Hz`)
     } else {
@@ -4040,12 +4044,16 @@ onMounted(() => {
   })
 })
 
-// Cleanup on unmount: cancel any in-progress discovery scan
+// Cleanup on unmount: cancel scan + unregister all MQTT callbacks
 onBeforeUnmount(() => {
   if (mqtt.isScanning.value) {
     mqtt.cancelScan()
   }
   showDiscoveryPanel.value = false
+  if (unsubDiscovery) { unsubDiscovery(); unsubDiscovery = null }
+  if (unsubCrioResponse) { unsubCrioResponse(); unsubCrioResponse = null }
+  if (unsubConfigUpdate) { unsubConfigUpdate(); unsubConfigUpdate = null }
+  if (unsubSystemUpdate) { unsubSystemUpdate(); unsubSystemUpdate = null }
 })
 
 watch(() => Object.keys(store.channels), () => {

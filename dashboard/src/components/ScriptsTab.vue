@@ -3178,7 +3178,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
           >
             <span class="alarm-icon">🔔</span>
             <span class="alarm-name">{{ alarm.name }}</span>
-            <span class="alarm-time">{{ new Date(alarm.triggeredAt!).toLocaleTimeString() }}</span>
+            <span class="alarm-time" v-if="alarm.triggeredAt">{{ new Date(alarm.triggeredAt).toLocaleTimeString() }}</span>
             <button class="ack-btn" @click="scripts.acknowledgeAlarm(alarm.id)">Acknowledge</button>
           </div>
         </div>

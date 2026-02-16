@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -83,6 +84,7 @@ class AzureUploaderService:
 
         # Current configuration (set by start command)
         self.connection_string: str = ''
+        self._node_id: str = 'node-001'
         self.channels: List[str] = []
         self.batch_size: int = 10
         self.batch_interval_ms: int = 1000
@@ -281,6 +283,7 @@ class AzureUploaderService:
 
         # Extract config
         self.connection_string = config.get('connection_string', '')
+        self._node_id = config.get('node_id', 'node-001')
         self.channels = config.get('channels', [])
         self.batch_size = config.get('batch_size', 10)
         self.batch_interval_ms = config.get('batch_interval_ms', 1000)
@@ -310,7 +313,7 @@ class AzureUploaderService:
             with self._stats_lock:
                 self._stats['azure_connected'] = True
 
-            logger.info(f"Connected to Azure IoT Hub (device: {self._get_device_id()})")
+            logger.info(f"Connected to Azure IoT Hub (device: {self._get_device_id()}, identifier: {self._get_device_identifier()})")
             if self.channels:
                 logger.info(f"Streaming channels: {', '.join(self.channels)}")
             else:
@@ -538,7 +541,6 @@ class AzureUploaderService:
 
         try:
             payload = {
-                'device_id': self._get_device_id(),
                 'batch_size': len(batch),
                 'data': batch
             }
@@ -551,6 +553,8 @@ class AzureUploaderService:
             has_safety = any(p.get('safety_event') for p in batch)
             message.custom_properties['messageType'] = 'safety_event' if has_safety else 'telemetry'
             message.custom_properties['batchSize'] = str(len(batch))
+            message.custom_properties['deviceIdentifier'] = self._get_device_identifier()
+            message.custom_properties['nodeId'] = self._node_id
 
             self.azure_client.send_message(message)
 
@@ -602,6 +606,19 @@ class AzureUploaderService:
             logger.debug(f"Could not parse device ID from connection string: {e}")
             return 'unknown'
 
+    def _get_device_identifier(self) -> str:
+        """Build structured device identifier: {HOSTNAME}_ICCSFlux_{node_id}
+
+        Recommended DeviceId format for Azure portal device registration.
+        Preserves hostname case for IT identification.
+        Example: BOILER-LAB-PC_ICCSFlux_node-001
+        """
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = 'unknown-host'
+        return f"{hostname}_ICCSFlux_{self._node_id}"
+
     def _update_state(self, state: str, error: str = None) -> None:
         """Update state and publish status."""
         with self._stats_lock:
@@ -618,6 +635,8 @@ class AzureUploaderService:
             with self._stats_lock:
                 status = dict(self._stats)
             status['timestamp'] = datetime.now(timezone.utc).isoformat()
+            status['device_identifier'] = self._get_device_identifier()
+            status['azure_device_id'] = self._get_device_id()
             self.mqtt_client.publish(
                 self.status_topic,
                 json.dumps(status),

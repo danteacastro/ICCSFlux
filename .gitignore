@@ -74,6 +74,11 @@ nul
 .DS_Store
 Thumbs.db
 
+# Syncthing
+.stignore
+*.sync-conflict-*
+.syncthing.*
+
 # Credentials and secrets
 *credentials*.json
 *_secret*
