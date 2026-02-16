@@ -23,6 +23,7 @@ import ConnectionOverlay from './components/ConnectionOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import GcAnalysisTab from './components/GcAnalysisTab.vue'
 import DataViewerTab from './components/DataViewerTab.vue'
+import LogViewerTab from './components/LogViewerTab.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
@@ -64,6 +65,7 @@ const tabComponents: Record<string, Component> = {
   scripts: markRaw(ScriptsTab),
   data: markRaw(DataTab),
   data_viewer: markRaw(DataViewerTab),
+  log_viewer: markRaw(LogViewerTab),
   safety: markRaw(SafetyTab),
   notebook: markRaw(NotebookTab),
   gc_analysis: markRaw(GcAnalysisTab),
@@ -93,6 +95,7 @@ const tabAccess = {
   scripts: computed(() => true),
   data: computed(() => true),
   data_viewer: computed(() => true),
+  log_viewer: computed(() => true),
   safety: computed(() => true),
   notebook: computed(() => true),
   gc_analysis: computed(() => true),
@@ -144,7 +147,7 @@ function updateUrlNavigation(view: string, pageId: string) {
 
 // Restore activeTab from URL on startup (before any watches fire)
 const urlView = getViewFromUrl()
-if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
+if (urlView && ['overview', 'configuration', 'scripts', 'data', 'data_viewer', 'log_viewer', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
   activeTab.value = urlView
 }
 
@@ -687,6 +690,19 @@ async function handleManualSave() {
               <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
             </svg>
             Viewer
+          </button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'log_viewer' }"
+            @click="switchTab('log_viewer')"
+            title="Service Logs"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/>
+              <line x1="7" y1="16" x2="13" y2="16"/>
+            </svg>
+            Logs
           </button>
           <button
             class="tab-btn"

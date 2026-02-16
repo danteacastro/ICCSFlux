@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import mqtt, { type MqttClient, type IClientOptions } from 'mqtt'
-import type { ChannelValue, SystemStatus, ChannelConfig, ChannelType, RecordingConfig, RecordedFile, NodeInfo, DiscoveryCallbackPayload, ConfigUpdateCallbackPayload, RecordingCallbackPayload, AlarmCallbackPayload, SystemUpdateCallbackPayload, CrioCallbackPayload } from '../types'
+import type { ChannelValue, SystemStatus, ChannelConfig, ChannelType, BackendRecordingConfig, RecordedFile, NodeInfo, DiscoveryCallbackPayload, ConfigUpdateCallbackPayload, RecordingCallbackPayload, AlarmCallbackPayload, SystemUpdateCallbackPayload, CrioCallbackPayload } from '../types'
 import { usePlayground } from './usePlayground'
 import { usePythonScripts } from './usePythonScripts'
 import { useSOE } from './useSOE'
@@ -61,7 +61,7 @@ const channelDeletedCallbacks: ((channelName: string) => void)[] = []
 const channelCreatedCallbacks: ((channels: string[]) => void)[] = []
 
 // Recording state (shared)
-const recordingConfig = ref<Partial<RecordingConfig>>({})
+const recordingConfig = ref<Partial<BackendRecordingConfig>>({})
 const recordedFiles = ref<RecordedFile[]>([])
 
 // Full config callbacks (shared) - payload is raw config object from backend
@@ -138,6 +138,9 @@ const configUpdateCallbacks: ((result: ConfigUpdateCallbackPayload) => void)[] =
 const recordingCallbacks: ((result: RecordingCallbackPayload) => void)[] = []
 const alarmCallbacks: ((alarm: AlarmCallbackPayload, event: 'triggered' | 'updated' | 'cleared') => void)[] = []
 const systemUpdateCallbacks: ((result: SystemUpdateCallbackPayload) => void)[] = []
+const logStreamCallbacks: ((entries: any[]) => void)[] = []
+const logQueryCallbacks: ((result: { success: boolean; entries?: any[]; error?: string }) => void)[] = []
+const recordingReadCallbacks: ((result: any) => void)[] = []
 
 // Generic topic subscriptions (shared) - payload is intentionally `unknown` since topics vary
 // Second arg (topic) is optional for backwards compatibility
@@ -251,7 +254,8 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/script/#`,  // Script published values and status
         `${nodePrefix}/crio/#`,  // cRIO node management
         `${nodePrefix}/gc/#`,  // GC node analysis data
-        `${nodePrefix}/historian/#`  // Historian query responses
+        `${nodePrefix}/historian/#`,  // Historian query responses
+        `${nodePrefix}/logs/#`  // Log viewer streaming
       ]
 
       topics.forEach(topic => {
@@ -404,6 +408,8 @@ export function useMqtt(prefix: string = 'nisystem') {
             handleRecordingConfig(payload)
           } else if (restOfTopic === 'recording/list/response') {
             handleRecordingList(payload)
+          } else if (restOfTopic === 'recording/read/response') {
+            recordingReadCallbacks.forEach(cb => cb(payload))
           } else if (restOfTopic === 'recording/response') {
             handleRecordingResponse(payload)
           }
@@ -479,6 +485,18 @@ export function useMqtt(prefix: string = 'nisystem') {
           }
         } catch (e) {
           console.error(`[MQTT] Error handling cRIO response on topic ${topic}:`, e)
+        }
+
+        try {
+          if (restOfTopic === 'logs/stream') {
+            if (Array.isArray(payload)) {
+              logStreamCallbacks.forEach(cb => cb(payload))
+            }
+          } else if (restOfTopic === 'logs/query/response') {
+            logQueryCallbacks.forEach(cb => cb(payload))
+          }
+        } catch (e) {
+          console.error(`[MQTT] Error handling log stream on topic ${topic}:`, e)
         }
       }
 
@@ -1813,7 +1831,7 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   // Recording management functions - always go to local DAQ service
-  function updateRecordingConfig(config: Partial<RecordingConfig>) {
+  function updateRecordingConfig(config: Partial<BackendRecordingConfig>) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
@@ -1846,6 +1864,26 @@ export function useMqtt(prefix: string = 'nisystem') {
     sendLocalCommand('recording/delete', { filename })
   }
 
+  function readRecordingFile(filename: string, options?: { decimation?: number; max_samples?: number }) {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    sendLocalCommand('recording/read', {
+      filename,
+      decimation: options?.decimation ?? 1,
+      max_samples: options?.max_samples ?? 500000,
+    })
+  }
+
+  function onRecordingRead(callback: (result: any) => void): () => void {
+    recordingReadCallbacks.push(callback)
+    return () => {
+      const idx = recordingReadCallbacks.indexOf(callback)
+      if (idx > -1) recordingReadCallbacks.splice(idx, 1)
+    }
+  }
+
   function sendScriptValues(values: Record<string, number>) {
     if (!client.value || !connected.value) {
       return
@@ -1875,6 +1913,32 @@ export function useMqtt(prefix: string = 'nisystem') {
       const idx = systemUpdateCallbacks.indexOf(callback)
       if (idx > -1) systemUpdateCallbacks.splice(idx, 1)
     }
+  }
+
+  // =========================================================================
+  // LOG VIEWER
+  // =========================================================================
+
+  function onLogStream(callback: (entries: any[]) => void): () => void {
+    logStreamCallbacks.push(callback)
+    return () => {
+      const idx = logStreamCallbacks.indexOf(callback)
+      if (idx > -1) logStreamCallbacks.splice(idx, 1)
+    }
+  }
+
+  function onLogQuery(callback: (result: { success: boolean; entries?: any[]; error?: string }) => void): () => void {
+    logQueryCallbacks.push(callback)
+    return () => {
+      const idx = logQueryCallbacks.indexOf(callback)
+      if (idx > -1) logQueryCallbacks.splice(idx, 1)
+    }
+  }
+
+  function queryLogs(count: number = 200, level?: string) {
+    const payload: any = { count }
+    if (level) payload.level = level
+    sendNodeCommand('logs/query', payload)
   }
 
   // =========================================================================
@@ -2152,6 +2216,8 @@ export function useMqtt(prefix: string = 'nisystem') {
     getRecordingConfig,
     listRecordedFiles,
     deleteRecordedFile,
+    readRecordingFile,
+    onRecordingRead,
     sendScriptValues,
     testDbConnection,
     onRecordingResponse,
@@ -2162,6 +2228,11 @@ export function useMqtt(prefix: string = 'nisystem') {
     listCrioNodes,
     onCrioResponse,
     onCrioList,
+
+    // Log viewer
+    onLogStream,
+    onLogQuery,
+    queryLogs,
 
     // Events
     onData,

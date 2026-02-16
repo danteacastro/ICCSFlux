@@ -435,37 +435,69 @@ export interface DeviceCommandResult {
   plc_info?: Record<string, unknown>  // EtherNet/IP PLC info
 }
 
-// Recording configuration matching Python backend
-export interface RecordingConfig {
+// Backend recording configuration (snake_case, matches Python backend)
+export interface BackendRecordingConfig {
   // File settings
   base_path: string
   file_prefix: string
   file_format: 'csv' | 'tdms'
-  include_timestamp: boolean
-  include_date: boolean
   // Logging rate
-  log_rate_hz: number
+  sample_interval: number
+  sample_interval_unit: 'seconds' | 'milliseconds'
   decimation: number
-  // File management
+  // File rotation
+  rotation_mode: 'single' | 'time' | 'size' | 'samples' | 'session'
   max_file_size_mb: number
   max_file_duration_s: number
-  split_files: boolean
+  max_file_samples: number
+  // Naming
+  naming_pattern: 'timestamp' | 'sequential' | 'custom'
+  include_date: boolean
+  include_time: boolean
+  include_channels_in_name: boolean
+  sequential_start: number
+  sequential_padding: number
+  custom_suffix: string
+  // Directory
+  directory_structure: 'flat' | 'daily' | 'monthly' | 'experiment'
+  experiment_name: string
+  // Write strategy
+  write_mode: 'immediate' | 'buffered'
+  buffer_size: number
+  flush_interval_s: number
+  // Limits
+  on_limit_reached: 'new_file' | 'stop' | 'circular'
+  circular_max_files: number
   // Recording mode
   mode: 'manual' | 'triggered' | 'scheduled'
-  // Triggered mode settings
+  selected_channels: string[]
+  include_scripts: boolean
+  // Triggered mode
   trigger_channel: string
   trigger_condition: 'above' | 'below' | 'change'
   trigger_value: number
-  trigger_hysteresis: number
   pre_trigger_samples: number
   post_trigger_samples: number
-  // Scheduled mode settings
+  // Scheduled mode
   schedule_start: string
   schedule_end: string
   schedule_days: string[]
-  // Channel selection
-  selected_channels: string[]
-  include_scripts: boolean
+  // File reuse
+  reuse_file: boolean
+  // ALCOA+ (FDA 21 CFR Part 11)
+  append_only: boolean
+  verify_on_close: boolean
+  include_audit_metadata: boolean
+  // PostgreSQL
+  db_enabled: boolean
+  db_host: string
+  db_port: number
+  db_name: string
+  db_user: string
+  db_password: string
+  db_table: string
+  db_batch_size: number
+  db_timescale: boolean
 }
 
 export interface RecordedFile {
@@ -582,6 +614,14 @@ export interface HistorianStats {
   retention_days: number
   points_written: number
   write_errors: number
+}
+
+// Log Viewer types
+export interface LogEntry {
+  timestamp: string       // ISO 8601 with milliseconds
+  level: string           // DEBUG, INFO, WARNING, ERROR, CRITICAL
+  logger: string          // Logger name (e.g., 'DAQService', 'AlarmManager')
+  message: string         // Formatted log message
 }
 
 export type ButtonActionType =

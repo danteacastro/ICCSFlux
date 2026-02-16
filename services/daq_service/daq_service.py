@@ -13,6 +13,7 @@ import logging
 import threading
 import uuid
 import queue
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
@@ -188,6 +189,49 @@ class ScanTimingStats:
             'overruns': self.overruns,
             'total_scans': self.total_scans,
         }
+
+
+class MqttLogHandler(logging.Handler):
+    """Logging handler that buffers log records for MQTT streaming.
+
+    Captures log records into a thread-safe ring buffer (deque).
+    The publish loop drains the buffer periodically and publishes
+    entries to MQTT for the dashboard Log Viewer tab.
+    """
+
+    def __init__(self, maxlen: int = 500):
+        super().__init__()
+        self._buffer: deque = deque(maxlen=maxlen)
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            entry = {
+                'timestamp': datetime.fromtimestamp(record.created).isoformat(timespec='milliseconds'),
+                'level': record.levelname,
+                'logger': record.name,
+                'message': self.format(record),
+            }
+            with self._lock:
+                self._buffer.append(entry)
+        except Exception:
+            self.handleError(record)
+
+    def drain(self) -> list:
+        """Drain all buffered entries. Returns list and clears buffer."""
+        with self._lock:
+            entries = list(self._buffer)
+            self._buffer.clear()
+        return entries
+
+    def get_recent(self, count: int = 200, level: str = None) -> list:
+        """Get recent entries, optionally filtered by minimum level."""
+        with self._lock:
+            entries = list(self._buffer)
+        if level:
+            level_num = getattr(logging, level.upper(), logging.DEBUG)
+            entries = [e for e in entries if getattr(logging, e['level'], 0) >= level_num]
+        return entries[-count:]
 
 
 class DAQService:
@@ -371,6 +415,12 @@ class DAQService:
         except ImportError:
             logger.warning("psutil not installed - resource monitoring disabled")
             self._process = None
+
+        # MQTT log streaming handler (captures log records for dashboard Log Viewer)
+        self._log_handler = MqttLogHandler(maxlen=500)
+        self._log_handler.setFormatter(logging.Formatter('%(message)s'))
+        logging.getLogger().addHandler(self._log_handler)
+        self._log_publish_counter = 0
 
         self._load_config()
         self._init_scheduler()
@@ -2919,6 +2969,7 @@ Unit conversions:
             'channels': azure_config.get('channels', []),
             'batch_size': azure_config.get('batch_size', 10),
             'batch_interval_ms': azure_config.get('batch_interval_ms', 1000),
+            'node_id': self.config.system.node_id,
         }
 
     def _publish_azure_command(self, action: str, config: Optional[Dict] = None):
@@ -3408,6 +3459,9 @@ Unit conversions:
             client.subscribe(f"{base}/historian/tags")
             client.subscribe(f"{base}/historian/export")
             client.subscribe(f"{base}/historian/stats")
+
+            # Subscribe to log viewer topics
+            client.subscribe(f"{base}/logs/query")
 
             # Subscribe to Azure IoT Hub topics
             client.subscribe(f"{base}/azure/config")
@@ -4161,6 +4215,10 @@ Unit conversions:
             self._handle_historian_export(payload)
         elif topic == f"{base}/historian/stats":
             self._handle_historian_stats()
+
+        # === LOG VIEWER ===
+        elif topic == f"{base}/logs/query":
+            self._handle_logs_query(payload)
 
         # === AZURE IOT HUB ===
         elif topic == f"{base}/azure/config":
@@ -5404,6 +5462,49 @@ Unit conversions:
         stats = self.historian.get_stats()
         stats['success'] = True
         self.mqtt_client.publish(f"{base}/historian/stats/response", json.dumps(stats))
+
+    # =========================================================================
+    # LOG VIEWER HANDLERS
+    # =========================================================================
+
+    def _drain_and_publish_logs(self):
+        """Drain log buffer and publish entries to MQTT for the Log Viewer."""
+        if not self._log_handler or not self.mqtt_client:
+            return
+        entries = self._log_handler.drain()
+        if entries:
+            base = self.get_topic_base()
+            try:
+                self.mqtt_client.publish(
+                    f"{base}/logs/stream",
+                    json.dumps(entries),
+                    qos=0
+                )
+            except Exception:
+                pass  # Log streaming must never affect the publish loop
+
+    def _handle_logs_query(self, payload: Any):
+        """Handle log query request — returns recent log entries."""
+        base = self.get_topic_base()
+        try:
+            count = 200
+            level = None
+            if isinstance(payload, dict):
+                count = min(payload.get('count', 200), 500)
+                level = payload.get('level')
+
+            entries = self._log_handler.get_recent(count=count, level=level)
+            self.mqtt_client.publish(
+                f"{base}/logs/query/response",
+                json.dumps({'success': True, 'entries': entries}),
+                qos=0
+            )
+        except Exception as e:
+            self.mqtt_client.publish(
+                f"{base}/logs/query/response",
+                json.dumps({'success': False, 'error': str(e)}),
+                qos=0
+            )
 
     # =========================================================================
     # AZURE IOT HUB COMMAND HANDLERS
@@ -13636,6 +13737,12 @@ Unit conversions:
                 if self.user_variables:
                     self._publish_user_variables_values()
                     self._publish_formula_blocks_values()
+                # Drain log buffer and publish to MQTT (~every 1s)
+                self._log_publish_counter += 1
+                if self._log_publish_counter >= 2:
+                    self._log_publish_counter = 0
+                    self._drain_and_publish_logs()
+
                 # Check for cRIO config push timeouts (non-blocking)
                 self._check_crio_push_timeouts()
 
@@ -13793,6 +13900,10 @@ Unit conversions:
         if self.alarm_manager:
             logger.info("Saving alarm manager state...")
             self.alarm_manager.save_all()
+
+        # Remove log streaming handler
+        if self._log_handler:
+            logging.getLogger().removeHandler(self._log_handler)
 
         # Save safety manager state
         if self.safety_manager:
