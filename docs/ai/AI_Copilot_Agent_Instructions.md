@@ -23,6 +23,13 @@ ICCSFlux is a Windows-based DAQ platform that reads NI cDAQ/cRIO hardware, Modbu
 
 ## Critical Rules
 
+### Safety — Scripts Are NOT Safety Devices
+- **Scripts CANNOT be used for safety purposes.** Safety is enforced through hardware interlocks (IEC 61511 latch state machine), not Python scripts.
+- Scripts cannot override safety-held outputs. If an interlock or alarm action holds an output, `outputs.set()` will be blocked.
+- When the user's requirements involve safety-critical operations (temperature limits, pressure shutdowns, emergency stops, over-current protection), you **MUST recommend configuring interlocks** in the Safety tab rather than implementing safety logic in a script.
+- Suggest specific interlock configurations when applicable. Example: "You should also add an interlock: if TC_HotOut exceeds 175 degC, set Valve_HotIn to closed. Configure this in Safety > Interlocks, not in a script."
+- Scripts may **monitor and report** safety-related values (publish efficiency, log warnings to console), but must never be the sole protection against a hazardous condition.
+
 ### Channel Configuration
 - The ONLY valid channel types are: `thermocouple`, `rtd`, `voltage_input`, `current_input`, `voltage_output`, `current_output`, `digital_input`, `digital_output`, `counter`/`counter_input`, `counter_output`, `frequency_input`, `pulse_output`, `strain`/`strain_input`, `bridge_input`, `iepe`/`iepe_input`, `resistance`/`resistance_input`, `modbus_register`, `modbus_coil`.
 - NEVER use `script`, `calculated`, `virtual`, or any other type — they will cause a ValueError.
@@ -101,13 +108,13 @@ ICCSFlux is a Windows-based DAQ platform that reads NI cDAQ/cRIO hardware, Modbu
 
 ## Knowledge Sources to Attach
 
-Upload these three files as knowledge sources in the Agent Builder:
+Upload these three files as knowledge sources in the Agent Builder (all in `docs/ai/`):
 
 | File | Purpose |
 |------|---------|
-| `docs/AI_Project_Generation_Guide.md` | Complete reference for project JSON structure, all channel types, widget types, HMI controls, user variables, recording config, with field-level documentation |
-| `docs/AI_Script_Generation_Guide.md` | Complete reference for Python script APIs, sandbox constraints, helper classes, script patterns, and sequence step types |
-| `docs/Example_Project_Reference.json` | Comprehensive example project (Heat Exchanger Test Stand) demonstrating correct field names, all major features, and proper structure |
+| `AI_Project_Generation_Guide.md` | Complete reference for project JSON structure, all channel types, widget types, HMI controls, user variables, recording config, with field-level documentation |
+| `AI_Script_Generation_Guide.md` | Complete reference for Python script APIs, sandbox constraints, helper classes, script patterns, and sequence step types |
+| `Example_Project_Reference.json` | Comprehensive example project (Heat Exchanger Test Stand) demonstrating correct field names, all major features, and proper structure |
 
 ---
 

@@ -60,7 +60,10 @@ try:
         CounterFrequencyMethod,
         FrequencyUnits,
         READ_ALL_AVAILABLE,
-        SampleTimingType
+        SampleTimingType,
+        StrainGageBridgeType,
+        BridgeConfiguration,
+        BridgeUnits,
     )
     from nidaqmx.stream_readers import (
         AnalogMultiChannelReader,
@@ -485,15 +488,14 @@ class HardwareReader:
                         cjc_val=cjc_val
                     )
 
-                    # Enable open thermocouple detection
-                    # When TC is open/broken, NI-DAQmx will return a very large value (~1e308)
-                    # which our validation layer will detect and convert to NaN
-                    try:
-                        ai_chan.ai_open_thrmcpl_detect_enable = True
-                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (cjc={channel.cjc_source}, open TC detection enabled)")
-                    except Exception as e:
-                        logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
-                        logger.info(f"Added thermocouple: {channel.name} -> {phys_chan}")
+                    # Open thermocouple detection (configurable, default: enabled)
+                    open_detect = getattr(channel, 'open_detect', True)
+                    if open_detect is not False:
+                        try:
+                            ai_chan.ai_open_thrmcpl_detect_enable = True
+                        except Exception as e:
+                            logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
+                    logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (cjc={channel.cjc_source}, open_detect={open_detect})")
 
                 elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
                     # Voltage input
@@ -514,13 +516,22 @@ class HardwareReader:
                     max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
                     term_config = get_terminal_config(channel.terminal_config)
 
+                    shunt_loc_map = {
+                        'internal': CurrentShuntResistorLocation.INTERNAL,
+                        'external': CurrentShuntResistorLocation.EXTERNAL,
+                    }
+                    shunt_loc = shunt_loc_map.get(
+                        getattr(channel, 'shunt_resistor_loc', 'internal'),
+                        CurrentShuntResistorLocation.INTERNAL
+                    )
+
                     task.ai_channels.add_ai_current_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         terminal_config=term_config,
                         min_val=0.0,
                         max_val=max_current,
-                        shunt_resistor_loc=CurrentShuntResistorLocation.INTERNAL
+                        shunt_resistor_loc=shunt_loc
                     )
                     logger.info(f"Added current input: {channel.name} -> {phys_chan}")
 
@@ -555,8 +566,9 @@ class HardwareReader:
                     )
                     logger.info(f"Added RTD: {channel.name} -> {phys_chan}")
 
-                elif channel.channel_type in (ChannelType.STRAIN, ChannelType.STRAIN_INPUT, ChannelType.BRIDGE_INPUT):
-                    # Strain gauge
+                elif channel.channel_type == ChannelType.BRIDGE_INPUT:
+                    # Generic Wheatstone bridge (NI 9219, NI 9237 in bridge mode)
+                    # Uses BridgeConfiguration enum and add_ai_bridge_chan (returns mV/V)
                     bridge_map = {
                         'full-bridge': BridgeConfiguration.FULL_BRIDGE,
                         'half-bridge': BridgeConfiguration.HALF_BRIDGE,
@@ -564,14 +576,42 @@ class HardwareReader:
                     }
                     bridge_config = bridge_map.get(channel.strain_config, BridgeConfiguration.FULL_BRIDGE)
 
+                    task.ai_channels.add_ai_bridge_chan(
+                        phys_chan,
+                        name_to_assign_to_channel=channel.name,
+                        bridge_config=bridge_config,
+                        voltage_excit_source=ExcitationSource.INTERNAL,
+                        voltage_excit_val=channel.strain_excitation_voltage or 2.5,
+                        nominal_bridge_resistance=channel.strain_resistance or 350.0
+                    )
+                    logger.info(f"Added bridge: {channel.name} -> {phys_chan}")
+
+                elif channel.channel_type in (ChannelType.STRAIN, ChannelType.STRAIN_INPUT):
+                    # Strain gauge — uses StrainGageBridgeType enum (7 specific bridge wiring variants)
+                    strain_bridge_map = {
+                        'full-bridge': StrainGageBridgeType.FULL_BRIDGE_I,
+                        'full-bridge-I': StrainGageBridgeType.FULL_BRIDGE_I,
+                        'full-bridge-II': StrainGageBridgeType.FULL_BRIDGE_II,
+                        'full-bridge-III': StrainGageBridgeType.FULL_BRIDGE_III,
+                        'half-bridge': StrainGageBridgeType.HALF_BRIDGE_I,
+                        'half-bridge-I': StrainGageBridgeType.HALF_BRIDGE_I,
+                        'half-bridge-II': StrainGageBridgeType.HALF_BRIDGE_II,
+                        'quarter-bridge': StrainGageBridgeType.QUARTER_BRIDGE_I,
+                        'quarter-bridge-I': StrainGageBridgeType.QUARTER_BRIDGE_I,
+                        'quarter-bridge-II': StrainGageBridgeType.QUARTER_BRIDGE_II,
+                    }
+                    strain_config = strain_bridge_map.get(channel.strain_config, StrainGageBridgeType.FULL_BRIDGE_I)
+                    poisson = getattr(channel, 'poisson_ratio', 0.30) or 0.30
+
                     task.ai_channels.add_ai_strain_gage_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
-                        strain_config=bridge_config,
+                        strain_config=strain_config,
                         voltage_excit_source=ExcitationSource.INTERNAL,
                         voltage_excit_val=channel.strain_excitation_voltage or 2.5,
                         gage_factor=channel.strain_gage_factor or 2.0,
-                        nominal_gage_resistance=channel.strain_resistance or 350.0
+                        nominal_gage_resistance=channel.strain_resistance or 350.0,
+                        poisson_ratio=poisson
                     )
                     logger.info(f"Added strain: {channel.name} -> {phys_chan}")
 
@@ -1111,10 +1151,13 @@ class HardwareReader:
                 task = nidaqmx.Task(f"VO_{channel.name}")
 
                 v_range = channel.voltage_range or 10.0
+                v_min = getattr(channel, 'voltage_range_min', None)
+                if v_min is None:
+                    v_min = -v_range  # NI 92xx AO modules are bipolar (±10V)
                 task.ao_channels.add_ao_voltage_chan(
                     phys_chan,
                     name_to_assign_to_channel=channel.name,
-                    min_val=0.0,  # Most AO modules are 0-10V
+                    min_val=v_min,
                     max_val=v_range
                 )
 

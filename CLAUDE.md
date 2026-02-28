@@ -152,7 +152,12 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| `services/cfp_node/cfp_node.py` | 998 | NI CompactFieldPoint hardware support |
+| `services/cfp_node/cfp_node.py` | ~800 | CFPNodeV2: modular Modbus-to-MQTT bridge for NI CompactFieldPoint (cFP-18xx/20xx). pymodbus, TLS, safety, audit trail, state machine (same architecture as cRIO v2) |
+| `services/cfp_node/mqtt_interface.py` | ~290 | paho-mqtt wrapper with TLS + auto-reconnect (synced from cRIO v2) |
+| `services/cfp_node/state_machine.py` | ~215 | IDLE → ACQUIRING → SESSION state machine (synced from cRIO v2) |
+| `services/cfp_node/safety.py` | ~1,855 | ISA-18.2 alarms + IEC 61511 interlocks (synced from cRIO v2, logger='CFPNode'). **MUST stay in sync with crio_node_v2/safety.py** |
+| `services/cfp_node/audit_trail.py` | ~150 | SHA-256 hash chain, append-only JSONL, 10 MB rotation (synced from cRIO v2) |
+| `services/cfp_node/config.py` | ~310 | CFPChannelConfig, CFPNodeConfig, Modbus-specific config types, v1→v2 migration |
 | `services/azure_uploader/azure_uploader_service.py` | 574 | Azure IoT Hub uploader (isolated process, paho-mqtt <2.0) |
 | `services/service_manager.py` | 749 | Service lifecycle management (start/stop/status/logs) |
 | `services/node_deploy.py` | 821 | Remote deployment via SSH/SCP with rollback |
@@ -176,6 +181,9 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 | `scripts/generate_tls_certs.py` | 209 | Self-signed TLS certificate generation |
 | `scripts/cleanup_portable.py` | 263 | Remove old portable builds |
 | `scripts/mqtt_credentials.py` | 124 | MQTT credential generation (auto-generated at first run, chmod 600) |
+| `scripts/write_crio_creds.py` | 39 | Generate cRIO credential JSON for deploy_crio_v2.bat (avoids CMD parenthesis issues) |
+| `scripts/read_mqtt_creds.py` | 22 | Read MQTT credentials → print user:pass for deploy_crio_v2.bat |
+| `scripts/clear_retained_mqtt.py` | 34 | Clear retained MQTT acquire messages after cRIO deploy |
 
 ### Section 11: Dashboard — Core & Stores
 
@@ -351,9 +359,139 @@ python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py tests/t
 
 **Integration tests** (require MQTT broker + DAQ service): `python -m pytest tests/`
 
-**Dashboard tests** (Vitest): `npm run test` in `dashboard/` — 20+ test files covering stores, composables, widgets
+**Dashboard tests** (Vitest): `cd dashboard && npx vitest run` — 41 test files, 2200+ tests covering stores, composables, widgets
 
 **Dashboard type check + build**: `npm run build` in `dashboard/` (runs `vue-tsc -b && vite build`)
+
+### Hardware-in-the-Loop (HIL) Tests
+
+4-tier test suite in `tests/test_hardware_hil.py` for validating real NI hardware. Auto-starts Mosquitto silently — no manual `NISystem Start.bat` needed.
+
+```bash
+# Run all HIL tests (auto-starts MQTT broker):
+python -m pytest tests/test_hardware_hil.py -v
+
+# Run specific tier:
+python -m pytest tests/test_hardware_hil.py -v -k "tier1"
+python -m pytest tests/test_hardware_hil.py -v -k "tier4"
+```
+
+| Tier | Requires | Tests |
+|------|----------|-------|
+| Tier 1 — NI Driver | NI-DAQmx runtime installed | `nidaqmx` import, `System.local()`, driver version |
+| Tier 2 — Local Hardware | cDAQ/cRIO physically connected | Device enumeration, module detection, channel listing, AI/TC/DI reads |
+| Tier 3 — Loopback Wiring | AO→AI wired on same chassis | Write AO → read AI within tolerance, DI toggle verification |
+| Tier 4 — MQTT + Services | MQTT broker (auto-started) | Broker connectivity, DAQ service status, cRIO node online, Opto22 node online |
+
+**Test infrastructure files:**
+
+| File | Purpose |
+|------|---------|
+| `tests/test_hardware_hil.py` | HIL test suite (4 tiers) |
+| `tests/service_fixtures.py` | Auto-start/stop Mosquitto and DAQ service for pytest |
+| `tests/conftest.py` | Session-scoped `mqtt_broker` and `daq_service` fixtures |
+| `tests/test_helpers.py` | `MQTTTestHarness` with auth support |
+
+**Auto-start behavior:** The `mqtt_broker` session fixture in `conftest.py` checks if port 1883 is already open. If not, it finds `mosquitto.exe` (in `vendor/` or Program Files), writes a minimal test config, and starts it silently. On teardown, only services we started are terminated. If Mosquitto was already running (user ran `NISystem Start.bat`), it is reused and not killed.
+
+**Reference hardware (cRIO-9056 at 192.168.1.20):**
+
+| Slot | Module | Type | Wiring |
+|------|--------|------|--------|
+| Mod1 | NI 9202 | 16 AI (voltage) | AO loopback from Mod2 |
+| Mod2 | NI 9264 | 16 AO (voltage) | Wired to Mod1 AI |
+| Mod3 | NI 9425 | 32 DI (spring) | 2 switches on ch0-1 |
+| Mod4 | NI 9472 | 8 DO | 4 relays on ch0-1 |
+| Mod5 | NI 9213 | 16 TC | TC on ch0 only |
+| Mod6 | NI 9266 | 8 AO (current) | Unused |
+
+### System Validation Suite (Field Diagnostics)
+
+9-layer end-to-end diagnostic in `tests/test_system_validation.py`. Auto-starts Mosquitto + DAQ service — no manual setup needed. Kills stale processes from previous runs automatically.
+
+```bash
+# Full diagnostic (auto-starts everything):
+python -m pytest tests/test_system_validation.py -v
+
+# Quick infrastructure check (layers 1-3):
+python -m pytest tests/test_system_validation.py -v -k "Layer1 or Layer2 or Layer3"
+
+# Just data pipeline:
+python -m pytest tests/test_system_validation.py -v -k "Layer4"
+
+# Edge nodes only (cRIO/cFP/Opto22):
+python -m pytest tests/test_system_validation.py -v -k "Layer5"
+```
+
+| Layer | Tests | What it validates |
+|-------|-------|-------------------|
+| 1 — Infrastructure | 4 | Mosquitto alive, MQTT auth, DAQ service online, heartbeat |
+| 2 — Project & Config | 4 | Project load via MQTT, channel config published, project list/get |
+| 3 — Acquisition Lifecycle | 4 | Start/stop/restart acquisition, state transitions |
+| 4 — Data Pipeline | 4 | Channel values arriving, payload format, scan rate timing, valid simulation data |
+| 5 — Edge Nodes | 4 | cRIO/cFP/Opto22 discovery and status (skips if not connected) |
+| 6 — Alarms | 4 | Alarm config sync, active topic, acknowledge, reset |
+| 7 — Safety & Interlocks | 4 | Interlock config loaded, arm latch, trip on condition, reset |
+| 8 — Recording | 4 | Recording start/stop, file created on disk, sample count |
+| 9 — Device Discovery | 2 | NI hardware scan, result format (skips if NI-DAQmx not installed) |
+
+**Test project:** `config/projects/_SystemValidation_Test.json` — 4 simulated channels, 1 alarm, 1 interlock. Uses `simulation_mode: true` so layers 1-4, 6-8 work on any PC without hardware.
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `tests/test_system_validation.py` | 9-layer diagnostic suite (34 tests) |
+| `tests/service_fixtures.py` | Auto-start/stop Mosquitto + DAQ, stale process cleanup, TLS listener for edge nodes |
+| `tests/conftest.py` | Session fixtures (`mqtt_broker`, `daq_service`, `ensure_test_admin`) |
+| `config/projects/_SystemValidation_Test.json` | Minimal test project (simulation mode) |
+
+**Expected results on healthy system (no edge hardware):**
+```
+Layer 1-4, 6-8: PASSED
+Layer 5: 2-4 SKIPPED (no cFP/Opto22)  — cRIO passes if connected
+Layer 9: PASSED (if NI-DAQmx installed) or SKIPPED
+```
+
+**Troubleshooting:**
+- "DAQ service not publishing status" → stale processes; fixture now auto-kills them, but `taskkill /F /IM python.exe` clears manually
+- "Mosquitto failed to start" → check if another Mosquitto instance holds port 1883
+- Layer 5 skips → edge node not powered on, not on network, or TLS certs missing (`config/tls/`)
+- Layer 7 interlock tests → condition semantics: `satisfied=True` means "safe state" (e.g., `TC < 100` = safe while below 100)
+
+### Complete Field Test Workflow
+
+Run backend + frontend validation together. The test broker includes a WebSocket listener (port 9002) so the dashboard connects during tests.
+
+```bash
+# Step 1: Run backend validation (auto-starts Mosquitto + DAQ service)
+python -m pytest tests/test_system_validation.py -v
+
+# Step 2: While services are still running, open the dashboard
+cd dashboard && npm run dev
+# Browse to http://localhost:5173 — dashboard connects via WebSocket on port 9002
+
+# Step 3: Run dashboard unit tests (separate terminal, no MQTT needed)
+cd dashboard && npx vitest run
+
+# Step 4: Type check + production build
+cd dashboard && npm run build
+```
+
+**What the dashboard shows during validation tests:**
+- Live channel values (TC_VAL_01, TC_VAL_02, AO_VAL_01, DI_VAL_01) updating at 4 Hz
+- Alarm events firing and clearing as Layer 6 runs
+- Interlock state changes (SAFE → ARMED → TRIPPED → reset) during Layer 7
+- Recording indicator toggling during Layer 8
+- cRIO status (if connected) during Layer 5
+
+**Test broker listeners (matches production):**
+
+| Port | Transport | Auth | Purpose |
+|------|-----------|------|---------|
+| 1883 | TCP | Authenticated | Backend services (DAQ, tests) |
+| 8883 | TCP + TLS | Authenticated | Edge nodes (cRIO, Opto22, cFP) |
+| 9002 | WebSocket | Anonymous | Dashboard (localhost only) |
 
 ---
 
@@ -382,6 +520,29 @@ Default values:
 - broker_host: 192.168.1.1
 
 **DO NOT manually scp individual files** — use the deploy script to ensure all files are deployed together and the service is properly restarted.
+
+### Deploy Script Architecture
+
+`deploy_crio_v2.bat` is a thin wrapper that calls `scripts/deploy_crio.py`. All deploy logic is in Python to avoid CMD escaping issues with SSH, shell scripts, and inline Python.
+
+**SAFETY**: The deploy enforces exactly ONE cRIO process at all times. Duplicate processes are a split-brain interlock hazard. The deploy verifies zero processes before deploying and exactly one process after starting.
+
+**Service management**: The cRIO service is managed by `/etc/init.d/crio_node` (source: `scripts/crio_init_service.sh`). This is the SINGLE authority for process lifecycle — it auto-restarts on crash and starts on boot. The service runs `run_crio_v2.py` which loads credentials from `mqtt_creds.json`.
+
+**MQTT resilience**: `crio_node.py:run()` retries MQTT connection with exponential backoff (5s → 60s max). The node never exits on broker unavailability — it keeps retrying until the broker comes up or SIGTERM is received.
+
+| Deploy Script/Helper | Purpose |
+|---------------------|---------|
+| `scripts/deploy_crio.py` | Main deploy logic (SSH/SCP, safety checks, service install) |
+| `scripts/crio_init_service.sh` | init.d service script (SCP'd to `/etc/init.d/crio_node`) |
+| `scripts/write_crio_creds.py` | Generate cRIO credential JSON file |
+| `scripts/read_mqtt_creds.py` | Read `config/mqtt_credentials.json` → print `user:pass` |
+| `scripts/verify_crio_process.sh` | Verify exactly 1 cRIO process (safety check) |
+| `scripts/check_crio_stopped.sh` | Verify 0 cRIO processes (pre-deploy safety) |
+
+### CMD Batch File Pitfalls
+
+**Never put complex logic in .bat files.** CMD cannot handle `$`, `()`, `#`, heredocs, or any characters that shell scripts/Python need. Always put logic in Python scripts or `.sh` files and SCP them. The bat file should only be a thin wrapper.
 
 ## Device CLI
 
@@ -559,7 +720,7 @@ Safety:
 
 ## Safety & Interlock Architecture
 
-The safety system runs at three levels: DAQ service (backend-authoritative), cRIO node, and Opto22 node. All three share the same interlock data structures with camelCase↔snake_case serialization compatibility.
+The safety system runs at four levels: DAQ service (backend-authoritative), cRIO node, Opto22 node, and CFP node. All four share the same interlock data structures with camelCase↔snake_case serialization compatibility.
 
 ### Three-Tier Safety
 
@@ -568,17 +729,18 @@ The safety system runs at three levels: DAQ service (backend-authoritative), cRI
 | DAQ Service | `safety_manager.py` | Backend-authoritative. Evaluates all interlocks, manages latch state, pushes interlocks to edge nodes via config. Has full condition type set including `mqtt_connected`, `variable_value`, `expression` |
 | cRIO Node | `crio_node_v2/safety.py` | Local safety. Evaluates interlocks independently (survives PC disconnect). Condition types: `channel_value`, `digital_input`, `alarm_active`, `no_active_alarms`, `acquiring` |
 | Opto22 Node | `opto22_node/safety.py` | Identical to cRIO (synced copy with different logger) |
+| CFP Node | `cfp_node/safety.py` | Identical to cRIO (synced copy with logger='CFPNode'). Provides safety for Modbus-based CompactFieldPoint I/O |
 
 ### Interlock Config Push (DAQ → Edge Nodes)
 
-The DAQ service pushes interlocks to edge nodes during config sync (`_push_crio_channel_config()`):
+The DAQ service pushes interlocks to edge nodes during config sync (`_push_crio_channel_config()` / `_push_cfp_channel_config()`):
 - Filters interlocks: only those with controls targeting the node's channels, or `stop_session` controls
 - Includes `safe_state_config` with per-channel safe values
 - Interlocks are included in the config hash for version tracking
 - Edge nodes deserialize via `from_dict()` which accepts both camelCase (DAQ format) and snake_case (node format)
 
 ```
-DAQ Service (safety_manager.py)         Edge Nodes (cRIO/Opto22 safety.py)
+DAQ Service (safety_manager.py)         Edge Nodes (cRIO/Opto22/CFP safety.py)
 ─────────────────────────────           ──────────────────────────────────
 InterlockCondition.to_dict()    ──MQTT──>  InterlockCondition.from_dict()
   uses 'type', camelCase                   accepts both camelCase + snake_case
@@ -605,9 +767,9 @@ When `check_all(channel_values, configured_channels=set)` is called with a set o
 When an interlock condition references a channel with no value (None), the evaluation result includes `channel_offline: True`. This propagates to `has_offline_channels` in the interlock status (DAQ: `InterlockStatus.has_offline_channels`, serialized as `hasOfflineChannels`; nodes: `has_offline_channels` key in status dict). Distinguishes hardware failures from legitimate process condition failures.
 
 ### Safety File Sync
-`crio_node_v2/safety.py` and `opto22_node/safety.py` are identical except for the logger name. When modifying safety logic, **edit cRIO first, then copy to Opto22** and change `logger = logging.getLogger('cRIONode')` to `logging.getLogger('Opto22Node')`.
+`crio_node_v2/safety.py`, `opto22_node/safety.py`, and `cfp_node/safety.py` are identical except for the logger name. When modifying safety logic, **edit cRIO first, then copy to Opto22 and CFP**, changing `logger = logging.getLogger('cRIONode')` to `logging.getLogger('Opto22Node')` or `logging.getLogger('CFPNode')` respectively.
 
-### Interlock Commands (cRIO/Opto22)
+### Interlock Commands (cRIO/Opto22/CFP)
 
 Edge nodes accept these MQTT commands on `{base}/commands/interlock`:
 - `arm_latch` / `disarm_latch` — arm/disarm the safety latch

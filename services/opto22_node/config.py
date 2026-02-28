@@ -253,10 +253,12 @@ class NodeConfig:
 
     # NISystem MQTT broker
     mqtt_broker: str = "localhost"
-    mqtt_port: int = 1883
+    mqtt_port: int = 8883
     mqtt_username: Optional[str] = None
     mqtt_password: Optional[str] = None
     mqtt_base_topic: str = "nisystem"
+    mqtt_tls_enabled: bool = True
+    mqtt_tls_ca_cert: Optional[str] = None  # Path to CA certificate file
 
     # groov Manage MQTT broker (on the EPIC itself)
     groov_mqtt_host: str = "localhost"
@@ -276,6 +278,16 @@ class NodeConfig:
 
     # Timing
     heartbeat_interval_s: float = 5.0
+
+    # Watchdog output — toggles a digital output so external safety hardware
+    # can detect the node is alive. If the pulse stops, the relay trips.
+    watchdog_output_channel: Optional[str] = None
+    watchdog_output_rate_hz: float = 1.0
+    watchdog_output_enabled: bool = False
+
+    # Communication watchdog — if no command/heartbeat received from PC
+    # within this timeout, transition to safe state. 0 = disabled.
+    comm_watchdog_timeout_s: float = 30.0
 
     # Channels
     channels: Dict[str, ChannelConfig] = field(default_factory=dict)
@@ -308,10 +320,14 @@ class NodeConfig:
             scan_rate_hz=max(0.1, min(100.0, float(system.get('scan_rate_hz', data.get('scan_rate_hz', 4.0))))),
             publish_rate_hz=max(0.1, min(100.0, float(system.get('publish_rate_hz', data.get('publish_rate_hz', 4.0))))),
             mqtt_broker=system.get('mqtt_broker', data.get('mqtt_broker', 'localhost')),
-            mqtt_port=system.get('mqtt_port', data.get('mqtt_port', 1883)),
+            mqtt_port=system.get('mqtt_port', data.get('mqtt_port', 8883)),
             mqtt_username=system.get('mqtt_username', data.get('mqtt_username')),
             mqtt_password=system.get('mqtt_password', data.get('mqtt_password')),
             mqtt_base_topic=system.get('mqtt_base_topic', data.get('mqtt_base_topic', 'nisystem')),
+            mqtt_tls_enabled=system.get('mqtt_tls_enabled', system.get('tls_enabled',
+                              data.get('mqtt_tls_enabled', data.get('tls_enabled', True)))),
+            mqtt_tls_ca_cert=system.get('mqtt_tls_ca_cert', system.get('tls_ca_cert',
+                              data.get('mqtt_tls_ca_cert', data.get('tls_ca_cert')))),
             groov_mqtt_host=groov.get('mqtt_host', data.get('groov_mqtt_host', 'localhost')),
             groov_mqtt_port=groov.get('mqtt_port', data.get('groov_mqtt_port', 1883)),
             groov_mqtt_username=groov.get('mqtt_username', data.get('groov_mqtt_username')),
@@ -327,6 +343,14 @@ class NodeConfig:
             groov_rest_password=groov.get('rest_password', data.get('groov_rest_password')),
             heartbeat_interval_s=system.get('heartbeat_interval_s',
                                    data.get('heartbeat_interval_s', 5.0)),
+            watchdog_output_channel=system.get('watchdog_output_channel',
+                                    data.get('watchdog_output_channel')),
+            watchdog_output_rate_hz=float(system.get('watchdog_output_rate_hz',
+                                         data.get('watchdog_output_rate_hz', 1.0))),
+            watchdog_output_enabled=system.get('watchdog_output_enabled',
+                                    data.get('watchdog_output_enabled', False)),
+            comm_watchdog_timeout_s=float(system.get('comm_watchdog_timeout_s',
+                                         data.get('comm_watchdog_timeout_s', 30.0))),
             channels=channels,
             topic_mapping=topic_mapping,
         )
@@ -388,7 +412,12 @@ def load_config(payload: Dict[str, Any], existing_config: Optional['NodeConfig']
                 'mqtt_username': system.get('mqtt_username', existing_config.mqtt_username),
                 'mqtt_password': system.get('mqtt_password', existing_config.mqtt_password),
                 'mqtt_base_topic': system.get('mqtt_base_topic', existing_config.mqtt_base_topic),
+                'mqtt_tls_enabled': system.get('mqtt_tls_enabled', existing_config.mqtt_tls_enabled),
+                'mqtt_tls_ca_cert': system.get('mqtt_tls_ca_cert', existing_config.mqtt_tls_ca_cert),
                 'heartbeat_interval_s': system.get('heartbeat_interval_s', existing_config.heartbeat_interval_s),
+                'watchdog_output_channel': system.get('watchdog_output_channel', existing_config.watchdog_output_channel),
+                'watchdog_output_rate_hz': system.get('watchdog_output_rate_hz', existing_config.watchdog_output_rate_hz),
+                'watchdog_output_enabled': system.get('watchdog_output_enabled', existing_config.watchdog_output_enabled),
             },
             'groov': {
                 'mqtt_host': groov.get('mqtt_host', existing_config.groov_mqtt_host),
@@ -442,7 +471,12 @@ def save_config(config: 'NodeConfig', path: str) -> None:
             'mqtt_username': config.mqtt_username,
             'mqtt_password': config.mqtt_password,
             'mqtt_base_topic': config.mqtt_base_topic,
+            'mqtt_tls_enabled': config.mqtt_tls_enabled,
+            'mqtt_tls_ca_cert': config.mqtt_tls_ca_cert,
             'heartbeat_interval_s': config.heartbeat_interval_s,
+            'watchdog_output_channel': config.watchdog_output_channel,
+            'watchdog_output_rate_hz': config.watchdog_output_rate_hz,
+            'watchdog_output_enabled': config.watchdog_output_enabled,
         },
         'groov': {
             'mqtt_host': config.groov_mqtt_host,

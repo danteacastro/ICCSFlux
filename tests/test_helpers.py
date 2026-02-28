@@ -50,8 +50,10 @@ class MQTTTestHarness:
     - Handles race conditions properly
     """
 
-    def __init__(self, client_id: str):
+    def __init__(self, client_id: str, username: str = None, password: str = None):
         self.client = mqtt.Client(client_id=client_id, callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
+        if username and password:
+            self.client.username_pw_set(username, password)
         self.connected = False
         self.messages: Dict[str, List[dict]] = {}
         self.message_lock = threading.Lock()

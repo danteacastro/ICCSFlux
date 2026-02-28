@@ -132,7 +132,7 @@ function subscribeToStatus() {
   })
 
   // Request current status
-  mqtt.sendCommand('datasource/list', {})
+  mqtt.sendNodeCommand('datasource/list', {})
 }
 
 function updateDevicesFromStatus(status: any) {
@@ -272,7 +272,7 @@ async function addDevice() {
     }))
 
     // Send to backend
-    mqtt.sendCommand('datasource/add', {
+    mqtt.sendNodeCommand('datasource/add', {
       name: deviceForm.value.name,
       type: 'rest_api',
       enabled: deviceForm.value.enabled,
@@ -321,7 +321,7 @@ async function updateDevice() {
       is_output: ep.is_output
     }))
 
-    mqtt.sendCommand('datasource/update', {
+    mqtt.sendNodeCommand('datasource/update', {
       name: deviceForm.value.name,
       type: 'rest_api',
       enabled: deviceForm.value.enabled,
@@ -348,7 +348,7 @@ async function deleteDevice(deviceName: string) {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/delete', { name: deviceName })
+    mqtt.sendNodeCommand('datasource/delete', { name: deviceName })
     if (selectedDevice.value === deviceName) {
       selectedDevice.value = null
     }
@@ -363,7 +363,7 @@ async function deleteDevice(deviceName: string) {
 async function testConnection(deviceName: string) {
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/test', { name: deviceName })
+    mqtt.sendNodeCommand('datasource/test', { name: deviceName })
   } catch (e: any) {
     showFeedback('error', e.message || 'Failed to test connection')
   } finally {

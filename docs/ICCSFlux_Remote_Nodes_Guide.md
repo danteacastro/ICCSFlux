@@ -311,7 +311,7 @@ The Opto22 node uses a **hybrid architecture**: groov Manage's built-in MQTT bro
 │  │  (det. PID)  │                                       │
 │  └──────────────┘                                       │
 └──────────────────────────────┬───────────────────────────┘
-                               │ NISystem MQTT
+                               │ ICCSFlux MQTT
                         ┌──────▼──────┐
                         │ ICCSFlux PC │
                         │ Mosquitto   │
@@ -319,7 +319,7 @@ The Opto22 node uses a **hybrid architecture**: groov Manage's built-in MQTT bro
 ```
 
 **Dual MQTT connections:**
-- **SystemMQTT**: Connects to NISystem Mosquitto broker on the PC (publishes data, receives commands)
+- **SystemMQTT**: Connects to ICCSFlux Mosquitto broker on the PC (publishes data, receives commands)
 - **GroovMQTT**: Connects to groov Manage's built-in broker on the EPIC (subscribes to I/O topics)
 - **REST fallback**: If groov MQTT is unavailable, falls back to groov Manage REST API
 
@@ -459,7 +459,7 @@ To use the hybrid MQTT architecture:
 4. Configure I/O publishing topics (default: `groov/io/{module}/{channel}`)
 5. Set the publish rate to match your scan requirements
 
-The Python node subscribes to these topics and maps them to NISystem channel names via config:
+The Python node subscribes to these topics and maps them to ICCSFlux channel names via config:
 
 ```bash
 # In opto22_node.env
@@ -491,7 +491,7 @@ If your groov EPIC requires authentication:
 Environment file: `/home/dev/nisystem/opto22_node.env`
 
 ```bash
-# NISystem MQTT Broker (PC)
+# ICCSFlux MQTT Broker (PC)
 MQTT_BROKER=192.168.1.100
 MQTT_PORT=1883
 
@@ -845,7 +845,7 @@ curl -k https://localhost/api/v1/device/info
 # Test groov MQTT (if mosquitto_sub available)
 mosquitto_sub -h localhost -t "groov/io/#" -v
 
-# Test NISystem MQTT connectivity to PC
+# Test ICCSFlux MQTT connectivity to PC
 mosquitto_pub -h <pc-ip> -t "test" -m "ping"
 
 # Check CODESYS Modbus (if configured)

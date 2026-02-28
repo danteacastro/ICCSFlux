@@ -802,8 +802,9 @@ class SafetyManager:
             satisfied = all(results) if results else True
 
         # Track demand (transition from satisfied to not satisfied)
-        was_satisfied = self._previous_states.get(interlock.id, True)
-        if was_satisfied and not satisfied:
+        # Use None default to avoid false demand count on first evaluation
+        was_satisfied = self._previous_states.get(interlock.id)
+        if was_satisfied is True and not satisfied:
             interlock.demand_count += 1
             interlock.last_demand_time = datetime.now().isoformat()
             self._record_event(interlock, 'demand', 'system', None, {
@@ -1326,7 +1327,7 @@ class SafetyManager:
             'tripReason': trip_reason,
             'user': user,
             'timestamp': datetime.now().isoformat()
-        })
+        }, retain=True)
 
     def _publish_trip_event(self, reason: str):
         """Publish trip event to MQTT"""
@@ -1354,7 +1355,7 @@ class SafetyManager:
             return
 
         status = self.evaluate_all()
-        self._publish('safety/status', status)
+        self._publish('safety/status', status, retain=True)
 
     # ========================================================================
     # Persistence

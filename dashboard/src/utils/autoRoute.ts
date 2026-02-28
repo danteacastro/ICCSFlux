@@ -323,3 +323,191 @@ function simplifyOrthoPath(points: Point[]): Point[] {
   result.push(points[points.length - 1]!)
   return result
 }
+
+// ─── Pipe Bundling ─────────────────────────────────────────────────
+
+interface PipeInput {
+  id: string
+  points: Point[]
+  strokeWidth?: number
+}
+
+interface OrthoSegment {
+  pipeId: string
+  axis: 'h' | 'v'     // horizontal or vertical
+  coord: number         // the fixed coordinate (y for horizontal, x for vertical)
+  min: number           // start of range on the other axis
+  max: number           // end of range on the other axis
+  pointIdxStart: number // index in the pipe's points array
+  pointIdxEnd: number
+}
+
+/**
+ * Post-process multiple routed pipes to bundle parallel overlapping segments.
+ *
+ * Detects orthogonal segments across all pipes that share the same axis and
+ * coordinate (within tolerance) and have overlapping ranges. Offsets each pipe
+ * in the bundle so they run side-by-side instead of stacking on top of each other.
+ *
+ * Returns a Map from pipe ID to adjusted point arrays. Pipes not needing adjustment
+ * are omitted from the map.
+ *
+ * @param pipes - Array of pipes with their points and stroke widths
+ * @param gap - Gap between bundled pipes in pixels (default 4)
+ * @param tolerance - How close two segment coordinates must be to be considered parallel (default 1)
+ */
+export function bundleParallelPipes(
+  pipes: PipeInput[],
+  gap: number = 4,
+  tolerance: number = 1
+): Map<string, Point[]> {
+  if (pipes.length < 2) return new Map()
+
+  // Step 1: Extract all orthogonal segments from all pipes
+  const segments: OrthoSegment[] = []
+  for (const pipe of pipes) {
+    for (let i = 0; i < pipe.points.length - 1; i++) {
+      const a = pipe.points[i]!
+      const b = pipe.points[i + 1]!
+      if (a.x === b.x) {
+        // Vertical segment
+        segments.push({
+          pipeId: pipe.id,
+          axis: 'v',
+          coord: a.x,
+          min: Math.min(a.y, b.y),
+          max: Math.max(a.y, b.y),
+          pointIdxStart: i,
+          pointIdxEnd: i + 1,
+        })
+      } else if (a.y === b.y) {
+        // Horizontal segment
+        segments.push({
+          pipeId: pipe.id,
+          axis: 'h',
+          coord: a.y,
+          min: Math.min(a.x, b.x),
+          max: Math.max(a.x, b.x),
+          pointIdxStart: i,
+          pointIdxEnd: i + 1,
+        })
+      }
+    }
+  }
+
+  // Step 2: Group segments by axis, then find overlapping clusters
+  // Sort by axis + coord for efficient grouping
+  const hSegs = segments.filter(s => s.axis === 'h').sort((a, b) => a.coord - b.coord)
+  const vSegs = segments.filter(s => s.axis === 'v').sort((a, b) => a.coord - b.coord)
+
+  // Collect offset adjustments per pipe per point
+  // Map<pipeId, Map<pointIdx, {dx, dy}>>
+  const adjustments = new Map<string, Map<number, { dx: number; dy: number }>>()
+
+  function applyBundleOffsets(segs: OrthoSegment[], axis: 'h' | 'v') {
+    // Find clusters of segments at similar coordinates with overlapping ranges
+    let i = 0
+    while (i < segs.length) {
+      // Collect all segments within tolerance of segs[i].coord
+      const cluster: OrthoSegment[] = [segs[i]!]
+      let j = i + 1
+      while (j < segs.length && Math.abs(segs[j]!.coord - segs[i]!.coord) <= tolerance) {
+        cluster.push(segs[j]!)
+        j++
+      }
+
+      if (cluster.length >= 2) {
+        // Find segments with overlapping ranges (different pipes)
+        // Group by overlapping ranges using pairwise check
+        const overlapping = findOverlappingGroups(cluster)
+        for (const group of overlapping) {
+          if (group.length < 2) continue
+          // Ensure we only bundle segments from different pipes
+          const uniquePipes = new Set(group.map(s => s.pipeId))
+          if (uniquePipes.size < 2) continue
+
+          // Calculate offsets: center the bundle around the original coord
+          const maxSw = Math.max(...group.map(s => {
+            const pipe = pipes.find(p => p.id === s.pipeId)
+            return pipe?.strokeWidth ?? 2
+          }))
+          const spacing = maxSw + gap
+
+          for (let k = 0; k < group.length; k++) {
+            const seg = group[k]!
+            const offset = (k - (group.length - 1) / 2) * spacing
+
+            if (!adjustments.has(seg.pipeId)) {
+              adjustments.set(seg.pipeId, new Map())
+            }
+            const pipeAdj = adjustments.get(seg.pipeId)!
+
+            // For horizontal segments, offset in Y; for vertical, offset in X
+            const delta = axis === 'h' ? { dx: 0, dy: offset } : { dx: offset, dy: 0 }
+
+            // Apply to both endpoints of this segment
+            for (const idx of [seg.pointIdxStart, seg.pointIdxEnd]) {
+              const existing = pipeAdj.get(idx)
+              if (existing) {
+                // Accumulate — a point may belong to multiple segments
+                // Take the larger absolute offset per axis
+                if (Math.abs(delta.dx) > Math.abs(existing.dx)) existing.dx = delta.dx
+                if (Math.abs(delta.dy) > Math.abs(existing.dy)) existing.dy = delta.dy
+              } else {
+                pipeAdj.set(idx, { ...delta })
+              }
+            }
+          }
+        }
+      }
+
+      i = j
+    }
+  }
+
+  applyBundleOffsets(hSegs, 'h')
+  applyBundleOffsets(vSegs, 'v')
+
+  // Step 3: Build adjusted point arrays
+  const result = new Map<string, Point[]>()
+  for (const [pipeId, pipeAdj] of adjustments) {
+    const pipe = pipes.find(p => p.id === pipeId)
+    if (!pipe) continue
+    const adjusted = pipe.points.map((pt, idx) => {
+      const adj = pipeAdj.get(idx)
+      if (!adj) return pt
+      return { x: pt.x + adj.dx, y: pt.y + adj.dy }
+    })
+    result.set(pipeId, adjusted)
+  }
+
+  return result
+}
+
+/** Find groups of segments with overlapping ranges */
+function findOverlappingGroups(segments: OrthoSegment[]): OrthoSegment[][] {
+  if (segments.length <= 1) return [segments]
+
+  // Sort by min coordinate
+  const sorted = [...segments].sort((a, b) => a.min - b.min)
+  const groups: OrthoSegment[][] = []
+  let current: OrthoSegment[] = [sorted[0]!]
+  let currentMax = sorted[0]!.max
+
+  for (let i = 1; i < sorted.length; i++) {
+    const seg = sorted[i]!
+    if (seg.min < currentMax) {
+      // Overlaps with current group
+      current.push(seg)
+      currentMax = Math.max(currentMax, seg.max)
+    } else {
+      // Start new group
+      if (current.length >= 2) groups.push(current)
+      current = [seg]
+      currentMax = seg.max
+    }
+  }
+  if (current.length >= 2) groups.push(current)
+
+  return groups
+}

@@ -18,6 +18,8 @@ import type {
   PidPoint,
   PidTextAnnotation,
   PidCommand,
+  PidStateSnapshot,
+  PipeCleanupDelta,
   PidGroup,
   PidTemplate,
   PidLayerInfo,
@@ -301,9 +303,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   function pidPasteStyle(pipeId: string) {
     if (!pidStyleClipboard.value) return
-    const beforeState = createPidStateSnapshot()
-    updatePidPipe(pipeId, { ...pidStyleClipboard.value })
-    pushPidCommand('modify', 'Paste pipe style', beforeState)
+    updatePidPipeWithUndo(pipeId, { ...pidStyleClipboard.value })
   }
 
   // P&ID Zoom/Pan (edit-mode only)
@@ -456,7 +456,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // ========================================================================
   const pidUndoStack = ref<PidCommand[]>([])
   const pidRedoStack = ref<PidCommand[]>([])
-  const PID_MAX_UNDO_STACK = 50  // Limit stack size to prevent memory issues
+  const PID_MAX_UNDO_STACK = 200  // Delta commands are lightweight — allow more history
 
   // ========================================================================
   // P&ID CLIPBOARD (Copy/Paste)
@@ -1406,9 +1406,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // ========================================================================
 
   /**
-   * Create a snapshot of current PID layer state for undo/redo
+   * Create a full snapshot of current PID layer state (for complex bulk operations only)
    */
-  function createPidStateSnapshot(): PidCommand['beforeState'] {
+  function createPidStateSnapshot(): PidStateSnapshot {
     return {
       symbols: JSON.parse(JSON.stringify(pidLayer.value.symbols)),
       pipes: JSON.parse(JSON.stringify(pidLayer.value.pipes)),
@@ -1418,28 +1418,278 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   }
 
+  /** Generate a unique command ID */
+  function cmdId(): string {
+    return `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  }
+
   /**
-   * Push a command to the undo stack (called after each edit operation)
+   * Push a delta command to the undo stack
    */
-  function pushPidCommand(type: PidCommand['type'], description: string, beforeState: PidCommand['beforeState']) {
-    const command: PidCommand = {
-      id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      type,
-      timestamp: Date.now(),
-      description,
-      beforeState,
-      afterState: createPidStateSnapshot()
-    }
-
+  function pushPidDelta(command: PidCommand) {
     pidUndoStack.value.push(command)
-
-    // Limit stack size
     if (pidUndoStack.value.length > PID_MAX_UNDO_STACK) {
       pidUndoStack.value.shift()
     }
-
-    // Clear redo stack on new action
     pidRedoStack.value = []
+  }
+
+  /**
+   * Legacy helper: push a snapshot-based command (for bulk operations like clear, paste, align, etc.)
+   */
+  function pushPidCommand(_type: string, description: string, beforeState: PidStateSnapshot) {
+    pushPidDelta({
+      id: cmdId(),
+      timestamp: Date.now(),
+      description,
+      type: 'snapshot',
+      beforeState,
+      afterState: createPidStateSnapshot()
+    })
+  }
+
+  /**
+   * Apply a command in the forward (redo) direction
+   */
+  function applyCommand(cmd: PidCommand) {
+    switch (cmd.type) {
+      case 'addSymbol':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: [...pidLayer.value.symbols, cmd.symbol]
+        }
+        break
+
+      case 'deleteSymbol':
+        // Re-clean pipe connections if needed
+        let pipes = pidLayer.value.pipes
+        if (cmd.cleanedPipes) {
+          for (const delta of cmd.cleanedPipes) {
+            pipes = pipes.map(p => p.id === delta.pipeId ? { ...p, ...delta.after } : p)
+          }
+        }
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.filter(s => s.id !== cmd.symbolId),
+          pipes
+        }
+        break
+
+      case 'moveSymbols':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s => {
+            const d = cmd.deltas.find(d => d.id === s.id)
+            return d ? { ...s, x: d.to.x, y: d.to.y } : s
+          })
+        }
+        break
+
+      case 'modifySymbol':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s =>
+            s.id === cmd.symbolId ? { ...s, ...cmd.after } : s
+          )
+        }
+        break
+
+      case 'modifySymbols':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s => {
+            const d = cmd.deltas.find(d => d.id === s.id)
+            return d ? { ...s, ...d.after } : s
+          })
+        }
+        break
+
+      case 'addPipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: [...pidLayer.value.pipes, cmd.pipe]
+        }
+        break
+
+      case 'deletePipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.filter(p => p.id !== cmd.pipeId)
+        }
+        break
+
+      case 'modifyPipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.map(p =>
+            p.id === cmd.pipeId ? { ...p, ...cmd.after } : p
+          )
+        }
+        break
+
+      case 'addText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: [...(pidLayer.value.textAnnotations || []), cmd.annotation]
+        }
+        break
+
+      case 'deleteText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).filter(t => t.id !== cmd.textId)
+        }
+        break
+
+      case 'modifyText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+            t.id === cmd.textId ? { ...t, ...cmd.after } : t
+          )
+        }
+        break
+
+      case 'batch':
+        for (const sub of cmd.subCommands) {
+          applyCommand(sub)
+        }
+        break
+
+      case 'snapshot':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: cmd.afterState.symbols,
+          pipes: cmd.afterState.pipes,
+          textAnnotations: cmd.afterState.textAnnotations,
+          groups: cmd.afterState.groups,
+          ...(cmd.afterState.layerInfos ? { layerInfos: cmd.afterState.layerInfos } : {})
+        }
+        break
+    }
+  }
+
+  /**
+   * Apply a command in the reverse (undo) direction
+   */
+  function invertCommand(cmd: PidCommand) {
+    switch (cmd.type) {
+      case 'addSymbol':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.filter(s => s.id !== cmd.symbolId)
+        }
+        break
+
+      case 'deleteSymbol': {
+        // Restore symbol and undo pipe connection cleanup
+        let pipes = pidLayer.value.pipes
+        if (cmd.cleanedPipes) {
+          for (const delta of cmd.cleanedPipes) {
+            pipes = pipes.map(p => p.id === delta.pipeId ? { ...p, ...delta.before } : p)
+          }
+        }
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: [...pidLayer.value.symbols, cmd.symbol],
+          pipes
+        }
+        break
+      }
+
+      case 'moveSymbols':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s => {
+            const d = cmd.deltas.find(d => d.id === s.id)
+            return d ? { ...s, x: d.from.x, y: d.from.y } : s
+          })
+        }
+        break
+
+      case 'modifySymbol':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s =>
+            s.id === cmd.symbolId ? { ...s, ...cmd.before } : s
+          )
+        }
+        break
+
+      case 'modifySymbols':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: pidLayer.value.symbols.map(s => {
+            const d = cmd.deltas.find(d => d.id === s.id)
+            return d ? { ...s, ...d.before } : s
+          })
+        }
+        break
+
+      case 'addPipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.filter(p => p.id !== cmd.pipeId)
+        }
+        break
+
+      case 'deletePipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: [...pidLayer.value.pipes, cmd.pipe]
+        }
+        break
+
+      case 'modifyPipe':
+        pidLayer.value = {
+          ...pidLayer.value,
+          pipes: pidLayer.value.pipes.map(p =>
+            p.id === cmd.pipeId ? { ...p, ...cmd.before } : p
+          )
+        }
+        break
+
+      case 'addText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).filter(t => t.id !== cmd.textId)
+        }
+        break
+
+      case 'deleteText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: [...(pidLayer.value.textAnnotations || []), cmd.annotation]
+        }
+        break
+
+      case 'modifyText':
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: (pidLayer.value.textAnnotations || []).map(t =>
+            t.id === cmd.textId ? { ...t, ...cmd.before } : t
+          )
+        }
+        break
+
+      case 'batch':
+        // Invert sub-commands in reverse order
+        for (let i = cmd.subCommands.length - 1; i >= 0; i--) {
+          invertCommand(cmd.subCommands[i]!)
+        }
+        break
+
+      case 'snapshot':
+        pidLayer.value = {
+          ...pidLayer.value,
+          symbols: cmd.beforeState.symbols,
+          pipes: cmd.beforeState.pipes,
+          textAnnotations: cmd.beforeState.textAnnotations,
+          groups: cmd.beforeState.groups,
+          ...(cmd.beforeState.layerInfos ? { layerInfos: cmd.beforeState.layerInfos } : {})
+        }
+        break
+    }
   }
 
   /**
@@ -1449,17 +1699,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const command = pidUndoStack.value.pop()
     if (!command) return false
 
-    // Restore before state (including layerInfos for #3.6)
-    pidLayer.value = {
-      ...pidLayer.value,
-      symbols: command.beforeState.symbols || [],
-      pipes: command.beforeState.pipes || [],
-      textAnnotations: command.beforeState.textAnnotations || [],
-      groups: command.beforeState.groups || [],
-      ...(command.beforeState.layerInfos ? { layerInfos: command.beforeState.layerInfos } : {})
-    }
-
-    // Push to redo stack
+    invertCommand(command)
     pidRedoStack.value.push(command)
 
     saveLayoutToStorage()
@@ -1473,17 +1713,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const command = pidRedoStack.value.pop()
     if (!command) return false
 
-    // Restore after state (including layerInfos for #3.6)
-    pidLayer.value = {
-      ...pidLayer.value,
-      symbols: command.afterState.symbols || [],
-      pipes: command.afterState.pipes || [],
-      textAnnotations: command.afterState.textAnnotations || [],
-      groups: command.afterState.groups || [],
-      ...(command.afterState.layerInfos ? { layerInfos: command.afterState.layerInfos } : {})
-    }
-
-    // Push back to undo stack
+    applyCommand(command)
     pidUndoStack.value.push(command)
 
     saveLayoutToStorage()
@@ -1738,42 +1968,110 @@ export const useDashboardStore = defineStore('dashboard', () => {
   function pidDeleteSelected(): boolean {
     if (!hasPidSelection.value) return false
 
-    const beforeState = createPidStateSnapshot()
+    // Build batch sub-commands before mutating state
+    const subCommands: PidCommand[] = []
 
-    // Remove selected symbols (skip locked ones)
+    // Identify symbols to delete (skip locked ones)
     const unlockedSymbolIds = pidSelectedIds.value.symbolIds.filter(
       id => !pidLayer.value.symbols.find(s => s.id === id)?.locked
     )
-    if (unlockedSymbolIds.length > 0) {
-      pidLayer.value = {
-        ...pidLayer.value,
-        symbols: pidLayer.value.symbols.filter(s => !unlockedSymbolIds.includes(s.id))
+    const deletedSymbolIdSet = new Set(unlockedSymbolIds)
+
+    // Capture symbol delete sub-commands with pipe cleanup deltas
+    for (const symId of unlockedSymbolIds) {
+      const sym = pidLayer.value.symbols.find(s => s.id === symId)
+      if (!sym) continue
+      const cleanedPipes: PipeCleanupDelta[] = []
+      for (const pipe of pidLayer.value.pipes) {
+        const before: Partial<PidPipe> = {}
+        const after: Partial<PidPipe> = {}
+        let changed = false
+        if (pipe.startConnection?.symbolId === symId) {
+          before.startConnection = pipe.startConnection; before.startSymbolId = pipe.startSymbolId; before.startPortId = pipe.startPortId
+          after.startConnection = undefined; after.startSymbolId = undefined; after.startPortId = undefined
+          changed = true
+        }
+        if (pipe.endConnection?.symbolId === symId) {
+          before.endConnection = pipe.endConnection; before.endSymbolId = pipe.endSymbolId; before.endPortId = pipe.endPortId
+          after.endConnection = undefined; after.endSymbolId = undefined; after.endPortId = undefined
+          changed = true
+        }
+        if (pipe.startSymbolId === symId) {
+          before.startSymbolId = pipe.startSymbolId; before.startPortId = pipe.startPortId
+          after.startSymbolId = undefined; after.startPortId = undefined
+          changed = true
+        }
+        if (pipe.endSymbolId === symId) {
+          before.endSymbolId = pipe.endSymbolId; before.endPortId = pipe.endPortId
+          after.endSymbolId = undefined; after.endPortId = undefined
+          changed = true
+        }
+        if (changed) cleanedPipes.push({ pipeId: pipe.id, before, after })
       }
+      subCommands.push({
+        id: cmdId(), timestamp: Date.now(), description: `Delete symbol ${symId}`,
+        type: 'deleteSymbol', symbolId: symId, symbol: JSON.parse(JSON.stringify(sym)), cleanedPipes
+      })
     }
 
-    // Remove selected pipes
-    if (pidSelectedIds.value.pipeIds.length > 0) {
-      pidLayer.value = {
-        ...pidLayer.value,
-        pipes: pidLayer.value.pipes.filter(p => !pidSelectedIds.value.pipeIds.includes(p.id))
-      }
+    // Capture pipe delete sub-commands
+    for (const pipeId of pidSelectedIds.value.pipeIds) {
+      const pipe = pidLayer.value.pipes.find(p => p.id === pipeId)
+      if (!pipe) continue
+      subCommands.push({
+        id: cmdId(), timestamp: Date.now(), description: `Delete pipe ${pipeId}`,
+        type: 'deletePipe', pipeId, pipe: JSON.parse(JSON.stringify(pipe))
+      })
     }
 
-    // Remove selected text annotations
-    if (pidSelectedIds.value.textAnnotationIds.length > 0 && pidLayer.value.textAnnotations) {
-      pidLayer.value = {
-        ...pidLayer.value,
-        textAnnotations: pidLayer.value.textAnnotations.filter(t => !pidSelectedIds.value.textAnnotationIds.includes(t.id))
-      }
+    // Capture text annotation delete sub-commands
+    for (const textId of pidSelectedIds.value.textAnnotationIds) {
+      const ann = (pidLayer.value.textAnnotations || []).find(t => t.id === textId)
+      if (!ann) continue
+      subCommands.push({
+        id: cmdId(), timestamp: Date.now(), description: `Delete text ${textId}`,
+        type: 'deleteText', textId, annotation: JSON.parse(JSON.stringify(ann))
+      })
     }
 
-    const deletedCount =
-      unlockedSymbolIds.length +
-      pidSelectedIds.value.pipeIds.length +
-      pidSelectedIds.value.textAnnotationIds.length
+    // Now apply all deletions atomically
+    let cleanedPipes = pidLayer.value.pipes
+    if (deletedSymbolIdSet.size > 0) {
+      cleanedPipes = cleanedPipes.map(pipe => {
+        let updated = pipe
+        if (pipe.startConnection?.symbolId && deletedSymbolIdSet.has(pipe.startConnection.symbolId)) {
+          const { startConnection, ...rest } = updated
+          updated = { ...rest, startSymbolId: undefined, startPortId: undefined } as typeof pipe
+        }
+        if (pipe.endConnection?.symbolId && deletedSymbolIdSet.has(pipe.endConnection.symbolId)) {
+          const { endConnection, ...rest } = updated
+          updated = { ...rest, endSymbolId: undefined, endPortId: undefined } as typeof pipe
+        }
+        if (pipe.startSymbolId && deletedSymbolIdSet.has(pipe.startSymbolId)) {
+          updated = { ...updated, startSymbolId: undefined, startPortId: undefined }
+        }
+        if (pipe.endSymbolId && deletedSymbolIdSet.has(pipe.endSymbolId)) {
+          updated = { ...updated, endSymbolId: undefined, endPortId: undefined }
+        }
+        return updated
+      })
+    }
 
-    // Push undo command
-    pushPidCommand('delete', `Delete ${deletedCount} element(s)`, beforeState)
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: pidLayer.value.symbols.filter(s => !deletedSymbolIdSet.has(s.id)),
+      pipes: cleanedPipes.filter(p => !pidSelectedIds.value.pipeIds.includes(p.id)),
+      textAnnotations: (pidLayer.value.textAnnotations || []).filter(
+        t => !pidSelectedIds.value.textAnnotationIds.includes(t.id)
+      )
+    }
+
+    // Push batch undo command
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(),
+      description: `Delete ${subCommands.length} element(s)`,
+      type: 'batch', subCommands
+    })
 
     // Clear selection
     pidClearSelection()
@@ -2534,41 +2832,67 @@ export const useDashboardStore = defineStore('dashboard', () => {
   function pidMoveSelected(dx: number, dy: number) {
     if (!hasPidSelection.value) return
 
-    const beforeState = createPidStateSnapshot()
+    // If only symbols selected (common case), use lightweight delta
+    const hasPipes = pidSelectedIds.value.pipeIds.length > 0
+    const hasText = pidSelectedIds.value.textAnnotationIds.length > 0
 
-    // Move symbols (skip locked ones)
-    pidLayer.value = {
-      ...pidLayer.value,
-      symbols: pidLayer.value.symbols.map(s =>
-        pidSelectedIds.value.symbolIds.includes(s.id) && !s.locked
-          ? { ...s, x: s.x + dx, y: s.y + dy }
-          : s
+    if (!hasPipes && !hasText) {
+      // Pure symbol move — lightweight delta
+      const movedIds = pidSelectedIds.value.symbolIds.filter(
+        id => !pidLayer.value.symbols.find(s => s.id === id)?.locked
       )
-    }
+      const deltas = movedIds.map(id => {
+        const s = pidLayer.value.symbols.find(s => s.id === id)!
+        return { id, from: { x: s.x, y: s.y }, to: { x: s.x + dx, y: s.y + dy } }
+      })
 
-    // Move pipes
-    pidLayer.value = {
-      ...pidLayer.value,
-      pipes: pidLayer.value.pipes.map(p =>
-        pidSelectedIds.value.pipeIds.includes(p.id)
-          ? { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }
-          : p
-      )
-    }
-
-    // Move text annotations
-    if (pidLayer.value.textAnnotations) {
       pidLayer.value = {
         ...pidLayer.value,
-        textAnnotations: pidLayer.value.textAnnotations.map(t =>
-          pidSelectedIds.value.textAnnotationIds.includes(t.id)
-            ? { ...t, x: t.x + dx, y: t.y + dy }
-            : t
+        symbols: pidLayer.value.symbols.map(s =>
+          movedIds.includes(s.id) ? { ...s, x: s.x + dx, y: s.y + dy } : s
         )
       }
-    }
 
-    pushPidCommand('move', `Move ${pidSelectedIds.value.symbolIds.length + pidSelectedIds.value.pipeIds.length + pidSelectedIds.value.textAnnotationIds.length} element(s)`, beforeState)
+      pushPidDelta({
+        id: cmdId(), timestamp: Date.now(),
+        description: `Move ${deltas.length} element(s)`,
+        type: 'moveSymbols', deltas
+      })
+    } else {
+      // Mixed move (symbols + pipes + text) — use snapshot
+      const beforeState = createPidStateSnapshot()
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        symbols: pidLayer.value.symbols.map(s =>
+          pidSelectedIds.value.symbolIds.includes(s.id) && !s.locked
+            ? { ...s, x: s.x + dx, y: s.y + dy }
+            : s
+        )
+      }
+
+      pidLayer.value = {
+        ...pidLayer.value,
+        pipes: pidLayer.value.pipes.map(p =>
+          pidSelectedIds.value.pipeIds.includes(p.id)
+            ? { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }
+            : p
+        )
+      }
+
+      if (pidLayer.value.textAnnotations) {
+        pidLayer.value = {
+          ...pidLayer.value,
+          textAnnotations: pidLayer.value.textAnnotations.map(t =>
+            pidSelectedIds.value.textAnnotationIds.includes(t.id)
+              ? { ...t, x: t.x + dx, y: t.y + dy }
+              : t
+          )
+        }
+      }
+
+      pushPidCommand('move', `Move ${pidSelectedIds.value.symbolIds.length + pidSelectedIds.value.pipeIds.length + pidSelectedIds.value.textAnnotationIds.length} element(s)`, beforeState)
+    }
     saveLayoutToStorage()
   }
 
@@ -2580,8 +2904,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Add a text annotation to the canvas
    */
   function addPidTextAnnotation(annotation: Omit<PidTextAnnotation, 'id'>): string {
-    const beforeState = createPidStateSnapshot()
-
     const id = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     const newAnnotation: PidTextAnnotation = { ...annotation, id }
 
@@ -2590,7 +2912,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
       textAnnotations: [...(pidLayer.value.textAnnotations || []), newAnnotation]
     }
 
-    pushPidCommand('add', 'Add text annotation', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Add text annotation',
+      type: 'addText', textId: id, annotation: JSON.parse(JSON.stringify(newAnnotation))
+    })
     saveLayoutToStorage()
     return id
   }
@@ -2599,7 +2924,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Update a text annotation
    */
   function updatePidTextAnnotation(id: string, updates: Partial<PidTextAnnotation>) {
-    const beforeState = createPidStateSnapshot()
+    const ann = (pidLayer.value.textAnnotations || []).find(t => t.id === id)
+    if (!ann) return
+    const before: Partial<PidTextAnnotation> = {}
+    for (const key of Object.keys(updates) as (keyof PidTextAnnotation)[]) {
+      (before as any)[key] = (ann as any)[key]
+    }
 
     pidLayer.value = {
       ...pidLayer.value,
@@ -2608,7 +2938,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
       )
     }
 
-    pushPidCommand('modify', 'Update text annotation', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Update text annotation',
+      type: 'modifyText', textId: id, before, after: { ...updates }
+    })
     saveLayoutToStorage()
   }
 
@@ -2616,14 +2949,19 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Remove a text annotation
    */
   function removePidTextAnnotation(id: string) {
-    const beforeState = createPidStateSnapshot()
+    const ann = (pidLayer.value.textAnnotations || []).find(t => t.id === id)
+    if (!ann) return
+    const annCopy: PidTextAnnotation = JSON.parse(JSON.stringify(ann))
 
     pidLayer.value = {
       ...pidLayer.value,
       textAnnotations: (pidLayer.value.textAnnotations || []).filter(t => t.id !== id)
     }
 
-    pushPidCommand('delete', 'Delete text annotation', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Delete text annotation',
+      type: 'deleteText', textId: id, annotation: annCopy
+    })
     saveLayoutToStorage()
   }
 
@@ -2776,9 +3114,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Add symbol with undo support
    */
   function addPidSymbolWithUndo(symbol: Omit<PidSymbol, 'id'>): string {
-    const beforeState = createPidStateSnapshot()
     const id = addPidSymbol(symbol)
-    pushPidCommand('add', `Add ${symbol.type} symbol`, beforeState)
+    const added = pidLayer.value.symbols.find(s => s.id === id)!
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: `Add ${symbol.type} symbol`,
+      type: 'addSymbol', symbolId: id, symbol: JSON.parse(JSON.stringify(added))
+    })
     return id
   }
 
@@ -2786,27 +3127,74 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Update symbol with undo support
    */
   function updatePidSymbolWithUndo(id: string, updates: Partial<PidSymbol>) {
-    const beforeState = createPidStateSnapshot()
+    const sym = pidLayer.value.symbols.find(s => s.id === id)
+    if (!sym) return
+    // Capture only the changed keys
+    const before: Partial<PidSymbol> = {}
+    for (const key of Object.keys(updates) as (keyof PidSymbol)[]) {
+      (before as any)[key] = (sym as any)[key]
+    }
     updatePidSymbol(id, updates)
-    pushPidCommand('modify', 'Update symbol', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Update symbol',
+      type: 'modifySymbol', symbolId: id, before, after: { ...updates }
+    })
   }
 
   /**
-   * Remove symbol with undo support
+   * Remove symbol with undo support (captures pipe cleanup deltas)
    */
   function removePidSymbolWithUndo(id: string) {
-    const beforeState = createPidStateSnapshot()
+    const sym = pidLayer.value.symbols.find(s => s.id === id)
+    if (!sym) return
+    const symbolCopy: PidSymbol = JSON.parse(JSON.stringify(sym))
+
+    // Capture pipe cleanup deltas before removal
+    const cleanedPipes: PipeCleanupDelta[] = []
+    for (const pipe of pidLayer.value.pipes) {
+      const before: Partial<PidPipe> = {}
+      const after: Partial<PidPipe> = {}
+      let changed = false
+      if (pipe.startConnection?.symbolId === id) {
+        before.startConnection = pipe.startConnection; before.startSymbolId = pipe.startSymbolId; before.startPortId = pipe.startPortId
+        after.startConnection = undefined; after.startSymbolId = undefined; after.startPortId = undefined
+        changed = true
+      }
+      if (pipe.endConnection?.symbolId === id) {
+        before.endConnection = pipe.endConnection; before.endSymbolId = pipe.endSymbolId; before.endPortId = pipe.endPortId
+        after.endConnection = undefined; after.endSymbolId = undefined; after.endPortId = undefined
+        changed = true
+      }
+      if (pipe.startSymbolId === id) {
+        before.startSymbolId = pipe.startSymbolId; before.startPortId = pipe.startPortId
+        after.startSymbolId = undefined; after.startPortId = undefined
+        changed = true
+      }
+      if (pipe.endSymbolId === id) {
+        before.endSymbolId = pipe.endSymbolId; before.endPortId = pipe.endPortId
+        after.endSymbolId = undefined; after.endPortId = undefined
+        changed = true
+      }
+      if (changed) cleanedPipes.push({ pipeId: pipe.id, before, after })
+    }
+
     removePidSymbol(id)
-    pushPidCommand('delete', 'Delete symbol', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Delete symbol',
+      type: 'deleteSymbol', symbolId: id, symbol: symbolCopy, cleanedPipes
+    })
   }
 
   /**
    * Add pipe with undo support
    */
   function addPidPipeWithUndo(pipe: Omit<PidPipe, 'id'>): string {
-    const beforeState = createPidStateSnapshot()
     const id = addPidPipe(pipe)
-    pushPidCommand('add', 'Add pipe', beforeState)
+    const added = pidLayer.value.pipes.find(p => p.id === id)!
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Add pipe',
+      type: 'addPipe', pipeId: id, pipe: JSON.parse(JSON.stringify(added))
+    })
     return id
   }
 
@@ -2814,18 +3202,74 @@ export const useDashboardStore = defineStore('dashboard', () => {
    * Update pipe with undo support
    */
   function updatePidPipeWithUndo(id: string, updates: Partial<PidPipe>) {
-    const beforeState = createPidStateSnapshot()
+    const pipe = pidLayer.value.pipes.find(p => p.id === id)
+    if (!pipe) return
+    const before: Partial<PidPipe> = {}
+    for (const key of Object.keys(updates) as (keyof PidPipe)[]) {
+      (before as any)[key] = (pipe as any)[key]
+    }
     updatePidPipe(id, updates)
-    pushPidCommand('modify', 'Update pipe', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Update pipe',
+      type: 'modifyPipe', pipeId: id, before, after: { ...updates }
+    })
   }
 
   /**
    * Remove pipe with undo support
    */
   function removePidPipeWithUndo(id: string) {
-    const beforeState = createPidStateSnapshot()
+    const pipe = pidLayer.value.pipes.find(p => p.id === id)
+    if (!pipe) return
+    const pipeCopy: PidPipe = JSON.parse(JSON.stringify(pipe))
     removePidPipe(id)
-    pushPidCommand('delete', 'Delete pipe', beforeState)
+    pushPidDelta({
+      id: cmdId(), timestamp: Date.now(), description: 'Delete pipe',
+      type: 'deletePipe', pipeId: id, pipe: pipeCopy
+    })
+  }
+
+  /**
+   * Delete a pipe segment with undo support.
+   * If the pipe has only 1 segment (2 points) or segIdx is null, deletes the whole pipe.
+   * Otherwise: first segment → trim start; last segment → trim end; middle → split into two pipes.
+   */
+  function pidDeletePipeSegment(pipeId: string, segIdx: number | null) {
+    const pipe = pidLayer.value.pipes.find(p => p.id === pipeId)
+    if (!pipe) return
+
+    // Whole-pipe delete if only one segment or no segment specified
+    if (pipe.points.length <= 2 || segIdx == null) {
+      removePidPipeWithUndo(pipeId)
+      return
+    }
+
+    const beforeState = createPidStateSnapshot()
+    const newPipes = pidLayer.value.pipes.filter(p => p.id !== pipeId)
+
+    if (segIdx === 0) {
+      // Delete first segment: keep points from index 1 onward
+      const remaining: PidPipe = { ...pipe, points: pipe.points.slice(1), startConnection: undefined }
+      if (remaining.points.length >= 2) newPipes.push(remaining)
+    } else if (segIdx >= pipe.points.length - 2) {
+      // Delete last segment: keep points up to the segment start
+      const remaining: PidPipe = { ...pipe, points: pipe.points.slice(0, segIdx + 1), endConnection: undefined }
+      if (remaining.points.length >= 2) newPipes.push(remaining)
+    } else {
+      // Delete middle segment: split into two pipes
+      const leftPoints = pipe.points.slice(0, segIdx + 1)
+      const rightPoints = pipe.points.slice(segIdx + 1)
+      if (leftPoints.length >= 2) {
+        newPipes.push({ ...pipe, id: `${pipe.id}-L`, points: leftPoints, endConnection: undefined })
+      }
+      if (rightPoints.length >= 2) {
+        newPipes.push({ ...pipe, id: `${pipe.id}-R`, points: rightPoints, startConnection: undefined })
+      }
+    }
+
+    pidLayer.value = { ...pidLayer.value, pipes: newPipes }
+    pushPidCommand('delete', 'Delete pipe segment', beforeState)
+    saveLayoutToStorage()
   }
 
   /**
@@ -2833,11 +3277,23 @@ export const useDashboardStore = defineStore('dashboard', () => {
    */
   function updatePidSymbolsBatch(ids: string[], updates: Partial<PidSymbol>) {
     if (ids.length === 0) return
-    const beforeState = createPidStateSnapshot()
+    const deltas: { id: string; before: Partial<PidSymbol>; after: Partial<PidSymbol> }[] = []
     for (const id of ids) {
+      const sym = pidLayer.value.symbols.find(s => s.id === id)
+      if (!sym) continue
+      const before: Partial<PidSymbol> = {}
+      for (const key of Object.keys(updates) as (keyof PidSymbol)[]) {
+        (before as any)[key] = (sym as any)[key]
+      }
+      deltas.push({ id, before, after: { ...updates } })
       updatePidSymbol(id, updates)
     }
-    pushPidCommand('modify', `Update ${ids.length} symbols`, beforeState)
+    if (deltas.length > 0) {
+      pushPidDelta({
+        id: cmdId(), timestamp: Date.now(), description: `Update ${deltas.length} symbols`,
+        type: 'modifySymbols', deltas
+      })
+    }
   }
 
   /**
@@ -2856,7 +3312,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const chNames = Object.keys(channels.value)
     if (chNames.length === 0) return { matched: 0, total: targetSymbols.length }
 
-    const beforeState = createPidStateSnapshot()
+    const deltas: { id: string; before: Partial<PidSymbol>; after: Partial<PidSymbol> }[] = []
     let matched = 0
 
     for (const sym of targetSymbols) {
@@ -2880,13 +3336,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
       }
 
       if (match) {
+        deltas.push({ id: sym.id, before: { channel: sym.channel }, after: { channel: match } })
         updatePidSymbol(sym.id, { channel: match })
         matched++
       }
     }
 
-    if (matched > 0) {
-      pushPidCommand('modify', `Auto-match ${matched} channels`, beforeState)
+    if (deltas.length > 0) {
+      pushPidDelta({
+        id: cmdId(), timestamp: Date.now(), description: `Auto-match ${matched} channels`,
+        type: 'modifySymbols', deltas
+      })
     }
 
     return { matched, total: targetSymbols.length }
@@ -2940,8 +3400,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
       name,
       description,
       category,
-      symbols: selectedSymbols.map(({ id: _id, ...rest }) => ({
+      symbols: selectedSymbols.map(({ id, ...rest }) => ({
         ...rest,
+        originalId: id,
         offsetX: rest.x - minX,
         offsetY: rest.y - minY
       })),
@@ -2973,57 +3434,69 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const beforeState = createPidStateSnapshot()
     const newIds: string[] = []
 
+    // Build ID mapping from original template symbol IDs to new IDs
+    const idMapping: Record<string, string> = {}
+
     // Create new symbols
+    const newSymbols: PidSymbol[] = []
     for (const symbolDef of template.symbols) {
       const newId = `pid-symbol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-      const { offsetX, offsetY, ...symbolProps } = symbolDef
-      const newSymbol: PidSymbol = {
+      const { offsetX, offsetY, originalId, ...symbolProps } = symbolDef
+      if (originalId) idMapping[originalId] = newId
+      newSymbols.push({
         ...symbolProps,
         id: newId,
         x: x + offsetX,
         y: y + offsetY
-      }
-
-      pidLayer.value = {
-        ...pidLayer.value,
-        symbols: [...pidLayer.value.symbols, newSymbol]
-      }
+      })
       newIds.push(newId)
     }
 
-    // Create new pipes
+    // Create new pipes with remapped symbol references
+    const newPipes: PidPipe[] = []
     for (const pipeDef of template.pipes) {
       const newId = `pid-pipe-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
       const { offsetPoints, ...pipeProps } = pipeDef
       const newPipe: PidPipe = {
         ...pipeProps,
         id: newId,
-        points: offsetPoints.map(pt => ({ x: x + pt.x, y: y + pt.y }))
+        points: offsetPoints.map(pt => ({ x: x + pt.x, y: y + pt.y })),
+        // Remap symbol references to new IDs
+        startSymbolId: pipeProps.startSymbolId ? (idMapping[pipeProps.startSymbolId] ?? pipeProps.startSymbolId) : undefined,
+        endSymbolId: pipeProps.endSymbolId ? (idMapping[pipeProps.endSymbolId] ?? pipeProps.endSymbolId) : undefined,
+        startConnection: pipeProps.startConnection ? {
+          ...pipeProps.startConnection,
+          symbolId: idMapping[pipeProps.startConnection.symbolId] ?? pipeProps.startConnection.symbolId
+        } : undefined,
+        endConnection: pipeProps.endConnection ? {
+          ...pipeProps.endConnection,
+          symbolId: idMapping[pipeProps.endConnection.symbolId] ?? pipeProps.endConnection.symbolId
+        } : undefined,
       }
-
-      pidLayer.value = {
-        ...pidLayer.value,
-        pipes: [...pidLayer.value.pipes, newPipe]
-      }
+      newPipes.push(newPipe)
       newIds.push(newId)
     }
 
     // Create new text annotations
+    const newTexts: PidTextAnnotation[] = []
     for (const textDef of template.textAnnotations) {
       const newId = `pid-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
       const { offsetX, offsetY, ...textProps } = textDef
-      const newText: PidTextAnnotation = {
+      newTexts.push({
         ...textProps,
         id: newId,
         x: x + offsetX,
         y: y + offsetY
-      }
-
-      pidLayer.value = {
-        ...pidLayer.value,
-        textAnnotations: [...(pidLayer.value.textAnnotations || []), newText]
-      }
+      })
       newIds.push(newId)
+    }
+
+    // Apply all additions in one atomic update
+    pidLayer.value = {
+      ...pidLayer.value,
+      symbols: [...pidLayer.value.symbols, ...newSymbols],
+      pipes: [...pidLayer.value.pipes, ...newPipes],
+      textAnnotations: [...(pidLayer.value.textAnnotations || []), ...newTexts]
     }
 
     pushPidCommand('add', `Instantiate template: ${template.name}`, beforeState)
@@ -3739,6 +4212,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     addPidPipeWithUndo,
     updatePidPipeWithUndo,
     removePidPipeWithUndo,
+    pidDeletePipeSegment,
 
     // P&ID Templates
     pidTemplates,

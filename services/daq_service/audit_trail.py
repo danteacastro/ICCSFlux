@@ -441,6 +441,8 @@ class AuditTrail:
     def cleanup_old_logs(self):
         """Remove audit logs older than retention period and compress old logs"""
         cutoff = datetime.now() - timedelta(days=self.retention_days)
+        removed_files = []
+        compressed_files = []
 
         for log_file in self.audit_dir.glob("audit_*.jsonl"):
             try:
@@ -451,14 +453,30 @@ class AuditTrail:
 
                 if file_date < cutoff:
                     logger.info(f"Removing old audit log: {log_file.name}")
+                    removed_files.append(log_file.name)
                     log_file.unlink()
                 elif file_date < datetime.now() - timedelta(days=7):
                     # Compress logs older than 7 days
                     if not (self.audit_dir / f"{log_file.name}.gz").exists():
                         self._compress_log(log_file)
+                        compressed_files.append(log_file.name)
 
             except Exception as e:
                 logger.warning(f"Error processing {log_file}: {e}")
+
+        # Audit the cleanup itself (so we can prove what was removed and when)
+        if removed_files or compressed_files:
+            self.log_event(
+                event_type=AuditEventType.SYSTEM_STARTUP,  # Reuse system event type
+                user="SYSTEM",
+                description="Audit log retention cleanup",
+                details={
+                    "removed_files": removed_files,
+                    "compressed_files": compressed_files,
+                    "retention_days": self.retention_days,
+                    "cutoff_date": cutoff.isoformat()
+                }
+            )
 
     def _compress_log(self, log_file: Path):
         """Compress a log file to save space"""

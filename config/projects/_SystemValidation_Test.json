@@ -1,0 +1,122 @@
+{
+  "type": "nisystem-project",
+  "version": "2.0",
+  "name": "System Validation Test",
+  "created": "2026-02-27T00:00:00",
+  "modified": "2026-02-27T00:00:00",
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 4,
+    "publish_rate_hz": 4,
+    "simulation_mode": true,
+    "log_directory": "./logs",
+    "system_name": "System Validation Test",
+    "system_id": "VAL-TEST-001"
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "TC_VAL_01": {
+      "name": "TC_VAL_01",
+      "physical_channel": "Mod1/ai0",
+      "channel_type": "thermocouple",
+      "unit": "degC",
+      "group": "Validation",
+      "description": "Validation thermocouple 1",
+      "visible": true,
+      "chartable": true,
+      "thermocouple_type": "K",
+      "scale_type": "none",
+      "high_limit": 100,
+      "high_warning": 80,
+      "low_warning": 5,
+      "log": true
+    },
+    "TC_VAL_02": {
+      "name": "TC_VAL_02",
+      "physical_channel": "Mod1/ai1",
+      "channel_type": "thermocouple",
+      "unit": "degC",
+      "group": "Validation",
+      "description": "Validation thermocouple 2",
+      "visible": true,
+      "chartable": true,
+      "thermocouple_type": "K",
+      "scale_type": "none",
+      "log": true
+    },
+    "AO_VAL_01": {
+      "name": "AO_VAL_01",
+      "physical_channel": "Mod2/ao0",
+      "channel_type": "voltage_output",
+      "unit": "V",
+      "group": "Validation",
+      "description": "Validation analog output",
+      "visible": true,
+      "chartable": true,
+      "scale_type": "none",
+      "default_value": 0,
+      "log": true
+    },
+    "DI_VAL_01": {
+      "name": "DI_VAL_01",
+      "physical_channel": "Mod3/port0/line0",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Validation",
+      "description": "Validation digital input",
+      "visible": true,
+      "log": true
+    },
+    "DO_VAL_01": {
+      "name": "DO_VAL_01",
+      "physical_channel": "Mod3/port0/line1",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Validation",
+      "description": "Validation digital output",
+      "visible": true,
+      "default_value": 0,
+      "log": true
+    }
+  },
+  "alarmConfigs": {
+    "TC_VAL_01": {
+      "enabled": true,
+      "priority": "high",
+      "deadband": 1
+    }
+  },
+  "interlocks": [
+    {
+      "name": "ValidationInterlock",
+      "description": "Test interlock: safe while TC_VAL_01 < 100, trips AO to 0 if exceeded",
+      "enabled": true,
+      "bypassAllowed": true,
+      "bypassed": false,
+      "conditions": [
+        {
+          "id": "cond-val-001",
+          "type": "channel_value",
+          "channel": "TC_VAL_01",
+          "operator": "<",
+          "value": 100
+        }
+      ],
+      "controls": [
+        {
+          "type": "set_analog_output",
+          "channel": "AO_VAL_01",
+          "setValue": 0
+        }
+      ]
+    }
+  ],
+  "pythonScripts": []
+}

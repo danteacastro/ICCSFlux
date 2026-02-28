@@ -39,6 +39,57 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger('Opto22Node')
 
+# ---------------------------------------------------------------------------
+# Real-time hardening (groov EPIC runs Linux)
+# ---------------------------------------------------------------------------
+_SCHED_FIFO = 1
+_MCL_CURRENT = 1
+_MCL_FUTURE = 2
+
+
+def _enable_rt_scheduling(priority: int = 50) -> bool:
+    """Enable SCHED_FIFO real-time scheduling for the current process.
+
+    groov EPIC runs Linux; if the kernel supports PREEMPT_RT, running with
+    SCHED_FIFO gives the Python process deterministic scheduling priority
+    over all non-RT user-space processes.
+
+    Priority 50 is below driver threads (80-99) but above everything else.
+    """
+    try:
+        os.sched_setscheduler(0, _SCHED_FIFO, os.sched_param(priority))
+        logger.info(f"RT scheduling enabled (SCHED_FIFO priority {priority})")
+        return True
+    except (PermissionError, OSError) as e:
+        logger.warning(f"RT scheduling not available: {e}")
+        return False
+    except AttributeError:
+        # Windows / non-POSIX — sched_setscheduler does not exist
+        logger.debug("RT scheduling not available on this platform")
+        return False
+
+
+def _lock_memory() -> bool:
+    """Lock all current and future pages into RAM (mlockall).
+
+    Prevents the kernel from paging the Python process to swap, which
+    eliminates random 10-50 ms page-fault spikes during the scan loop.
+    """
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        result = libc.mlockall(_MCL_CURRENT | _MCL_FUTURE)
+        if result == 0:
+            logger.info("Memory locked (mlockall MCL_CURRENT|MCL_FUTURE)")
+            return True
+        else:
+            logger.warning(f"mlockall returned {result}")
+            return False
+    except (OSError, AttributeError) as e:
+        logger.debug(f"mlockall not available: {e}")
+        return False
+
+
 # Module imports
 from .state_machine import Opto22StateMachine, Opto22State
 from .mqtt_interface import SystemMQTT, GroovMQTT, MQTTConfig, GroovMQTTConfig
@@ -169,6 +220,10 @@ class Opto22NodeService:
         self._watchdog_last_pet: float = 0.0
         self._watchdog_triggered: bool = False
 
+        # Watchdog output (external safety relay pulse)
+        self._watchdog_output_state: bool = False
+        self._watchdog_output_last_toggle: float = 0.0
+
         # Threads
         self.scan_thread: Optional[threading.Thread] = None
         self.heartbeat_thread: Optional[threading.Thread] = None
@@ -230,6 +285,7 @@ class Opto22NodeService:
         # Status tracking
         self.last_pc_contact = time.time()
         self.pc_connected = False
+        self._comm_watchdog_tripped = False
         self._last_status_time = 0.0
         self._last_publish_time = 0.0
         self.config_version = ''
@@ -346,6 +402,8 @@ class Opto22NodeService:
             client_id=f"opto22-{self.config.node_id}",
             base_topic=self.config.mqtt_base_topic or 'nisystem',
             node_id=self.config.node_id,
+            tls_enabled=getattr(self.config, 'mqtt_tls_enabled', False),
+            tls_ca_cert=getattr(self.config, 'mqtt_tls_ca_cert', None),
         )
         self.system_mqtt = SystemMQTT(sys_config)
         self.system_mqtt.on_connect = self._on_system_mqtt_connect
@@ -488,6 +546,16 @@ class Opto22NodeService:
                     'interlocks': payload.get('interlocks', []),
                     'safe_state_config': payload.get('safe_state_config', {}),
                 })
+
+                # Update watchdog output config if provided
+                wd = payload.get('watchdog_output')
+                if wd and isinstance(wd, dict):
+                    self.config.watchdog_output_enabled = wd.get('enabled', False)
+                    self.config.watchdog_output_channel = wd.get('channel') or None
+                    self.config.watchdog_output_rate_hz = float(wd.get('rate_hz', 1.0))
+                    logger.info(f"Watchdog output: enabled={self.config.watchdog_output_enabled}, "
+                                f"channel={self.config.watchdog_output_channel}, "
+                                f"rate={self.config.watchdog_output_rate_hz} Hz")
 
                 # Load engine configs
                 self.pid_engine.load_config(payload)
@@ -877,6 +945,76 @@ class Opto22NodeService:
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
 
+    def _check_comm_watchdog(self):
+        """Check if the PC/DAQ service has stopped communicating.
+
+        If no command received within timeout, apply safe state and transition
+        to IDLE. Matches the cRIO comm watchdog pattern.
+        """
+        if not self.config or self.config.comm_watchdog_timeout_s <= 0:
+            return
+
+        elapsed = time.time() - self.last_pc_contact
+        timeout = self.config.comm_watchdog_timeout_s
+
+        if elapsed > timeout and not self._comm_watchdog_tripped:
+            self._comm_watchdog_tripped = True
+            logger.critical(
+                f"COMMUNICATION WATCHDOG: No commands received for {elapsed:.1f}s "
+                f"(timeout={timeout}s) — transitioning to safe state"
+            )
+            # Stop watchdog output so external relay trips
+            self._stop_watchdog_output()
+            # Force safe state on all outputs
+            self._set_safe_state("comm_watchdog_timeout")
+            # Transition to IDLE
+            self.state_machine.transition(Opto22State.IDLE)
+            self._acquiring.clear()
+            self._publish_status()
+            self._publish(self._topic('safety/comm_watchdog'), {
+                'tripped': True,
+                'elapsed_s': round(elapsed, 1),
+                'timeout_s': timeout,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+        elif elapsed <= timeout and self._comm_watchdog_tripped:
+            # Communication restored
+            self._comm_watchdog_tripped = False
+            logger.info("Communication watchdog: contact restored")
+            self._publish(self._topic('safety/comm_watchdog'), {
+                'tripped': False,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+
+    # =========================================================================
+    # WATCHDOG OUTPUT
+    # =========================================================================
+
+    def _toggle_watchdog_output(self):
+        """Toggle watchdog output at configured rate for external safety relay monitoring."""
+        if not self.config or not self.config.watchdog_output_enabled or not self.config.watchdog_output_channel:
+            return
+
+        now = time.time()
+        toggle_interval = 0.5 / self.config.watchdog_output_rate_hz  # half-period
+
+        if now - self._watchdog_output_last_toggle < toggle_interval:
+            return
+        self._watchdog_output_state = not self._watchdog_output_state
+        self._watchdog_output_last_toggle = now
+
+        value = 1.0 if self._watchdog_output_state else 0.0
+        if self.hardware:
+            self.hardware.write_output(self.config.watchdog_output_channel, value)
+
+    def _stop_watchdog_output(self):
+        """Force watchdog output LOW (external relay will detect loss of pulse)."""
+        if self.config and self.config.watchdog_output_enabled and self.config.watchdog_output_channel:
+            if self.hardware:
+                self.hardware.write_output(self.config.watchdog_output_channel, 0.0)
+            self._watchdog_output_state = False
+            logger.info(f"Watchdog output {self.config.watchdog_output_channel} set LOW")
+
     def _pet_watchdog(self):
         self._watchdog_last_pet = time.time()
         self._watchdog_triggered = False
@@ -937,6 +1075,9 @@ class Opto22NodeService:
         if not self._acquiring.is_set():
             return
 
+        # Stop watchdog output (external relay detects loss of pulse)
+        self._stop_watchdog_output()
+
         # Notify engines
         self.pid_engine.on_acquisition_stop()
         self.sequence_manager.on_acquisition_stop()
@@ -973,6 +1114,7 @@ class Opto22NodeService:
             try:
                 self._pet_watchdog()
                 now = time.time()
+                stale_channels = []  # Reset each scan; populated if hardware available
 
                 _scan_count += 1
 
@@ -986,16 +1128,15 @@ class Opto22NodeService:
                             self.channel_values[name] = val
                             self.channel_timestamps[name] = io_timestamps.get(name, now)
 
-                    # Periodic stale channel check (every 10 scans)
-                    if _scan_count % 10 == 0:
-                        stale = self.hardware.get_stale_channels(timeout_s=10.0)
-                        if stale:
-                            logger.warning(f"Stale I/O channels ({len(stale)}): {stale[:5]}")
-                            self._publish(self._topic('status/stale_channels'), {
-                                'channels': stale,
-                                'count': len(stale),
-                                'timestamp': time.time(),
-                            })
+                    # Stale channel check — every scan for safety-critical detection
+                    stale_channels = self.hardware.get_stale_channels(timeout_s=10.0)
+                    if stale_channels and _scan_count % 10 == 0:
+                        logger.warning(f"Stale I/O channels ({len(stale_channels)}): {stale_channels[:5]}")
+                        self._publish(self._topic('status/stale_channels'), {
+                            'channels': stale_channels,
+                            'count': len(stale_channels),
+                            'timestamp': time.time(),
+                        })
 
                 # Include output values
                 with self.values_lock:
@@ -1016,8 +1157,15 @@ class Opto22NodeService:
                     ts_snap = dict(self.channel_timestamps)
 
                 # Safety checks (ISA-18.2 alarms + interlocks)
+                # Remove stale channels from safety snapshot so COMM_FAIL fires
+                # for channels that groov MQTT has stopped updating
                 configured = set(self.config.channels.keys()) if self.config else set()
-                self.safety.check_all(values_snap, configured_channels=configured)
+                if stale_channels:
+                    values_for_safety = {k: v for k, v in values_snap.items()
+                                         if k not in stale_channels}
+                else:
+                    values_for_safety = values_snap
+                self.safety.check_all(values_for_safety, configured_channels=configured)
 
                 # PID control
                 dt = time.time() - loop_start
@@ -1037,6 +1185,9 @@ class Opto22NodeService:
                     self.channel_watchdog.process_scan(values_snap, ts_snap)
                 except Exception as e:
                     logger.error(f"Watchdog engine error: {e}")
+
+                # Watchdog output toggle (if configured)
+                self._toggle_watchdog_output()
 
             except Exception as e:
                 logger.error(f"Scan loop error: {e}")
@@ -1208,6 +1359,12 @@ class Opto22NodeService:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
+        # RT hardening (best-effort — graceful fallback on non-RT kernels)
+        rt_enabled = _enable_rt_scheduling(priority=50)
+        mem_locked = _lock_memory()
+        logger.info(f"RT hardening: scheduling={'SCHED_FIFO' if rt_enabled else 'default'}, "
+                    f"memory={'locked' if mem_locked else 'unlocked'}")
+
         self._running.set()
         self.state_machine.transition(Opto22State.IDLE)
 
@@ -1263,7 +1420,10 @@ class Opto22NodeService:
                 elif self.groov_mqtt:
                     self._groov_disconnect_logged = False
 
-                # PC contact timeout
+                # Communication watchdog — apply safe state on PC contact loss
+                self._check_comm_watchdog()
+
+                # PC contact timeout (informational logging)
                 if time.time() - self.last_pc_contact > 30 and self.pc_connected:
                     logger.warning("Lost contact with PC — continuing standalone")
                     self.pc_connected = False

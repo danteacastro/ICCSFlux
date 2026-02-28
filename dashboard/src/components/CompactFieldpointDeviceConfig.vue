@@ -210,6 +210,25 @@ const feedbackMessage = ref('')
 const feedbackType = ref<'success' | 'error'>('success')
 const generatingSlot = ref<number | null>(null)
 
+// CFP slot probing state
+const isProbing = ref(false)
+const probeResults = ref<Array<{ slot: number; populated: boolean; category: string; register_type: string }>>([])
+
+// Category-to-registerType mapping for filtering module suggestions
+const CATEGORY_TO_REGISTER_TYPE: Record<string, string> = {
+  'analog_input': 'input',
+  'analog_output': 'holding',
+  'digital_input': 'discrete',
+  'digital_output': 'coil',
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  'analog_input': 'Analog Input',
+  'analog_output': 'Analog Output',
+  'digital_input': 'Digital Input',
+  'digital_output': 'Digital Output',
+}
+
 // Connection status from backend
 const connectionStatus = ref<Record<string, {
   connected: boolean
@@ -274,7 +293,28 @@ function calculateRegisterAddress(slotNumber: number, channelIndex: number, regi
 }
 
 /**
- * Generate Modbus channels for a slot
+ * Map a CFP module model to the real signal channel type.
+ * This lets CFP channels be categorized by signal type (TC, RTD, V-IN, DI, DO)
+ * in the Configuration tab, while source_type='cfp' tells the backend to
+ * route them through the Modbus reader.
+ */
+function getCfpChannelType(moduleModel: string, module: CFPModuleDefinition): string {
+  const model = moduleModel.toUpperCase()
+  if (model.includes('TC-')) return 'thermocouple'
+  if (model.includes('RTD-')) return 'rtd'
+  if (model.includes('AI-') && module.unit === 'mA') return 'current_input'
+  if (model.includes('AI-')) return 'voltage_input'
+  if (model.includes('AO-') && module.unit === 'mA') return 'current_output'
+  if (model.includes('AO-')) return 'voltage_output'
+  if (model.includes('DI-')) return 'digital_input'
+  if (model.includes('DO-') || model.includes('RLY-')) return 'digital_output'
+  // Fallback: use Modbus types for unknown modules
+  return module.registerType === 'coil' || module.registerType === 'discrete'
+    ? 'modbus_coil' : 'modbus_register'
+}
+
+/**
+ * Generate channels for a slot with real signal types and CFP source routing.
  */
 function generateChannelsForSlot(device: CFPDevice, slot: SlotConfig) {
   if (!slot.moduleModel) return []
@@ -283,6 +323,8 @@ function generateChannelsForSlot(device: CFPDevice, slot: SlotConfig) {
   if (!module) return []
 
   const channels = []
+  const channelType = getCfpChannelType(slot.moduleModel, module)
+  const isAnalogOrTemp = !['digital_input', 'digital_output', 'modbus_coil'].includes(channelType)
 
   for (let i = 0; i < module.channels; i++) {
     const registerAddress = calculateRegisterAddress(
@@ -292,21 +334,19 @@ function generateChannelsForSlot(device: CFPDevice, slot: SlotConfig) {
     )
 
     const channelName = `${slot.channelPrefix}Ch${i}`
-    const channelType = module.registerType === 'coil' || module.registerType === 'discrete'
-      ? 'modbus_coil'
-      : 'modbus_register'
 
     channels.push({
       name: channelName,
       channel_type: channelType,
+      source_type: 'cfp',  // Tells backend to route via ModbusReader
       physical_channel: `modbus:${module.registerType}:${registerAddress}`,
       unit: module.unit,
       group: module.group,
       description: `${slot.moduleModel} Slot ${slot.slotNumber} Ch${i}`,
       visible: true,
-      chartable: channelType === 'modbus_register',
+      chartable: isAnalogOrTemp,
       enabled: true,
-      // Modbus-specific config
+      // Modbus transport config (used by ModbusReader via source_type='cfp')
       chassis: device.name,
       connection: device.connectionType.toUpperCase(),
       ip_address: device.ipAddress,
@@ -349,7 +389,7 @@ async function addChannelsForSlot(device: CFPDevice, slotNumber: number) {
 
     // Add channels via MQTT
     for (const ch of channels) {
-      mqtt.sendCommand('channel/add', ch)
+      mqtt.sendNodeCommand('channel/add', ch)
     }
 
     showFeedback('success', `Added ${channels.length} channels for Slot ${slotNumber} (${slot.moduleModel})`)
@@ -400,7 +440,7 @@ async function addDevice() {
   isLoading.value = true
   try {
     // Register as Modbus device in backend
-    mqtt.sendCommand('chassis/add', {
+    mqtt.sendNodeCommand('chassis/add', {
       name: deviceForm.value.name,
       type: 'cfp_backplane',
       connection: deviceForm.value.connectionType.toUpperCase(),
@@ -431,7 +471,7 @@ async function addDevice() {
 async function updateDevice() {
   isLoading.value = true
   try {
-    mqtt.sendCommand('chassis/update', {
+    mqtt.sendNodeCommand('chassis/update', {
       name: deviceForm.value.name,
       type: 'cfp_backplane',
       connection: deviceForm.value.connectionType.toUpperCase(),
@@ -468,7 +508,7 @@ async function deleteDevice(deviceName: string) {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('chassis/delete', { name: deviceName })
+    mqtt.sendNodeCommand('chassis/delete', { name: deviceName })
     devices.value = devices.value.filter(d => d.name !== deviceName)
     if (selectedDevice.value === deviceName) {
       selectedDevice.value = null
@@ -500,6 +540,61 @@ async function testConnection(deviceName: string) {
     isLoading.value = false
   }
 }
+
+function scanSlots(device: CFPDevice) {
+  if (device.connectionType !== 'tcp') {
+    showFeedback('error', 'Slot scanning only supported over TCP')
+    return
+  }
+  isProbing.value = true
+  probeResults.value = []
+  showFeedback('success', `Scanning slots on ${device.ipAddress}:${device.port}...`)
+  mqtt.scanDevices('cfp', {
+    ip_address: device.ipAddress,
+    port: device.port,
+    slave_id: device.slaveId,
+    backplane_model: device.backplaneModel,
+    device_name: device.name
+  })
+}
+
+function getModuleSuggestionsForCategory(category: string): { model: string; description: string }[] {
+  const regType = CATEGORY_TO_REGISTER_TYPE[category]
+  if (!regType) return []
+  return Object.entries(CFP_MODULES)
+    .filter(([_, def]) => def.registerType === regType)
+    .map(([model, def]) => ({ model, description: def.description }))
+}
+
+// Watch for CFP discovery results
+watch(() => mqtt.cfpDiscoveryResult.value, (result) => {
+  if (!result) return
+  isProbing.value = false
+
+  if (!result.success) {
+    showFeedback('error', result.message || 'Slot scan failed')
+    return
+  }
+
+  probeResults.value = result.slots || []
+  showFeedback('success', result.message || 'Slot scan complete')
+
+  // Auto-populate module dropdowns for the target device
+  const targetName = result.device_name
+  const device = devices.value.find(d => d.name === targetName)
+  if (device) {
+    for (const probeSlot of probeResults.value) {
+      const slot = device.slots.find(s => s.slotNumber === probeSlot.slot)
+      if (slot && probeSlot.populated && !slot.moduleModel) {
+        // Auto-select if only one module matches
+        const suggestions = getModuleSuggestionsForCategory(probeSlot.category)
+        if (suggestions.length === 1 && suggestions[0]) {
+          slot.moduleModel = suggestions[0].model
+        }
+      }
+    }
+  }
+})
 
 function showFeedback(type: 'success' | 'error', message: string) {
   feedbackType.value = type
@@ -723,9 +818,25 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Slot probe results overlay -->
+          <div v-if="probeResults.length > 0" class="probe-results">
+            <h4>Scan Results</h4>
+            <div class="probe-grid">
+              <div v-for="probe in probeResults" :key="probe.slot" class="probe-slot"
+                   :class="{ 'probe-populated': probe.populated, 'probe-empty': !probe.populated }">
+                <span class="probe-slot-num">Slot {{ probe.slot }}</span>
+                <span v-if="probe.populated" class="probe-category">{{ CATEGORY_LABELS[probe.category] || probe.category }}</span>
+                <span v-else class="probe-empty-label">Empty</span>
+              </div>
+            </div>
+          </div>
+
           <div class="device-actions">
             <button class="action-btn" @click.stop="testConnection(device.name)" :disabled="isLoading">
               Test Connection
+            </button>
+            <button v-if="editMode" class="action-btn" @click.stop="scanSlots(device)" :disabled="isProbing">
+              {{ isProbing ? 'Scanning...' : 'Scan Slots' }}
             </button>
             <button v-if="editMode" class="action-btn" @click.stop="openEditDevice(device)">
               Edit
@@ -1263,6 +1374,63 @@ onMounted(() => {
 .add-channels-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Probe Results */
+.probe-results {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: #1e293b;
+  border-radius: 6px;
+  border: 1px solid #334155;
+}
+
+.probe-results h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.probe-grid {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.probe-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  min-width: 70px;
+}
+
+.probe-populated {
+  background: #064e3b;
+  border: 1px solid #059669;
+}
+
+.probe-empty {
+  background: #1f2937;
+  border: 1px solid #374151;
+  opacity: 0.6;
+}
+
+.probe-slot-num {
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+}
+
+.probe-category {
+  color: #34d399;
+  font-size: 0.7rem;
+}
+
+.probe-empty-label {
+  color: #6b7280;
+  font-size: 0.7rem;
 }
 
 /* Device Actions */

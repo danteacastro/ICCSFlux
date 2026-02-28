@@ -257,6 +257,7 @@ class DataSourceManager:
         self._lock = threading.Lock()
         self._value_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         self._all_values: Dict[str, Any] = {}
+        self._value_timestamps: Dict[str, float] = {}
         logger.info("DataSourceManager initialized")
 
     @classmethod
@@ -338,10 +339,16 @@ class DataSourceManager:
             source.disconnect()
         logger.info("Stopped all data sources")
 
+    # Maximum age (seconds) for cached data source values before they're discarded
+    MAX_VALUE_AGE_S = 120.0
+
     def _on_source_values(self, source_name: str, values: Dict[str, Any]):
         """Called when a source has new values."""
+        now = time.time()
         with self._lock:
             self._all_values.update(values)
+            for ch_name in values:
+                self._value_timestamps[ch_name] = now
 
         # Notify callbacks
         for callback in self._value_callbacks:
@@ -355,9 +362,21 @@ class DataSourceManager:
         self._value_callbacks.append(callback)
 
     def get_all_values(self) -> Dict[str, Any]:
-        """Get all cached values from all sources."""
+        """Get all cached values from all sources, excluding stale entries."""
+        now = time.time()
         with self._lock:
-            return self._all_values.copy()
+            fresh = {}
+            stale_channels = []
+            for ch_name, val in self._all_values.items():
+                ts = self._value_timestamps.get(ch_name, 0)
+                if ts > 0 and (now - ts) > self.MAX_VALUE_AGE_S:
+                    stale_channels.append(ch_name)
+                else:
+                    fresh[ch_name] = val
+            if stale_channels:
+                logger.warning(f"[DATA_SOURCE] {len(stale_channels)} stale channel(s) excluded: "
+                               f"{stale_channels[:5]}{'...' if len(stale_channels) > 5 else ''}")
+            return fresh
 
     def read_channel(self, channel_name: str) -> Optional[Any]:
         """Read a channel value (from cache or direct read)."""

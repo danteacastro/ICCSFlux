@@ -43,6 +43,7 @@ psycopg2-binary>=2.9.0  # PostgreSQL (no server install needed, client-only)
 # BUILD
 # ===========================================
 pyinstaller>=6.0.0
+pywebview>=5.0.0         # Native desktop window for ICCSFlux launcher (Edge WebView2)
 
 # ===========================================
 # TESTING

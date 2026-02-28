@@ -106,7 +106,7 @@ class ModbusConnection:
     def __init__(self, config: ModbusDeviceConfig):
         self.config = config
         self.client = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.connected = False
         self.last_error = None
         self.error_count = 0
@@ -371,6 +371,13 @@ class ModbusReader:
         self.output_values: Dict[str, float] = {}
         self.lock = threading.Lock()
 
+        # Background polling state
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_running = False
+        self._latest_values: Dict[str, float] = {}
+        self._latest_lock = threading.Lock()
+        self._last_poll_duration = 0.0
+
         self._initialize_connections()
         self._initialize_channels()
 
@@ -415,11 +422,36 @@ class ModbusReader:
             except Exception as e:
                 logger.error(f"Failed to initialize Modbus connection {name}: {e}")
 
+    @staticmethod
+    def _is_output_channel(channel: ChannelConfig, reg_type: 'ModbusRegisterType') -> bool:
+        """Determine if a channel is an output (writable) Modbus channel.
+
+        Handles both traditional Modbus channels (channel_type == MODBUS_COIL)
+        and CFP channels that use real signal types (digital_output, voltage_output,
+        current_output) transported over Modbus.
+        """
+        # Traditional Modbus coil outputs
+        if channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL:
+            return True
+        # CFP channels with output signal types transported via Modbus
+        is_cfp = getattr(channel, 'source_type', '') == 'cfp'
+        if is_cfp and channel.channel_type in (
+            ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT
+        ):
+            return True
+        # Traditional Modbus holding register outputs (writable registers)
+        if channel.channel_type == ChannelType.MODBUS_REGISTER and reg_type == ModbusRegisterType.HOLDING:
+            # Holding registers can be read/write — mark as output if explicitly configured
+            return getattr(channel, 'modbus_is_output', False)
+        return False
+
     def _initialize_channels(self):
         """Parse channel configurations for Modbus channels"""
         for name, channel in self.config.channels.items():
-            # Check if this is a Modbus channel
-            if channel.channel_type not in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+            # Check if this is a Modbus channel (explicit type or CFP source)
+            is_modbus_type = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            is_cfp = getattr(channel, 'source_type', '') == 'cfp'
+            if not is_modbus_type and not is_cfp:
                 continue
 
             # Get module and chassis
@@ -495,7 +527,7 @@ class ModbusReader:
                 word_order=getattr(channel, 'modbus_word_order', 'big'),
                 scale=getattr(channel, 'modbus_scale', 1.0),
                 offset=getattr(channel, 'modbus_offset', 0.0),
-                is_output=channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL,
+                is_output=self._is_output_channel(channel, reg_type),
                 register_count=register_count,
                 register_index=register_index
             )
@@ -520,6 +552,52 @@ class ModbusReader:
         for connection in self.connections.values():
             connection.disconnect()
 
+    def start_polling(self):
+        """Start background polling thread. Modbus reads run asynchronously
+        so they don't block the main scan loop."""
+        if self._poll_thread and self._poll_thread.is_alive():
+            return  # Already running
+
+        self._poll_running = True
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop,
+            name="ModbusPoller",
+            daemon=True
+        )
+        self._poll_thread.start()
+        logger.info("Modbus background polling started")
+
+    def stop_polling(self):
+        """Stop background polling thread."""
+        self._poll_running = False
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5.0)
+            logger.info("Modbus background polling stopped")
+        self._poll_thread = None
+
+    def _poll_loop(self):
+        """Background thread: continuously reads all Modbus channels.
+        Polls as fast as the serial/TCP links allow — no artificial rate cap.
+        RTU at 9600 baud naturally limits to ~1-2 Hz, TCP to ~5-10 Hz."""
+        while self._poll_running:
+            start = time.time()
+            try:
+                live_values = self.read_all()
+                with self._latest_lock:
+                    self._latest_values = live_values
+            except Exception as e:
+                logger.error(f"Modbus poll error: {e}")
+                time.sleep(1.0)  # Back off on error to avoid spin
+
+            self._last_poll_duration = time.time() - start
+
+    def get_latest_values(self) -> Dict[str, float]:
+        """Return the most recent values from background polling.
+        Non-blocking — just returns whatever was last read.
+        Channels with failed reads are excluded (triggers COMM_FAIL)."""
+        with self._latest_lock:
+            return self._latest_values.copy()
+
     def read_channel(self, channel_name: str) -> Optional[float]:
         """Read a single Modbus channel value"""
         if channel_name not in self.channel_configs:
@@ -543,8 +621,14 @@ class ModbusReader:
 
         Supports batch reading: channels with the same device/slave/register_type
         and register_count are read together in a single Modbus transaction.
+
+        Channels whose reads fail are EXCLUDED from the return dict so that
+        the DAQ service's COMM_FAIL alarm mechanism can detect offline devices.
         """
         with self.lock:
+            # Track which channels were successfully read this cycle
+            live_values: Dict[str, float] = {}
+
             # Group channels for batch reading
             # Key: (device_name, slave_id, register_type, address, register_count)
             batch_groups: Dict[tuple, List[ModbusChannelConfig]] = {}
@@ -579,6 +663,7 @@ class ModbusReader:
                     value = self._extract_value_from_batch(registers, config)
                     if value is not None:
                         self.channel_values[config.channel_name] = value
+                        live_values[config.channel_name] = value
 
             # Read individual channels
             for config in individual_channels:
@@ -589,8 +674,9 @@ class ModbusReader:
                 value = self._read_channel_value(connection, config)
                 if value is not None:
                     self.channel_values[config.channel_name] = value
+                    live_values[config.channel_name] = value
 
-            return self.channel_values.copy()
+            return live_values
 
     def _read_register_batch(self, connection: ModbusConnection,
                               reg_type: ModbusRegisterType,
@@ -833,7 +919,9 @@ class ModbusReader:
 
     def add_channel(self, channel: ChannelConfig):
         """Add a new Modbus channel dynamically without requiring service restart."""
-        if channel.channel_type not in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+        is_modbus_type = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+        is_cfp = getattr(channel, 'source_type', '') == 'cfp'
+        if not is_modbus_type and not is_cfp:
             return  # Not a Modbus channel, ignore
 
         name = channel.name
@@ -893,7 +981,7 @@ class ModbusReader:
             word_order=getattr(channel, 'modbus_word_order', 'big'),
             scale=getattr(channel, 'modbus_scale', 1.0),
             offset=getattr(channel, 'modbus_offset', 0.0),
-            is_output=channel.channel_type == ChannelType.MODBUS_COIL and reg_type == ModbusRegisterType.COIL,
+            is_output=self._is_output_channel(channel, reg_type),
             register_count=getattr(channel, 'modbus_register_count', None),
             register_index=getattr(channel, 'modbus_register_index', 0)
         )
@@ -907,13 +995,14 @@ class ModbusReader:
         logger.info(f"Dynamically added Modbus channel: {name} -> {chassis_name}/{reg_type_str}:{address}")
 
     def remove_channel(self, channel_name: str):
-        """Remove a channel dynamically."""
-        if channel_name in self.channel_configs:
-            del self.channel_configs[channel_name]
-        if channel_name in self.channel_values:
-            del self.channel_values[channel_name]
-        if channel_name in self.output_values:
-            del self.output_values[channel_name]
+        """Remove a channel dynamically (thread-safe)."""
+        with self.lock:
+            if channel_name in self.channel_configs:
+                del self.channel_configs[channel_name]
+            if channel_name in self.channel_values:
+                del self.channel_values[channel_name]
+            if channel_name in self.output_values:
+                del self.output_values[channel_name]
 
     def trigger_event(self, event_type: str):
         """
@@ -923,8 +1012,9 @@ class ModbusReader:
         pass
 
     def close(self):
-        """Close all Modbus connections"""
-        logger.info("Closing Modbus reader connections...")
+        """Stop polling and close all Modbus connections"""
+        logger.info("Closing Modbus reader...")
+        self.stop_polling()
         self.disconnect_all()
         logger.info("Modbus reader closed")
 

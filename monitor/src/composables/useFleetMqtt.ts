@@ -80,14 +80,14 @@ export function useFleetMqtt() {
         error: null,
       })
 
-      // Subscribe to all status topics
+      // Subscribe to node-prefixed topics (DAQ publishes to nisystem/nodes/{nodeId}/...)
+      // and flat watchdog topic (watchdog publishes to nisystem/watchdog/status)
       client.subscribe([
-        'nisystem/status/system',
-        'nisystem/status/service',
-        'nisystem/heartbeat',
-        'nisystem/alarms/active/#',
-        'nisystem/alarms/cleared',
-        'nisystem/safety/status',
+        'nisystem/nodes/+/status/system',
+        'nisystem/nodes/+/heartbeat',
+        'nisystem/nodes/+/alarms/active/#',
+        'nisystem/nodes/+/alarms/cleared',
+        'nisystem/nodes/+/safety/status',
         'nisystem/watchdog/status',
       ])
     })
@@ -150,15 +150,17 @@ export function useFleetMqtt() {
   // ── Message routing ─────────────────────────────────────────────────
 
   function routeMessage(nodeId: string, topic: string, data: unknown) {
-    if (topic === 'nisystem/status/system') {
+    // Topics are node-prefixed: nisystem/nodes/{nodeId}/status/system, etc.
+    // Match on suffix to handle any node ID in the path.
+    if (topic.endsWith('/status/system')) {
       store.updateStatus(nodeId, data as any)
-    } else if (topic === 'nisystem/heartbeat') {
+    } else if (topic.endsWith('/heartbeat')) {
       store.updateHeartbeat(nodeId, data as any)
-    } else if (topic.startsWith('nisystem/alarms/active/')) {
+    } else if (topic.includes('/alarms/active/')) {
       store.updateAlarm(nodeId, data as any)
-    } else if (topic === 'nisystem/alarms/cleared') {
+    } else if (topic.endsWith('/alarms/cleared')) {
       store.clearAlarms(nodeId)
-    } else if (topic === 'nisystem/safety/status') {
+    } else if (topic.endsWith('/safety/status')) {
       store.updateSafety(nodeId, data as any)
     } else if (topic === 'nisystem/watchdog/status') {
       store.updateWatchdog(nodeId, data as any)

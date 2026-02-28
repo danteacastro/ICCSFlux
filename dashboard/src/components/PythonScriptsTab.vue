@@ -5,6 +5,8 @@ import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useDashboardStore } from '../stores/dashboard'
+import { useSafety } from '../composables/useSafety'
+import { usePlayground } from '../composables/usePlayground'
 import type { PythonScript, ScriptOutput } from '../types/python-scripts'
 import { SCRIPT_TEMPLATES, DEFAULT_SCRIPT_CODE } from '../types/python-scripts'
 
@@ -28,6 +30,10 @@ const pythonScripts = usePythonScripts()
 const backendScripts = useBackendScripts()
 // Project file management - for persisting scripts to project
 const projectFiles = useProjectFiles()
+// Safety data for AI context
+const safety = useSafety()
+// User variables for AI context
+const playground = usePlayground()
 
 // =============================================================================
 // STATE
@@ -37,6 +43,9 @@ const selectedScriptId = ref<string | null>(null)
 const showNewScriptModal = ref(false)
 const showTemplatesModal = ref(false)
 const showImportDataModal = ref(false)
+const showAiContextModal = ref(false)
+const aiDescription = ref('')
+const aiCopyFeedback = ref('')
 const newScriptName = ref('')
 const newScriptDescription = ref('')
 const importVariableName = ref('data')
@@ -750,6 +759,100 @@ function getOutputTypeClass(type: string): string {
   }
 }
 
+// =============================================================================
+// AI CONTEXT
+// =============================================================================
+
+function generateAiContext(): string {
+  // Build compact channel summary (no hardware details — just what the AI needs)
+  const channels: Record<string, any> = {}
+  for (const [name, ch] of Object.entries(store.channels)) {
+    if (!ch.visible) continue
+    const entry: any = {
+      type: ch.channel_type,
+      unit: ch.unit || '',
+    }
+    if (ch.description) entry.description = ch.description
+    // Flag safety-held outputs so AI knows not to write to them
+    const isOutput = ['digital_output', 'voltage_output', 'current_output'].includes(entry.type)
+    if (isOutput) {
+      const locked = safety.interlocks.value.some(il =>
+        il.controls?.some((ctrl: any) => ctrl.channel === name)
+      )
+      if (locked) entry.safety_held = true
+    }
+    channels[name] = entry
+  }
+
+  // Compact alarm thresholds
+  const alarms: Record<string, any> = {}
+  for (const [name, cfg] of Object.entries(safety.alarmConfigs.value)) {
+    if (!cfg.enabled) continue
+    const a: any = {}
+    if (cfg.high_high != null) a.hihi = cfg.high_high
+    if (cfg.high != null) a.hi = cfg.high
+    if (cfg.low != null) a.lo = cfg.low
+    if (cfg.low_low != null) a.lolo = cfg.low_low
+    if (Object.keys(a).length > 0) alarms[name] = a
+  }
+
+  // User variables
+  const userVars = playground.variablesList.value.map(v => v.name)
+
+  // Existing script names (avoid conflicts)
+  const existingScripts = backendScripts.scriptsList.value.map(s => s.name)
+
+  // Safety-locked outputs
+  const safetyLocked: string[] = []
+  for (const il of safety.interlocks.value) {
+    for (const ctrl of (il.controls || [])) {
+      const ch = (ctrl as any).channel
+      if (ch && !safetyLocked.includes(ch)) safetyLocked.push(ch)
+    }
+  }
+
+  const context: any = {
+    system: 'ICCSFlux',
+    project: store.systemName || 'Unnamed Project',
+  }
+
+  if (aiDescription.value.trim()) {
+    context.description = aiDescription.value.trim()
+  }
+
+  context.channels = channels
+
+  if (Object.keys(alarms).length > 0) context.alarms = alarms
+  if (userVars.length > 0) context.user_variables = userVars
+  if (existingScripts.length > 0) context.existing_scripts = existingScripts
+  if (safetyLocked.length > 0) context.safety_locked_outputs = safetyLocked
+
+  context.safety_notice = 'IMPORTANT: Scripts CANNOT be used for safety purposes. Safety is enforced through hardware interlocks (IEC 61511), not Python scripts. Scripts cannot override safety-held outputs. If the user\'s requirements involve safety-critical operations (temperature limits, pressure shutdowns, emergency stops, over-current protection), you MUST recommend configuring interlocks in the Safety tab instead of implementing safety logic in a script. Suggest specific interlock configurations (channel, threshold, action) when applicable.'
+
+  context.instructions = 'Use the ICCSFlux AI reference docs (docs/ai/ folder) with this context to generate a Python script. The script runs in a sandboxed environment — see AI_Script_Generation_Guide.md for the full API reference.'
+
+  return JSON.stringify(context, null, 2)
+}
+
+async function copyAiContext() {
+  const context = generateAiContext()
+  try {
+    await navigator.clipboard.writeText(context)
+    aiCopyFeedback.value = 'Copied!'
+    setTimeout(() => { aiCopyFeedback.value = '' }, 2000)
+  } catch {
+    // Fallback for non-secure contexts
+    const textarea = document.createElement('textarea')
+    textarea.value = context
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    aiCopyFeedback.value = 'Copied!'
+    setTimeout(() => { aiCopyFeedback.value = '' }, 2000)
+  }
+}
+
 function getScriptStateIcon(id: string): string {
   const script = backendScripts.scripts.value[id]
   if (script?.state === 'running') return '▶'
@@ -777,6 +880,9 @@ function getScriptStateClass(id: string): string {
           </button>
           <button class="btn btn-sm btn-secondary" @click="showTemplatesModal = true" title="Templates">
             📋
+          </button>
+          <button class="btn btn-sm btn-secondary" @click="showAiContextModal = true" title="Copy AI Context — export your project context for AI script generation">
+            AI
           </button>
         </div>
       </div>
@@ -1063,6 +1169,38 @@ function getScriptStateClass(id: string): string {
           />
           <div class="modal-actions">
             <button class="btn btn-secondary" @click="showImportDataModal = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- AI Context Modal -->
+    <Teleport to="body">
+      <div v-if="showAiContextModal" class="modal-overlay" @click.self="showAiContextModal = false">
+        <div class="modal ai-context-modal">
+          <h3>Copy AI Context</h3>
+          <p class="modal-description">
+            Describe what you want the script to do. Your project context (channels, alarms, variables, interlocks)
+            will be included automatically.
+          </p>
+          <div class="form-group">
+            <label>What should the script do?</label>
+            <textarea
+              v-model="aiDescription"
+              class="ai-description-input"
+              rows="4"
+              placeholder="e.g., Calculate membrane flux from FT_Feed and FT_Permeate flow channels. Alarm if flux drops below 15 LMH for more than 30 seconds. Publish the flux value and a fouling indicator."
+            />
+          </div>
+          <p class="ai-help-text">
+            Paste the copied context into your AI (ChatGPT, Claude, etc.) along with the reference docs
+            from <code>docs/ai/</code> to get a working script.
+          </p>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" @click="showAiContextModal = false">Cancel</button>
+            <button class="btn btn-primary" @click="copyAiContext">
+              {{ aiCopyFeedback || 'Copy to Clipboard' }}
+            </button>
           </div>
         </div>
       </div>
@@ -1743,5 +1881,47 @@ function getScriptStateClass(id: string): string {
 .dropzone-hint {
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* AI Context Modal */
+.ai-context-modal {
+  max-width: 520px;
+}
+
+.ai-description-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-elevated, #0f172a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.ai-description-input:focus {
+  border-color: var(--color-accent, #3b82f6);
+  outline: none;
+}
+
+.ai-description-input::placeholder {
+  color: var(--text-dim, #6b7280);
+}
+
+.ai-help-text {
+  font-size: 12px;
+  color: var(--text-secondary, #9ca3af);
+  margin: 8px 0 0;
+  line-height: 1.4;
+}
+
+.ai-help-text code {
+  background: var(--bg-elevated, #0f172a);
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: monospace;
+  font-size: 11px;
 }
 </style>

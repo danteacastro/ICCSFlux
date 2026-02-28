@@ -1141,11 +1141,12 @@ class SafetyManager:
                 'reason': f'Unknown condition type: {cond.condition_type}'
             }
 
-        # Apply per-condition on-delay
-        if cond.delay_s > 0 and not result['satisfied']:
+        # Apply per-condition on-delay (condition must stay satisfied for delay_s
+        # before reporting satisfied — prevents premature interlock clearing)
+        if cond.delay_s > 0 and result['satisfied']:
             result = self._apply_condition_delay(cond.id, result, cond.delay_s, now)
-        elif cond.delay_s > 0 and result['satisfied']:
-            # Condition satisfied — clear delay tracking
+        elif cond.delay_s > 0 and not result['satisfied']:
+            # Condition unsatisfied — clear delay tracking
             self._condition_delay_state.pop(cond.id, None)
 
         return result
@@ -1173,24 +1174,33 @@ class SafetyManager:
 
     def _apply_condition_delay(self, cond_id: str, result: Dict[str, Any],
                                 delay_s: float, now: float) -> Dict[str, Any]:
-        """Apply on-delay logic to a condition result (for unsatisfied conditions)."""
+        """Apply on-delay logic to a condition result (for satisfied conditions).
+
+        The condition must remain continuously satisfied for delay_s seconds
+        before reporting as satisfied. This prevents premature interlock clearing
+        from brief transient good readings.
+        """
         delay_state = self._condition_delay_state.get(cond_id)
 
-        if delay_state is None:
-            # First time condition is unsatisfied — start delay timer
-            self._condition_delay_state[cond_id] = {'start': now}
-            remaining = delay_s
-            return {**result, 'satisfied': True,
-                    'reason': f"{result['reason']} (delay {remaining:.1f}s remaining)"}
-        else:
-            elapsed = now - delay_state['start']
+        if delay_state is None or not delay_state.get('met', False):
+            # Start or continue delay timer
+            start_time = delay_state.get('start', now) if delay_state else now
+            elapsed = now - start_time
+
             if elapsed >= delay_s:
-                # Delay expired — condition is truly unsatisfied
+                # Delay elapsed — condition is truly satisfied
+                self._condition_delay_state[cond_id] = {'start': start_time, 'met': True}
                 return result
             else:
+                # Still waiting — override to not-satisfied
                 remaining = delay_s - elapsed
-                return {**result, 'satisfied': True,
-                        'reason': f"{result['reason']} (delay {remaining:.1f}s remaining)"}
+                self._condition_delay_state[cond_id] = {'start': start_time, 'met': False}
+                return {**result, 'satisfied': False,
+                        'delay_remaining': remaining,
+                        'reason': f"{result['reason']} (waiting {remaining:.1f}s)"}
+        else:
+            # Already confirmed met — pass through
+            return result
 
     def evaluate_interlock(self, interlock: Interlock,
                            channel_values: Dict[str, float],
@@ -1244,8 +1254,9 @@ class SafetyManager:
             satisfied = all(results) if results else True
 
         # Track demand transitions (satisfied -> unsatisfied)
-        was_satisfied = self._interlock_prev_states.get(interlock.id, True)
-        if was_satisfied and not satisfied:
+        # Use None default to avoid false demand count on first evaluation
+        was_satisfied = self._interlock_prev_states.get(interlock.id)
+        if was_satisfied is True and not satisfied:
             interlock.demand_count += 1
             interlock.last_demand_time = now
             logger.warning(f"Interlock '{interlock.name}' DEMAND #{interlock.demand_count}: "

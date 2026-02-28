@@ -13,8 +13,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
 
-# Fix console encoding for Windows
-if sys.platform == 'win32':
+# Fix console encoding for Windows (skip under pytest — breaks capture)
+if sys.platform == 'win32' and 'pytest' not in sys.modules:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 

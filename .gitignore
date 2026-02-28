@@ -48,6 +48,7 @@ logs/*.txt
 logs/*.csv
 logs/*.tdms
 logs/*.sha256
+logs/historian/
 !logs/.gitkeep
 
 # Service logs and recordings
@@ -93,3 +94,6 @@ config/tls/
 
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
+
+# Build audit reports (auto-generated per build)
+audit_reports/

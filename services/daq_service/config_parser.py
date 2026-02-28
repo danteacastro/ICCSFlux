@@ -107,6 +107,13 @@ class HardwareSource(Enum):
             return cls.OPTO22
         if channel.source_type == "gc":
             return cls.GC_NODE
+        if channel.source_type == "cfp":
+            # CFP channels use real signal types (thermocouple, voltage_input, etc.)
+            # but are transported via Modbus TCP/RTU
+            phys = channel.physical_channel.lower()
+            if phys.startswith("rtu://") or "com" in phys:
+                return cls.MODBUS_RTU
+            return cls.MODBUS_TCP
 
         # Check for Modbus channels
         if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
@@ -139,10 +146,17 @@ class ProjectMode(Enum):
 
     OPTO22: Opto22 groov EPIC/RIO is the PLC, PC is HMI only. Same architecture
             as CRIO mode but using Opto22 hardware instead of NI cRIO.
+
+    CFP: CompactFieldPoint (cFP-18xx/20xx) hardware read via Modbus TCP/RTU.
+         PC handles all control logic (scripts, safety, PID) — same architecture
+         as CDAQ but I/O is over Modbus instead of NI-DAQmx. Channels use their
+         real signal types (thermocouple, voltage_input, etc.) with source_type='cfp'
+         so the backend routes them through ModbusReader.
     """
     CDAQ = "cdaq"     # PC does everything (legacy/simple mode)
     CRIO = "crio"     # cRIO is PLC, PC is HMI (robust/industrial mode)
     OPTO22 = "opto22" # Opto22 is PLC, PC is HMI (like CRIO but different hardware)
+    CFP = "cfp"       # CompactFieldPoint via Modbus — PC handles all control (like cDAQ)
 
 
 @dataclass
@@ -245,6 +259,7 @@ class ChannelConfig:
     # Ranges
     voltage_range: float = 10.0
     current_range_ma: float = 20.0
+    shunt_resistor_loc: str = "internal"  # internal or external (for current input modules)
 
     # Terminal configuration for analog inputs (DEFAULT, RSE, DIFF, NRSE, PSEUDO_DIFF)
     # DEFAULT = Let DAQmx auto-select (recommended - works with all modules)
@@ -258,6 +273,8 @@ class ChannelConfig:
     thermocouple_type: Optional[ThermocoupleType] = None
     cjc_source: str = "internal"
     cjc_value: float = 25.0          # Constant CJC temperature in °C (when cjc_source='constant')
+    open_detect: bool = True         # Open thermocouple detection (default: enabled)
+    auto_zero: bool = False          # Auto-zero for improved accuracy
 
     # RTD specific
     rtd_type: str = "Pt100"          # Pt100, Pt500, Pt1000, custom
@@ -266,10 +283,11 @@ class ChannelConfig:
     rtd_current: float = 0.001       # Excitation current in Amps (default 1mA)
 
     # Strain gauge specific
-    strain_config: str = "full-bridge"  # full-bridge, half-bridge, quarter-bridge
+    strain_config: str = "full-bridge"  # full-bridge, half-bridge[-I/-II/-III], quarter-bridge[-I/-II]
     strain_excitation_voltage: float = 2.5  # Bridge excitation voltage
     strain_gage_factor: float = 2.0  # Gage factor (typically 2.0 for foil gages)
     strain_resistance: float = 350.0 # Nominal gage resistance in Ohms
+    poisson_ratio: float = 0.30      # Poisson ratio (for quarter-bridge compensation)
 
     # IEPE specific (accelerometers, microphones)
     iepe_sensitivity: float = 100.0  # mV/g or mV/Pa
@@ -281,12 +299,16 @@ class ChannelConfig:
     resistance_wiring: str = "4-wire"  # 2-wire, 4-wire
 
     # Counter specific
-    counter_mode: str = "frequency"  # frequency, count, period
+    counter_mode: str = "frequency"  # frequency, count, period, position (encoder)
     pulses_per_unit: float = 1.0     # e.g., 100 pulses = 1 gallon → pulses_per_unit = 100
     counter_edge: str = "rising"     # rising, falling, both
     counter_reset_on_read: bool = False  # For totalizer mode
     counter_min_freq: float = 0.1    # Minimum expected frequency in Hz
     counter_max_freq: float = 1000.0 # Maximum expected frequency in Hz
+    # Encoder-specific (position mode)
+    decoding_type: str = "X4"        # X1, X2, X4, two_pulse
+    pulses_per_revolution: int = 1024  # Encoder resolution
+    z_index_enable: bool = False     # Z-index (home) pulse enable
 
     # Pulse/Counter output specific
     pulse_frequency: float = 1000.0       # Output frequency in Hz
@@ -397,10 +419,10 @@ class ChannelConfig:
         """
         True if safety logic for this channel can run independent of PC.
 
-        Only cRIO channels have true local safety - hardware watchdog continues
-        even if PC crashes or network disconnects.
+        cRIO and Opto22 channels have true local safety - hardware watchdog
+        continues even if PC crashes or network disconnects.
         """
-        return self.is_crio
+        return self.is_crio or self.is_opto22
 
     @property
     def hardware_source_display(self) -> str:
@@ -644,7 +666,7 @@ def load_config(config_path: str) -> NISystemConfig:
                 scaled_max=float(sec['scaled_max']) if 'scaled_max' in sec else None,
                 voltage_range=float(sec.get('voltage_range', 10.0)),
                 current_range_ma=float(sec.get('current_range_ma', 20.0)),
-                terminal_config=sec.get('terminal_config', 'RSE'),
+                terminal_config=sec.get('terminal_config', 'DEFAULT'),
                 thermocouple_type=tc_type,
                 cjc_source=sec.get('cjc_source', 'internal'),
                 # RTD

@@ -90,8 +90,12 @@ class MQTTInterface:
         """
         Connect to MQTT broker.
         Returns True if connection initiated (not necessarily connected yet).
+        Safe to call after disconnect() for retry.
         """
         try:
+            # Reset shutdown flag so reconnect logic works correctly
+            self._shutdown.clear()
+
             # paho-mqtt 2.x requires callback_api_version
             try:
                 self._client = mqtt.Client(
@@ -179,8 +183,10 @@ class MQTTInterface:
         """
         Subscribe to topic pattern.
         Subscriptions are restored on reconnect.
+        Deduplicates to prevent list growth across reconnect cycles.
         """
-        self._subscriptions.append((topic_pattern, qos))
+        if (topic_pattern, qos) not in self._subscriptions:
+            self._subscriptions.append((topic_pattern, qos))
 
         if self._connected.is_set() and self._client:
             self._client.subscribe(topic_pattern, qos)

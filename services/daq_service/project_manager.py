@@ -58,7 +58,10 @@ PROJECT_SCHEMA = {
         "analog_input", "analog_output", "digital_input", "digital_output",
         "thermocouple", "voltage", "current", "rtd", "counter", "virtual",
         "calculated", "modbus", "rest", "strain", "iepe", "resistance",
-        "modbus_register", "modbus_coil"
+        "modbus_register", "modbus_coil",
+        "voltage_input", "voltage_output", "current_input", "current_output",
+        "counter_input", "counter_output", "frequency_input", "pulse_output",
+        "strain_input", "bridge_input", "iepe_input", "resistance_input"
     ]
 }
 @dataclass

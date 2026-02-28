@@ -505,5 +505,138 @@ class TestLowThresholds:
         assert alarm.threshold_type == 'low_low'
 
 
+class TestUnshelveReEvaluation:
+    """Test alarm unshelve re-evaluates condition correctly.
+
+    Validates the fix for the AttributeError crash where unshelve_alarm
+    accessed config.alarm_type (which doesn't exist) instead of
+    config.digital_alarm_enabled.
+    """
+
+    @pytest.fixture
+    def manager(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield AlarmManager(Path(tmpdir))
+
+    def test_unshelve_analog_alarm_condition_still_active(self, manager):
+        """Unshelve when analog alarm condition is still active — should go to ACTIVE"""
+        config = AlarmConfig(
+            id="unshelve-active",
+            channel="Temp1",
+            name="Unshelve Active Test",
+            severity=AlarmSeverity.HIGH,
+            high=100.0,
+            latch_behavior=LatchBehavior.LATCH
+        )
+        manager.add_alarm_config(config)
+
+        # Trigger alarm with high value
+        manager.process_value("Temp1", 110.0)
+        assert "unshelve-active" in manager.active_alarms
+
+        # Shelve it
+        manager.shelve_alarm("unshelve-active", "operator", "maintenance", 3600)
+        alarm = manager.active_alarms["unshelve-active"]
+        assert alarm.state == AlarmState.SHELVED
+
+        # Unshelve — condition still active (current_value=110 > high=100)
+        result = manager.unshelve_alarm("unshelve-active", "operator", "done")
+        assert result is True
+
+        # Alarm should be restored to active state (not crash with AttributeError)
+        alarm = manager.active_alarms.get("unshelve-active")
+        assert alarm is not None
+        assert alarm.state in (AlarmState.ACTIVE, AlarmState.ACKNOWLEDGED)
+
+    def test_unshelve_analog_alarm_condition_cleared(self, manager):
+        """Unshelve when analog alarm condition has cleared — should remove alarm"""
+        config = AlarmConfig(
+            id="unshelve-clear",
+            channel="Temp2",
+            name="Unshelve Clear Test",
+            severity=AlarmSeverity.MEDIUM,
+            high=100.0,
+            latch_behavior=LatchBehavior.AUTO_CLEAR
+        )
+        manager.add_alarm_config(config)
+
+        # Trigger alarm
+        manager.process_value("Temp2", 110.0)
+        assert "unshelve-clear" in manager.active_alarms
+
+        # Shelve it
+        manager.shelve_alarm("unshelve-clear", "operator", "work", 3600)
+
+        # Update value to normal (below threshold) while shelved
+        manager.process_value("Temp2", 80.0)
+
+        # Unshelve — condition cleared, alarm should be removed
+        result = manager.unshelve_alarm("unshelve-clear", "operator", "done")
+        assert result is True
+
+        # Alarm should be gone
+        assert "unshelve-clear" not in manager.active_alarms
+
+    def test_unshelve_digital_alarm_no_crash(self, manager):
+        """Unshelve a digital alarm — validates the alarm_type -> digital_alarm_enabled fix"""
+        config = AlarmConfig(
+            id="unshelve-digital",
+            channel="Switch1",
+            name="Digital Unshelve Test",
+            severity=AlarmSeverity.HIGH,
+            digital_alarm_enabled=True,
+            digital_expected_state=False,  # Alarm when True
+            latch_behavior=LatchBehavior.LATCH
+        )
+        manager.add_alarm_config(config)
+
+        # Trigger digital alarm (value=1 != expected=False)
+        manager.process_value("Switch1", 1.0)
+        assert "unshelve-digital" in manager.active_alarms
+
+        # Shelve it
+        manager.shelve_alarm("unshelve-digital", "operator", "test", 3600)
+
+        # Unshelve — this used to crash with AttributeError: 'AlarmConfig' has no attribute 'alarm_type'
+        result = manager.unshelve_alarm("unshelve-digital", "operator", "done")
+        assert result is True
+
+        # Should not crash — alarm should still be active (condition still met)
+        alarm = manager.active_alarms.get("unshelve-digital")
+        assert alarm is not None
+
+    def test_shelve_auto_expiry_no_crash(self, manager):
+        """Shelve with very short duration — auto-expiry should not crash"""
+        config = AlarmConfig(
+            id="expiry-test",
+            channel="Pressure",
+            name="Expiry Test",
+            severity=AlarmSeverity.MEDIUM,
+            high=500.0,
+            latch_behavior=LatchBehavior.LATCH,
+            max_shelve_time_s=1.0  # Allow shelving
+        )
+        manager.add_alarm_config(config)
+
+        # Trigger alarm
+        manager.process_value("Pressure", 600.0)
+        assert "expiry-test" in manager.active_alarms
+
+        # Shelve with short duration
+        manager.shelve_alarm("expiry-test", "operator", "quick check", duration_s=0.3)
+        assert manager.active_alarms["expiry-test"].state == AlarmState.SHELVED
+
+        # Wait for expiry
+        time.sleep(0.5)
+
+        # Process value triggers shelve expiry check — should not crash
+        manager.process_value("Pressure", 600.0)
+
+        # Alarm should be unshelved (back to active, not crashed)
+        alarm = manager.active_alarms.get("expiry-test")
+        assert alarm is not None
+        assert alarm.state != AlarmState.SHELVED
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

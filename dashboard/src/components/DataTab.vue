@@ -742,6 +742,9 @@ onMounted(() => {
 
   // Listen for recording responses (store unsubscribe for cleanup)
   unsubscribeRecordingResponse = mqtt.onRecordingResponse((response) => {
+    // Skip if a DB connection test is in progress — its own listener handles the response
+    if (dbTestStatus.value.testing) return
+
     // Reset recording op guard on any response (replaces blind timeout)
     if (isRecordingOp.value) {
       isRecordingOp.value = false
@@ -1833,9 +1836,9 @@ const scheduleDayLabels = [
                 <p class="field-hint">Samples per message</p>
               </div>
               <div class="form-group">
-                <label>Batch Interval (ms)</label>
+                <label>Upload Interval (ms)</label>
                 <input type="number" v-model.number="azureBatchInterval" min="100" max="60000" step="100" />
-                <p class="field-hint">Max time between sends</p>
+                <p class="field-hint">How often data is sent to Azure (e.g. 1000 = 1s, 5000 = 5s)</p>
               </div>
             </div>
 

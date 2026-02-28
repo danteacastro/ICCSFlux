@@ -1134,7 +1134,7 @@ class AlarmManager:
             config = self.alarm_configs.get(alarm_id)
             condition_met = False
             if config and alarm.current_value is not None:
-                if config.alarm_type == 'digital':
+                if config.digital_alarm_enabled:
                     condition_met, _, _ = self._check_digital_alarm(config, alarm.current_value, time.time())
                 else:
                     condition_met, _, _ = self._check_thresholds(config, alarm.current_value)

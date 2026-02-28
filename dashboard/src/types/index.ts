@@ -48,8 +48,9 @@ export type ChannelType =
  * - cdaq: PC is the "PLC" - reads hardware, evaluates alarms, executes safety
  * - crio: cRIO is the PLC, PC is HMI only (like Allen Bradley + FactoryTalk)
  * - opto22: Opto22 groov EPIC/RIO is the PLC, PC is HMI only
+ * - cfp: CompactFieldPoint via Modbus - PC handles all control (like cDAQ but I/O over Modbus)
  */
-export type ProjectMode = 'cdaq' | 'crio' | 'opto22'
+export type ProjectMode = 'cdaq' | 'crio' | 'opto22' | 'cfp'
 
 export type WidgetType =
   | 'numeric'
@@ -261,7 +262,7 @@ export interface ChannelConfig {
   log_interval_ms?: number
 
   // Multi-node support
-  source_type?: 'local' | 'crio' | 'cdaq' | 'opto22' | 'gc'  // Source of channel data
+  source_type?: 'local' | 'crio' | 'cdaq' | 'opto22' | 'gc' | 'cfp'  // Source of channel data
   node_id?: string                 // Remote node ID for cRIO channels, chassis name for cDAQ
   chassis_name?: string            // Chassis name (e.g., "cDAQ-9189", "cRIO-9056")
 
@@ -1029,6 +1030,10 @@ export interface PidSymbol {
     max?: number            // range max for writable channels
   }>
 
+  // ISA-5.1 parametric function block (for type === 'isaFunctionBlock')
+  isaLetters?: string        // e.g., "TIC", "FIC", "PIC", "LT"
+  isaLocation?: 'field' | 'panel' | 'dcs' | 'plc' | 'shared' | 'behind-panel' | 'local-panel'
+
   // Block editor indicator stubs (nozzle-point style annotations)
   indicators?: PidIndicator[]
 }
@@ -1105,36 +1110,29 @@ export const AUXILIARY_CHANNEL_PRESETS: Record<string, Array<{
 export type PidArrowType = 'none' | 'arrow' | 'open' | 'dot' | 'diamond' | 'bar'
 
 // Free-form pipe (bezier/polyline, not orthogonal-only)
-export interface PidPipe {
-  id: string
-  // Path points in pixels (click anywhere to add points)
+// --- P&ID Pipe Sub-Interfaces (composed into PidPipe) ---
+
+export interface PipeGeometry {
   points: PidPoint[]
-  // Path type
   pathType: 'polyline' | 'bezier' | 'orthogonal'
-  // Styling
+  rounded?: boolean
+  cornerRadius?: number      // default 8
+  jumpStyle?: 'none' | 'arc' | 'gap'
+  jumpSize?: number          // default 8
+}
+
+export interface PipeStyle {
   color?: string
   strokeWidth?: number
   opacity?: number           // 0-1, default 1
   dashed?: boolean
   dashPattern?: string       // Custom SVG dash-array, e.g. "8,4", overrides dashed
   animated?: boolean
-  label?: string
-  labelPosition?: 'start' | 'middle' | 'end'  // default 'middle'
-  // Arrow markers (PidArrowType or boolean for backwards compat)
   startArrow?: PidArrowType | boolean
   endArrow?: PidArrowType | boolean
-  // Rounded corners
-  rounded?: boolean
-  cornerRadius?: number      // default 8
-  // Line jumps at crossings
-  jumpStyle?: 'none' | 'arc' | 'gap'
-  jumpSize?: number          // default 8
-  // Z-index for layering
-  zIndex?: number
-  // === Enhanced Features (Phase 1+) ===
-  // Grouping
-  groupId?: string
-  // Snap-to-port connections (Phase 1)
+}
+
+export interface PipeConnections {
   startConnection?: PidPipeConnection
   endConnection?: PidPipeConnection
   // Legacy port binding (kept for backwards compatibility)
@@ -1142,33 +1140,43 @@ export interface PidPipe {
   startPortId?: string
   endSymbolId?: string
   endPortId?: string
-  // Enhanced flow animation (Phase 2)
+}
+
+export interface PipeFlow {
   flowChannel?: string       // Channel to determine flow rate/direction
   flowSpeed?: number         // Animation speed multiplier (default 1)
   flowDirection?: 'forward' | 'reverse' | 'stopped'
-  // Pipe medium/type indicator
   medium?: 'water' | 'steam' | 'gas' | 'air' | 'oil' | 'chemical' | 'electrical' | 'signal' | 'custom'
-  // ISA-5.1 line coding (for signal/instrument lines)
+  flowParticles?: boolean
+  particleCount?: number     // Number of particles (default 4)
+  particleColor?: string     // Particle color (default: pipe color)
+}
+
+export interface PipeIsaMetadata {
   lineCode?: PidSignalLineType
-  // Structured pipe attributes (ISA standard pipe identification)
   nominalSize?: string       // Nominal pipe size, e.g. "4\"", "DN100", "2\""
   pressureRating?: string    // Pressure class, e.g. "150#", "300#", "PN16"
   material?: string          // Material spec, e.g. "CS", "SS316", "CPVC"
   fluidCode?: string         // Fluid service code, e.g. "S" (steam), "W" (water), "G" (gas)
   lineNumber?: string        // Full line number, e.g. "4\"-S-150#-CS-101"
-  // Flow particle animation (animated dots along the pipe path)
-  flowParticles?: boolean
-  particleCount?: number     // Number of particles (default 4)
-  particleColor?: string     // Particle color (default: pipe color)
-  // Heat tracing (ISA zigzag marking alongside pipe)
+}
+
+export interface PipeHeatTrace {
   heatTrace?: 'none' | 'electric' | 'steam' | 'hot-water'
   heatTraceChannel?: string  // Channel binding: trace on when value >= threshold
   heatTraceThreshold?: number // On/off threshold (default 0.5)
-  // Named layer membership
-  layerId?: string
-  // System grouping (e.g., cooling, heating, process)
-  system?: string
 }
+
+// Composed PidPipe — intersection flattens to same JSON shape as the original interface
+export type PidPipe = {
+  id: string
+  label?: string
+  labelPosition?: 'start' | 'middle' | 'end'  // default 'middle'
+  zIndex?: number
+  groupId?: string
+  layerId?: string
+  system?: string            // System grouping (e.g., cooling, heating, process)
+} & PipeGeometry & PipeStyle & PipeConnections & PipeFlow & PipeIsaMetadata & PipeHeatTrace
 
 // P&ID layer data for a page
 export interface PidLayerData {
@@ -1236,32 +1244,54 @@ export interface PidTextAnnotation {
 }
 
 /**
- * Command for Undo/Redo system (Command Pattern)
- * Stores state before and after each operation
+ * State snapshot for legacy/bulk undo operations
  */
-export interface PidCommand {
+export interface PidStateSnapshot {
+  symbols: PidSymbol[]
+  pipes: PidPipe[]
+  textAnnotations: PidTextAnnotation[]
+  groups: PidGroup[]
+  layerInfos: PidLayerInfo[]
+}
+
+/**
+ * Base fields shared by all undo commands
+ */
+interface PidCommandBase {
   id: string
-  type: 'add' | 'delete' | 'modify' | 'move' | 'resize' | 'group' | 'ungroup' | 'paste' | 'batch'
   timestamp: number
   description: string
-  // State snapshots for undo/redo
-  beforeState: {
-    symbols?: PidSymbol[]
-    pipes?: PidPipe[]
-    textAnnotations?: PidTextAnnotation[]
-    groups?: PidGroup[]
-    layerInfos?: PidLayerInfo[]
-  }
-  afterState: {
-    symbols?: PidSymbol[]
-    pipes?: PidPipe[]
-    textAnnotations?: PidTextAnnotation[]
-    groups?: PidGroup[]
-    layerInfos?: PidLayerInfo[]
-  }
-  // For batch operations, store sub-commands
-  subCommands?: PidCommand[]
 }
+
+/**
+ * Delta command for pipe connection cleanup when deleting symbols
+ */
+export interface PipeCleanupDelta {
+  pipeId: string
+  before: Partial<PidPipe>
+  after: Partial<PidPipe>
+}
+
+/**
+ * Command for Undo/Redo system (Delta-based Command Pattern)
+ * Each command stores only the data needed to undo/redo that specific operation.
+ * 'snapshot' type is used for complex operations that affect many elements at once.
+ */
+export type PidCommand = PidCommandBase & (
+  | { type: 'addSymbol'; symbolId: string; symbol: PidSymbol }
+  | { type: 'deleteSymbol'; symbolId: string; symbol: PidSymbol; cleanedPipes?: PipeCleanupDelta[] }
+  | { type: 'moveSymbols'; deltas: { id: string; from: { x: number; y: number }; to: { x: number; y: number } }[] }
+  | { type: 'modifySymbol'; symbolId: string; before: Partial<PidSymbol>; after: Partial<PidSymbol> }
+  | { type: 'modifySymbols'; deltas: { id: string; before: Partial<PidSymbol>; after: Partial<PidSymbol> }[] }
+  | { type: 'addPipe'; pipeId: string; pipe: PidPipe }
+  | { type: 'deletePipe'; pipeId: string; pipe: PidPipe }
+  | { type: 'modifyPipe'; pipeId: string; before: Partial<PidPipe>; after: Partial<PidPipe> }
+  | { type: 'addText'; textId: string; annotation: PidTextAnnotation }
+  | { type: 'deleteText'; textId: string; annotation: PidTextAnnotation }
+  | { type: 'modifyText'; textId: string; before: Partial<PidTextAnnotation>; after: Partial<PidTextAnnotation> }
+  | { type: 'batch'; subCommands: PidCommand[] }
+  | { type: 'snapshot'; beforeState: PidStateSnapshot; afterState: PidStateSnapshot }
+)
 
 /**
  * Group of P&ID elements that move/resize together
@@ -1306,8 +1336,8 @@ export interface PidTemplate {
   name: string
   description?: string
   category?: string
-  // Template content (relative positions)
-  symbols: Array<Omit<PidSymbol, 'id'> & { offsetX: number; offsetY: number }>
+  // Template content (relative positions, originalId for pipe connection remapping)
+  symbols: Array<Omit<PidSymbol, 'id'> & { originalId?: string; offsetX: number; offsetY: number }>
   pipes: Array<Omit<PidPipe, 'id'> & { offsetPoints: { x: number; y: number }[] }>
   textAnnotations: Array<Omit<PidTextAnnotation, 'id'> & { offsetX: number; offsetY: number }>
   // Preview thumbnail (data URL)

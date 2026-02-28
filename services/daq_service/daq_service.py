@@ -24,7 +24,7 @@ import paho.mqtt.client as mqtt
 from config_parser import (
     load_config, load_config_safe, validate_config, NISystemConfig, ChannelConfig, ChannelType,
     get_input_channels, get_output_channels, ConfigValidationError, ValidationResult,
-    SystemConfig, ThermocoupleType, HardwareSource, ProjectMode,
+    SystemConfig, ThermocoupleType, HardwareSource, ProjectMode, DataViewerConfig,
     get_crio_channels, get_local_daq_channels, get_modbus_channels, get_hardware_source_summary
 )
 from simulator import HardwareSimulator
@@ -278,6 +278,9 @@ class DAQService:
         self.heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_interval = 2.0  # seconds
 
+        # MQTT connection tracking (None=never connected, True=connected, False=disconnected)
+        self._mqtt_connected: Optional[bool] = None
+
         # System state - controllable via MQTT
         self.recording = False          # Is data recording active
         self.recording_start_time: Optional[datetime] = None
@@ -342,6 +345,9 @@ class DAQService:
         # Debounced config push (for bulk create/update/delete - coalesces rapid calls)
         self._crio_push_debounce_timer: Optional[threading.Timer] = None
         self._crio_push_debounce_delay = 0.5  # 500ms debounce
+
+        # Opto22 config push tracking (mirrors cRIO pattern)
+        self._opto22_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
 
         # Non-blocking MQTT publish queue (prevents scan loop blocking on slow broker)
         self._publish_queue: queue.Queue[Tuple[str, str, int, bool]] = queue.Queue(maxsize=10000)
@@ -694,6 +700,7 @@ class DAQService:
             # Keep existing chassis/modules/safety_actions if available
             self.config = NISystemConfig(
                 system=system,
+                dataviewer=self.config.dataviewer if self.config else DataViewerConfig(),
                 chassis=self.config.chassis if self.config else {},
                 modules=self.config.modules if self.config else {},
                 channels=channels,
@@ -722,7 +729,14 @@ class DAQService:
                     self.hardware_reader = None
                     self.simulator = self._create_simulator()
 
-            # Initialize channel values
+            # Initialize channel values (clear stale entries from previous project)
+            old_names = set(self.channel_values.keys())
+            new_names = set(self.config.channels.keys())
+            for stale in old_names - new_names:
+                del self.channel_values[stale]
+                self.channel_timestamps.pop(stale, None)
+                self.channel_acquisition_ts_us.pop(stale, None)
+                self.channel_qualities.pop(stale, None)
             for name, channel in self.config.channels.items():
                 if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
                     self.channel_values[name] = channel.default_state
@@ -730,6 +744,9 @@ class DAQService:
                     self.channel_values[name] = channel.default_value
                 else:
                     self.channel_values[name] = 0.0
+
+            # Reinitialize Modbus reader for new project's devices
+            self._init_modbus_reader()
 
             # Reinitialize alarm manager with new channel configs
             # This clears old alarms and creates new alarm configs from the new channels
@@ -835,9 +852,10 @@ class DAQService:
             logger.debug("pymodbus not available - Modbus support disabled")
             return
 
-        # Check if we have any Modbus channels configured
+        # Check if we have any Modbus channels configured (explicit type or CFP source)
         has_modbus_channels = any(
             ch.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            or getattr(ch, 'source_type', '') == 'cfp'
             for ch in self.config.channels.values()
         )
 
@@ -853,12 +871,22 @@ class DAQService:
             return
 
         try:
+            # Close existing reader before creating a new one to avoid leaked connections
+            if self.modbus_reader:
+                try:
+                    self.modbus_reader.close()
+                except Exception as e:
+                    logger.warning(f"Error closing old Modbus reader: {e}")
+
             self.modbus_reader = ModbusReader(self.config)
             connection_results = self.modbus_reader.connect_all()
 
             connected = sum(1 for v in connection_results.values() if v)
             total = len(connection_results)
             logger.info(f"Modbus reader initialized: {connected}/{total} devices connected")
+
+            # Start background polling — Modbus reads asynchronously from the scan loop
+            self.modbus_reader.start_polling()
 
             if connected == 0 and total > 0:
                 logger.warning("No Modbus devices connected - check device availability")
@@ -2650,17 +2678,30 @@ Unit conversions:
         STALE_REMOTE_VALUE_SECONDS = 30.0
 
         def get_channel_value(channel: str) -> Optional[float]:
-            """Get current value of a channel, returning None for stale remote values"""
+            """Get current value of a channel, returning None for stale remote values.
+            Excludes legacy Modbus channels — Modbus is not a safety-rated protocol.
+            CFP channels (source_type='cfp') are included since they represent typed I/O."""
             with self.values_lock:
                 val = self.channel_values.get(channel)
                 if val is not None:
-                    # Check staleness for remote node channels
                     ch_config = self.config.channels.get(channel) if self.config else None
+                    # Legacy Modbus channels excluded from safety (not safety-rated protocol)
+                    # CFP channels with real signal types ARE included
+                    if ch_config and ch_config.is_modbus and getattr(ch_config, 'source_type', '') != 'cfp':
+                        return None
+                    # Check staleness for remote node channels
                     if ch_config and ch_config.is_remote_node:
                         ts = self.channel_timestamps.get(channel, 0)
-                        if ts > 0 and (time.time() - ts) > STALE_REMOTE_VALUE_SECONDS:
-                            logger.warning(f"[SAFETY] Stale remote value for {channel} "
-                                           f"(age={time.time() - ts:.0f}s > {STALE_REMOTE_VALUE_SECONDS}s)")
+                        age = time.time() - ts if ts > 0 else 0
+                        if ts > 0 and age > STALE_REMOTE_VALUE_SECONDS:
+                            # Rate-limit the warning to once per 30s per channel
+                            warn_key = f"_stale_warn_{channel}"
+                            last_warn = getattr(self, warn_key, 0)
+                            if (time.time() - last_warn) > 30:
+                                setattr(self, warn_key, time.time())
+                                logger.warning(f"[SAFETY] Stale remote value for {channel} "
+                                               f"(age={age:.0f}s > {STALE_REMOTE_VALUE_SECONDS}s) "
+                                               f"— interlock will fail safe")
                             return None
                     try:
                         return float(val)
@@ -2743,18 +2784,28 @@ Unit conversions:
         self.safety_manager.node_id = getattr(self.config.system, 'node_id', 'node-001')
         logger.info("Safety manager initialized")
 
-    def _safety_manager_publish(self, topic: str, data: Any):
+    def _safety_manager_publish(self, topic: str, data: Any, **kwargs):
         """Callback from safety manager to publish MQTT messages"""
         if not self.mqtt_client:
             return
 
         base = self.get_topic_base()
+        retain = kwargs.get('retain', False)
         try:
             if isinstance(data, dict):
                 payload = json.dumps(data)
             else:
                 payload = str(data)
-            self.mqtt_client.publish(f"{base}/{topic}", payload, qos=1)
+            full_topic = f"{base}/{topic}"
+            self.mqtt_client.publish(full_topic, payload, qos=1, retain=retain)
+            # Write trip events to historian for DMZ relay
+            if self.historian and topic in ('safety/trip', 'safety/action'):
+                try:
+                    self.historian.write_event(
+                        int(time.time() * 1000), topic.replace('/', '_'),
+                        full_topic, payload)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Error publishing safety event: {e}")
 
@@ -2849,7 +2900,16 @@ Unit conversions:
                 retention_days=365,
                 max_file_size_mb=50.0
             )
-            logger.info(f"Audit trail initialized at {audit_dir}")
+            # Verify integrity of existing audit trail on startup
+            is_valid, errors, entries_checked = self.audit_trail.verify_integrity()
+            if is_valid:
+                logger.info(f"Audit trail initialized at {audit_dir} "
+                           f"(integrity verified: {entries_checked} entries)")
+            else:
+                logger.warning(f"Audit trail integrity check FAILED at {audit_dir}: "
+                              f"{len(errors)} error(s) in {entries_checked} entries")
+                for err in errors[:5]:  # Log first 5 errors
+                    logger.warning(f"  Audit integrity: {err}")
         except Exception as e:
             logger.error(f"Failed to initialize audit trail: {e}")
             self.audit_trail = None
@@ -2995,12 +3055,16 @@ Unit conversions:
 
         if event_type == 'alarm':
             # Publish alarm state
-            self.mqtt_client.publish(
-                f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}",
-                json.dumps(data),
-                retain=True,
-                qos=1
-            )
+            topic = f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}"
+            payload_json = json.dumps(data)
+            self.mqtt_client.publish(topic, payload_json, retain=True, qos=1)
+            # Write to historian for DMZ relay
+            if self.historian:
+                try:
+                    self.historian.write_event(
+                        int(time.time() * 1000), 'alarm', topic, payload_json)
+                except Exception:
+                    pass
             # Forward to notification manager with group enrichment
             if self.notification_manager:
                 enriched = dict(data)
@@ -3010,12 +3074,16 @@ Unit conversions:
                 self.notification_manager.on_alarm_event('triggered', enriched)
         elif event_type == 'alarm_cleared':
             # Publish cleared state
-            self.mqtt_client.publish(
-                f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}",
-                json.dumps({'active': False, 'alarm_id': data.get('alarm_id')}),
-                retain=True,
-                qos=1
-            )
+            topic = f"{base}/alarms/active/{data.get('alarm_id', 'unknown')}"
+            cleared_payload = json.dumps({'active': False, 'alarm_id': data.get('alarm_id')})
+            self.mqtt_client.publish(topic, cleared_payload, retain=True, qos=1)
+            # Write to historian for DMZ relay
+            if self.historian:
+                try:
+                    self.historian.write_event(
+                        int(time.time() * 1000), 'alarm_cleared', topic, cleared_payload)
+                except Exception:
+                    pass
             # Forward to notification manager
             if self.notification_manager:
                 enriched = dict(data)
@@ -3039,12 +3107,17 @@ Unit conversions:
         elif event_type == 'safety_action':
             # ISA-18.2 safety action from AlarmManager
             # Publish to MQTT so frontend can execute (frontend-defined actions)
-            self.mqtt_client.publish(
-                f"{base}/safety/action",
-                json.dumps(data),
-                qos=1
-            )
+            topic = f"{base}/safety/action"
+            payload_json = json.dumps(data)
+            self.mqtt_client.publish(topic, payload_json, qos=1)
             logger.warning(f"SAFETY ACTION published: {data.get('action_id')} by alarm {data.get('alarm_id')}")
+            # Write to historian for DMZ relay
+            if self.historian:
+                try:
+                    self.historian.write_event(
+                        int(time.time() * 1000), 'safety_action', topic, payload_json)
+                except Exception:
+                    pass
             # Also try backend execution for actions defined in config
             action_id = data.get('action_id')
             trigger_source = data.get('alarm_id', 'unknown')
@@ -3361,6 +3434,15 @@ Unit conversions:
             self.mqtt_client.tls_set(ca_certs=tls_ca)
             logger.info(f"MQTT TLS enabled with CA: {tls_ca}")
 
+        # Last Will & Testament — broker publishes this if DAQ service
+        # disconnects unexpectedly (crash, network loss, keepalive timeout)
+        self.mqtt_client.will_set(
+            f"{base}/status/system",
+            json.dumps({"status": "offline", "reason": "unexpected_disconnect"}),
+            qos=1,
+            retain=True
+        )
+
         try:
             self.mqtt_client.connect(
                 self.config.system.mqtt_broker,
@@ -3375,7 +3457,11 @@ Unit conversions:
     def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
         """MQTT connection callback"""
         if reason_code == 0:
-            logger.info("Connected to MQTT broker")
+            if self._mqtt_connected is False:
+                logger.info("Reconnected to MQTT broker (was disconnected)")
+            else:
+                logger.info("Connected to MQTT broker")
+            self._mqtt_connected = True
 
             # Subscribe to command topics
             base = self.get_topic_base()
@@ -3643,7 +3729,11 @@ Unit conversions:
 
     def _on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         """MQTT disconnection callback"""
-        logger.warning(f"Disconnected from MQTT broker (rc={reason_code})")
+        self._mqtt_connected = False
+        if reason_code == 0:
+            logger.info("Disconnected from MQTT broker (clean)")
+        else:
+            logger.warning(f"Disconnected from MQTT broker unexpectedly (rc={reason_code})")
 
     # =========================================================================
     # CRITICAL COMMAND CALLBACKS (per-topic, isolated from main handler)
@@ -3929,7 +4019,8 @@ Unit conversions:
         'datasource/update': Permission.MODIFY_CHANNELS,
         'datasource/delete': Permission.MODIFY_CHANNELS,
         # Modbus write (Operator+)
-        'modbus/write-register': Permission.CONTROL_OUTPUTS,
+        'modbus/write_register': Permission.CONTROL_OUTPUTS,
+        'modbus/write': Permission.CONTROL_OUTPUTS,
         # Notebook (Operator+)
         'notebook/save': Permission.SAVE_PROJECT,
         # cRIO config push (Supervisor+)
@@ -4528,7 +4619,8 @@ Unit conversions:
 
         # Determine which backend handles this channel
         channel = self.config.channels.get(channel_name)
-        is_modbus = channel and channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+        is_modbus = channel and (channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+                                 or getattr(channel, 'source_type', '') == 'cfp')
 
         # Use centralized hardware source detection from ChannelConfig
         # This uses the HardwareSource enum and channel properties for clear cRIO vs cDAQ distinction
@@ -5093,7 +5185,7 @@ Unit conversions:
             # Start Azure IoT streaming if configured
             azure_config = self._get_azure_config()
             if azure_config:
-                self._publish_azure_command('start', azure_config)
+                self._sync_azure_config_to_historian(streaming=True)
         else:
             logger.error("[STATE MACHINE] Recording start failed - manager returned False")
             self._publish_recording_response(False, "Failed to start recording")
@@ -5129,7 +5221,7 @@ Unit conversions:
 
             # Stop Azure IoT streaming if it was active
             if self._get_azure_config():
-                self._publish_azure_command('stop')
+                self._sync_azure_config_to_historian(streaming=False)
         else:
             logger.error("[STATE MACHINE] Recording stop failed - manager returned False")
             self._publish_recording_response(False, "Failed to stop recording")
@@ -5536,12 +5628,16 @@ Unit conversions:
             self._publish_azure_response({"success": True, "message": "Azure config saved to project"})
             self._publish_azure_config_current()
 
+            # Write config to historian so the Azure uploader can read it
+            self._sync_azure_config_to_historian()
+
             # Log to audit trail
             if self.audit_trail:
                 self.audit_trail.log_config_change(
-                    changed_by=self.current_session_id or 'system',
-                    section='azure_iot',
-                    old_value=None,
+                    config_type='azure_iot',
+                    item_id='azure_iot_config',
+                    user=self.current_session_id or 'system',
+                    previous_value=None,
                     new_value={'channels': channels}
                 )
 
@@ -5556,23 +5652,41 @@ Unit conversions:
         self._publish_azure_config_current()
 
     def _handle_azure_start(self, payload: Any = None):
-        """Start Azure IoT Hub streaming (sends command to external Azure uploader service)"""
+        """Start Azure IoT Hub streaming"""
         azure_config = self._get_azure_config()
         if not azure_config:
             self._publish_azure_response({"success": False, "error": "Azure IoT Hub not configured"})
             return
 
-        # Send start command to external Azure uploader service
-        self._publish_azure_command('start', azure_config)
-        self._publish_azure_response({"success": True, "message": "Azure IoT streaming start command sent"})
-        logger.info("Azure IoT Hub start command sent to external service")
+        # Write streaming=True to historian so uploader picks it up
+        self._sync_azure_config_to_historian(streaming=True)
+        self._publish_azure_response({"success": True, "message": "Azure IoT streaming started"})
+        logger.info("Azure IoT Hub streaming enabled")
 
     def _handle_azure_stop(self):
-        """Stop Azure IoT Hub streaming (sends command to external Azure uploader service)"""
-        # Send stop command to external Azure uploader service
-        self._publish_azure_command('stop')
-        self._publish_azure_response({"success": True, "message": "Azure IoT streaming stop command sent"})
-        logger.info("Azure IoT Hub stop command sent to external service")
+        """Stop Azure IoT Hub streaming"""
+        # Write streaming=False to historian so uploader picks it up
+        self._sync_azure_config_to_historian(streaming=False)
+        self._publish_azure_response({"success": True, "message": "Azure IoT streaming stopped"})
+        logger.info("Azure IoT Hub streaming disabled")
+
+    def _sync_azure_config_to_historian(self, streaming: Optional[bool] = None):
+        """Write current Azure config to historian.db for the uploader to read."""
+        if not self.historian:
+            return
+        try:
+            azure_cfg = self._get_azure_config() or {}
+            config = {
+                'connection_string': azure_cfg.get('connection_string', ''),
+                'channels': azure_cfg.get('channels', []),
+                'batch_size': azure_cfg.get('batch_size', 10),
+                'upload_interval_ms': azure_cfg.get('batch_interval_ms', 1000),
+                'node_id': azure_cfg.get('node_id', getattr(self.config.system, 'node_id', 'node-001')),
+                'streaming': streaming if streaming is not None else False,
+            }
+            self.historian.write_azure_config(config)
+        except Exception as e:
+            logger.warning(f"Failed to sync Azure config to historian: {e}")
 
     def _handle_azure_status_get(self):
         """Get Azure IoT Hub status"""
@@ -5807,6 +5921,9 @@ Unit conversions:
             },
             # Hardware health
             "hardware_health": self.hardware_reader.get_health_status() if self.hardware_reader else None,
+            # MQTT publish queue health
+            "publish_queue_drops": self._publish_queue_drops,
+            "publish_queue_size": self._publish_queue.qsize(),
         }
 
         self.mqtt_client.publish(
@@ -5827,6 +5944,13 @@ Unit conversions:
             retain=True,
             qos=1  # At least once delivery for status
         )
+
+        # Publish Modbus connection status (if configured)
+        if self.modbus_reader:
+            try:
+                self._publish_modbus_status()
+            except Exception as e:
+                logger.debug(f"Error publishing Modbus status: {e}")
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get current system metrics for health/metrics endpoints.
@@ -6136,8 +6260,9 @@ Unit conversions:
                 # Log to audit trail
                 if self.audit_trail:
                     self.audit_trail.log_event(
-                        AuditEventType.CONFIG_CHANGE,
-                        username=self.auth_username,
+                        event_type=AuditEventType.CONFIG_CHANGE,
+                        user=self.auth_username or "system",
+                        description=f"User '{username}' created with role '{role}'",
                         details={"action": "user_created", "new_user": username, "role": role}
                     )
 
@@ -6197,8 +6322,9 @@ Unit conversions:
                 # Log to audit trail
                 if self.audit_trail:
                     self.audit_trail.log_event(
-                        AuditEventType.CONFIG_CHANGE,
-                        username=self.auth_username,
+                        event_type=AuditEventType.CONFIG_CHANGE,
+                        user=self.auth_username or "system",
+                        description=f"User '{username}' updated: {', '.join(update_fields.keys())}",
                         details={"action": "user_updated", "target_user": username, "fields": list(update_fields.keys())}
                     )
 
@@ -6253,8 +6379,9 @@ Unit conversions:
                 # Log to audit trail
                 if self.audit_trail:
                     self.audit_trail.log_event(
-                        AuditEventType.CONFIG_CHANGE,
-                        username=self.auth_username,
+                        event_type=AuditEventType.CONFIG_CHANGE,
+                        user=self.auth_username or "system",
+                        description=f"User '{username}' deleted",
                         details={"action": "user_deleted", "deleted_user": username}
                     )
 
@@ -6371,10 +6498,22 @@ Unit conversions:
         end_time = payload.get('end_time')
 
         try:
-            filepath = self.audit_trail.export_events(
-                format=format_type,
-                start_time=datetime.fromisoformat(start_time) if start_time else None,
-                end_time=datetime.fromisoformat(end_time) if end_time else None
+            # Build filter kwargs for export
+            export_filters = {}
+            if start_time:
+                export_filters['start_time'] = datetime.fromisoformat(start_time)
+            if end_time:
+                export_filters['end_time'] = datetime.fromisoformat(end_time)
+
+            # Generate export file path
+            export_dir = Path(getattr(self.config.system, 'data_directory', 'data')) / 'exports'
+            export_dir.mkdir(parents=True, exist_ok=True)
+            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filepath = export_dir / f"audit_export_{timestamp_str}.csv"
+
+            self.audit_trail.export_csv(
+                output_path=filepath,
+                **export_filters
             )
 
             self.mqtt_client.publish(
@@ -6758,18 +6897,35 @@ Unit conversions:
                 self.config.system.publish_rate_hz = new_publish_rate
                 logger.info(f"Publish rate updated: {old_publish_rate} Hz -> {new_publish_rate} Hz")
 
-            # Update project mode if provided
+            # Update project mode if provided (reject while acquiring to prevent state corruption)
             if 'project_mode' in payload:
+                if self.acquiring:
+                    logger.warning("Cannot change project mode while acquiring — stop acquisition first")
+                    self._publish_config_response(False, "Stop acquisition before changing project mode")
+                    return
                 mode_str = payload['project_mode'].lower()
-                if mode_str in ('cdaq', 'crio'):
+                if mode_str in ('cdaq', 'crio', 'opto22', 'cfp'):
                     try:
                         new_mode = ProjectMode(mode_str)
+                        old_mode = self.config.system.project_mode
                         self.config.system.project_mode = new_mode
-                        logger.info(f"Project mode updated: {old_project_mode.value} -> {new_mode.value}")
+                        logger.info(f"Project mode updated: {old_mode.value} -> {new_mode.value}")
+                        # Clean up stale channel values from the previous mode's channels
+                        valid_names = set(self.config.channels.keys())
+                        stale = [k for k in self.channel_values if k not in valid_names]
+                        for k in stale:
+                            del self.channel_values[k]
+                            self.channel_timestamps.pop(k, None)
+                            self.channel_acquisition_ts_us.pop(k, None)
+                            self.channel_qualities.pop(k, None)
+                        if stale:
+                            logger.info(f"Cleaned up {len(stale)} stale channel values after mode switch")
+                        # Reinitialize Modbus reader for new mode's channels
+                        self._init_modbus_reader()
                     except ValueError:
                         logger.warning(f"Invalid project_mode: {mode_str}")
                 else:
-                    logger.warning(f"Invalid project_mode: {mode_str} (must be 'cdaq' or 'crio')")
+                    logger.warning(f"Invalid project_mode: {mode_str} (must be 'cdaq', 'crio', 'opto22', or 'cfp')")
 
             # Update watchdog output settings if provided
             if 'watchdog_output' in payload:
@@ -7238,8 +7394,8 @@ Unit conversions:
                     })
                 )
 
-            # Auto-push config to all known cRIO nodes after project load
-            # This ensures cRIO has the TAG name -> physical channel mappings
+            # Auto-push config to all known remote nodes after project load
+            # This ensures nodes have the TAG name -> physical channel mappings
             self._push_config_to_all_crio_nodes()
 
             return True
@@ -7986,6 +8142,16 @@ Unit conversions:
             logger.error(f"Failed to test chassis: {e}")
             self._publish_chassis_response(False, str(e))
 
+    def _get_allowed_modbus_ips(self) -> set:
+        """Build set of allowed Modbus TCP IP addresses from configured chassis/devices."""
+        allowed = set()
+        if hasattr(self.config, 'chassis') and self.config.chassis:
+            for chassis in self.config.chassis.values():
+                ip = getattr(chassis, 'ip_address', '')
+                if ip:
+                    allowed.add(ip)
+        return allowed
+
     def _handle_modbus_write_register(self, payload: Any):
         """
         Write a value to a Modbus register with optional verification.
@@ -8002,7 +8168,7 @@ Unit conversions:
         - data_type: 'int16', 'uint16', 'int32', 'uint32', 'float32' (default: uint16)
         - verify: true/false - read back after write to confirm (default: false)
         - connection_type: 'tcp' or 'rtu' (default: tcp)
-        - ip_address: For TCP connections
+        - ip_address: For TCP connections (must be a configured device)
         - port: TCP port (default: 502)
         - serial_port: For RTU connections
         - baudrate, parity, stopbits, bytesize: RTU params
@@ -8062,7 +8228,11 @@ Unit conversions:
             if hasattr(ch_config, 'data_type') and ch_config.data_type:
                 data_type = ch_config.data_type
 
-            # Get connection info from chassis/device config if available
+            # In channel mode, connection params come exclusively from device config
+            # (payload ip_address/serial_port are ignored for security)
+            payload_ip = payload.get('ip_address')
+            ip_address = None
+            serial_port = None
             if hasattr(ch_config, 'device') and ch_config.device:
                 device_id = ch_config.device
                 if hasattr(self.config, 'chassis') and self.config.chassis:
@@ -8070,12 +8240,17 @@ Unit conversions:
                         if hasattr(chassis, 'devices'):
                             for dev in chassis.devices:
                                 if getattr(dev, 'id', None) == device_id or getattr(dev, 'name', None) == device_id:
-                                    if not ip_address and hasattr(dev, 'ip_address'):
+                                    if hasattr(dev, 'ip_address') and dev.ip_address:
                                         ip_address = dev.ip_address
-                                    if not serial_port and hasattr(dev, 'serial_port'):
+                                    if hasattr(dev, 'serial_port') and dev.serial_port:
                                         serial_port = dev.serial_port
                                         connection_type = 'rtu'
                                     break
+            if payload_ip and payload_ip != ip_address:
+                logger.warning(
+                    f"[SECURITY] Modbus write: payload ip_address='{payload_ip}' ignored in channel mode "
+                    f"for channel '{channel_name}' (using device config ip='{ip_address}')"
+                )
 
         # Validate required params
         if value is None:
@@ -8101,6 +8276,20 @@ Unit conversions:
                 "success": False, "error": "Missing ip_address for TCP connection"
             }))
             return
+
+        # IP allowlisting: only allow writes to configured Modbus device IPs
+        if connection_type == 'tcp' and ip_address:
+            allowed_ips = self._get_allowed_modbus_ips()
+            if allowed_ips and ip_address not in allowed_ips:
+                logger.warning(
+                    f"[SECURITY] Modbus write blocked: target IP '{ip_address}' "
+                    f"is not a configured Modbus device (allowed: {allowed_ips})"
+                )
+                self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
+                    "success": False,
+                    "error": f"IP address '{ip_address}' is not a configured Modbus device"
+                }))
+                return
 
         if connection_type == 'rtu' and not serial_port:
             self.mqtt_client.publish(f"{base}/modbus/write_register/response", json.dumps({
@@ -8499,8 +8688,10 @@ Unit conversions:
             existing_nodes = {n.node_id for n in self.device_discovery.get_crio_nodes()}
         elif node_type == 'opto22':
             existing_nodes = {n.node_id for n in self.device_discovery.get_opto22_nodes()}
-        else:  # gc
+        elif node_type == 'gc':
             existing_nodes = {n.node_id for n in self.device_discovery.get_gc_nodes()}
+        else:
+            return  # CFP uses cDAQ pattern — no remote node registration
         is_new_node = node_id not in existing_nodes
 
         if status == 'offline':
@@ -8530,7 +8721,7 @@ Unit conversions:
                     "node_id": node_id,
                     "node_type": node_type,
                     "status": status,
-                    "product_type": payload.get('product_type', 'cRIO' if node_type == 'crio' else ('groov EPIC' if node_type == 'opto22' else 'GC Analyzer')),
+                    "product_type": payload.get('product_type', {'crio': 'cRIO', 'opto22': 'groov EPIC'}.get(node_type, 'GC Analyzer')),
                     "channels": payload.get('channels', 0),
                     "timestamp": datetime.now().isoformat()
                 }),
@@ -8553,7 +8744,10 @@ Unit conversions:
             # Check 2: Config version mismatch or missing
             if not should_push:
                 reported_version = payload.get('config_version', '')
-                expected_version = self._crio_config_versions.get(node_id, '')
+                if node_type == 'opto22':
+                    expected_version = self._opto22_config_versions.get(node_id, '')
+                else:
+                    expected_version = self._crio_config_versions.get(node_id, '')
                 if expected_version:
                     # We have an expected version - check if node matches
                     if not reported_version:
@@ -8567,7 +8761,10 @@ Unit conversions:
 
             if should_push:
                 logger.info(f"Auto-pushing config to {node_type.upper()} {node_id}: {reason}")
-                self._push_crio_channel_config(node_id)  # Works for both cRIO and Opto22
+                if node_type == 'opto22':
+                    self._push_opto22_channel_config(node_id)
+                else:
+                    self._push_crio_channel_config(node_id)
 
     def _handle_crio_heartbeat(self, topic: str, payload: Dict[str, Any]):
         """
@@ -8868,11 +9065,11 @@ Unit conversions:
                         self._crio_config_ack_events[node_id].set()
                 else:
                     error_msg = payload.get('error', payload.get('message', 'Unknown error'))
-                    logger.error(f"cRIO {node_id} rejected config: {error_msg}")
+                    logger.error(f"{node_label} {node_id} rejected config: {error_msg}")
                     self._publish_crio_response(False, f"Config rejected by {node_id}: {error_msg}")
             else:
                 # Unexpected ACK (maybe from direct push or duplicate)
-                logger.debug(f"cRIO {node_id} config response (no pending push): {status}")
+                logger.debug(f"{node_label} {node_id} config response (no pending push): {status}")
 
     def _handle_crio_session_status(self, topic: str, payload: Dict[str, Any]):
         """
@@ -9199,25 +9396,22 @@ Unit conversions:
         pending pushes and compares timestamps.
         """
         now = time.time()
+        # Check cRIO pending pushes
         with self._crio_push_lock:
             for node_id, push_info in list(self._pending_crio_pushes.items()):
                 elapsed = now - push_info['timestamp']
                 if elapsed > self._CRIO_CONFIG_TIMEOUT:
                     if push_info['attempts'] < self._CRIO_CONFIG_MAX_RETRIES:
-                        # Retry
                         push_info['attempts'] += 1
                         push_info['timestamp'] = now
                         logger.warning(f"cRIO config push timeout for {node_id} - retrying (attempt {push_info['attempts']}/{self._CRIO_CONFIG_MAX_RETRIES})")
-                        # Re-push (outside lock to avoid blocking)
                         config_data = push_info['config']
-                        # Schedule retry outside lock
                         threading.Thread(
                             target=self._handle_crio_push_config,
                             args=(node_id, config_data),
                             daemon=True
                         ).start()
                     else:
-                        # Give up after max retries
                         del self._pending_crio_pushes[node_id]
                         logger.error(f"cRIO config push to {node_id} failed after {self._CRIO_CONFIG_MAX_RETRIES} attempts - no ACK received")
                         self._publish_crio_response(
@@ -9397,10 +9591,16 @@ Unit conversions:
             if node.status != 'online':
                 continue
 
-            # On start: only push config if cRIO doesn't already have confirmed config
-            # This avoids re-pushing when user already clicked "Push" button
+            # On start: push config if cRIO doesn't have confirmed config.
+            # Cancel any pending debounce timer first to prevent race where
+            # channels were modified but debounce hasn't fired yet.
             if command == 'start':
                 with self._crio_push_lock:
+                    if self._crio_push_debounce_timer:
+                        self._crio_push_debounce_timer.cancel()
+                        self._crio_push_debounce_timer = None
+                        self._crio_config_versions.clear()
+                        logger.debug("[START] Cancelled pending debounce timer, cleared config versions")
                     has_confirmed_config = node.node_id in self._crio_config_versions
 
                 if has_confirmed_config:
@@ -9496,30 +9696,42 @@ Unit conversions:
 
     def _push_config_to_all_crio_nodes(self):
         """
-        Push channel configuration to all known online cRIO nodes.
-        Called automatically after project load/import to ensure cRIO
-        has the TAG name -> physical channel mappings.
+        Push channel configuration to all known online cRIO and Opto22 nodes.
+        Called automatically after project load/import to ensure remote nodes
+        have the TAG name -> physical channel mappings.
+
+        Each node receives only its own channels:
+        - cRIO: filtered by physical_channel.startswith('Mod')
+        - Opto22: filtered by source_type=='opto22' and source_node_id match
+        So multiple nodes of the same type get independent configs.
         """
         if not self.mqtt_client or not self.device_discovery:
             return
 
-        crio_nodes = self.device_discovery.get_crio_nodes()
-        if not crio_nodes:
-            logger.debug("No cRIO nodes found - skipping auto-push")
-            return
+        pushed = 0
 
-        pushed_count = 0
-        for node in crio_nodes:
+        # Push to cRIO nodes
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        for node in (crio_nodes or []):
             if node.status != 'online':
                 logger.debug(f"Skipping offline cRIO node: {node.node_id}")
                 continue
-
             logger.info(f"Auto-pushing config to cRIO node: {node.node_id}")
             self._push_crio_channel_config(node.node_id)
-            pushed_count += 1
+            pushed += 1
 
-        if pushed_count > 0:
-            logger.info(f"Auto-pushed config to {pushed_count} cRIO node(s) after project load")
+        # Push to Opto22 nodes
+        opto22_nodes = self.device_discovery.get_opto22_nodes()
+        for node in (opto22_nodes or []):
+            if node.status != 'online':
+                logger.debug(f"Skipping offline Opto22 node: {node.node_id}")
+                continue
+            logger.info(f"Auto-pushing config to Opto22 node: {node.node_id}")
+            self._push_opto22_channel_config(node.node_id)
+            pushed += 1
+
+        if pushed > 0:
+            logger.info(f"Auto-pushed config to {pushed} remote node(s) after project load")
 
     def _push_crio_channel_config(self, node_id: str):
         """
@@ -9652,6 +9864,13 @@ Unit conversions:
                     }
 
         # Build interlocks for this node (filter to interlocks with controls on node channels)
+        # Edge nodes only support: channel_value, digital_input, alarm_active,
+        # no_active_alarms, acquiring. DAQ-only types fail-open on the node,
+        # so skip interlocks whose conditions are ALL DAQ-only.
+        _DAQ_ONLY_CONDITION_TYPES = {
+            'mqtt_connected', 'daq_connected', 'not_recording',
+            'variable_value', 'expression'
+        }
         node_interlocks = []
         if self.safety_manager:
             crio_channel_names = set(crio_channels.keys())
@@ -9668,6 +9887,15 @@ Unit conversions:
                     for ctrl in interlock.controls
                 )
                 if has_node_control or has_stop:
+                    # Skip if ALL conditions are DAQ-only (interlock can never trip on node)
+                    if interlock.conditions and all(
+                        c.condition_type in _DAQ_ONLY_CONDITION_TYPES
+                        for c in interlock.conditions
+                    ):
+                        logger.warning(
+                            f"Interlock '{interlock.name}' has only DAQ-only conditions "
+                            f"— skipping push to node (DAQ will evaluate it)")
+                        continue
                     node_interlocks.append(interlock.to_dict())
 
         # Build safe state config for this node
@@ -9727,6 +9955,185 @@ Unit conversions:
         # Clean up any stale channel values after config push
         self._cleanup_stale_channel_values()
 
+    def _push_opto22_channel_config(self, node_id: str):
+        """
+        Push channel configuration to an Opto22 node.
+
+        Filters channels that belong to Opto22 (source_type == 'opto22' and
+        source_node_id matches) and sends them so the node can run safety,
+        scripts, PID, sequences, and watchdog autonomously.
+
+        Args:
+            node_id: Target Opto22 node ID (e.g., 'opto22-001')
+        """
+        if not self.mqtt_client or not self.config:
+            return
+
+        # Filter channels that belong to this Opto22 node
+        opto22_channels = {}
+        for name, channel in self.config.channels.items():
+            source_type = getattr(channel, 'source_type', 'local') or 'local'
+            source_node = getattr(channel, 'source_node_id', '') or ''
+            if source_type == 'opto22' and source_node == node_id:
+                ch_dict = {
+                    'name': name,
+                    'physical_channel': getattr(channel, 'physical_channel', '') or '',
+                    'channel_type': channel.channel_type.value if hasattr(channel.channel_type, 'value') else str(channel.channel_type),
+                }
+                # Optional fields
+                if hasattr(channel, 'thermocouple_type') and channel.thermocouple_type:
+                    tc_type = channel.thermocouple_type
+                    ch_dict['thermocouple_type'] = tc_type.value if hasattr(tc_type, 'value') else str(tc_type)
+                if hasattr(channel, 'default_state'):
+                    ch_dict['default_state'] = channel.default_state
+                if hasattr(channel, 'invert'):
+                    ch_dict['invert'] = channel.invert
+                # Scaling params
+                if hasattr(channel, 'scale_slope') and channel.scale_slope is not None:
+                    ch_dict['scale_slope'] = channel.scale_slope
+                if hasattr(channel, 'scale_offset') and channel.scale_offset is not None:
+                    ch_dict['scale_offset'] = channel.scale_offset
+                ch_dict['scale_type'] = getattr(channel, 'scale_type', 'none') or 'none'
+                ch_dict['four_twenty_scaling'] = getattr(channel, 'four_twenty_scaling', False)
+                for attr in ('eng_units_min', 'eng_units_max',
+                             'pre_scaled_min', 'pre_scaled_max',
+                             'scaled_min', 'scaled_max'):
+                    val = getattr(channel, attr, None)
+                    if val is not None:
+                        ch_dict[attr] = val
+                if hasattr(channel, 'unit') and channel.unit:
+                    ch_dict['unit'] = channel.unit
+                # Alarm configuration (ISA-18.2)
+                if hasattr(channel, 'alarm_enabled'):
+                    ch_dict['alarm_enabled'] = channel.alarm_enabled
+                for limit_attr in ('hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit',
+                                   'high_limit', 'low_limit'):
+                    val = getattr(channel, limit_attr, None)
+                    if val is not None:
+                        ch_dict[limit_attr] = val
+                if hasattr(channel, 'alarm_priority') and channel.alarm_priority:
+                    ch_dict['alarm_priority'] = channel.alarm_priority
+                if hasattr(channel, 'alarm_deadband') and channel.alarm_deadband is not None:
+                    ch_dict['alarm_deadband'] = channel.alarm_deadband
+                if hasattr(channel, 'alarm_delay_sec') and channel.alarm_delay_sec is not None:
+                    ch_dict['alarm_delay_sec'] = channel.alarm_delay_sec
+                if hasattr(channel, 'alarm_off_delay_sec') and channel.alarm_off_delay_sec is not None:
+                    ch_dict['alarm_off_delay_sec'] = channel.alarm_off_delay_sec
+                if hasattr(channel, 'rate_of_change_limit') and channel.rate_of_change_limit is not None:
+                    ch_dict['rate_of_change_limit'] = channel.rate_of_change_limit
+                if hasattr(channel, 'rate_of_change_period_s') and channel.rate_of_change_period_s is not None:
+                    ch_dict['rate_of_change_period_s'] = channel.rate_of_change_period_s
+                # Safety configuration
+                if hasattr(channel, 'safety_action') and channel.safety_action:
+                    ch_dict['safety_action'] = channel.safety_action
+                if hasattr(channel, 'safety_interlock') and channel.safety_interlock:
+                    ch_dict['safety_interlock'] = channel.safety_interlock
+                # groov-specific fields
+                if hasattr(channel, 'groov_topic') and channel.groov_topic:
+                    ch_dict['groov_topic'] = channel.groov_topic
+                if hasattr(channel, 'groov_module_index') and channel.groov_module_index is not None:
+                    ch_dict['groov_module_index'] = channel.groov_module_index
+                if hasattr(channel, 'groov_channel_index') and channel.groov_channel_index is not None:
+                    ch_dict['groov_channel_index'] = channel.groov_channel_index
+
+                opto22_channels[name] = ch_dict
+
+        if not opto22_channels:
+            logger.debug(f"No Opto22 channels to push to {node_id}")
+            return
+
+        # Build safety_actions dict (filter to Opto22-relevant outputs only)
+        safety_actions_data = {}
+        if hasattr(self.config, 'safety_actions'):
+            for action_name, action in self.config.safety_actions.items():
+                node_actions = {}
+                for ch_name, value in action.actions.items():
+                    if ch_name in opto22_channels:
+                        node_actions[ch_name] = value
+                if node_actions:
+                    safety_actions_data[action_name] = {
+                        'name': action_name,
+                        'description': getattr(action, 'description', ''),
+                        'actions': node_actions,
+                        'trigger_alarm': getattr(action, 'trigger_alarm', False),
+                        'alarm_message': getattr(action, 'alarm_message', '')
+                    }
+
+        # Build interlocks for this node (filter to interlocks with controls on node channels)
+        _DAQ_ONLY_CONDITION_TYPES = {
+            'mqtt_connected', 'daq_connected', 'not_recording',
+            'variable_value', 'expression'
+        }
+        node_interlocks = []
+        if self.safety_manager:
+            opto22_channel_names = set(opto22_channels.keys())
+            for interlock in self.safety_manager.get_all_interlocks():
+                has_node_control = any(
+                    ctrl.channel in opto22_channel_names
+                    for ctrl in interlock.controls
+                    if ctrl.channel
+                )
+                has_stop = any(
+                    ctrl.control_type == 'stop_session'
+                    for ctrl in interlock.controls
+                )
+                if has_node_control or has_stop:
+                    if interlock.conditions and all(
+                        c.condition_type in _DAQ_ONLY_CONDITION_TYPES
+                        for c in interlock.conditions
+                    ):
+                        logger.warning(
+                            f"Interlock '{interlock.name}' has only DAQ-only conditions "
+                            f"— skipping push to Opto22 node (DAQ will evaluate it)")
+                        continue
+                    node_interlocks.append(interlock.to_dict())
+
+        # Build safe state config
+        safe_state_data = None
+        if self.safety_manager:
+            safe_state_data = self.safety_manager.safe_state_config.to_dict()
+
+        # Generate config version hash
+        import hashlib
+        config_for_hash = {
+            'channels': opto22_channels,
+            'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
+            'scan_rate_hz': self.config.system.scan_rate_hz,
+            'publish_rate_hz': self.config.system.publish_rate_hz
+        }
+        config_str = json.dumps(config_for_hash, sort_keys=True)
+        config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
+
+        # Build and publish config
+        mqtt_base = self.config.system.mqtt_base_topic
+        config_data = {
+            'channels': opto22_channels,
+            'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
+            'safe_state_outputs': [],
+            'scan_rate_hz': self.config.system.scan_rate_hz,
+            'publish_rate_hz': self.config.system.publish_rate_hz,
+            'watchdog_output': {
+                'enabled': self.config.system.watchdog_output_enabled,
+                'channel': self.config.system.watchdog_output_channel,
+                'rate_hz': self.config.system.watchdog_output_rate_hz
+            },
+            'timestamp': datetime.now().isoformat(),
+            'config_version': config_hash
+        }
+        if safe_state_data:
+            config_data['safe_state_config'] = safe_state_data
+
+        # Store expected version for sync tracking
+        self._opto22_config_versions[node_id] = config_hash
+
+        topic = f"{mqtt_base}/nodes/{node_id}/config/full"
+        self.mqtt_client.publish(topic, json.dumps(config_data), qos=1)
+        logger.info(f"Pushed {len(opto22_channels)} channels + {len(safety_actions_data)} safety actions + {len(node_interlocks)} interlocks to Opto22 {node_id} (version: {config_hash})")
+
+        self._cleanup_stale_channel_values()
+
     def _push_crio_channel_config_and_wait(self, node_id: str, timeout: float = 5.0) -> bool:
         """
         Push config to cRIO and WAIT for ACK response.
@@ -9748,7 +10155,7 @@ Unit conversions:
 
         try:
             # Push config (this is non-blocking, just publishes MQTT)
-            logger.info(f"[CONFIG_SYNC] Pushing config to {node_id} and waiting for ACK...")
+            logger.info(f"[CONFIG_SYNC] Pushing config to cRIO {node_id} and waiting for ACK...")
             self._push_crio_channel_config(node_id)
 
             # Wait for ACK (set by _handle_crio_config_response)
@@ -9788,6 +10195,7 @@ Unit conversions:
             # Invalidate confirmed config versions - channels have changed
             # This ensures START will push fresh config after channel modifications
             self._crio_config_versions.clear()
+            self._opto22_config_versions.clear()
             logger.debug("[DEBOUNCE] Cleared confirmed config versions (channels modified)")
 
             # Cancel existing timer if pending
@@ -10047,6 +10455,11 @@ Unit conversions:
                     'description': payload.get('description', ''),
                     'operator_notes': payload.get('operator_notes', ''),
                 }
+                # Brief delay to allow cRIO to finish transitioning to ACQUIRING state
+                # after the acquire/start command was sent (avoids race condition where
+                # session/start arrives before cRIO finishes its START transition)
+                if self.acquiring:
+                    time.sleep(0.2)
                 self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
                 logger.info(f"[SESSION] Forwarded start to cRIO {node.node_id}")
 
@@ -10591,6 +11004,28 @@ Unit conversions:
         if 'counter_max_freq' in config_data:
             channel.counter_max_freq = float(config_data['counter_max_freq'])
 
+        # Modbus-specific parameters
+        if 'modbus_register_type' in config_data:
+            channel.modbus_register_type = config_data['modbus_register_type']
+        if 'modbus_address' in config_data:
+            channel.modbus_address = int(config_data['modbus_address'])
+        if 'modbus_data_type' in config_data:
+            channel.modbus_data_type = config_data['modbus_data_type']
+        if 'modbus_byte_order' in config_data:
+            channel.modbus_byte_order = config_data['modbus_byte_order']
+        if 'modbus_word_order' in config_data:
+            channel.modbus_word_order = config_data['modbus_word_order']
+        if 'modbus_scale' in config_data:
+            channel.modbus_scale = float(config_data['modbus_scale'])
+        if 'modbus_offset' in config_data:
+            channel.modbus_offset = float(config_data['modbus_offset'])
+        if 'modbus_slave_id' in config_data:
+            channel.modbus_slave_id = int(config_data['modbus_slave_id']) if config_data['modbus_slave_id'] is not None else None
+        if 'modbus_register_count' in config_data:
+            channel.modbus_register_count = int(config_data['modbus_register_count']) if config_data['modbus_register_count'] is not None else None
+        if 'modbus_register_index' in config_data:
+            channel.modbus_register_index = int(config_data['modbus_register_index'])
+
         # ISA-18.2 Alarm Configuration
         alarm_config_changed = False
         if 'alarm_enabled' in config_data:
@@ -10790,6 +11225,17 @@ Unit conversions:
                 pulses_per_unit=float(config_data.get('pulses_per_unit', 1.0)),
                 counter_edge=config_data.get('counter_edge', 'rising'),
                 counter_reset_on_read=bool(config_data.get('counter_reset_on_read', False)),
+                # Modbus-specific parameters
+                modbus_register_type=config_data.get('modbus_register_type', 'holding'),
+                modbus_address=int(config_data.get('modbus_address', 0)),
+                modbus_data_type=config_data.get('modbus_data_type', 'float32'),
+                modbus_byte_order=config_data.get('modbus_byte_order', 'big'),
+                modbus_word_order=config_data.get('modbus_word_order', 'big'),
+                modbus_scale=float(config_data.get('modbus_scale', 1.0)),
+                modbus_offset=float(config_data.get('modbus_offset', 0.0)),
+                modbus_slave_id=int(config_data['modbus_slave_id']) if config_data.get('modbus_slave_id') is not None else None,
+                modbus_register_count=int(config_data['modbus_register_count']) if config_data.get('modbus_register_count') is not None else None,
+                modbus_register_index=int(config_data.get('modbus_register_index', 0)),
                 invert=bool(config_data.get('invert', False)),
                 default_state=bool(config_data.get('default_state', False)),
                 default_value=float(config_data.get('default_value', 0.0)),
@@ -11182,6 +11628,30 @@ Unit conversions:
 
         logger.info(f"Starting device discovery scan (mode: {mode})...")
         base = self.get_topic_base()
+
+        # CFP mode: targeted Modbus slot probe (separate from system-wide discovery)
+        if mode == 'cfp' and isinstance(payload, dict):
+            ip_address = payload.get('ip_address', '')
+            port = int(payload.get('port', 502))
+            slave_id = int(payload.get('slave_id', 1))
+            backplane_model = payload.get('backplane_model', 'cFP-1808')
+            device_name = payload.get('device_name', '')
+
+            if not ip_address:
+                cfp_result = {'success': False, 'message': 'CFP scan requires ip_address', 'slots': []}
+            else:
+                logger.info(f"Probing CFP backplane at {ip_address}:{port} ({backplane_model})...")
+                cfp_result = self.device_discovery.scan_cfp(
+                    ip_address=ip_address, port=port, slave_id=slave_id,
+                    backplane_model=backplane_model, device_name=device_name
+                )
+                logger.info(f"CFP probe complete: {cfp_result.get('message', '')}")
+
+            self.mqtt_client.publish(
+                f"{base}/discovery/cfp/result",
+                json.dumps(cfp_result), qos=1
+            )
+            return
 
         try:
             import time
@@ -12181,6 +12651,17 @@ Unit conversions:
                 "is_crio": channel.is_crio,
                 "is_local_daq": channel.is_local_daq,
                 "is_modbus": channel.is_modbus,
+                # Modbus-specific config (for dashboard channel editing)
+                "modbus_register_type": channel.modbus_register_type,
+                "modbus_address": channel.modbus_address,
+                "modbus_data_type": channel.modbus_data_type,
+                "modbus_byte_order": channel.modbus_byte_order,
+                "modbus_word_order": channel.modbus_word_order,
+                "modbus_scale": channel.modbus_scale,
+                "modbus_offset": channel.modbus_offset,
+                "modbus_slave_id": channel.modbus_slave_id,
+                "modbus_register_count": channel.modbus_register_count,
+                "modbus_register_index": channel.modbus_register_index,
                 "source_node_id": channel.source_node_id,
                 "safety_can_run_locally": channel.safety_can_run_locally
             }
@@ -13150,7 +13631,7 @@ Unit conversions:
             # Determine which backend handles this channel
             source_type = getattr(channel, 'source_type', 'local')
             source_node_id = getattr(channel, 'source_node_id', '')
-            is_modbus = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            is_modbus = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL) or source_type == 'cfp'
 
             # Auto-detect cRIO channels: if physical_channel starts with "Mod" (no chassis prefix)
             # it's ALWAYS a cRIO channel - local cDAQ channels have chassis prefix like "cDAQ1Mod1/ai0"
@@ -13468,11 +13949,18 @@ Unit conversions:
                             self._reader_degraded_notified = False
 
                     # Read from Modbus devices (if configured)
+                    # Modbus polls on its own background thread — just grab latest values
+                    # Track expected vs received channels for COMM_FAIL detection
                     try:
                         if self.modbus_reader:
-                            modbus_values = self.modbus_reader.read_all()
+                            modbus_values = self.modbus_reader.get_latest_values()
                             if modbus_values:
                                 raw_values.update(modbus_values)
+                            # Detect offline Modbus channels: expected but not returned
+                            expected_modbus = set(self.modbus_reader.channel_configs.keys())
+                            missing_modbus = expected_modbus - set(modbus_values.keys()) if modbus_values else expected_modbus
+                            for ch_name in missing_modbus:
+                                raw_values.setdefault(ch_name, float('nan'))
                     except Exception as e:
                         logger.error(f"[SCAN] Modbus read failed: {e}")
 
@@ -13557,9 +14045,16 @@ Unit conversions:
                             if is_crio_mode and is_crio_channel:
                                 continue
 
-                            self._check_safety(name, value)
+                            # Legacy Modbus channels (channel_type == modbus_register/coil) skip
+                            # safety limit checks — Modbus is not a safety-rated protocol.
+                            # CFP channels transported via Modbus but carrying real signal types
+                            # (thermocouple, voltage_input, etc.) DO get safety checks since
+                            # they represent known, typed I/O modules.
+                            is_legacy_modbus = channel and channel.is_modbus and getattr(channel, 'source_type', '') != 'cfp' if channel else False
+                            if not is_legacy_modbus:
+                                self._check_safety(name, value)
 
-                            # Also process through enhanced alarm manager
+                            # Process through alarm manager (informational, all channel types)
                             if self.alarm_manager:
                                 try:
                                     self.alarm_manager.process_value(name, value)
@@ -13599,7 +14094,13 @@ Unit conversions:
                     # Evaluate safety interlocks (backend-authoritative safety logic)
                     try:
                         if self.safety_manager:
+                            _t_safety = time.time()
                             self.safety_manager.evaluate_all()
+                            _safety_ms = (time.time() - _t_safety) * 1000
+                            if _safety_ms > 10.0:
+                                logger.warning(
+                                    f"[SCAN] Safety evaluation took {_safety_ms:.1f}ms (>10ms)"
+                                )
                     except Exception as e:
                         logger.error(f"[SCAN] Safety manager evaluation failed: {e}")
 
@@ -13881,15 +14382,15 @@ Unit conversions:
             logger.info("Flushing recording buffer...")
             self.recording_manager.stop()
 
+        # Signal Azure uploader to stop (via historian, before it's closed)
+        if self._get_azure_config() and self.historian:
+            logger.info("Signaling Azure uploader to stop...")
+            self._sync_azure_config_to_historian(streaming=False)
+
         # Close historian database
         if self.historian:
             logger.info("Closing historian database...")
             self.historian.close()
-
-        # Send stop command to external Azure uploader service
-        if self._get_azure_config():
-            logger.info("Sending stop command to Azure uploader service...")
-            self._publish_azure_command('stop')
 
         # Stop notification manager
         if self.notification_manager:

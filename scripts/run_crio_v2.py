@@ -35,13 +35,26 @@ from crio_node_v2 import CRIONodeV2, NodeConfig, load_config, find_config_file
 
 
 def setup_logging(level: str = 'INFO', log_file: str = None):
-    """Configure logging."""
+    """Configure logging with rotation to prevent disk exhaustion.
+
+    Uses RotatingFileHandler: 5 MB per file, 3 backups = 20 MB max.
+    Critical for cRIOs with limited flash storage (512 MB–2 GB).
+    """
+    from logging.handlers import RotatingFileHandler
+
     log_level = getattr(logging, level.upper(), logging.INFO)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     handlers = [logging.StreamHandler(sys.stdout)]
 
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
+        rot = RotatingFileHandler(
+            log_file,
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=3,             # keep 3 rotated copies
+        )
+        rot.setFormatter(fmt)
+        handlers.append(rot)
 
     logging.basicConfig(
         level=log_level,
@@ -211,6 +224,13 @@ def main():
         config.mqtt_password = args.mqtt_pass
     elif creds.get('mqtt_pass'):
         config.mqtt_password = creds['mqtt_pass']
+    # TLS settings from credential file (set by deploy script)
+    if creds.get('tls_enabled') is not None:
+        config.mqtt_tls_enabled = bool(creds['tls_enabled'])
+    if creds.get('tls_ca_cert'):
+        config.mqtt_tls_ca_cert = creds['tls_ca_cert']
+    if creds.get('port') and not args.port:
+        config.mqtt_port = int(creds['port'])
     if args.mock:
         config.use_mock_hardware = True
 
@@ -218,6 +238,8 @@ def main():
     cred_source = "CLI args" if args.mqtt_user else ("credential file" if creds.get('mqtt_user') else "none")
     logger.info(f"Node ID: {config.node_id}")
     logger.info(f"MQTT Broker: {config.mqtt_broker}:{config.mqtt_port}")
+    logger.info(f"MQTT TLS: {'enabled' if config.mqtt_tls_enabled else 'disabled'}"
+                f"{' (CA: ' + config.mqtt_tls_ca_cert + ')' if config.mqtt_tls_ca_cert else ''}")
     logger.info(f"MQTT Auth: {'yes' if config.mqtt_username else 'anonymous'} (source: {cred_source})")
     logger.info(f"Scan Rate: {config.scan_rate_hz} Hz")
     logger.info(f"Publish Rate: {config.publish_rate_hz} Hz")
@@ -227,16 +249,18 @@ def main():
     # Create and run service
     node = CRIONodeV2(config)
 
-    # Handle signals
+    # Handle signals — set shutdown flag and let run() do cleanup.
+    # Do NOT call node.stop() here: run()'s finally block handles it.
+    # Do NOT call sys.exit(): it raises SystemExit which bypasses run()'s
+    # cleanup and risks double-stop (stop called twice on same MQTT client).
     def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down...")
-        node.stop()
-        sys.exit(0)
+        logger.info(f"Received signal {signum}, requesting shutdown...")
+        node._shutdown.set()
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Run
+    # Run (blocks until _shutdown is set, then stops cleanly)
     try:
         node.run()
     except Exception as e:

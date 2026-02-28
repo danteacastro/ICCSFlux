@@ -917,7 +917,7 @@ Notification configuration is persisted to the project JSON file and sent to the
 
 ### 9.1 MQTT Security Model (Zero-Config)
 
-NISystem uses automatic MQTT credential generation. No manual setup is required.
+ICCSFlux uses automatic MQTT credential generation. No manual setup is required.
 
 **Architecture per portable unit:**
 ```
@@ -951,7 +951,7 @@ start.bat
 **TLS is intentionally omitted** because:
 - The MQTT broker runs on `localhost` (same PC as all services)
 - cRIO is on a dedicated physical Ethernet link (USB adapter), not a shared network
-- The credential system prevents cross-talk between portable NISystem instances
+- The credential system prevents cross-talk between portable ICCSFlux instances
 - Adding TLS would require certificate management that conflicts with the zero-config goal
 
 ### 9.2 Firewall Configuration
@@ -971,7 +971,7 @@ netsh advfirewall firewall add rule name="ICCSFlux Dashboard" dir=in action=allo
 
 ### 9.3 Network Isolation
 
-Each portable NISystem unit uses physical isolation:
+Each portable ICCSFlux unit uses physical isolation:
 - cRIO connects via dedicated USB-C/USB-A Ethernet adapter (not shared LAN)
 - MQTT WebSocket listener binds to `127.0.0.1` only (dashboard access)
 - MQTT TCP listener on `0.0.0.0:1883` is accessible only from the dedicated cRIO link

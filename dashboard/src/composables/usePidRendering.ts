@@ -8,6 +8,7 @@
 import { computed } from 'vue'
 import { SCADA_SYMBOLS, SYMBOL_INFO, isScadaSymbol, type ScadaSymbolType } from '../assets/symbols'
 import type { PidSymbol, PidPipe, PidPoint, PidLayerData, PidArrowType, PidIndicator } from '../types'
+import { generateIsaFunctionBlockSvg } from '../utils/isaFunctionBlock'
 import type { useDashboardStore } from '../stores/dashboard'
 import type { useSafety } from '../composables/useSafety'
 
@@ -35,7 +36,15 @@ export function isValveSymbol(symbol: PidSymbol): boolean {
   return false
 }
 
-export function getSymbolSvg(type: string, customSymbols?: Record<string, { svg: string }>): string {
+export function getSymbolSvg(type: string, customSymbols?: Record<string, { svg: string }>, symbol?: PidSymbol): string {
+  // Parametric ISA function block: generate SVG dynamically from symbol properties
+  if (type === 'isaFunctionBlock' && symbol) {
+    return generateIsaFunctionBlockSvg(
+      symbol.isaLetters || 'TI',
+      symbol.isaLocation || 'field',
+      symbol.loopNumber
+    )
+  }
   return customSymbols?.[type]?.svg
     ?? SCADA_SYMBOLS[type as ScadaSymbolType]
     ?? SCADA_SYMBOLS.solenoidValve

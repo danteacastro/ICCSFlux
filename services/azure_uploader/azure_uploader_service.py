@@ -2,20 +2,22 @@
 """
 Azure IoT Hub Uploader Service
 
-Command-driven service that streams channel data to Azure IoT Hub.
+Polls the historian SQLite database for channel data and safety events,
+then forwards to Azure IoT Hub over HTTPS.
+
 Runs in its own Python environment to avoid paho-mqtt version conflicts.
 
 Design:
-- Starts with ICCSFlux and sits idle, connected only to MQTT
-- Listens for start/stop commands from DAQ service
-- When recording starts, begins streaming to Azure IoT Hub
-- When recording stops, stops streaming
+- Starts with ICCSFlux, reads config from historian.db azure_config table
+- DAQ service writes config (connection string, channels, upload interval)
+  to historian.db when the user changes settings in the DataTab
+- Polls historian.db for new datapoints and safety events
+- Sends batches to Azure IoT Hub over HTTPS
+- No MQTT dependency — data flows through SQLite only
 
-Control Topics:
-    nisystem/azure/command  - receives start/stop commands with config
-
-Data Topics:
-    nisystem/nodes/+/channels/values - channel data to forward
+This architecture is Purdue-Model compliant: the uploader can run on a
+DMZ host (Level 3.5) reading historian.db from a read-only network share,
+keeping the Level 2 DAQ workstation air-gapped from the internet.
 """
 
 import argparse
@@ -24,15 +26,13 @@ import logging
 import os
 import signal
 import socket
+import sqlite3
 import sys
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from collections import deque
-
-# paho-mqtt 1.x API
-import paho.mqtt.client as mqtt
 
 # Azure IoT SDK
 from azure.iot.device import IoTHubDeviceClient, Message
@@ -53,131 +53,95 @@ logger = logging.getLogger('AzureUploader')
 
 class AzureUploaderService:
     """
-    Command-driven Azure IoT Hub uploader service.
+    SQLite-driven Azure IoT Hub uploader service.
 
-    Starts idle, waiting for commands via MQTT. When DAQ service starts
-    recording with Azure enabled, it sends a 'start' command with config.
+    Reads config + data from historian.db, sends to Azure IoT Hub.
+    All user configuration comes from the DataTab UI via the DAQ service.
     """
 
-    def __init__(self, mqtt_host: str = 'localhost', mqtt_port: int = 1883,
-                 mqtt_username: str = None, mqtt_password: str = None,
-                 mqtt_tls_ca: str = None):
-        self.mqtt_host = mqtt_host
-        self.mqtt_port = mqtt_port
-        self.mqtt_username = mqtt_username
-        self.mqtt_password = mqtt_password
-        self.mqtt_tls_ca = mqtt_tls_ca
+    def __init__(self, db_path: str):
+        self._db_path = db_path
 
-        # MQTT topics
-        self.command_topic = 'nisystem/azure/command'
-        self.data_topic = 'nisystem/nodes/+/channels/values'
-        self.alarm_topic = 'nisystem/nodes/+/alarms/active/+'
-        self.safety_trip_topic = 'nisystem/nodes/+/safety/trip'
-        self.safety_action_topic = 'nisystem/nodes/+/safety/action'
-        self.status_topic = 'nisystem/azure/status'
-
-        # MQTT client (always connected)
-        self.mqtt_client: Optional[mqtt.Client] = None
-
-        # Azure client (only connected when streaming)
+        # Azure client (connected when streaming)
         self.azure_client: Optional[IoTHubDeviceClient] = None
 
-        # Current configuration (set by start command)
+        # Config (read from historian.db azure_config table)
         self.connection_string: str = ''
         self._node_id: str = 'node-001'
         self.channels: List[str] = []
         self.batch_size: int = 10
-        self.batch_interval_ms: int = 1000
+        self.upload_interval_ms: int = 1000
         self.max_queue_size: int = 10000
-        self.upload_interval_s: float = 1.0
 
         # State
-        self._service_running = False  # Service process running
-        self._streaming = False         # Actively streaming to Azure
+        self._service_running = False
+        self._streaming = False
         self._stop_event = threading.Event()
         self._force_flush = threading.Event()
 
-        # Decimation tracking
-        self._last_queue_time: float = 0.0
+        # SQLite cursors
+        self._last_data_ts: int = 0
+        self._last_event_id: int = 0
+        self._last_config_hash: str = ''
 
-        # Safety event cooldown: prevents alarm chatter from flooding Azure
-        # Key: alarm_id or topic, Value: last forwarded timestamp
+        # Safety event cooldown
         self._safety_cooldowns: Dict[str, float] = {}
-        self._safety_cooldown_s: float = 30.0  # Min seconds between same alarm forwarding
+        self._safety_cooldown_s: float = 30.0
 
-        # Data queue (only used when streaming)
+        # Data queue
         self._queue: deque = deque(maxlen=self.max_queue_size)
         self._queue_lock = threading.Lock()
+        self._poll_thread: Optional[threading.Thread] = None
         self._upload_thread: Optional[threading.Thread] = None
 
         # Stats
         self._stats = {
             'state': 'idle',
-            'mqtt_connected': False,
             'azure_connected': False,
             'messages_received': 0,
             'messages_sent': 0,
             'messages_failed': 0,
             'samples_sent': 0,
-            'samples_decimated': 0,
             'last_error': None,
         }
         self._stats_lock = threading.Lock()
 
     def start_service(self) -> bool:
-        """Start the service (connects to MQTT, waits for commands)."""
+        """Start the service — reads config from historian.db, begins polling."""
         if self._service_running:
             return True
 
-        logger.info(f"Starting Azure Uploader Service...")
-        logger.info(f"  MQTT broker: {self.mqtt_host}:{self.mqtt_port}")
-        logger.info(f"  Command topic: {self.command_topic}")
-
-        try:
-            # Resolve MQTT credentials (CLI args > env vars > credential file)
-            mqtt_user = self.mqtt_username or os.environ.get('MQTT_USERNAME')
-            mqtt_pass = self.mqtt_password or os.environ.get('MQTT_PASSWORD')
-            if not mqtt_user or not mqtt_pass:
-                cred_file = os.path.join('config', 'mqtt_credentials.json')
-                if os.path.exists(cred_file):
-                    try:
-                        with open(cred_file) as _f:
-                            _creds = json.load(_f)
-                        mqtt_user = _creds.get('backend', {}).get('username')
-                        mqtt_pass = _creds.get('backend', {}).get('password')
-                        logger.info("Loaded MQTT credentials from credential file")
-                    except Exception as e:
-                        logger.warning(f"Could not read MQTT credentials from {cred_file}: {e}")
-
-            # Connect to MQTT broker
-            self.mqtt_client = mqtt.Client(client_id=f"azure_uploader_{os.getpid()}")
-            self.mqtt_client.on_connect = self._on_mqtt_connect
-            self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
-            self.mqtt_client.on_message = self._on_mqtt_message
-
-            if mqtt_user and mqtt_pass:
-                self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
-                logger.info(f"MQTT authentication: user={mqtt_user}")
-
-            # Optional TLS for broker connection
-            tls_ca = self.mqtt_tls_ca or os.environ.get('MQTT_TLS_CA')
-            if tls_ca and os.path.exists(tls_ca):
-                import ssl
-                self.mqtt_client.tls_set(ca_certs=tls_ca)
-                logger.info(f"MQTT TLS enabled with CA: {tls_ca}")
-
-            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
-            self.mqtt_client.loop_start()
-
-            self._service_running = True
-            self._update_state('idle')
-
-            logger.info("Azure Uploader Service started (waiting for commands)")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start service: {e}")
+        if not os.path.exists(self._db_path):
+            logger.error(f"Database not found: {self._db_path}")
             return False
+
+        logger.info(f"Starting Azure Uploader Service")
+        logger.info(f"  Database: {self._db_path}")
+
+        # Read initial config from historian
+        config = self._read_config()
+        if not config:
+            logger.info("No Azure config in historian yet — waiting for DataTab configuration")
+        else:
+            self._apply_config(config)
+
+        # Seed data cursor to current position (don't replay old data)
+        self._seed_cursors()
+
+        self._service_running = True
+        self._stop_event.clear()
+
+        # Start the poll loop (handles config watching + data polling + upload)
+        self._poll_thread = threading.Thread(
+            target=self._main_poll_loop,
+            name="AzurePollLoop",
+            daemon=True
+        )
+        self._poll_thread.start()
+
+        self._update_state('idle')
+        logger.info("Azure Uploader Service started (polling historian.db)")
+        return True
 
     def stop_service(self) -> None:
         """Stop the service completely."""
@@ -185,122 +149,149 @@ class AzureUploaderService:
             return
 
         logger.info("Stopping Azure Uploader Service...")
-
-        # Stop streaming if active
-        if self._streaming:
-            self._stop_streaming()
-
-        # Disconnect MQTT
-        if self.mqtt_client:
-            try:
-                self.mqtt_client.loop_stop()
-                self.mqtt_client.disconnect()
-            except Exception as e:
-                logger.warning(f"Error disconnecting MQTT: {e}")
-            self.mqtt_client = None
-
         self._service_running = False
+        self._streaming = False
+        self._stop_event.set()
+
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5.0)
+        if self._upload_thread and self._upload_thread.is_alive():
+            self._upload_thread.join(timeout=5.0)
+
+        if self.azure_client:
+            try:
+                self.azure_client.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting Azure: {e}")
+            self.azure_client = None
+
+        with self._stats_lock:
+            self._stats['azure_connected'] = False
+
         self._update_state('stopped')
         logger.info("Azure Uploader Service stopped")
 
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
-        """MQTT connection callback."""
-        if rc == 0:
-            logger.info("Connected to MQTT broker")
-            # Subscribe to command topic
-            client.subscribe(self.command_topic)
-            logger.info(f"Subscribed to {self.command_topic}")
+    # ── Config management ────────────────────────────────────────────
 
-            # Subscribe to data topic (will only process when streaming)
-            client.subscribe(self.data_topic)
-
-            # Subscribe to alarm/safety topics for immediate forwarding
-            client.subscribe(self.alarm_topic)
-            client.subscribe(self.safety_trip_topic)
-            client.subscribe(self.safety_action_topic)
-
-            with self._stats_lock:
-                self._stats['mqtt_connected'] = True
-
-            # Publish status
-            self._publish_status()
-        else:
-            logger.error(f"MQTT connection failed with code {rc}")
-            with self._stats_lock:
-                self._stats['mqtt_connected'] = False
-
-    def _on_mqtt_disconnect(self, client, userdata, rc):
-        """MQTT disconnection callback."""
-        logger.warning(f"Disconnected from MQTT broker (rc={rc})")
-        with self._stats_lock:
-            self._stats['mqtt_connected'] = False
-
-    def _on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT messages."""
+    def _read_config(self) -> Optional[Dict[str, Any]]:
+        """Read Azure config from historian.db azure_config table."""
         try:
-            if msg.topic == self.command_topic:
-                self._handle_command(msg.payload)
-            elif self._streaming and '/channels/values' in msg.topic:
-                self._handle_data(msg.payload)
-            elif self._streaming and ('/alarms/active/' in msg.topic or
-                                       '/safety/trip' in msg.topic or
-                                       '/safety/action' in msg.topic):
-                self._handle_safety_event(msg.topic, msg.payload)
+            conn = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, timeout=10.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                cursor = conn.execute(
+                    "SELECT value FROM azure_config WHERE key = 'config'")
+                row = cursor.fetchone()
+                if row:
+                    return json.loads(row[0])
+                return None
+            finally:
+                conn.close()
         except Exception as e:
-            logger.warning(f"Error processing message on {msg.topic}: {e}")
+            logger.debug(f"Could not read Azure config: {e}")
+            return None
 
-    def _handle_command(self, payload: bytes) -> None:
-        """Handle control commands from DAQ service."""
-        try:
-            cmd = json.loads(payload.decode('utf-8'))
-            action = cmd.get('action', '')
-
-            if action == 'start':
-                logger.info("Received START command")
-                config = cmd.get('config', {})
-                self._start_streaming(config)
-
-            elif action == 'stop':
-                logger.info("Received STOP command")
-                self._stop_streaming()
-
-            elif action == 'status':
-                self._publish_status()
-
-            else:
-                logger.warning(f"Unknown command action: {action}")
-
-        except json.JSONDecodeError:
-            logger.warning("Invalid JSON in command")
-        except Exception as e:
-            logger.error(f"Error handling command: {e}")
-
-    def _start_streaming(self, config: Dict[str, Any]) -> None:
-        """Start streaming to Azure IoT Hub."""
-        if self._streaming:
-            logger.warning("Already streaming, ignoring start command")
-            return
-
-        # Extract config
+    def _apply_config(self, config: Dict[str, Any]) -> None:
+        """Apply config from historian to local state."""
         self.connection_string = config.get('connection_string', '')
-        self._node_id = config.get('node_id', 'node-001')
         self.channels = config.get('channels', [])
         self.batch_size = config.get('batch_size', 10)
-        self.batch_interval_ms = config.get('batch_interval_ms', 1000)
-        self.upload_interval_s = max(0.0, config.get('upload_interval_s', 1.0))
+        self.upload_interval_ms = config.get('upload_interval_ms', 1000)
+        self._node_id = config.get('node_id', 'node-001')
 
-        if not self.connection_string:
-            logger.error("No Azure connection string in config")
+        logger.info(f"  Upload interval: {self.upload_interval_ms} ms")
+        if self.channels:
+            logger.info(f"  Channels: {', '.join(self.channels)}")
+        else:
+            logger.info(f"  Channels: all")
+
+    def _config_hash(self, config: Dict[str, Any]) -> str:
+        """Quick hash to detect config changes."""
+        return json.dumps(config, sort_keys=True)
+
+    def _seed_cursors(self) -> None:
+        """Seed data/event cursors to current DB position."""
+        try:
+            conn = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, timeout=10.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                cursor = conn.execute("SELECT MAX(ts) FROM datapoints")
+                row = cursor.fetchone()
+                self._last_data_ts = row[0] or 0
+
+                cursor = conn.execute("SELECT MAX(id) FROM events")
+                row = cursor.fetchone()
+                self._last_event_id = row[0] or 0
+            finally:
+                conn.close()
+            logger.info(f"  Data cursor: ts={self._last_data_ts}, event_id={self._last_event_id}")
+        except Exception as e:
+            logger.warning(f"Could not seed cursors: {e}")
+
+    # ── Main poll loop ───────────────────────────────────────────────
+
+    def _main_poll_loop(self) -> None:
+        """
+        Single loop that:
+        1. Checks config for changes (start/stop streaming)
+        2. Polls data + events when streaming
+        3. Sends batches to Azure
+        """
+        config_check_interval = 2.0  # Check config every 2s
+        last_config_check = 0.0
+
+        while not self._stop_event.is_set():
+            now = time.monotonic()
+
+            # 1. Check config periodically
+            if now - last_config_check >= config_check_interval:
+                last_config_check = now
+                self._check_config()
+
+            # 2. Poll data + send when streaming
+            if self._streaming:
+                self._poll_and_send()
+
+            # Sleep for poll interval (or config check interval if not streaming)
+            sleep_s = (self.upload_interval_ms / 1000.0) if self._streaming else config_check_interval
+            self._stop_event.wait(min(sleep_s, config_check_interval))
+
+    def _check_config(self) -> None:
+        """Check historian for config changes, start/stop streaming accordingly."""
+        config = self._read_config()
+        if not config:
+            if self._streaming:
+                logger.info("Azure config removed — stopping streaming")
+                self._stop_streaming()
+            return
+
+        config_hash = self._config_hash(config)
+        config_changed = config_hash != self._last_config_hash
+        should_stream = config.get('streaming', False)
+        has_connection = config.get('connection_string', '').startswith('HostName=')
+
+        if config_changed:
+            self._apply_config(config)
+            self._last_config_hash = config_hash
+
+        if should_stream and has_connection and not self._streaming:
+            self._start_streaming()
+        elif not should_stream and self._streaming:
+            self._stop_streaming()
+
+    def _start_streaming(self) -> None:
+        """Connect to Azure and begin streaming."""
+        if self._streaming:
+            return
+
+        if not self.connection_string or not self.connection_string.startswith('HostName='):
+            logger.error("Cannot start streaming: no valid connection string")
             self._update_state('error', 'No connection string')
             return
 
-        if not self.connection_string.startswith('HostName='):
-            logger.error("Invalid Azure connection string format")
-            self._update_state('error', 'Invalid connection string')
-            return
-
         try:
-            # Connect to Azure IoT Hub
             logger.info("Connecting to Azure IoT Hub...")
             self.azure_client = IoTHubDeviceClient.create_from_connection_string(
                 self.connection_string,
@@ -313,29 +304,14 @@ class AzureUploaderService:
             with self._stats_lock:
                 self._stats['azure_connected'] = True
 
-            logger.info(f"Connected to Azure IoT Hub (device: {self._get_device_id()}, identifier: {self._get_device_identifier()})")
-            if self.channels:
-                logger.info(f"Streaming channels: {', '.join(self.channels)}")
-            else:
-                logger.info("Streaming all channels")
+            logger.info(f"Connected to Azure IoT Hub (device: {self._get_device_id()}, "
+                        f"identifier: {self._get_device_identifier()})")
 
-            # Clear queue and start upload thread
             with self._queue_lock:
                 self._queue.clear()
 
             self._streaming = True
-            self._stop_event.clear()
-            self._force_flush.clear()
-            self._last_queue_time = 0.0
             self._safety_cooldowns.clear()
-
-            self._upload_thread = threading.Thread(
-                target=self._upload_loop,
-                name="AzureUploadLoop",
-                daemon=True
-            )
-            self._upload_thread.start()
-
             self._update_state('streaming')
             logger.info("Azure streaming started")
 
@@ -345,24 +321,21 @@ class AzureUploaderService:
             if self.azure_client:
                 try:
                     self.azure_client.disconnect()
-                except Exception as e:
-                    logger.warning(f"Error disconnecting Azure client during error recovery: {e}")
+                except Exception:
+                    pass
                 self.azure_client = None
 
     def _stop_streaming(self) -> None:
-        """Stop streaming to Azure IoT Hub."""
+        """Disconnect from Azure and stop streaming."""
         if not self._streaming:
             return
 
         logger.info("Stopping Azure streaming...")
         self._streaming = False
-        self._stop_event.set()
 
-        # Wait for upload thread
-        if self._upload_thread and self._upload_thread.is_alive():
-            self._upload_thread.join(timeout=5.0)
+        # Send remaining queued data
+        self._flush_queue()
 
-        # Disconnect Azure
         if self.azure_client:
             try:
                 self.azure_client.disconnect()
@@ -376,163 +349,129 @@ class AzureUploaderService:
         self._update_state('idle')
         logger.info("Azure streaming stopped")
 
-    def _handle_data(self, payload: bytes) -> None:
-        """Handle channel data message."""
-        if not self._streaming:
-            return
+    # ── Data polling + sending ───────────────────────────────────────
 
+    def _poll_and_send(self) -> None:
+        """Poll historian.db for new data and events, send to Azure."""
         try:
-            data = json.loads(payload.decode('utf-8'))
+            conn = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, timeout=10.0)
+            conn.execute("PRAGMA journal_mode=WAL")
 
-            with self._stats_lock:
-                self._stats['messages_received'] += 1
-
-            # Decimation: skip messages that arrive faster than upload_interval_s
-            if self.upload_interval_s > 0:
-                now = time.time()
-                if (now - self._last_queue_time) < self.upload_interval_s:
-                    with self._stats_lock:
-                        self._stats['samples_decimated'] += 1
-                    return
-                self._last_queue_time = now
-
-            # Extract values
-            values = data.get('values', data)
-            if not isinstance(values, dict):
-                return
-
-            # Filter channels if configured
-            if self.channels:
-                filtered = {k: v for k, v in values.items() if k in self.channels}
-            else:
-                filtered = values
-
-            if not filtered:
-                return
-
-            # Filter to numeric values only
-            numeric_values = {}
-            for k, v in filtered.items():
-                if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):
-                    numeric_values[k] = v
-
-            if not numeric_values:
-                return
-
-            # Queue data point
-            data_point = {
-                'timestamp': data.get('timestamp', datetime.now(timezone.utc).isoformat()),
-                'node_id': data.get('node_id', 'unknown'),
-                'values': numeric_values
-            }
-
-            with self._queue_lock:
-                self._queue.append(data_point)
-
-        except json.JSONDecodeError:
-            pass
-        except Exception as e:
-            logger.debug(f"Error processing data: {e}")
-
-    # Alarm severities / threshold types that bypass decimation
-    _CRITICAL_THRESHOLDS = {'high_high', 'low_low'}
-    _CRITICAL_SEVERITIES = {'CRITICAL', 'HIGH'}
-
-    def _handle_safety_event(self, topic: str, payload: bytes) -> None:
-        """Handle alarm or safety interlock events — bypass decimation and queue immediately."""
-        if not self._streaming:
-            return
-
-        try:
-            data = json.loads(payload.decode('utf-8'))
-
-            # For alarm messages, only forward critical ones (HiHi/LoLo or CRITICAL/HIGH severity)
-            if '/alarms/active/' in topic:
-                # Cleared alarms (active=False) also get forwarded so cloud knows it resolved
-                if data.get('active') is False:
-                    pass  # forward the clear event
+            try:
+                # Poll channel data
+                if self.channels:
+                    placeholders = ','.join('?' * len(self.channels))
+                    cursor = conn.execute(
+                        f"SELECT id, name FROM channels WHERE name IN ({placeholders})",
+                        self.channels
+                    )
+                    ch_map = {row[0]: row[1] for row in cursor.fetchall()}
+                    if ch_map:
+                        ch_placeholders = ','.join('?' * len(ch_map))
+                        cursor = conn.execute(
+                            f"SELECT ts, ch, val FROM datapoints "
+                            f"WHERE ts > ? AND ch IN ({ch_placeholders}) "
+                            f"ORDER BY ts LIMIT 5000",
+                            (self._last_data_ts, *ch_map.keys())
+                        )
+                    else:
+                        cursor = conn.execute("SELECT 1 WHERE 0")
                 else:
-                    severity = data.get('severity', '')
-                    threshold_type = data.get('threshold_type', '')
-                    if (severity not in self._CRITICAL_SEVERITIES and
-                            threshold_type not in self._CRITICAL_THRESHOLDS):
-                        return  # Skip non-critical alarms
+                    cursor = conn.execute("SELECT id, name FROM channels")
+                    ch_map = {row[0]: row[1] for row in cursor.fetchall()}
+                    cursor = conn.execute(
+                        "SELECT ts, ch, val FROM datapoints "
+                        "WHERE ts > ? ORDER BY ts LIMIT 5000",
+                        (self._last_data_ts,)
+                    )
 
-            # Cooldown: prevent the same alarm from flooding Azure (e.g., chattering alarm)
-            cooldown_key = data.get('alarm_id', topic)
-            now = time.time()
-            last_forwarded = self._safety_cooldowns.get(cooldown_key, 0.0)
-            if (now - last_forwarded) < self._safety_cooldown_s:
-                logger.debug(f"Safety event throttled (cooldown): {cooldown_key}")
-                return
-            self._safety_cooldowns[cooldown_key] = now
+                # Group rows by timestamp
+                current_ts = None
+                current_values: Dict[str, Any] = {}
+                for ts, ch, val in cursor.fetchall():
+                    if ts != current_ts:
+                        if current_values:
+                            self._queue_data_point(current_ts, current_values)
+                        current_ts = ts
+                        current_values = {}
+                    name = ch_map.get(ch)
+                    if name and val is not None:
+                        current_values[name] = val
+                if current_values:
+                    self._queue_data_point(current_ts, current_values)
+                if current_ts:
+                    self._last_data_ts = current_ts
 
-            event_point = {
-                'timestamp': data.get('triggered_at', datetime.now(timezone.utc).isoformat()),
-                'safety_event': True,
-                'event_topic': topic,
-                'event_data': data
-            }
-
-            with self._queue_lock:
-                self._queue.append(event_point)
-
-            # Signal upload thread to flush immediately
-            self._force_flush.set()
-
-            logger.info(f"Safety event queued for immediate upload: {cooldown_key}")
-
-        except json.JSONDecodeError:
-            pass
-        except Exception as e:
-            logger.warning(f"Error processing safety event: {e}")
-
-    def _upload_loop(self) -> None:
-        """Background thread that batches and sends data to Azure."""
-        batch: List[Dict] = []
-        last_send = time.time()
-
-        while not self._stop_event.is_set():
-            try:
-                # Collect data from queue
-                with self._queue_lock:
-                    while self._queue and len(batch) < self.batch_size:
-                        batch.append(self._queue.popleft())
-
-                # Check if we should send
-                forced = self._force_flush.is_set()
-                if forced:
-                    self._force_flush.clear()
-
-                elapsed_ms = (time.time() - last_send) * 1000
-                should_send = (
-                    forced or
-                    len(batch) >= self.batch_size or
-                    (batch and elapsed_ms >= self.batch_interval_ms)
+                # Poll safety events
+                cursor = conn.execute(
+                    "SELECT id, ts, event_type, topic, data FROM events "
+                    "WHERE id > ? ORDER BY id LIMIT 500",
+                    (self._last_event_id,)
                 )
+                for row_id, ts, event_type, topic, data_str in cursor.fetchall():
+                    # Cooldown check
+                    cooldown_key = topic
+                    now_t = time.time()
+                    if (now_t - self._safety_cooldowns.get(cooldown_key, 0.0)) < self._safety_cooldown_s:
+                        self._last_event_id = row_id
+                        continue
+                    self._safety_cooldowns[cooldown_key] = now_t
 
-                if should_send and batch:
-                    self._send_batch(batch)
-                    batch = []
-                    last_send = time.time()
+                    try:
+                        event_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        event_data = {'raw': data_str}
 
-                self._stop_event.wait(0.05)
+                    event_point = {
+                        'timestamp': datetime.fromtimestamp(
+                            ts / 1000, tz=timezone.utc).isoformat(),
+                        'safety_event': True,
+                        'event_topic': topic,
+                        'event_data': event_data
+                    }
+                    with self._queue_lock:
+                        self._queue.append(event_point)
+                    self._force_flush.set()
+                    self._last_event_id = row_id
 
-            except Exception as e:
-                logger.error(f"Error in upload loop: {e}")
                 with self._stats_lock:
-                    self._stats['last_error'] = str(e)
-                time.sleep(1)
+                    self._stats['messages_received'] += 1
 
-        # Send remaining on stop
-        if batch:
-            try:
-                self._send_batch(batch)
-            except Exception as e:
-                logger.error(f"Failed to send final batch ({len(batch)} samples) during shutdown: {e}")
-                with self._stats_lock:
-                    self._stats['messages_failed'] += 1
-                    self._stats['last_error'] = f"Final batch lost: {e}"
+            finally:
+                conn.close()
+
+        except Exception as e:
+            logger.warning(f"SQLite poll error: {e}")
+            with self._stats_lock:
+                self._stats['last_error'] = str(e)
+
+        # Send queued data
+        self._flush_queue()
+
+    def _queue_data_point(self, ts_ms: int, values: Dict[str, Any]) -> None:
+        """Queue a single timestamp's data for Azure upload."""
+        data_point = {
+            'timestamp': datetime.fromtimestamp(
+                ts_ms / 1000, tz=timezone.utc).isoformat(),
+            'node_id': self._node_id,
+            'values': values
+        }
+        with self._queue_lock:
+            self._queue.append(data_point)
+
+    def _flush_queue(self) -> None:
+        """Send all queued data to Azure in batches."""
+        while True:
+            batch: List[Dict] = []
+            with self._queue_lock:
+                while self._queue and len(batch) < self.batch_size:
+                    batch.append(self._queue.popleft())
+
+            if not batch:
+                break
+
+            self._send_batch(batch)
 
     def _send_batch(self, batch: List[Dict]) -> bool:
         """Send a batch of data points to Azure IoT Hub."""
@@ -597,22 +536,18 @@ class AzureUploaderService:
                 self._stats['last_error'] = f"Reconnect failed: {e}"
             return False
 
+    # ── Helpers ──────────────────────────────────────────────────────
+
     def _get_device_id(self) -> str:
         """Extract device ID from connection string."""
         try:
             parts = dict(p.split('=', 1) for p in self.connection_string.split(';') if '=' in p)
             return parts.get('DeviceId', 'unknown')
-        except (ValueError, AttributeError) as e:
-            logger.debug(f"Could not parse device ID from connection string: {e}")
+        except (ValueError, AttributeError):
             return 'unknown'
 
     def _get_device_identifier(self) -> str:
-        """Build structured device identifier: {HOSTNAME}_ICCSFlux_{node_id}
-
-        Recommended DeviceId format for Azure portal device registration.
-        Preserves hostname case for IT identification.
-        Example: BOILER-LAB-PC_ICCSFlux_node-001
-        """
+        """Build structured device identifier: {HOSTNAME}_ICCSFlux_{node_id}"""
         try:
             hostname = socket.gethostname()
         except Exception:
@@ -620,30 +555,11 @@ class AzureUploaderService:
         return f"{hostname}_ICCSFlux_{self._node_id}"
 
     def _update_state(self, state: str, error: str = None) -> None:
-        """Update state and publish status."""
+        """Update internal state."""
         with self._stats_lock:
             self._stats['state'] = state
             if error:
                 self._stats['last_error'] = error
-        self._publish_status()
-
-    def _publish_status(self) -> None:
-        """Publish current status to MQTT."""
-        if not self.mqtt_client:
-            return
-        try:
-            with self._stats_lock:
-                status = dict(self._stats)
-            status['timestamp'] = datetime.now(timezone.utc).isoformat()
-            status['device_identifier'] = self._get_device_identifier()
-            status['azure_device_id'] = self._get_device_id()
-            self.mqtt_client.publish(
-                self.status_topic,
-                json.dumps(status),
-                retain=True
-            )
-        except Exception as e:
-            logger.debug(f"Failed to publish status: {e}")
 
     def run_forever(self) -> None:
         """Run the service until interrupted."""
@@ -660,38 +576,26 @@ class AzureUploaderService:
 
         logger.info("Azure Uploader running (Ctrl+C to stop)")
 
-        # Main loop
         while self._service_running:
             time.sleep(30)
-            # Periodic status update
-            self._publish_status()
-
             if self._streaming:
                 with self._stats_lock:
                     stats = dict(self._stats)
-                logger.info(f"Streaming: sent={stats['messages_sent']}, samples={stats['samples_sent']}")
+                logger.info(f"Streaming: sent={stats['messages_sent']}, "
+                            f"samples={stats['samples_sent']}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='Azure IoT Hub Uploader Service')
-    parser.add_argument('--host', default='localhost', help='MQTT broker host')
-    parser.add_argument('--port', type=int, default=1883, help='MQTT broker port')
-    parser.add_argument('--mqtt-user', default=None, help='MQTT username')
-    parser.add_argument('--mqtt-pass', default=None, help='MQTT password')
-    parser.add_argument('--tls-ca', default=None, help='Path to CA certificate for MQTT TLS')
+    parser.add_argument('--db-path', required=True,
+                        help='Path to historian.db (local or network share)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    service = AzureUploaderService(
-        mqtt_host=args.host,
-        mqtt_port=args.port,
-        mqtt_username=args.mqtt_user,
-        mqtt_password=args.mqtt_pass,
-        mqtt_tls_ca=args.tls_ca,
-    )
+    service = AzureUploaderService(db_path=args.db_path)
     service.run_forever()
 
 

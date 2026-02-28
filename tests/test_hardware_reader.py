@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"
 # Import config_parser first since hardware_reader depends on it
 from config_parser import (
     NISystemConfig, SystemConfig, ChassisConfig, ModuleConfig, ChannelConfig,
-    ChannelType, ThermocoupleType
+    ChannelType, ThermocoupleType, DataViewerConfig
 )
 
 # Mock nidaqmx/numpy before importing hardware_reader, then restore all mocks
@@ -248,6 +248,7 @@ class TestHardwareReaderConfiguration:
                     channel_type=ChannelType.DIGITAL_OUTPUT
                 )
             },
+            dataviewer=DataViewerConfig(),
             safety_actions={}
         )
 

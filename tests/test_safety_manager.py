@@ -860,3 +860,187 @@ class TestBypassExpiration:
 
         # Bypass should be removed
         assert manager.get_interlock("expire-test").bypassed is False
+
+
+class TestSafetyAcceptance:
+    """End-to-end safety acceptance tests.
+
+    Validates the full interlock lifecycle:
+    trip → safe state → output blocked → reset → normal operation.
+    These tests exercise the integration seams between SafetyManager components.
+    """
+
+    @pytest.fixture
+    def channel_values(self):
+        return {'temp': 75.0, 'pressure': 50.0, 'valve': 1}
+
+    @pytest.fixture
+    def data_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def manager(self, data_dir, channel_values):
+        set_output_mock = Mock()
+        stop_session_mock = Mock()
+
+        mgr = SafetyManager(
+            data_dir=data_dir,
+            get_channel_value=lambda name: channel_values.get(name),
+            get_channel_type=lambda name: 'digital_output' if name == 'valve' else 'voltage_input',
+            get_all_channels=lambda: {
+                'valve': {'channel_type': 'digital_output'},
+                'temp': {'channel_type': 'voltage_input'},
+            },
+            publish_callback=Mock(),
+            set_output_callback=set_output_mock,
+            stop_session_callback=stop_session_mock,
+            get_system_state=lambda: {'status': 'online', 'acquiring': True},
+            get_alarm_state=lambda: {'active_count': 0}
+        )
+        mgr._set_output = set_output_mock
+        mgr._stop_session = stop_session_mock
+        return mgr
+
+    def test_full_trip_lifecycle(self, manager, channel_values):
+        """Full lifecycle: arm → trip → safe state → reset → normal"""
+        # Configure interlock: temp must be < 100
+        interlock = Interlock(
+            id="overtemp",
+            name="Over Temperature",
+            enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100.0)
+            ],
+            controls=[
+                InterlockControl(control_type="set_output", channel="valve", set_value=0)
+            ],
+            condition_logic="AND"
+        )
+        manager.add_interlock(interlock)
+
+        # 1. Initial state: SAFE, interlock satisfied (temp=75 < 100)
+        status = manager.evaluate_all()
+        assert manager.latch_state == LatchState.SAFE
+        assert manager.is_tripped is False
+
+        # 2. Arm the system
+        manager.arm_latch("operator")
+        assert manager.latch_state == LatchState.ARMED
+
+        # 3. Interlock still satisfied (temp=75 < 100)
+        manager.evaluate_all()
+        assert manager.is_tripped is False
+
+        # 4. Temperature exceeds threshold — trip!
+        channel_values['temp'] = 120.0
+        manager.evaluate_all()
+        assert manager.is_tripped is True
+        assert manager.latch_state == LatchState.TRIPPED
+        assert manager.last_trip_reason is not None
+
+        # 5. Verify set_output was called (safe state action)
+        assert manager._set_output.called
+
+        # 6. Temperature returns to normal
+        channel_values['temp'] = 60.0
+        manager.evaluate_all()
+        # System stays tripped (latched) even though condition cleared
+        assert manager.is_tripped is True
+
+        # 7. Reset the trip
+        manager.reset_trip("operator")
+        assert manager.is_tripped is False
+        assert manager.latch_state == LatchState.SAFE
+
+    def test_demand_count_not_inflated_on_startup(self, manager, channel_values):
+        """Demand count should NOT increment on first evaluation"""
+        # Start with temp already above threshold (unsatisfied at startup)
+        channel_values['temp'] = 120.0
+
+        interlock = Interlock(
+            id="demand-test",
+            name="Demand Test",
+            enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100.0)
+            ],
+            controls=[],
+            condition_logic="AND"
+        )
+        manager.add_interlock(interlock)
+
+        # First evaluation — interlock is already failed, but this is initial state
+        manager.evaluate_all()
+
+        # Demand count should be 0 (not 1) — no transition observed
+        assert interlock.demand_count == 0
+
+        # Now fix the condition
+        channel_values['temp'] = 75.0
+        manager.evaluate_all()
+        assert interlock.demand_count == 0  # Still no demand (went from failed→OK)
+
+        # Now fail again — THIS is a real demand (OK→failed transition)
+        channel_values['temp'] = 120.0
+        manager.evaluate_all()
+        assert interlock.demand_count == 1
+
+    def test_output_blocked_by_interlock(self, manager, channel_values):
+        """Interlock-held output should be reported as blocked"""
+        interlock = Interlock(
+            id="block-test",
+            name="Block Test",
+            enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100.0)
+            ],
+            controls=[
+                InterlockControl(control_type="digital_output", channel="valve", set_value=0)
+            ],
+            condition_logic="AND"
+        )
+        manager.add_interlock(interlock)
+
+        # Normal state — output not blocked
+        result = manager.is_output_blocked("valve")
+        assert result['blocked'] is False
+
+        # Trip the interlock
+        channel_values['temp'] = 120.0
+        manager.evaluate_all()
+
+        # Output should now be blocked
+        result = manager.is_output_blocked("valve")
+        assert result['blocked'] is True
+        assert len(result['blockedBy']) > 0
+
+    def test_condition_delay_holds_back_satisfaction(self, manager, channel_values):
+        """Condition delay should prevent premature clearing"""
+        interlock = Interlock(
+            id="delay-test",
+            name="Delay Test",
+            enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100.0,
+                                   delay_s=0.5)
+            ],
+            controls=[],
+            condition_logic="AND"
+        )
+        manager.add_interlock(interlock)
+
+        # temp=75 < 100 → raw satisfied, but delay not elapsed yet
+        status = manager.evaluate_interlock(interlock)
+        assert status.satisfied is False  # Delay holds back "satisfied"
+
+        # Wait for delay
+        time.sleep(0.6)
+
+        # Now satisfied should pass through
+        status = manager.evaluate_interlock(interlock)
+        assert status.satisfied is True

@@ -17,7 +17,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watchEffect, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { SYMBOL_PORTS, SYMBOL_INFO, NOZZLE_STUB_CATEGORIES, OFF_PAGE_CONNECTOR_TYPES, getPortPosition, rotateCW, rotateDirection, flipPoint, flipDirection, type ScadaSymbolType } from '../assets/symbols'
-import { autoRoute } from '../utils/autoRoute'
+import { autoRoute, bundleParallelPipes } from '../utils/autoRoute'
 import type { PidSymbol, PidPipe, PidPoint, PidLayerData, PidPipeConnection, PidTextAnnotation, PidIndicator, PidArrowType } from '../types'
 import PidFaceplate from './PidFaceplate.vue'
 import PidBlockEditor from './PidBlockEditor.vue'
@@ -149,6 +149,29 @@ const visibleSymbols = computed(() => {
 const visiblePipes = computed(() => {
   return layerFilteredPipes.value.filter(p => isPipeInViewport(p))
 })
+
+// Bundle overlapping orthogonal pipes for visual offset (rendering only, doesn't modify stored data)
+const bundledPipePoints = computed(() => {
+  const orthoPipes = props.pidLayer.pipes.filter(p => p.pathType === 'orthogonal')
+  if (orthoPipes.length < 2) return new Map<string, { x: number; y: number }[]>()
+  return bundleParallelPipes(
+    orthoPipes.map(p => ({ id: p.id, points: p.points, strokeWidth: p.strokeWidth ?? 2 }))
+  )
+})
+
+/** Get pipe points with bundle offset applied (if any) */
+function getPipePointsWithBundling(pipe: PidPipe): { x: number; y: number }[] {
+  return bundledPipePoints.value.get(pipe.id) ?? pipe.points
+}
+
+/** Return a shallow copy of the pipe with bundled points for visual rendering.
+ *  Use this for generatePipePath/generatePipePathWithJumps/generateHeatTracePath calls.
+ *  Editing/interaction code should use pipe.points directly (original coordinates). */
+function pipeView(pipe: PidPipe): PidPipe {
+  const bundled = bundledPipePoints.value.get(pipe.id)
+  if (!bundled) return pipe
+  return { ...pipe, points: bundled as PidPoint[] }
+}
 
 const visibleTextAnnotations = computed(() => {
   return layerFilteredTextAnnotations.value.filter(t =>
@@ -537,6 +560,19 @@ function onNoteMouseDown(event: MouseEvent, note: { id: string; x: number; y: nu
 
 // Context menu state
 const contextMenu = ref<{ x: number; y: number; target: MenuTarget } | null>(null)
+
+// Template save dialog state
+const showTemplateSaveDialog = ref(false)
+const templateName = ref('')
+const templateCategory = ref('General')
+
+function saveTemplate() {
+  if (!templateName.value.trim()) return
+  store.createPidTemplate(templateName.value.trim(), undefined, templateCategory.value)
+  showTemplateSaveDialog.value = false
+  templateName.value = ''
+  templateCategory.value = 'General'
+}
 
 // Dragging state
 const isDragging = ref(false)
@@ -1039,6 +1075,13 @@ function handleContextMenuAction(action: string) {
     store.pidSelectItems([], [target.id], [])
   }
 
+  // Shared actions (work for any target type)
+  if (action === 'saveAsTemplate') {
+    showTemplateSaveDialog.value = true
+    contextMenu.value = null
+    return
+  }
+
   if (target.type === 'symbol') {
     switch (action) {
       case 'configure':
@@ -1076,25 +1119,7 @@ function handleContextMenuAction(action: string) {
     switch (action) {
       case 'delete': store.removePidPipeWithUndo(target.id); selectedPipeId.value = null; selectedPipeSegmentIdx.value = null; break
       case 'deleteSegment': {
-        // Delete only the selected segment, splitting the pipe if needed
-        const pipe = props.pidLayer.pipes.find(p => p.id === target.id)
-        const segIdx = selectedPipeSegmentIdx.value
-        if (!pipe || segIdx == null) { store.removePidPipeWithUndo(target.id); break }
-        if (pipe.points.length <= 2) { store.removePidPipeWithUndo(target.id); break }
-        const newPipes = props.pidLayer.pipes.filter(p => p.id !== target.id)
-        if (segIdx === 0) {
-          const remaining: PidPipe = { ...pipe, points: pipe.points.slice(1), startConnection: undefined }
-          if (remaining.points.length >= 2) newPipes.push(remaining)
-        } else if (segIdx >= pipe.points.length - 2) {
-          const remaining: PidPipe = { ...pipe, points: pipe.points.slice(0, segIdx + 1), endConnection: undefined }
-          if (remaining.points.length >= 2) newPipes.push(remaining)
-        } else {
-          const leftPoints = pipe.points.slice(0, segIdx + 1)
-          const rightPoints = pipe.points.slice(segIdx + 1)
-          if (leftPoints.length >= 2) newPipes.push({ ...pipe, id: `${pipe.id}-L`, points: leftPoints, endConnection: undefined })
-          if (rightPoints.length >= 2) newPipes.push({ ...pipe, id: `${pipe.id}-R`, points: rightPoints, startConnection: undefined })
-        }
-        emit('update:pidLayer', { ...props.pidLayer, pipes: newPipes })
+        store.pidDeletePipeSegment(target.id, selectedPipeSegmentIdx.value)
         selectedPipeId.value = null; selectedPipeSegmentIdx.value = null
         emit('select:pipe', null)
         break
@@ -2252,50 +2277,16 @@ function onCanvasKeyDown(event: KeyboardEvent) {
     return
   }
 
-  // Delete selected element (only when not drawing)
+  // Delete selected element (only when not drawing) — route through store for undo + pipe cleanup
   if ((event.key === 'Delete' || event.key === 'Backspace') && !isDrawingPipe.value && (selectedSymbolId.value || selectedPipeId.value)) {
     if (selectedSymbolId.value) {
-      const newSymbols = props.pidLayer.symbols.filter(s => s.id !== selectedSymbolId.value)
-      emit('update:pidLayer', { ...props.pidLayer, symbols: newSymbols })
+      store.pidSelectItems([selectedSymbolId.value], [], [])
+      store.pidDeleteSelected()
       selectedSymbolId.value = null
       emit('select:symbol', null)
     } else if (selectedPipeId.value) {
-      const pipe = props.pidLayer.pipes.find(p => p.id === selectedPipeId.value)
-      if (!pipe) return
-      const segIdx = selectedPipeSegmentIdx.value
-
-      // If pipe has only 1 segment (2 points) or no segment selected, delete the whole pipe
-      if (pipe.points.length <= 2 || segIdx == null) {
-        const newPipes = props.pidLayer.pipes.filter(p => p.id !== selectedPipeId.value)
-        emit('update:pidLayer', { ...props.pidLayer, pipes: newPipes })
-      } else {
-        // Segment-level deletion: remove the segment and split if in the middle
-        const newPipes = props.pidLayer.pipes.filter(p => p.id !== selectedPipeId.value)
-
-        if (segIdx === 0) {
-          // Delete first segment: keep points from index 1 onward
-          const remaining: PidPipe = { ...pipe, points: pipe.points.slice(1), startConnection: undefined }
-          if (remaining.points.length >= 2) newPipes.push(remaining)
-        } else if (segIdx >= pipe.points.length - 2) {
-          // Delete last segment: keep points up to the segment start
-          const remaining: PidPipe = { ...pipe, points: pipe.points.slice(0, segIdx + 1), endConnection: undefined }
-          if (remaining.points.length >= 2) newPipes.push(remaining)
-        } else {
-          // Delete middle segment: split into two pipes
-          const leftPoints = pipe.points.slice(0, segIdx + 1)
-          const rightPoints = pipe.points.slice(segIdx + 1)
-          if (leftPoints.length >= 2) {
-            newPipes.push({ ...pipe, id: `${pipe.id}-L`, points: leftPoints, endConnection: undefined })
-          }
-          if (rightPoints.length >= 2) {
-            newPipes.push({ ...pipe, id: `${pipe.id}-R`, points: rightPoints, startConnection: undefined })
-          }
-        }
-
-        emit('update:pidLayer', { ...props.pidLayer, pipes: newPipes })
-      }
+      store.pidDeletePipeSegment(selectedPipeId.value, selectedPipeSegmentIdx.value)
       selectedPipeId.value = null; selectedPipeSegmentIdx.value = null
-      selectedPipeSegmentIdx.value = null
       emit('select:pipe', null)
     }
   }
@@ -2320,13 +2311,23 @@ function onCanvasBlur() {
 // Drag-drop symbol from panel
 function onCanvasDragOver(event: DragEvent) {
   if (!props.editMode || !event.dataTransfer) return
-  if (event.dataTransfer.types.includes('application/x-pid-symbol')) {
+  if (event.dataTransfer.types.includes('application/x-pid-symbol') ||
+      event.dataTransfer.types.includes('application/x-pid-template')) {
     event.dataTransfer.dropEffect = 'copy'
   }
 }
 
 function onCanvasDrop(event: DragEvent) {
   if (!props.editMode || !event.dataTransfer) return
+
+  // Handle template drop
+  const templateId = event.dataTransfer.getData('application/x-pid-template')
+  if (templateId) {
+    const coords = getCanvasCoords(event as unknown as MouseEvent)
+    store.instantiatePidTemplate(templateId, Math.round(coords.x), Math.round(coords.y))
+    return
+  }
+
   const symbolType = event.dataTransfer.getData('application/x-pid-symbol')
   if (!symbolType) return
 
@@ -2917,7 +2918,7 @@ watchEffect(() => {
       <g v-for="pipe in visiblePipes" :key="pipe.id" class="pipe-group">
         <!-- Wider invisible hit area for easier clicking -->
         <path
-          :d="generatePipePath(pipe)"
+          :d="generatePipePath(pipeView(pipe))"
           stroke="transparent"
           stroke-width="16"
           fill="none"
@@ -2928,7 +2929,7 @@ watchEffect(() => {
         />
         <!-- Visible pipe -->
         <path
-          :d="generatePipePathWithJumps(pipe)"
+          :d="generatePipePathWithJumps(pipeView(pipe))"
           :stroke="getPipeMediumColor(pipe)"
           :stroke-width="pipe.strokeWidth || 3"
           :stroke-opacity="pipe.opacity ?? 1"
@@ -2959,7 +2960,7 @@ watchEffect(() => {
         <!-- Heat trace zigzag (ISA marking alongside pipe) -->
         <path
           v-if="pipe.heatTrace && pipe.heatTrace !== 'none' && (editMode || isHeatTraceActive(pipe))"
-          :d="generateHeatTracePath(pipe.points)"
+          :d="generateHeatTracePath(getPipePointsWithBundling(pipe))"
           :stroke="getHeatTraceColor(pipe.heatTrace)"
           :stroke-width="1.5 / zoom"
           stroke-linecap="round"
@@ -2972,7 +2973,7 @@ watchEffect(() => {
         <!-- Flow animation (enhanced) -->
         <path
           v-if="getPipeFlowState(pipe).animated"
-          :d="generatePipePath(pipe)"
+          :d="generatePipePath(pipeView(pipe))"
           stroke="rgba(255,255,255,0.6)"
           :stroke-width="(pipe.strokeWidth || 3) - 1"
           stroke-dasharray="8,8"
@@ -2987,7 +2988,7 @@ watchEffect(() => {
         <!-- Secondary flow particles for better visibility -->
         <path
           v-if="getPipeFlowState(pipe).animated"
-          :d="generatePipePath(pipe)"
+          :d="generatePipePath(pipeView(pipe))"
           stroke="rgba(96, 165, 250, 0.4)"
           :stroke-width="(pipe.strokeWidth || 3) + 2"
           stroke-dasharray="2,20"
@@ -3005,7 +3006,7 @@ watchEffect(() => {
           <!-- Hidden reference path for animateMotion (clean path without jumps) -->
           <path
             :id="'pipe-path-' + pipe.id"
-            :d="generatePipePath(pipe)"
+            :d="generatePipePath(pipeView(pipe))"
             fill="none" stroke="none"
           />
           <circle
@@ -3331,7 +3332,7 @@ watchEffect(() => {
               ? getValveSvgWithPosition(symbol)
               : symbol.type === 'conveyor'
                 ? getConveyorSvgWithAnimation(symbol)
-                : getSymbolSvg(symbol.type, store.pidCustomSymbols)"
+                : getSymbolSvg(symbol.type, store.pidCustomSymbols, symbol)"
         />
 
         <!-- Label -->
@@ -3521,7 +3522,7 @@ watchEffect(() => {
         <polyline
           v-for="pipe in pidLayer.pipes"
           :key="'mm-' + pipe.id"
-          :points="pipe.points.map(p => `${p.x},${p.y}`).join(' ')"
+          :points="getPipePointsWithBundling(pipe).map(p => `${p.x},${p.y}`).join(' ')"
           fill="none" :stroke="getPipeMediumColor(pipe)" stroke-width="2" stroke-opacity="0.6"
         />
         <!-- Viewport rectangle -->
@@ -3599,6 +3600,28 @@ watchEffect(() => {
       @action="handleContextMenuAction"
       @close="contextMenu = null"
     />
+
+    <!-- Template Save Dialog -->
+    <Teleport to="body">
+      <div v-if="showTemplateSaveDialog" class="pid-modal-overlay" @click.self="showTemplateSaveDialog = false">
+        <div class="pid-modal-dialog">
+          <div class="pid-modal-title">Save as Template</div>
+          <label class="pid-modal-label">Name</label>
+          <input v-model="templateName" class="pid-modal-input" placeholder="e.g. Pump Station" autofocus @keydown.enter="saveTemplate" />
+          <label class="pid-modal-label">Category</label>
+          <select v-model="templateCategory" class="pid-modal-input">
+            <option>General</option>
+            <option>Control Loops</option>
+            <option>Equipment Groups</option>
+            <option>Safety Systems</option>
+          </select>
+          <div class="pid-modal-actions">
+            <button class="pid-modal-btn" @click="showTemplateSaveDialog = false">Cancel</button>
+            <button class="pid-modal-btn primary" :disabled="!templateName.trim()" @click="saveTemplate">Save</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Runtime Tooltip (#6.1) -->
     <div
@@ -4310,6 +4333,30 @@ watchEffect(() => {
 }
 
 /* Runtime Tooltip (#6.1) */
+.pid-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+}
+.pid-modal-dialog {
+  background: var(--bg-panel); border: 1px solid var(--border-color);
+  border-radius: 8px; padding: 16px; min-width: 280px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.pid-modal-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
+.pid-modal-label { font-size: 11px; color: var(--text-secondary); display: block; margin-bottom: 4px; margin-top: 8px; }
+.pid-modal-input {
+  width: 100%; padding: 6px 8px; background: var(--bg-widget); border: 1px solid var(--border-color);
+  border-radius: 4px; color: var(--text-primary); font-size: 12px; outline: none; box-sizing: border-box;
+}
+.pid-modal-input:focus { border-color: var(--color-accent); }
+.pid-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.pid-modal-btn {
+  padding: 5px 12px; border-radius: 4px; border: 1px solid var(--border-color);
+  background: var(--bg-widget); color: var(--text-primary); font-size: 11px; cursor: pointer;
+}
+.pid-modal-btn.primary { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+.pid-modal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .runtime-tooltip {
   position: absolute;
   transform: translate(-50%, -100%);

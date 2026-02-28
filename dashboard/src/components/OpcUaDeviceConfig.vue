@@ -152,7 +152,7 @@ async function addDevice() {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/add', {
+    mqtt.sendNodeCommand('datasource/add', {
       type: 'opc_ua',
       name: deviceForm.value.name,
       enabled: deviceForm.value.enabled,
@@ -182,7 +182,7 @@ async function addDevice() {
 async function updateDevice() {
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/update', {
+    mqtt.sendNodeCommand('datasource/update', {
       type: 'opc_ua',
       name: deviceForm.value.name,
       enabled: deviceForm.value.enabled,
@@ -219,7 +219,7 @@ async function deleteDevice(deviceName: string) {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/delete', { type: 'opc_ua', name: deviceName })
+    mqtt.sendNodeCommand('datasource/delete', { type: 'opc_ua', name: deviceName })
     devices.value = devices.value.filter(d => d.name !== deviceName)
     if (selectedDevice.value === deviceName) {
       selectedDevice.value = null
@@ -303,7 +303,7 @@ function navigateBack() {
 
 function addNodeAsChannel(node: any) {
   // Would add this node as a channel - emit event or call MQTT
-  mqtt.sendCommand('channel/add', {
+  mqtt.sendNodeCommand('channel/add', {
     source_type: 'opc_ua',
     source_name: browseDeviceName.value,
     channel_name: node.browse_name || node.display_name,

@@ -12,6 +12,7 @@ Data Viewer composable queries it via MQTT commands.
 
 import io
 import csv
+import json
 import math
 import os
 import sqlite3
@@ -72,6 +73,26 @@ class Historian:
             """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_datapoints_ts ON datapoints(ts)
+            """)
+            # Events table for safety/alarm events (used by DMZ relay)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts         INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    topic      TEXT NOT NULL,
+                    data       TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)
+            """)
+            # Azure uploader config (written by DAQ service, read by uploader)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS azure_config (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
             """)
             conn.commit()
             self._conn = conn
@@ -367,6 +388,11 @@ class Historian:
                 deleted = cursor.rowcount
                 self._conn.commit()
 
+                # Prune old events too
+                self._conn.execute(
+                    "DELETE FROM events WHERE ts < ?", (cutoff_ms,)
+                )
+
                 if deleted > 0:
                     logger.info(f"Historian pruned {deleted:,} points older than {self._retention_days} days")
 
@@ -440,6 +466,149 @@ class Historian:
                     'points_written': self._points_written,
                     'write_errors': self._write_errors,
                 }
+
+    # ── Azure config (written by DAQ service, read by uploader) ────────
+
+    def write_azure_config(self, config: Dict[str, Any]) -> None:
+        """
+        Write Azure IoT Hub config so the uploader can read it.
+
+        The DAQ service calls this whenever the user changes Azure settings
+        in the DataTab.  The uploader polls read_azure_config() to pick up
+        changes without needing MQTT.
+        """
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO azure_config (key, value) "
+                    "VALUES ('config', ?)",
+                    (json.dumps(config),)
+                )
+                self._conn.commit()
+            except Exception as e:
+                logger.error(f"Historian write_azure_config error: {e}")
+
+    def read_azure_config(self) -> Optional[Dict[str, Any]]:
+        """Read current Azure IoT Hub config from the database."""
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT value FROM azure_config WHERE key = 'config'"
+                )
+                row = cursor.fetchone()
+                if row:
+                    return json.loads(row[0])
+                return None
+            except Exception as e:
+                logger.error(f"Historian read_azure_config error: {e}")
+                return None
+
+    # ── Events (written by DAQ service, read by uploader) ────────────
+
+    def write_event(self, timestamp_ms: int, event_type: str,
+                    topic: str, data_json: str) -> None:
+        """
+        Write a safety or alarm event for the DMZ relay to pick up.
+
+        Args:
+            timestamp_ms: Unix timestamp in milliseconds.
+            event_type: 'alarm', 'alarm_cleared', 'safety_trip', 'safety_action'.
+            topic: Original MQTT topic string.
+            data_json: JSON-encoded event payload.
+        """
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO events (ts, event_type, topic, data) "
+                    "VALUES (?, ?, ?, ?)",
+                    (timestamp_ms, event_type, topic, data_json)
+                )
+                self._conn.commit()
+            except Exception as e:
+                if self._write_errors <= 5 or self._write_errors % 100 == 0:
+                    logger.error(f"Historian event write error: {e}")
+                self._write_errors += 1
+
+    def query_data_since(self, after_ts_ms: int,
+                         channels: Optional[List[str]] = None,
+                         limit: int = 5000) -> List[Dict[str, Any]]:
+        """
+        Return datapoints newer than *after_ts_ms* for the DMZ relay.
+
+        Args:
+            after_ts_ms: Return rows with ts > this value.
+            channels: Optional channel name filter. None = all channels.
+            limit: Max rows to return per call (prevents runaway queries).
+
+        Returns:
+            List of {ts, channel, value} dicts ordered by timestamp.
+        """
+        with self._lock:
+            try:
+                if channels:
+                    ch_ids = []
+                    ch_name_map: Dict[int, str] = {}
+                    for name in channels:
+                        cid = self._channel_ids.get(name)
+                        if cid is not None:
+                            ch_ids.append(cid)
+                            ch_name_map[cid] = name
+                    if not ch_ids:
+                        return []
+                    placeholders = ','.join('?' * len(ch_ids))
+                    cursor = self._conn.execute(
+                        f"SELECT d.ts, d.ch, d.val FROM datapoints d "
+                        f"WHERE d.ts > ? AND d.ch IN ({placeholders}) "
+                        f"ORDER BY d.ts LIMIT ?",
+                        (after_ts_ms, *ch_ids, limit)
+                    )
+                else:
+                    # Build reverse map for all channels
+                    ch_name_map = {cid: name for name, cid in self._channel_ids.items()}
+                    cursor = self._conn.execute(
+                        "SELECT ts, ch, val FROM datapoints "
+                        "WHERE ts > ? ORDER BY ts LIMIT ?",
+                        (after_ts_ms, limit)
+                    )
+
+                rows = []
+                for ts, ch, val in cursor.fetchall():
+                    name = ch_name_map.get(ch)
+                    if name:
+                        rows.append({'ts': ts, 'channel': name, 'value': val})
+                return rows
+
+            except Exception as e:
+                logger.error(f"Historian query_data_since error: {e}")
+                return []
+
+    def query_events_since(self, after_id: int = 0,
+                           limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Return events with id > *after_id* for the DMZ relay.
+
+        Args:
+            after_id: Return events after this row ID. 0 = from the start.
+            limit: Max events to return per call.
+
+        Returns:
+            List of {id, ts, event_type, topic, data} dicts.
+        """
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT id, ts, event_type, topic, data FROM events "
+                    "WHERE id > ? ORDER BY id LIMIT ?",
+                    (after_id, limit)
+                )
+                return [
+                    {'id': row[0], 'ts': row[1], 'event_type': row[2],
+                     'topic': row[3], 'data': row[4]}
+                    for row in cursor.fetchall()
+                ]
+            except Exception as e:
+                logger.error(f"Historian query_events_since error: {e}")
+                return []
 
     def close(self):
         """Checkpoint WAL and close database connection."""

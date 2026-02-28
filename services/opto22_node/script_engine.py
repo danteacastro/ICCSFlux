@@ -1330,6 +1330,10 @@ class ScriptEngine:
         # Per-channel rate limiters for script publish calls (4 Hz cap)
         self._publish_rate_limiters: Dict[str, TokenBucketRateLimiter] = {}
 
+    # Maximum allowed script code size (256 KB) — must match DAQ service
+    MAX_SCRIPT_CODE_BYTES = 256 * 1024
+    MAX_SCRIPT_NAME_CHARS = 256
+
     # =========================================================================
     # MQTT COMMAND HANDLER
     # =========================================================================
@@ -1361,6 +1365,15 @@ class ScriptEngine:
         """Add a new script."""
         script_id = payload.get('id')
         if not script_id:
+            return
+
+        code = payload.get('code', '')
+        name = payload.get('name', '')
+        if len(str(code)) > self.MAX_SCRIPT_CODE_BYTES:
+            logger.error(f"Script code exceeds {self.MAX_SCRIPT_CODE_BYTES} byte limit ({len(str(code))} bytes), rejecting")
+            return
+        if len(str(name)) > self.MAX_SCRIPT_NAME_CHARS:
+            logger.error(f"Script name exceeds {self.MAX_SCRIPT_NAME_CHARS} char limit, rejecting")
             return
 
         self.scripts[script_id] = payload
@@ -1402,8 +1415,14 @@ class ScriptEngine:
 
         script = self.scripts[script_id]
         if 'code' in payload:
+            if len(str(payload['code'])) > self.MAX_SCRIPT_CODE_BYTES:
+                logger.error(f"Script code exceeds {self.MAX_SCRIPT_CODE_BYTES} byte limit, rejecting update")
+                return
             script['code'] = payload['code']
         if 'name' in payload:
+            if len(str(payload['name'])) > self.MAX_SCRIPT_NAME_CHARS:
+                logger.error(f"Script name exceeds {self.MAX_SCRIPT_NAME_CHARS} char limit, rejecting update")
+                return
             script['name'] = payload['name']
         if 'run_mode' in payload:
             script['run_mode'] = payload['run_mode']
@@ -1422,6 +1441,10 @@ class ScriptEngine:
 
         if not script_id or script_id not in self.scripts:
             logger.warning(f"Hot-reload: script not found: {script_id}")
+            return
+
+        if new_code is not None and len(str(new_code)) > self.MAX_SCRIPT_CODE_BYTES:
+            logger.error(f"Hot-reload rejected: code exceeds {self.MAX_SCRIPT_CODE_BYTES} byte limit")
             return
 
         script = self.scripts[script_id]
@@ -1617,12 +1640,15 @@ class ScriptEngine:
         def write_output(name: str, value: Any) -> bool:
             if self._node.state.is_output_locked(name):
                 return False
-            # Block writes to outputs held by safety actions
-            if self._node.safety.is_safety_held(name):
-                hold_info = self._node.safety.get_safety_hold_info(name)
-                alarm_ch = hold_info.get('alarm_channel', '?') if hold_info else '?'
-                logger.warning(f"Script write blocked: {name} is safety-held "
-                              f"(held by alarm on {alarm_ch})")
+            # Block writes to outputs held by safety actions or interlocks
+            if self._node.safety.is_output_blocked(name):
+                if self._node.safety.is_safety_held(name):
+                    hold_info = self._node.safety.get_safety_hold_info(name)
+                    alarm_ch = hold_info.get('alarm_channel', '?') if hold_info else '?'
+                    logger.warning(f"Script write blocked: {name} is safety-held "
+                                  f"(held by alarm on {alarm_ch})")
+                else:
+                    logger.warning(f"Script write blocked: {name} is interlock-held")
                 return False
             success = self._node.hardware.write_output(name, value)
             if success:

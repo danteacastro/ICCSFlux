@@ -144,7 +144,7 @@ async function addDevice() {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/add', {
+    mqtt.sendNodeCommand('datasource/add', {
       type: 'ethernet_ip',
       name: deviceForm.value.name,
       enabled: deviceForm.value.enabled,
@@ -172,7 +172,7 @@ async function addDevice() {
 async function updateDevice() {
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/update', {
+    mqtt.sendNodeCommand('datasource/update', {
       type: 'ethernet_ip',
       name: deviceForm.value.name,
       enabled: deviceForm.value.enabled,
@@ -207,7 +207,7 @@ async function deleteDevice(deviceName: string) {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('datasource/delete', { type: 'ethernet_ip', name: deviceName })
+    mqtt.sendNodeCommand('datasource/delete', { type: 'ethernet_ip', name: deviceName })
     devices.value = devices.value.filter(d => d.name !== deviceName)
     if (selectedDevice.value === deviceName) {
       selectedDevice.value = null
@@ -287,7 +287,7 @@ const filteredTags = computed(() => {
 })
 
 function addTagAsChannel(tag: any) {
-  mqtt.sendCommand('channel/add', {
+  mqtt.sendNodeCommand('channel/add', {
     source_type: 'ethernet_ip',
     source_name: browseDeviceName.value,
     channel_name: tag.name,

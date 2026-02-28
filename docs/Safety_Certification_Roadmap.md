@@ -1,8 +1,8 @@
 # IEC 61508 / IEC 61511 Safety Certification Roadmap
 
-A practical guide for achieving formal functional safety certification for the NISystem cRIO controller platform.
+A practical guide for achieving formal functional safety certification for the ICCSFlux cRIO controller platform.
 
-**Audience:** Engineering team evaluating the path from "works like a safety system" to "certified as a safety system."
+**Audience:** Engineering and management teams evaluating the path from "works like a safety system" to "certified as a safety system."
 
 **Last updated:** 2026-02-28
 
@@ -99,7 +99,7 @@ By contrast, certified C compilers exist:
 
 ### 2.2 Garbage Collection Non-Determinism
 
-The CPython garbage collector introduces unbounded pauses. The NISystem cRIO node already works around this:
+The CPython garbage collector introduces unbounded pauses. The ICCSFlux cRIO node already works around this:
 
 ```python
 # From crio_node.py line 510-516:
@@ -296,7 +296,7 @@ This assumes SIL 2 target, one safety function, one hardware configuration. Each
 
 ```
 +---------------------------------------------+
-|  Existing NISystem (unchanged)               |
+|  Existing ICCSFlux (unchanged)               |
 |  Python DAQ + cRIO node + Dashboard          |
 |  Monitoring, trending, alarming, scripting   |
 |  NOT safety-rated                            |
@@ -346,9 +346,9 @@ This assumes SIL 2 target, one safety function, one hardware configuration. Each
 - Communication between systems adds complexity (though MQTT/Modbus bridging works)
 - Need a safety PLC programmer (or training, typically 1-2 weeks)
 
-**Integration with NISystem:**
+**Integration with ICCSFlux:**
 
-The safety PLC would be the primary authority for safety functions. The NISystem can:
+The safety PLC would be the primary authority for safety functions. ICCSFlux can:
 1. Read safety PLC status via Modbus TCP (the ModbusReader already supports this)
 2. Display interlock status on the dashboard (the InterlockStatusWidget already exists)
 3. Log safety events to the audit trail
@@ -394,14 +394,14 @@ CODESYS offers a SIL 2-certified PLC runtime that runs on ARM Linux -- the same 
 3. The runtime uses 1oo2D (one-out-of-two with diagnostics) internal architecture -- two execution channels with comparison
 4. I/O is accessed through CODESYS Safety I/O drivers (or Modbus bridge to NI modules)
 
-**Architecture with NISystem:**
+**Architecture with ICCSFlux:**
 
 ```
 +------------------------------------------------------------------+
 |  cRIO-9056  (NI Linux Real-Time / ARM Cortex-A9)                 |
 |                                                                   |
 |  +---------------------------+   +-----------------------------+  |
-|  |  Python NISystem Node     |   |  CODESYS Safety SIL2        |  |
+|  |  Python ICCSFlux Node     |   |  CODESYS Safety SIL2        |  |
 |  |  (non-safety, SCHED_OTHER)|   |  (SIL 2, SCHED_FIFO pri 90) |  |
 |  |                           |   |                             |  |
 |  |  - MQTT, scripts, alarms  |   |  - Interlock evaluation     |  |
@@ -455,7 +455,7 @@ For SIL 3 applications, the standard approach is redundant hardware with voting 
 - Achieves SIL 3 with high availability (single faults are tolerated)
 - Used in Triconex TMR, HIMA HIQuad
 
-**What this would look like for NISystem:**
+**What this would look like for ICCSFlux:**
 
 ```
 +------------------+  +------------------+  +------------------+
@@ -487,11 +487,11 @@ For SIL 3 applications, the standard approach is redundant hardware with voting 
 
 ## 5. What You Already Have That Helps
 
-The existing NISystem codebase implements many concepts that map directly to IEC 61511 requirements. While the Python implementation itself cannot be certified, the *design patterns and operational procedures* transfer directly to any certified platform.
+The existing ICCSFlux codebase implements many concepts that map directly to IEC 61511 requirements. While the Python implementation itself cannot be certified, the *design patterns and operational procedures* transfer directly to any certified platform.
 
 ### 5.1 Mapping to IEC 61511 Requirements
 
-| IEC 61511 Requirement | NISystem Implementation | Certification Value |
+| IEC 61511 Requirement | ICCSFlux Implementation | Certification Value |
 |----------------------|------------------------|-------------------|
 | **SIF specification** (Clause 11) | `Interlock` dataclass with conditions, controls, logic, SIL rating | Direct reuse as SRS (Safety Requirements Specification) |
 | **SIS architecture** (Clause 11.4) | Latch state machine (SAFE/ARMED/TRIPPED) | Proven design pattern, portable to any platform |
@@ -571,9 +571,9 @@ Tasks:
 
 Tasks:
 - [ ] Select safety PLC based on SIL requirement, I/O count, and budget
-- [ ] Design safety system architecture (separation from NISystem)
+- [ ] Design safety system architecture (separation from ICCSFlux)
 - [ ] Specify safety I/O modules and field wiring
-- [ ] Define communication interface (Modbus TCP from safety PLC to NISystem)
+- [ ] Define communication interface (Modbus TCP from safety PLC to ICCSFlux)
 - [ ] Write functional specification for safety PLC programming
 
 **Common choices by SIL level:**
@@ -593,7 +593,7 @@ Tasks:
 - [ ] Procure safety PLC, I/O modules, safety sensors, safety actuators
 - [ ] Install safety PLC in control panel (separate from cRIO panel if possible)
 - [ ] Wire safety field devices to safety PLC I/O
-- [ ] Wire Modbus TCP or Ethernet from safety PLC to NISystem network
+- [ ] Wire Modbus TCP or Ethernet from safety PLC to ICCSFlux network
 - [ ] Commission power and communication
 
 **Typical hardware costs for a small system (8 DI, 4 DO, SIL 2):**
@@ -618,7 +618,7 @@ Tasks:
 Tasks:
 - [ ] Program safety functions in safety PLC (using SIL-rated function blocks)
 - [ ] Implement interlock logic (transfer from existing Python definitions)
-- [ ] Configure Modbus TCP server for NISystem integration
+- [ ] Configure Modbus TCP server for ICCSFlux integration
 - [ ] Factory Acceptance Test (FAT) with simulated I/O
 - [ ] Write proof test procedures
 - [ ] Write bypass/override procedures
@@ -655,17 +655,17 @@ This maps directly to a GuardLogix safety function block:
 [TC_Zone1_Input] --> [>=500.0?] --> [De-energize Heater_Relay]
 ```
 
-#### Phase 5: NISystem Integration
+#### Phase 5: ICCSFlux Integration
 
 **Duration:** 2-4 weeks
 **Cost:** $10K-$20K
 
 Tasks:
-- [ ] Configure NISystem ModbusReader to poll safety PLC status
+- [ ] Configure ICCSFlux ModbusReader to poll safety PLC status
 - [ ] Add safety PLC channels to project configuration
 - [ ] Map safety PLC interlock status to dashboard InterlockStatusWidget
 - [ ] Update audit trail to log safety PLC events
-- [ ] Test end-to-end: safety PLC trips, NISystem displays status, audit records event
+- [ ] Test end-to-end: safety PLC trips, ICCSFlux displays status, audit records event
 - [ ] Demote Python safety logic to monitoring-only (remove output control authority)
 
 #### Phase 6: Validation and Commissioning
@@ -717,7 +717,7 @@ Tasks:
 | 2. Architecture Design | 2-4 weeks | $5K-$15K |
 | 3. Hardware | 4-8 weeks | $10K-$70K |
 | 4. PLC Programming | 4-8 weeks | $15K-$40K |
-| 5. NISystem Integration | 2-4 weeks | $10K-$20K |
+| 5. ICCSFlux Integration | 2-4 weeks | $10K-$20K |
 | 6. Validation | 2-4 weeks | $10K-$30K |
 | 7. Formal Assessment | 2-4 months | $20K-$80K |
 | **Total** | **6-12 months** | **$75K-$295K** |
@@ -734,7 +734,7 @@ Compare this to the C/C++ safety island rewrite: $330K-$640K over 15-25 months. 
 
 ### The Practical Answer
 
-1. **For SIL 1-2 (most industrial applications):** Add a dedicated safety PLC alongside the existing system. Keep all Python code as-is. The safety PLC handles interlocks; NISystem handles monitoring, trending, recording, and HMI. Budget $75K-$150K and 6-9 months.
+1. **For SIL 1-2 (most industrial applications):** Add a dedicated safety PLC alongside the existing system. Keep all Python code as-is. The safety PLC handles interlocks; ICCSFlux handles monitoring, trending, recording, and HMI. Budget $75K-$150K and 6-9 months.
 
 2. **For simple digital safety functions (e-stop, door interlock):** Consider the NI 9351 Safety Module. It slots into the existing cRIO chassis, costs under $3K, and can be deployed in weeks.
 
@@ -770,7 +770,7 @@ The existing Python safety implementation is valuable and should be maintained b
 
 | Term | Definition |
 |------|-----------|
-| **BPCS** | Basic Process Control System -- the primary control system (NISystem in your case) |
+| **BPCS** | Basic Process Control System -- the primary control system (ICCSFlux in your case) |
 | **ESD** | Emergency Shutdown |
 | **FMEA** | Failure Mode and Effects Analysis |
 | **HAZOP** | Hazard and Operability Study |

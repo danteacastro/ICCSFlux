@@ -197,3 +197,8 @@ class StateTransition:
                 'test_id': self._session.test_id,
             })
         return status
+
+
+# Aliases for Opto22-specific naming (used by opto22_node.py)
+Opto22State = State
+Opto22StateMachine = StateTransition

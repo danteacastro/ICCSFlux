@@ -43,6 +43,7 @@ const channelOwners = new Map<string, string>()
 const discoveryResult = ref<any>(null)
 const discoveryChannels = ref<any[]>([])
 const crioDiscoveryChannels = ref<Record<string, any[]>>({}) // nodeId -> channels
+const cfpDiscoveryResult = ref<any>(null) // CFP slot probe results
 const isScanning = ref(false)
 let scanTimeoutId: ReturnType<typeof setTimeout> | null = null
 let crioRescanTimeoutId: ReturnType<typeof setTimeout> | null = null
@@ -255,7 +256,9 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/crio/#`,  // cRIO node management
         `${nodePrefix}/gc/#`,  // GC node analysis data
         `${nodePrefix}/historian/#`,  // Historian query responses
-        `${nodePrefix}/logs/#`  // Log viewer streaming
+        `${nodePrefix}/logs/#`,  // Log viewer streaming
+        `${nodePrefix}/modbus/#`,  // Modbus connection status and write responses
+        `${nodePrefix}/chassis/#`  // Chassis/device management responses
       ]
 
       topics.forEach(topic => {
@@ -384,6 +387,11 @@ export function useMqtt(prefix: string = 'nisystem') {
           if (restOfTopic === 'discovery/result') {
             console.debug('[MQTT] Received discovery/result, calling handler')
             handleDiscoveryResult(payload)
+          } else if (restOfTopic === 'discovery/cfp/result') {
+            console.debug('[MQTT] Received CFP discovery result')
+            cfpDiscoveryResult.value = payload
+            isScanning.value = false
+            if (scanTimeoutId) { clearTimeout(scanTimeoutId); scanTimeoutId = null }
           } else if (restOfTopic === 'discovery/channels') {
             handleDiscoveryChannels(payload)
           } else if (restOfTopic === 'discovery/crio-found') {
@@ -1370,7 +1378,8 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
 
     const requestId = generateRequestId()
-    const topic = `${systemPrefix}/${command}`
+    const nodeId = activeNodeId.value || 'node-001'
+    const topic = `${systemPrefix}/nodes/${nodeId}/${command}`
     const message = {
       ...(payload || {}),
       request_id: requestId
@@ -1454,15 +1463,9 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function sendCommand(command: string, payload?: any) {
-    if (!client.value || !connected.value) {
-      console.error('MQTT not connected')
-      return
-    }
-
-    const topic = `${systemPrefix}/${command}`
-    const message = payload !== undefined ? JSON.stringify(payload) : '{}'
-
-    client.value.publish(topic, message)
+    // Route through sendNodeCommand for correct node-prefixed topic
+    // Backend subscribes to: nisystem/nodes/{node_id}/{command}
+    sendNodeCommand(command, payload)
   }
 
   /**
@@ -1666,8 +1669,9 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   // Discovery functions
-  // mode: 'cdaq' | 'crio' | 'opto22' | 'all' - limits which device types to discover
-  function scanDevices(mode: 'cdaq' | 'crio' | 'opto22' | 'all' = 'all') {
+  // mode: 'cdaq' | 'crio' | 'opto22' | 'cfp' | 'all' - limits which device types to discover
+  // params: optional extra parameters (e.g., CFP connection details for slot probing)
+  function scanDevices(mode: 'cdaq' | 'crio' | 'opto22' | 'cfp' | 'all' = 'all', params?: Record<string, any>) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
       return
@@ -1679,11 +1683,15 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
 
     isScanning.value = true
-    discoveryResult.value = null
-    discoveryChannels.value = []
+    if (mode === 'cfp') {
+      cfpDiscoveryResult.value = null
+    } else {
+      discoveryResult.value = null
+      discoveryChannels.value = []
+    }
     // Discovery scan is always handled by local DAQ service
-    // Pass mode to limit which device types are scanned
-    sendLocalCommand('discovery/scan', { mode })
+    // Pass mode and any extra params (e.g., CFP ip_address, port, slave_id)
+    sendLocalCommand('discovery/scan', { mode, ...params })
 
     // Set timeout to automatically reset scanning state if no response
     scanTimeoutId = setTimeout(() => {
@@ -2156,6 +2164,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Discovery state
     discoveryResult,
     discoveryChannels,
+    cfpDiscoveryResult,
     isScanning,
 
     // Recording state

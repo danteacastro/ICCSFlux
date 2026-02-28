@@ -2,7 +2,8 @@
 """
 PyInstaller spec file for Azure IoT Hub Uploader Service
 Compiles the Azure uploader to a standalone executable.
-Note: This uses paho-mqtt 1.x for Azure SDK compatibility.
+Reads data from historian.db (SQLite) — no MQTT dependency.
+Still requires isolated venv for azure-iot-device SDK.
 """
 
 import sys
@@ -23,17 +24,12 @@ a = Analysis(
         'json',
         'logging',
         'threading',
-        'queue',
+        'sqlite3',
         'time',
         'datetime',
         'pathlib',
         'argparse',
         'signal',
-
-        # MQTT (1.x for Azure compatibility)
-        'paho',
-        'paho.mqtt',
-        'paho.mqtt.client',
 
         # Azure IoT SDK
         'azure',

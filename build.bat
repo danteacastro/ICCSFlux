@@ -47,7 +47,7 @@ if errorlevel 1 (
     echo.
     echo Build complete: dist\ICCSFlux-Portable\
     echo.
-    echo To run: dist\ICCSFlux-Portable\ICCSFlux.bat
+    echo To run: dist\ICCSFlux-Portable\ICCSFlux.exe
 )
 echo.
 pause

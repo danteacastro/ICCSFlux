@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for ICCSFlux Launcher
-Creates both console and windowed (service) versions.
+Creates a native windowed application (tkinter — Python stdlib).
 """
 
 from pathlib import Path
@@ -12,7 +12,10 @@ a = Analysis(
     [str(PROJECT_ROOT / 'scripts' / 'ICCSFlux_exe.py')],
     pathex=[],
     binaries=[],
-    datas=[(str(PROJECT_ROOT / 'scripts' / 'generate_tls_certs.py'), 'scripts')],
+    datas=[
+        (str(PROJECT_ROOT / 'scripts' / 'generate_tls_certs.py'), 'scripts'),
+        (str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'), '.'),
+    ],
     hiddenimports=[
         'os',
         'sys',
@@ -35,12 +38,14 @@ a = Analysis(
         'cryptography.hazmat.primitives.asymmetric.rsa',
         'cryptography.hazmat.backends',
         'cffi',
+        # Resource monitoring
+        'psutil',
+        'configparser',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'tkinter',
         'numpy',
         'scipy',
         'pandas',
@@ -52,8 +57,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# Console version (for interactive use)
-exe_console = EXE(
+# Windowed native app (tkinter — no console window)
+exe_windowed = EXE(
     pyz,
     a.scripts,
     a.binaries,
@@ -65,8 +70,8 @@ exe_console = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
+    runtime_tmpdir='_runtime',
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

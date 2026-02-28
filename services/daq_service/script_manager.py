@@ -32,6 +32,12 @@ logger = logging.getLogger('ScriptManager')
 # Default maximum runtime for scripts (seconds). Scripts can override via max_runtime_seconds.
 DEFAULT_SCRIPT_TIMEOUT_S = 30
 
+# Maximum script code size (bytes). Prevents denial-of-service via oversized payloads.
+MAX_SCRIPT_CODE_BYTES = 256 * 1024  # 256 KB
+
+# Maximum script name length (characters).
+MAX_SCRIPT_NAME_LENGTH = 256
+
 
 # =============================================================================
 # STATE PERSISTENCE
@@ -2827,6 +2833,17 @@ class ScriptManager:
 
     def add_script(self, script: Script) -> bool:
         """Add or update a script"""
+        # Enforce payload size limits
+        if len(script.code.encode('utf-8')) > MAX_SCRIPT_CODE_BYTES:
+            logger.error(f"Script '{script.name}' rejected: code size "
+                        f"({len(script.code.encode('utf-8'))} bytes) exceeds "
+                        f"limit ({MAX_SCRIPT_CODE_BYTES} bytes)")
+            return False
+        if len(script.name) > MAX_SCRIPT_NAME_LENGTH:
+            logger.error(f"Script name rejected: length ({len(script.name)}) "
+                        f"exceeds limit ({MAX_SCRIPT_NAME_LENGTH})")
+            return False
+
         with self._lock:
             # Stop if running
             if script.id in self.runtimes and self.runtimes[script.id].is_running():

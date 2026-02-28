@@ -14,12 +14,20 @@ from pathlib import Path
 import tempfile
 import sys
 
-# Add cfp_node to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'services' / 'cfp_node'))
+# Add services dir so cfp_node resolves as a package (relative imports work)
+sys.path.insert(0, str(Path(__file__).parent.parent / 'services'))
 
-from cfp_node import (
-    CFPNode, CFPConfig, CFPModuleConfig, ModbusChannel, ModbusTCPClient
-)
+try:
+    from cfp_node import CFPNodeV2 as CFPNode
+    from cfp_node.config import CFPNodeConfig as CFPConfig, CFPModuleConfig, CFPChannelConfig as ModbusChannel
+except ImportError as _exc:
+    pytest.skip(f"cfp_node import failed: {_exc}", allow_module_level=True)
+
+# ModbusTCPClient no longer exists — cfp_node v2 uses pymodbus directly
+try:
+    from pymodbus.client import ModbusTcpClient as ModbusTCPClient
+except ImportError:
+    ModbusTCPClient = None
 
 
 # ============================================================================

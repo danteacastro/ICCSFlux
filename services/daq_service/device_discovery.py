@@ -80,28 +80,37 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9226": {"category": ModuleCategory.RTD, "channels": 8, "description": "8-Ch RTD"},
 
     # Voltage input modules
-    "NI 9201": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±10V AI"},
-    "NI 9202": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI"},
-    "NI 9205": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 32, "description": "32-Ch ±10V AI"},
-    "NI 9206": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI"},
-    "NI 9215": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch Simultaneous ±10V"},
-    "NI 9220": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI"},
-    "NI 9221": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±60V AI"},
-    "NI 9222": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V AI"},
-    "NI 9223": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V AI"},
-    "NI 9229": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±60V AI"},
-    "NI 9239": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V AI 24-bit"},
+    "NI 9201": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±10V AI, 12-bit"},
+    "NI 9202": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V AI, 24-bit simultaneous"},
+    "NI 9204": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16 SE / 8 DIFF, ±0.2-10V, 16-bit, programmable gain"},
+    "NI 9205": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 32, "description": "32 SE / 16 DIFF, ±0.2-10V, 16-bit"},
+    "NI 9206": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16 DIFF, ±0.2-10V, 16-bit, high-isolation"},
+    "NI 9209": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 32, "description": "16 DIFF / 32 SE, ±10V, 24-bit"},
+    "NI 9215": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V simultaneous, 16-bit"},
+    "NI 9220": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch ±10V simultaneous, 16-bit"},
+    "NI 9221": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±60V, 12-bit"},
+    "NI 9222": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V, 16-bit, 500 kS/s"},
+    "NI 9223": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V, 16-bit, 1 MS/s"},
+    "NI 9224": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±10.5V, 16-bit"},
+    "NI 9225": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 3, "description": "3-Ch 300 Vrms, 24-bit (high-voltage power)"},
+    "NI 9228": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch ±60V, 24-bit"},
+    "NI 9229": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±60V, 24-bit isolated simultaneous"},
+    "NI 9238": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±0.5V, 24-bit (low-voltage precision)"},
+    "NI 9239": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 4, "description": "4-Ch ±10V, 24-bit simultaneous"},
+    "NI 9242": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 3, "description": "3-Ch 250 Vrms L-N, 24-bit (3-phase power)"},
+    "NI 9244": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 3, "description": "3-Ch 400 Vrms L-N, 24-bit (high-voltage power)"},
+    "NI 9252": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 8, "description": "8-Ch voltage digitizer"},
 
     # Combo modules (voltage + current on same module — per-channel type handled in _enumerate_channels)
-    "NI 9207": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch V/I AI (ai0-7 V, ai8-15 I)"},
+    "NI 9207": {"category": ModuleCategory.VOLTAGE_INPUT, "channels": 16, "description": "16-Ch V/I AI (ai0-7 V, ai8-15 I), 24-bit"},
 
     # Current input modules
-    "NI 9203": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI"},
-    "NI 9208": {"category": ModuleCategory.CURRENT_INPUT, "channels": 16, "description": "16-Ch ±20mA AI"},
-    "NI 9227": {"category": ModuleCategory.CURRENT_INPUT, "channels": 4, "description": "4-Ch Current AI"},
-    "NI 9246": {"category": ModuleCategory.CURRENT_INPUT, "channels": 3, "description": "3-Ch Current AI"},
-    "NI 9247": {"category": ModuleCategory.CURRENT_INPUT, "channels": 3, "description": "3-Ch Current AI"},
-    "NI 9253": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI"},
+    "NI 9203": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI, 16-bit"},
+    "NI 9208": {"category": ModuleCategory.CURRENT_INPUT, "channels": 16, "description": "16-Ch ±20mA AI, 24-bit high-precision"},
+    "NI 9227": {"category": ModuleCategory.CURRENT_INPUT, "channels": 4, "description": "4-Ch 5 Arms AI, 24-bit (AC power)"},
+    "NI 9246": {"category": ModuleCategory.CURRENT_INPUT, "channels": 3, "description": "3-Ch 20 Arms AI, 24-bit (3-phase power)"},
+    "NI 9247": {"category": ModuleCategory.CURRENT_INPUT, "channels": 3, "description": "3-Ch 50 Arms AI, 24-bit (high-current 3-phase)"},
+    "NI 9253": {"category": ModuleCategory.CURRENT_INPUT, "channels": 8, "description": "8-Ch ±20mA AI, 24-bit simultaneous"},
 
     # Strain/Bridge modules
     "NI 9235": {"category": ModuleCategory.STRAIN_INPUT, "channels": 8, "description": "8-Ch Quarter Bridge"},
@@ -128,7 +137,9 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     "NI 9423": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 8, "description": "8-Ch 24V DI"},
     "NI 9425": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 32, "description": "32-Ch 24V Sinking DI"},
     "NI 9426": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 32, "description": "32-Ch 24V Sourcing DI"},
-    "NI 9435": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 4, "description": "4-Ch Universal DI"},
+    "NI 9435": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 4, "description": "4-Ch Universal DI (5-250 VDC/VAC)"},
+    "NI 9436": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 8, "description": "8-Ch 12-24V DI, 1 µs (high-speed)"},
+    "NI 9437": {"category": ModuleCategory.DIGITAL_INPUT, "channels": 8, "description": "8-Ch 250 VDC/VAC DI (high-voltage)"},
 
     "NI 9470": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 8, "description": "8-Ch 24V Sourcing DO"},
     "NI 9472": {"category": ModuleCategory.DIGITAL_OUTPUT, "channels": 8, "description": "8-Ch 24V Sourcing DO"},
@@ -143,7 +154,7 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
 
     # Voltage output modules
     "NI 9260": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
-    "NI 9262": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 2, "description": "2-Ch ±10V AO"},
+    "NI 9262": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 6, "description": "6-Ch ±10V AO, 16-bit, 1 MS/s"},
     "NI 9263": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
     "NI 9264": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 16, "description": "16-Ch ±10V AO"},
     "NI 9269": {"category": ModuleCategory.VOLTAGE_OUTPUT, "channels": 4, "description": "4-Ch ±10V AO"},
@@ -155,9 +166,28 @@ NI_MODULE_DATABASE: Dict[str, Dict[str, Any]] = {
     # Counter modules
     "NI 9361": {"category": ModuleCategory.COUNTER_INPUT, "channels": 8, "description": "8-Ch Counter/DI"},
 
-    # Universal modules (configurable - defaults to bridge)
-    "NI 9219": {"category": ModuleCategory.BRIDGE_INPUT, "channels": 4, "description": "4-Ch Universal AI"},
+    # Universal modules (per-channel configurable: V, I, TC, RTD, R, bridge)
+    "NI 9218": {"category": ModuleCategory.BRIDGE_INPUT, "channels": 2, "description": "2-Ch Universal AI (V, I, bridge, IEPE)"},
+    "NI 9219": {"category": ModuleCategory.BRIDGE_INPUT, "channels": 4, "description": "4-Ch Universal AI (V, I, TC, RTD, R, bridge)"},
 }
+
+
+# CompactFieldPoint backplane database — slot count per model
+CFP_BACKPLANES: Dict[str, Dict[str, Any]] = {
+    'cFP-1804': {'slots': 4, 'description': '4-Slot Ethernet Backplane'},
+    'cFP-1808': {'slots': 8, 'description': '8-Slot Ethernet Backplane'},
+    'cFP-2020': {'slots': 8, 'description': '8-Slot Programmable Controller'},
+    'cFP-2120': {'slots': 8, 'description': '8-Slot High-Performance Controller'},
+}
+CFP_SLOT_REGISTER_OFFSET = 100  # Slot base address = (slot - 1) * 100
+
+# Optional pymodbus import for CFP slot probing
+try:
+    from pymodbus.client import ModbusTcpClient as _CfpModbusTcpClient
+    from pymodbus.exceptions import ModbusException as _CfpModbusException
+    _PYMODBUS_AVAILABLE = True
+except ImportError:
+    _PYMODBUS_AVAILABLE = False
 
 
 @dataclass
@@ -627,6 +657,116 @@ class DeviceDiscovery:
         """Get list of known GC nodes"""
         with self._gc_lock:
             return list(self._gc_nodes.values())
+
+    def scan_cfp(self, ip_address: str, port: int = 502, slave_id: int = 1,
+                 backplane_model: str = 'cFP-1808', device_name: str = '') -> Dict[str, Any]:
+        """
+        Probe a CFP backplane via Modbus TCP to detect populated slots.
+
+        Since CFP hardware does not expose module IDs via standard Modbus registers,
+        we detect slot occupancy by attempting reads at each slot's base address.
+        The register type that responds reveals the general I/O category.
+
+        Args:
+            ip_address: CFP backplane IP address
+            port: Modbus TCP port (default 502)
+            slave_id: Modbus slave ID (default 1)
+            backplane_model: Backplane model for slot count (e.g., 'cFP-1808')
+            device_name: Optional device name for result labeling
+
+        Returns:
+            Dict with success, slots array, and message
+        """
+        if not _PYMODBUS_AVAILABLE:
+            return {
+                'success': False,
+                'message': 'Modbus library (pymodbus) not available',
+                'ip_address': ip_address,
+                'port': port,
+                'backplane_model': backplane_model,
+                'device_name': device_name,
+                'slots': []
+            }
+
+        backplane = CFP_BACKPLANES.get(backplane_model, {'slots': 8})
+        num_slots = backplane['slots']
+
+        # Create temporary Modbus TCP client for probing
+        client = _CfpModbusTcpClient(host=ip_address, port=port, timeout=0.5)
+
+        try:
+            if not client.connect():
+                return {
+                    'success': False,
+                    'message': f'Cannot connect to {ip_address}:{port}',
+                    'ip_address': ip_address,
+                    'port': port,
+                    'backplane_model': backplane_model,
+                    'device_name': device_name,
+                    'slots': []
+                }
+
+            slots = []
+            populated_count = 0
+
+            for slot_num in range(1, num_slots + 1):
+                base_addr = (slot_num - 1) * CFP_SLOT_REGISTER_OFFSET
+                slot_result = {
+                    'slot': slot_num,
+                    'populated': False,
+                    'category': '',
+                    'register_type': ''
+                }
+
+                # Probe register types in priority order.
+                # Stop on first successful read — that reveals the module category.
+                probe_sequence = [
+                    ('input', 'analog_input', lambda a: client.read_input_registers(a, count=1, slave=slave_id)),
+                    ('discrete', 'digital_input', lambda a: client.read_discrete_inputs(a, count=1, slave=slave_id)),
+                    ('holding', 'analog_output', lambda a: client.read_holding_registers(a, count=1, slave=slave_id)),
+                    ('coil', 'digital_output', lambda a: client.read_coils(a, count=1, slave=slave_id)),
+                ]
+
+                for reg_type, category, read_fn in probe_sequence:
+                    try:
+                        result = read_fn(base_addr)
+                        if result is not None and not result.isError():
+                            slot_result['populated'] = True
+                            slot_result['category'] = category
+                            slot_result['register_type'] = reg_type
+                            populated_count += 1
+                            break
+                    except Exception:
+                        continue
+
+                slots.append(slot_result)
+
+            return {
+                'success': True,
+                'ip_address': ip_address,
+                'port': port,
+                'backplane_model': backplane_model,
+                'device_name': device_name,
+                'slots': slots,
+                'message': f'Found {populated_count} populated slot{"s" if populated_count != 1 else ""} out of {num_slots}'
+            }
+
+        except Exception as e:
+            logger.error(f"CFP slot probe failed for {ip_address}:{port}: {e}")
+            return {
+                'success': False,
+                'message': f'Probe failed: {e}',
+                'ip_address': ip_address,
+                'port': port,
+                'backplane_model': backplane_model,
+                'device_name': device_name,
+                'slots': []
+            }
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
 
     def scan(self, include_crio: bool = True, include_opto22: bool = True) -> DiscoveryResult:
         """

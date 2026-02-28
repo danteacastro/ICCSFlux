@@ -411,6 +411,48 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
           </div>
         </div>
 
+        <!-- ISA Function Block Configuration -->
+        <div v-if="selectedSymbol.type === 'isaFunctionBlock'" class="prop-section">
+          <div class="section-title">ISA Letters</div>
+          <input
+            type="text"
+            class="prop-input"
+            :value="selectedSymbol.isaLetters || ''"
+            @change="updateSymbol({ isaLetters: ($event.target as HTMLInputElement).value.toUpperCase() || undefined })"
+            placeholder="e.g. TIC, FT, PIC"
+            maxlength="5"
+          />
+          <div class="section-title" style="margin-top: 6px">Location</div>
+          <select
+            class="prop-select"
+            :value="selectedSymbol.isaLocation || 'field'"
+            @change="updateSymbol({ isaLocation: ($event.target as HTMLSelectElement).value as any })"
+          >
+            <option value="field">Field (circle)</option>
+            <option value="panel">Panel (midline)</option>
+            <option value="behind-panel">Behind Panel (dashed)</option>
+            <option value="local-panel">Local Panel (square)</option>
+            <option value="dcs">DCS (hexagon)</option>
+            <option value="plc">PLC (diamond)</option>
+            <option value="shared">Shared Display</option>
+          </select>
+          <details class="isa-reference">
+            <summary>ISA Letter Reference</summary>
+            <div class="isa-ref-grid">
+              <div class="isa-ref-col">
+                <div class="isa-ref-header">Variable</div>
+                <div class="isa-ref-row">T Temperature, F Flow, P Pressure, L Level</div>
+                <div class="isa-ref-row">A Analysis, V Vibration, W Weight, S Speed</div>
+              </div>
+              <div class="isa-ref-col">
+                <div class="isa-ref-header">Function</div>
+                <div class="isa-ref-row">I Indicator, C Controller, T Transmitter</div>
+                <div class="isa-ref-row">A Alarm, S Switch, R Recorder, V Valve</div>
+              </div>
+            </div>
+          </details>
+        </div>
+
         <!-- Off-Page Connector: Linked Page -->
         <div v-if="OFF_PAGE_CONNECTOR_TYPES.has(selectedSymbol.type)" class="prop-section">
           <div class="section-title">Linked Page</div>
@@ -1694,6 +1736,35 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
   color: var(--text-muted);
   font-style: italic;
   margin-top: 3px;
+}
+
+.isa-reference {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.isa-reference summary {
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.isa-ref-grid {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.isa-ref-col {
+  flex: 1;
+}
+.isa-ref-header {
+  font-weight: 600;
+  font-size: 10px;
+  margin-bottom: 2px;
+  color: var(--text-secondary);
+}
+.isa-ref-row {
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .prop-input::placeholder {

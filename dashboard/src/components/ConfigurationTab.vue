@@ -747,7 +747,7 @@ const systemSettingsForm = ref({
   project_name: '',
   scan_rate_hz: 4,
   publish_rate_hz: 4,
-  project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22',
+  project_mode: 'cdaq' as 'cdaq' | 'crio' | 'opto22' | 'cfp',
   watchdog_output: {
     enabled: false,
     channel: '',
@@ -1311,6 +1311,28 @@ function addNewChannel() {
     config.node_id = newChannelForm.value.node_id || ''
   }
 
+  // Add Modbus defaults for new Modbus channels so backend can parse them
+  const ct = newChannelForm.value.channel_type
+  if (ct === 'modbus_register') {
+    config.modbus_register_type = 'holding'
+    config.modbus_data_type = 'float32'
+    config.modbus_byte_order = 'big'
+    config.modbus_word_order = 'big'
+    config.modbus_scale = 1.0
+    config.modbus_offset = 0.0
+    // Build physical_channel in modbus format if user entered a plain address
+    if (resolvedPhysical && !resolvedPhysical.startsWith('modbus:')) {
+      config.physical_channel = `modbus:holding:${resolvedPhysical}`
+    }
+  }
+  if (ct === 'modbus_coil') {
+    config.modbus_register_type = 'coil'
+    // Build physical_channel in modbus format if user entered a plain address
+    if (resolvedPhysical && !resolvedPhysical.startsWith('modbus:')) {
+      config.physical_channel = `modbus:coil:${resolvedPhysical}`
+    }
+  }
+
   mqtt.updateChannelConfig(tagName, config)
   showFeedback('success', `Adding channel: ${tagName}`)
   channelEnabled.value[tagName] = true
@@ -1379,7 +1401,7 @@ function deleteChannel(channelName: string, event?: Event) {
   }
 
   // Send delete command to backend
-  mqtt.sendCommand('config/channel/delete', { channel: channelName })
+  mqtt.sendNodeCommand('config/channel/delete', { channel: channelName })
   showFeedback('info', `Deleting channel: ${channelName}...`)
 
   // Close config panel if this channel was selected
@@ -1429,7 +1451,7 @@ function renameChannel(oldName: string, newName: string) {
   mqtt.createChannel(newName, { ...config })
 
   // Delete old channel
-  mqtt.sendCommand('config/channel/delete', { channel: oldName })
+  mqtt.sendNodeCommand('config/channel/delete', { channel: oldName })
 
   // Update local enabled state
   if (channelEnabled.value[oldName] !== undefined) {
@@ -1677,7 +1699,7 @@ function openSystemSettings() {
     project_name: projectFiles.currentProjectData.value?.name || projectFiles.currentProject.value?.replace('.json', '') || '',
     scan_rate_hz: store.status?.scan_rate_hz || 4,
     publish_rate_hz: store.status?.publish_rate_hz || 4,
-    project_mode: (store.status?.project_mode as 'cdaq' | 'crio' | 'opto22') || 'cdaq',
+    project_mode: (store.status?.project_mode as 'cdaq' | 'crio' | 'opto22' | 'cfp') || 'cdaq',
     watchdog_output: {
       enabled: wd?.enabled || false,
       channel: wd?.channel || '',
@@ -1969,7 +1991,7 @@ function scanDevices() {
 
   // Get current project mode from system settings or store status
   const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
-  const modeLabel = mode === 'cdaq' ? 'cDAQ' : mode === 'crio' ? 'cRIO' : 'Opto22'
+  const modeLabel = mode === 'cdaq' ? 'cDAQ' : mode === 'crio' ? 'cRIO' : mode === 'cfp' ? 'CFP' : 'Opto22'
   showFeedback('info', `Discovering ${modeLabel} devices...`)
   userClosedDiscovery.value = false
   mqtt.scanDevices(mode)
@@ -2555,6 +2577,7 @@ interface ChannelTypeTab {
   fullName: string
   adminOnly?: boolean
   hidden?: boolean
+  cfpOnly?: boolean
 }
 
 const channelTypeTabs: ChannelTypeTab[] = [
@@ -2575,13 +2598,19 @@ const channelTypeTabs: ChannelTypeTab[] = [
   { id: 'rest_api', label: 'REST', icon: '🌐', fullName: 'REST API Device' },
   { id: 'opc_ua', label: 'OPC-UA', icon: '🔗', fullName: 'OPC-UA Server' },
   { id: 'ethernet_ip', label: 'AB PLC', icon: '🏭', fullName: 'Allen Bradley EtherNet/IP', hidden: true },
-  { id: 'cfp', label: 'CFP', icon: '📦', fullName: 'Compact FieldPoint (Legacy)', hidden: true },
+  { id: 'cfp', label: 'CFP', icon: '📦', fullName: 'Compact FieldPoint', cfpOnly: true },
   { id: 'gc', label: 'GC', icon: '\u2697', fullName: 'GC Analyzer' },
 ]
 
-// Filter tabs - hide admin-only tabs from non-admins
+// Filter tabs - hide admin-only tabs from non-admins, show CFP tab only in CFP mode
 const visibleTypeTabs = computed(() => {
-  return channelTypeTabs.filter(tab => !tab.hidden && (!tab.adminOnly || isAdmin.value))
+  const mode = store.status?.project_mode || 'cdaq'
+  return channelTypeTabs.filter(tab => {
+    if (tab.hidden) return false
+    if (tab.adminOnly && !isAdmin.value) return false
+    if (tab.cfpOnly && mode !== 'cfp') return false
+    return true
+  })
 })
 
 // Get full name for current signal type
@@ -2632,10 +2661,13 @@ const filteredChannels = computed(() => {
 
   // Filter by type
   if (activeTypeTab.value !== 'all') {
-    if (activeTypeTab.value === 'modbus') {
-      // Modbus tab shows both modbus_register and modbus_coil types
+    if (activeTypeTab.value === 'cfp') {
+      // CFP tab shows all channels with source_type 'cfp'
+      channels = channels.filter(([_, ch]) => ch.source_type === 'cfp')
+    } else if (activeTypeTab.value === 'modbus') {
+      // Modbus tab shows both modbus_register and modbus_coil types (excludes CFP channels)
       channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
+        (ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil') && ch.source_type !== 'cfp'
       )
     } else if (activeTypeTab.value === 'voltage_output') {
       // V-OUT: voltage_output channels (or legacy analog_output with voltage range)
@@ -3349,6 +3381,8 @@ function saveChannelConfig() {
     if (mc.cjc_source === 'constant') {
       config.cjc_value = mc.cjc_value ?? 25.0
     }
+    config.open_detect = mc.open_detect ?? true  // Open TC detection (default: enabled)
+    config.auto_zero = mc.auto_zero ?? false
   }
 
   // Add RTD-specific settings
@@ -3365,6 +3399,7 @@ function saveChannelConfig() {
     if (rangeMatch) {
       config.voltage_range = parseFloat(rangeMatch[1])
     }
+    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
     config.scale_type = mc.scale_type
     config.scale_slope = mc.scale_slope
     config.scale_offset = mc.scale_offset
@@ -3381,6 +3416,8 @@ function saveChannelConfig() {
     if (rangeMatch) {
       config.current_range_ma = parseFloat(rangeMatch[1])
     }
+    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
+    config.shunt_resistor_loc = mc.shunt_location ?? 'internal'  // internal or external
     config.four_twenty_scaling = mc.four_twenty_scaling
     config.eng_units_min = mc.eng_units_min
     config.eng_units_max = mc.eng_units_max
@@ -3401,18 +3438,23 @@ function saveChannelConfig() {
     config.digital_invert = mc.di_alarm_invert ?? false
   }
 
-  // Strain types
+  // Strain types — field names must match config_parser.py ChannelConfig
   if (['strain', 'strain_input'].includes(channelType)) {
-    config.bridge_config = mc.bridge_config
-    config.gage_factor = mc.gage_factor
-    config.excitation_voltage = mc.excitation_voltage
+    config.strain_config = mc.bridge_config  // UI: bridge_config → backend: strain_config
+    config.strain_gage_factor = mc.gage_factor
+    config.strain_excitation_voltage = mc.excitation_voltage
+    config.strain_resistance = mc.nominal_resistance ?? 350.0
+    if (mc.poisson_ratio != null) {
+      config.poisson_ratio = mc.poisson_ratio
+    }
   }
 
-  // IEPE types
+  // IEPE types — field names must match config_parser.py ChannelConfig
   if (['iepe', 'iepe_input'].includes(channelType)) {
-    config.coupling = mc.coupling
-    config.sensitivity = mc.sensitivity
-    config.excitation_current = mc.excitation_current
+    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
+    config.iepe_coupling = mc.coupling  // UI: coupling → backend: iepe_coupling
+    config.iepe_sensitivity = mc.sensitivity  // UI: sensitivity → backend: iepe_sensitivity
+    config.iepe_current = (mc.excitation_current || 4) / 1000  // UI: mA → backend: Amps
   }
 
   // Counter types
@@ -3421,6 +3463,12 @@ function saveChannelConfig() {
     config.counter_edge = mc.edge
     config.initial_count = mc.initial_count
     config.direction = mc.count_direction
+    // Encoder-specific fields (position mode)
+    if (mc.mode === 'position') {
+      config.decoding_type = mc.decoding_type ?? 'X4'
+      config.pulses_per_revolution = mc.pulses_per_revolution ?? 1024
+      config.z_index_enable = mc.z_index_enable ?? false
+    }
   }
 
   // Resistance types
@@ -3479,6 +3527,34 @@ function saveChannelConfig() {
     config.pulse_frequency = mc.frequency
     config.pulse_duty_cycle = mc.duty_cycle
     config.idle_state = mc.idle_state
+  }
+
+  // Modbus register
+  if (channelType === 'modbus_register') {
+    const ec = editingConfig.value.config
+    config.modbus_register_type = ec.modbus_register_type || 'holding'
+    config.modbus_slave_id = ec.modbus_slave_id || undefined
+    config.modbus_address = ec.modbus_address ?? 0
+    config.modbus_data_type = ec.modbus_data_type || 'float32'
+    config.modbus_byte_order = ec.modbus_byte_order || 'big'
+    config.modbus_word_order = ec.modbus_word_order || 'big'
+    config.modbus_scale = ec.modbus_scale ?? 1.0
+    config.modbus_offset = ec.modbus_offset ?? 0.0
+    config.modbus_register_count = ec.modbus_register_count || undefined
+    config.modbus_register_index = ec.modbus_register_index ?? 0
+    // Build physical_channel from Modbus fields so backend can parse it
+    config.physical_channel = `modbus:${config.modbus_register_type}:${config.modbus_address}`
+  }
+
+  // Modbus coil
+  if (channelType === 'modbus_coil') {
+    const ec = editingConfig.value.config
+    config.modbus_register_type = ec.modbus_register_type || 'coil'
+    config.modbus_slave_id = ec.modbus_slave_id || undefined
+    config.modbus_address = ec.modbus_address ?? 0
+    config.invert = ec.invert ?? false
+    // Build physical_channel from Modbus fields
+    config.physical_channel = `modbus:${config.modbus_register_type}:${config.modbus_address}`
   }
 
   // Include new_name if renaming the channel
@@ -3734,7 +3810,7 @@ function reloadConfig() {
   }
 
   isReloading.value = true
-  mqtt.sendCommand('config/reload', {})
+  mqtt.sendNodeCommand('config/reload', {})
   showFeedback('info', 'Reloading configuration from disk...')
 
   // Reset dirty flag and reload delay
@@ -3779,7 +3855,7 @@ function openLoadDialog() {
     return
   }
   // Request list of available configs
-  mqtt.sendCommand('config/list')
+  mqtt.sendNodeCommand('config/list')
   showLoadDialog.value = true
 }
 
@@ -3863,6 +3939,7 @@ const tableColumns = computed(() => {
     case 'voltage_input':
       return [
         ...baseColumns,
+        { key: 'terminal_config', label: 'TERM', width: '70px' },
         { key: 'raw_min', label: 'RAW MIN', width: '70px' },
         { key: 'raw_max', label: 'RAW MAX', width: '70px' },
         { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
@@ -3873,6 +3950,7 @@ const tableColumns = computed(() => {
     case 'current_input':
       return [
         ...baseColumns,
+        { key: 'terminal_config', label: 'TERM', width: '70px' },
         { key: 'raw_min', label: 'RAW MIN', width: '70px' },
         { key: 'raw_max', label: 'RAW MAX', width: '70px' },
         { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
@@ -3893,6 +3971,7 @@ const tableColumns = computed(() => {
     case 'iepe_input':
       return [
         ...baseColumns,
+        { key: 'terminal_config', label: 'TERM', width: '70px' },
         { key: 'coupling', label: 'COUPLING', width: '70px' },
         { key: 'sensitivity', label: 'SENS (mV/g)', width: '90px' },
         { key: 'units', label: 'UNITS', width: '60px' },
@@ -4584,6 +4663,15 @@ watch(
               </template>
               <template v-else-if="activeTypeTab === 'voltage_input'">
                 <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'DEFAULT'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                  </select>
+                </td>
+                <td class="editable-cell" @click.stop>
                   <input
                     type="text"
                     :value="config.pre_scaled_min ?? (typeof config.voltage_range === 'number' ? -Math.abs(config.voltage_range) : -10)"
@@ -4634,6 +4722,15 @@ watch(
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'current_input'">
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'DEFAULT'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                  </select>
+                </td>
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
@@ -4686,17 +4783,6 @@ watch(
               </template>
               <template v-else-if="activeTypeTab === 'strain'">
                 <td class="editable-cell" @click.stop>
-                  <input
-                    type="text"
-                    :value="config.unit || 'mA'"
-                    @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
-                    class="inline-input"
-                    :disabled="!canEdit"
-                  />
-                </td>
-              </template>
-              <template v-else-if="activeTypeTab === 'strain'">
-                <td class="editable-cell" @click.stop>
                   <select
                     :value="config.bridge_config || 'full'"
                     @change="updateChannelField(name, 'bridge_config', ($event.target as HTMLSelectElement).value)"
@@ -4725,8 +4811,20 @@ watch(
                     :disabled="!canEdit"
                   />V
                 </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
+                </td>
               </template>
               <template v-else-if="activeTypeTab === 'iepe'">
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'DEFAULT'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                  >
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                  </select>
+                </td>
                 <td class="editable-cell" @click.stop>
                   <select
                     :value="config.coupling || 'AC'"
@@ -4755,6 +4853,9 @@ watch(
                     class="inline-input"
                     :disabled="!canEdit"
                   />
+                </td>
+                <td class="col-value" :class="getAlarmStatus(name)">
+                  <span class="value">{{ getCurrentValue(name) }}</span>
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'counter'">
@@ -5593,6 +5694,14 @@ watch(
                   </select>
                 </div>
                 <div class="form-row">
+                  <label>Terminal Configuration</label>
+                  <select v-model="editingConfig.moduleConfig.terminal_config">
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">
+                      {{ t.label }}
+                    </option>
+                  </select>
+                </div>
+                <div class="form-row">
                   <label>Shunt Location</label>
                   <select v-model="editingConfig.moduleConfig.shunt_location">
                     <option value="internal">Internal</option>
@@ -5741,6 +5850,14 @@ watch(
             <template v-if="editingConfig.config.channel_type === 'iepe'">
               <div class="config-section">
                 <h4>IEPE/Accelerometer Settings</h4>
+                <div class="form-row">
+                  <label>Terminal Configuration</label>
+                  <select v-model="editingConfig.moduleConfig.terminal_config">
+                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">
+                      {{ t.label }}
+                    </option>
+                  </select>
+                </div>
                 <div class="form-row">
                   <label>Input Coupling</label>
                   <select v-model="editingConfig.moduleConfig.coupling">
@@ -5954,8 +6071,8 @@ watch(
               </div>
             </template>
 
-            <!-- Modbus Register settings -->
-            <template v-if="editingConfig.config.channel_type === 'modbus_register'">
+            <!-- Modbus Register settings (also shown for CFP channels which use Modbus transport) -->
+            <template v-if="editingConfig.config.channel_type === 'modbus_register' || editingConfig.config.source_type === 'cfp'">
               <div class="config-section">
                 <h4>Modbus Settings</h4>
                 <div class="form-row-group">
@@ -6731,13 +6848,16 @@ watch(
                   <option value="cdaq">cDAQ (PC is controller)</option>
                   <option value="crio">cRIO (cRIO is PLC)</option>
                   <option value="opto22">Opto22 (groov EPIC is PLC)</option>
+                  <option value="cfp">CFP (CompactFieldPoint via Modbus)</option>
                 </select>
                 <span class="form-hint">
                   {{ systemSettingsForm.project_mode === 'cdaq'
                     ? 'PC handles all control logic locally'
                     : systemSettingsForm.project_mode === 'crio'
                       ? 'cRIO runs autonomously - PC is HMI only'
-                      : 'groov EPIC/RIO runs autonomously - PC is HMI only' }}
+                      : systemSettingsForm.project_mode === 'cfp'
+                        ? 'CompactFieldPoint I/O via Modbus — PC handles all control logic'
+                        : 'groov EPIC/RIO runs autonomously - PC is HMI only' }}
                 </span>
               </div>
             </div>
@@ -6769,7 +6889,7 @@ watch(
             <div class="settings-section">
               <h4>Watchdog Output</h4>
               <span class="form-hint" style="margin-bottom: 8px; display: block;">
-                Toggles a digital output at a fixed rate so an external safety relay can detect the cRIO is alive.
+                Toggles a digital output at a fixed rate so an external safety relay can detect the edge node is alive. Pushed to cRIO and Opto22 nodes.
               </span>
               <div class="form-row">
                 <label>Enabled</label>

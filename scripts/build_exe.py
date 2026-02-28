@@ -5,19 +5,34 @@ This creates a self-contained folder with native .exe files that can run
 on any Windows PC without installing Python, Node.js, or Mosquitto system-wide.
 
 Usage:
-    python build_exe.py           # Build with PyInstaller compilation
-    python build_exe.py --quick   # Skip recompilation if .exe exists
+    python build_exe.py               # Build with PyInstaller compilation
+    python build_exe.py --quick       # Skip recompilation if .exe exists
+    python build_exe.py --sign        # Sign executables after build
+    python build_exe.py --no-sbom     # Skip SBOM/vulnerability audit
 
 Output: dist/ICCSFlux-Portable/
+
+Build artifacts include:
+- VERSION.txt               Git commit hash, branch, build timestamp
+- SHA256SUMS.txt            SHA-256 hashes of all executables
+- sbom.json                 CycloneDX Software Bill of Materials
+- vulnerability-audit.json  pip-audit vulnerability scan results
+- requirements-lock.txt     Pinned dependency versions
 
 Requirements:
 - Python 3.8+ with PyInstaller installed
 - Node.js + npm (to build the dashboard)
 - All Python dependencies installed (for PyInstaller to bundle)
+
+Optional (for code signing):
+- Windows SDK (signtool.exe)
+- Code signing certificate (.pfx file)
+- Set env vars: CODE_SIGN_PFX=path/to/cert.pfx CODE_SIGN_PASSWORD=password
 """
 
 import os
 import sys
+import hashlib
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -101,6 +116,33 @@ def get_build_version() -> dict:
         log("git not found — version info will be incomplete", "WARN")
 
     return version
+
+
+def setup_reproducible_env():
+    """Set environment variables for reproducible (deterministic) builds.
+
+    PYTHONHASHSEED=1 fixes Python's dict/set ordering randomization.
+    SOURCE_DATE_EPOCH fixes PE header timestamps to the git commit time.
+
+    Without these, every build produces a different SHA-256 hash even
+    when the source code is identical.  See docs/IT_Security_and_Compliance_Guide.md.
+    """
+    os.environ["PYTHONHASHSEED"] = "1"
+
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            os.environ["SOURCE_DATE_EPOCH"] = result.stdout.strip()
+            log(f"Reproducible build: PYTHONHASHSEED=1, SOURCE_DATE_EPOCH={result.stdout.strip()}")
+        else:
+            os.environ["SOURCE_DATE_EPOCH"] = "0"
+            log("Reproducible build: PYTHONHASHSEED=1 (git timestamp unavailable)", "WARN")
+    except FileNotFoundError:
+        os.environ["SOURCE_DATE_EPOCH"] = "0"
+        log("Reproducible build: PYTHONHASHSEED=1 (git not found)", "WARN")
 
 
 def write_version_file(version: dict):
@@ -635,45 +677,12 @@ def copy_documentation():
 
 
 def create_batch_launchers():
-    """Create simple batch file launchers."""
+    """Create service install/uninstall batch scripts.
+
+    Note: ICCSFlux.bat has been deprecated — ICCSFlux.exe is now a native
+    desktop app (pywebview) that users launch directly.
+    """
     log("Creating launchers...")
-
-    # Main launcher - improved with error handling
-    bat_content = '''@echo off
-title ICCSFlux
-cd /d "%~dp0"
-
-REM Check if ICCSFlux.exe exists
-if not exist "ICCSFlux.exe" (
-    echo.
-    echo ERROR: ICCSFlux.exe not found!
-    echo.
-    echo Make sure you're running this from the ICCSFlux-Portable folder.
-    echo.
-    pause
-    exit /b 1
-)
-
-REM Start ICCSFlux
-echo.
-echo Starting ICCSFlux...
-echo.
-echo Dashboard will open at: http://localhost:5173
-echo Press Ctrl+C to stop
-echo.
-
-ICCSFlux.exe
-
-REM If ICCSFlux exits with error, pause so user can see the error
-if errorlevel 1 (
-    echo.
-    echo ICCSFlux exited with an error.
-    echo Check data\\logs\\ for details.
-    echo.
-    pause
-)
-'''
-    (BUILD_DIR / "ICCSFlux.bat").write_text(bat_content)
 
     # Service install script - installs all services
     service_install = '''@echo off
@@ -833,13 +842,14 @@ def create_readme(version: dict = None):
 
 QUICK START
 -----------
-1. Double-click ICCSFlux.bat
-2. Dashboard opens automatically at http://localhost:5173
-3. Press Ctrl+C in the console window to stop
+1. Double-click ICCSFlux.exe
+2. The launcher window opens showing service status
+3. Click "Open Dashboard" to view the web interface
+4. Close the launcher window to stop all services
 
 WHAT'S INCLUDED
 ---------------
-ICCSFlux.exe        - Main launcher (8 MB)
+ICCSFlux.exe        - Launcher + service manager (native desktop app)
 DAQService.exe      - Data acquisition backend (24 MB)
 AzureUploader.exe   - Azure IoT Hub integration (11 MB)
 
@@ -851,11 +861,12 @@ data/               - Runtime data, logs, recordings
 RUNNING OPTIONS
 ---------------
 
-Option 1: Interactive Mode (recommended for testing)
-  - Double-click: ICCSFlux.bat
-  - Shows startup messages
-  - Opens browser automatically
-  - Press Ctrl+C to stop
+Option 1: Desktop Mode (recommended)
+  - Double-click: ICCSFlux.exe
+  - Native window with live service monitor
+  - Click "Open Dashboard" for the web interface
+  - Close the window to stop all services
+  - Pin ICCSFlux.exe to your taskbar for quick access
 
 Option 2: Windows Services (recommended for production)
   - Run as Administrator: Install-Service.bat
@@ -922,9 +933,9 @@ Problem: Services won't start
   - Run Install-Service.bat as Administrator
 
 Problem: Dashboard not loading
-  - Check if ICCSFlux.exe is running
+  - Check the launcher window for error messages
   - Try http://localhost:5173 directly in browser
-  - Check data/logs/web_server.log
+  - Check data/logs/ for service logs
 
 Problem: Port conflicts
   - Default ports: 1883 (MQTT), 5173 (Dashboard), 9001 (MQTT WebSocket)
@@ -984,6 +995,362 @@ See VERSION.txt for full details.
     return True
 
 
+def generate_requirements_lock():
+    """Freeze current environment to a lock file for reproducibility."""
+    log("Generating requirements lock file...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            lock_path = BUILD_DIR / "requirements-lock.txt"
+            lock_path.write_text(result.stdout)
+            count = len([l for l in result.stdout.strip().splitlines() if l and not l.startswith('#')])
+            log(f"Requirements lock: {count} packages frozen", "OK")
+            return True
+    except Exception as e:
+        log(f"Failed to freeze requirements: {e}", "WARN")
+    return False
+
+
+def generate_sbom():
+    """Generate a CycloneDX SBOM (Software Bill of Materials) in JSON format.
+
+    Requires: pip install cyclonedx-bom
+    Falls back gracefully if not installed.
+    """
+    log("Generating SBOM (Software Bill of Materials)...")
+    sbom_path = BUILD_DIR / "sbom.json"
+
+    try:
+        # cyclonedx-bom v7+ uses -o / --of flags
+        result = subprocess.run(
+            [sys.executable, "-m", "cyclonedx_py", "environment",
+             "-o", str(sbom_path), "--of", "json",
+             "--output-reproducible"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and sbom_path.exists():
+            log("SBOM generated (CycloneDX JSON)", "OK")
+            return True
+        # Fallback for older cyclonedx-bom versions
+        result = subprocess.run(
+            [sys.executable, "-m", "cyclonedx_py", "environment",
+             "--output", str(sbom_path), "--format", "json"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and sbom_path.exists():
+            log("SBOM generated (CycloneDX JSON)", "OK")
+            return True
+    except Exception:
+        pass
+
+    log("cyclonedx-bom not installed — SBOM skipped (pip install cyclonedx-bom)", "WARN")
+    return False
+
+
+def run_vulnerability_audit():
+    """Run pip-audit to check dependencies for known vulnerabilities.
+
+    Requires: pip install pip-audit
+    Falls back gracefully if not installed.
+    """
+    log("Running vulnerability audit (pip-audit)...")
+    audit_path = BUILD_DIR / "vulnerability-audit.json"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip_audit",
+             "--format", "json", "--output", str(audit_path)],
+            capture_output=True, text=True,
+            timeout=120,
+        )
+        if audit_path.exists():
+            if result.returncode == 0:
+                log("Vulnerability audit: no known vulnerabilities", "OK")
+            else:
+                log("Vulnerability audit: findings detected — review vulnerability-audit.json", "WARN")
+            return True
+    except subprocess.TimeoutExpired:
+        log("Vulnerability audit timed out (120s)", "WARN")
+    except Exception:
+        pass
+
+    log("pip-audit not installed — vulnerability scan skipped (pip install pip-audit)", "WARN")
+    return False
+
+
+def sign_executables():
+    """Sign all .exe files in the build directory with Authenticode.
+
+    Requires:
+    - Windows SDK (signtool.exe on PATH or in standard locations)
+    - Environment variables:
+      CODE_SIGN_PFX      — path to the .pfx certificate file
+      CODE_SIGN_PASSWORD  — password for the .pfx file
+    """
+    pfx_path = os.environ.get("CODE_SIGN_PFX", "")
+    pfx_password = os.environ.get("CODE_SIGN_PASSWORD", "")
+
+    if not pfx_path:
+        log("Code signing skipped — set CODE_SIGN_PFX and CODE_SIGN_PASSWORD to enable", "WARN")
+        return False
+
+    if not os.path.exists(pfx_path):
+        log(f"Code signing certificate not found: {pfx_path}", "ERROR")
+        return False
+
+    # Find signtool.exe
+    signtool = shutil.which("signtool")
+    if not signtool:
+        # Check standard Windows SDK locations
+        sdk_base = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
+        if sdk_base.exists():
+            for version_dir in sorted(sdk_base.iterdir(), reverse=True):
+                candidate = version_dir / "x64" / "signtool.exe"
+                if candidate.exists():
+                    signtool = str(candidate)
+                    break
+
+    if not signtool:
+        log("signtool.exe not found — install Windows SDK or add to PATH", "ERROR")
+        return False
+
+    log(f"Signing executables with {Path(pfx_path).name}...")
+
+    exe_files = list(BUILD_DIR.glob("*.exe"))
+    # Also sign tools
+    tools_dir = BUILD_DIR / "tools"
+    if tools_dir.exists():
+        exe_files.extend(tools_dir.glob("*.exe"))
+
+    signed = 0
+    for exe in exe_files:
+        try:
+            cmd = [
+                signtool, "sign",
+                "/f", pfx_path,
+                "/fd", "SHA256",
+                "/tr", "http://timestamp.digicert.com",
+                "/td", "SHA256",
+            ]
+            if pfx_password:
+                cmd.extend(["/p", pfx_password])
+            cmd.extend(["/v", str(exe)])
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                log(f"  Signed {exe.name}")
+                signed += 1
+            else:
+                log(f"  Failed to sign {exe.name}: {result.stderr.strip()}", "ERROR")
+        except subprocess.TimeoutExpired:
+            log(f"  Signing timed out for {exe.name}", "ERROR")
+        except Exception as e:
+            log(f"  Signing error for {exe.name}: {e}", "ERROR")
+
+    if signed == len(exe_files):
+        log(f"All {signed} executables signed", "OK")
+        return True
+    elif signed > 0:
+        log(f"Signed {signed}/{len(exe_files)} executables", "WARN")
+        return True
+    else:
+        log("No executables were signed", "ERROR")
+        return False
+
+
+def generate_hash_manifest():
+    """Generate SHA256SUMS.txt with hashes of all executables."""
+    log("Generating SHA-256 hash manifest...")
+
+    exe_files = sorted(BUILD_DIR.glob("*.exe"))
+    # Include tools
+    tools_dir = BUILD_DIR / "tools"
+    if tools_dir.exists():
+        exe_files.extend(sorted(tools_dir.glob("*.exe")))
+
+    manifest_lines = []
+    for exe in exe_files:
+        h = hashlib.sha256(exe.read_bytes()).hexdigest()
+        # Relative path from BUILD_DIR
+        rel = exe.relative_to(BUILD_DIR)
+        manifest_lines.append(f"{h}  {rel}")
+
+    manifest_path = BUILD_DIR / "SHA256SUMS.txt"
+    manifest_path.write_text("\n".join(manifest_lines) + "\n")
+    log(f"Hash manifest: {len(manifest_lines)} files", "OK")
+    return True
+
+
+def generate_audit_report(version: dict):
+    """Generate a human-readable build audit report and archive it.
+
+    Creates:
+    - BUILD_DIR/BUILD_AUDIT_REPORT.txt         (ships with the build)
+    - PROJECT_ROOT/audit_reports/<stamp>.txt    (permanent archive)
+    """
+    import json as _json
+
+    log("Generating build audit report...")
+
+    dirty = " (uncommitted changes)" if version.get("git_dirty") else ""
+    tag = version.get("git_tag") or "none"
+    signed = bool(os.environ.get("CODE_SIGN_PFX"))
+    timestamp = version.get("build_time", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+
+    # ── Collect executable hashes ────────────────────────────────
+    exe_hashes = []
+    hash_file = BUILD_DIR / "SHA256SUMS.txt"
+    if hash_file.exists():
+        for line in hash_file.read_text().strip().splitlines():
+            if line.strip():
+                parts = line.split("  ", 1)
+                if len(parts) == 2:
+                    exe_hashes.append((parts[1], parts[0]))
+
+    # ── Collect vulnerability findings ───────────────────────────
+    vuln_summary = "Not scanned"
+    vuln_details = []
+    audit_file = BUILD_DIR / "vulnerability-audit.json"
+    if audit_file.exists():
+        try:
+            data = _json.loads(audit_file.read_text())
+            deps = data if isinstance(data, list) else data.get("dependencies", [])
+            vulns = [d for d in deps if d.get("vulns")]
+            if vulns:
+                vuln_summary = f"{len(vulns)} package(s) with known vulnerabilities"
+                for v in vulns:
+                    for vuln in v.get("vulns", []):
+                        vuln_details.append(
+                            f"  - {v.get('name', '?')} {v.get('version', '?')}: "
+                            f"{vuln.get('id', '?')} (fix: {', '.join(vuln.get('fix_versions', ['N/A']))})"
+                        )
+            else:
+                vuln_summary = "No known vulnerabilities found"
+        except Exception:
+            vuln_summary = "Scan completed (see vulnerability-audit.json)"
+
+    # ── Collect SBOM stats ───────────────────────────────────────
+    sbom_summary = "Not generated"
+    sbom_file = BUILD_DIR / "sbom.json"
+    if sbom_file.exists():
+        try:
+            data = _json.loads(sbom_file.read_text())
+            count = len(data.get("components", []))
+            sbom_summary = f"{count} components cataloged (CycloneDX JSON)"
+        except Exception:
+            sbom_summary = "Generated (see sbom.json)"
+
+    # ── Collect dependency count ─────────────────────────────────
+    lock_file = BUILD_DIR / "requirements-lock.txt"
+    dep_count = "N/A"
+    if lock_file.exists():
+        lines = [l for l in lock_file.read_text().strip().splitlines()
+                 if l.strip() and not l.startswith('#')]
+        dep_count = str(len(lines))
+
+    # ── Build the report ─────────────────────────────────────────
+    lines = [
+        "=" * 70,
+        "  ICCSFlux BUILD AUDIT REPORT",
+        "=" * 70,
+        "",
+        "BUILD INFORMATION",
+        "-" * 40,
+        f"  Build time:       {timestamp}",
+        f"  Git commit:       {version.get('git_hash', 'unknown')}{dirty}",
+        f"  Branch:           {version.get('git_branch', 'unknown')}",
+        f"  Tag:              {tag}",
+        f"  Code signed:      {'Yes (Authenticode SHA-256)' if signed else 'No'}",
+        f"  Reproducible:     Yes (PYTHONHASHSEED=1, SOURCE_DATE_EPOCH set)",
+        "",
+        "EXECUTABLE HASHES (SHA-256)",
+        "-" * 40,
+    ]
+    if exe_hashes:
+        for name, h in exe_hashes:
+            lines.append(f"  {name:<30s} {h}")
+    else:
+        lines.append("  No executables found")
+
+    lines += [
+        "",
+        "DEPENDENCY INVENTORY",
+        "-" * 40,
+        f"  Total packages:   {dep_count}",
+        f"  SBOM:             {sbom_summary}",
+        f"  Lock file:        {'requirements-lock.txt' if lock_file.exists() else 'Not generated'}",
+        "",
+        "VULNERABILITY SCAN",
+        "-" * 40,
+        f"  Result:           {vuln_summary}",
+    ]
+    if vuln_details:
+        lines.append("  Findings:")
+        lines.extend(vuln_details)
+
+    lines += [
+        "",
+        "COMPLIANCE ARTIFACTS INCLUDED",
+        "-" * 40,
+    ]
+    for artifact in ["VERSION.txt", "SHA256SUMS.txt", "sbom.json",
+                     "vulnerability-audit.json", "requirements-lock.txt",
+                     "BUILD_AUDIT_REPORT.txt"]:
+        exists = (BUILD_DIR / artifact).exists() or artifact == "BUILD_AUDIT_REPORT.txt"
+        status = "[x]" if exists else "[ ]"
+        lines.append(f"  {status} {artifact}")
+
+    lines += [
+        "",
+        "CHANGE MANAGEMENT",
+        "-" * 40,
+    ]
+    # Include last 10 git commits for traceability
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-10"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines.append("  Recent commits:")
+            for commit_line in result.stdout.strip().splitlines():
+                lines.append(f"    {commit_line}")
+        else:
+            lines.append("  Git log unavailable")
+    except Exception:
+        lines.append("  Git log unavailable")
+
+    lines += [
+        "",
+        "=" * 70,
+        f"  Report generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "=" * 70,
+        "",
+    ]
+
+    report_text = "\n".join(lines)
+
+    # Write to build directory (ships with the build)
+    report_path = BUILD_DIR / "BUILD_AUDIT_REPORT.txt"
+    report_path.write_text(report_text)
+
+    # Archive to project audit_reports/ directory (permanent history)
+    archive_dir = PROJECT_ROOT / "audit_reports"
+    archive_dir.mkdir(exist_ok=True)
+
+    short_hash = version.get("git_hash_short", "unknown")
+    date_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    archive_name = f"build_audit_{date_stamp}_{short_hash}.txt"
+    archive_path = archive_dir / archive_name
+    archive_path.write_text(report_text)
+
+    log(f"Audit report: {report_path.name} (archived to audit_reports/{archive_name})", "OK")
+    return True
+
+
 def get_build_size():
     """Calculate total build size."""
     total = 0
@@ -996,6 +1363,8 @@ def get_build_size():
 def main():
     parser = argparse.ArgumentParser(description="Build ICCSFlux portable package")
     parser.add_argument("--quick", action="store_true", help="Skip recompilation if executables exist")
+    parser.add_argument("--sign", action="store_true", help="Sign executables (requires CODE_SIGN_PFX env var)")
+    parser.add_argument("--no-sbom", action="store_true", help="Skip SBOM generation and vulnerability audit")
     args = parser.parse_args()
 
     print()
@@ -1011,6 +1380,9 @@ def main():
 
     if not check_prerequisites():
         return 1
+
+    # Set reproducible build environment (fixes hash randomization + PE timestamps)
+    setup_reproducible_env()
 
     clean_build()
 
@@ -1063,6 +1435,26 @@ def main():
     create_readme(version)
     write_version_file(version)
 
+    # ── Compliance artifacts ──────────────────────────────────────
+    print()
+    log("Generating compliance artifacts...")
+    generate_requirements_lock()
+
+    if not args.no_sbom:
+        generate_sbom()
+        run_vulnerability_audit()
+
+    if args.sign or os.environ.get("CODE_SIGN_PFX"):
+        print()
+        sign_executables()
+
+    # Hash manifest (always generated, must come AFTER signing so hashes
+    # reflect the signed binaries, not the unsigned ones)
+    generate_hash_manifest()
+
+    # Audit report (human-readable summary + permanent archive)
+    generate_audit_report(version)
+
     size_mb = get_build_size()
     dirty = " (dirty)" if version["git_dirty"] else ""
 
@@ -1075,7 +1467,26 @@ def main():
     print(f"  Version: {version['git_hash_short']}{dirty}")
     print(f"  Built:   {version['build_time']}")
     print()
-    print("  To run: Double-click ICCSFlux.bat")
+    # Summarize compliance artifacts
+    artifacts = []
+    if (BUILD_DIR / "SHA256SUMS.txt").exists():
+        artifacts.append("SHA256SUMS.txt")
+    if (BUILD_DIR / "sbom.json").exists():
+        artifacts.append("sbom.json")
+    if (BUILD_DIR / "vulnerability-audit.json").exists():
+        artifacts.append("vulnerability-audit.json")
+    if (BUILD_DIR / "requirements-lock.txt").exists():
+        artifacts.append("requirements-lock.txt")
+    if (BUILD_DIR / "BUILD_AUDIT_REPORT.txt").exists():
+        artifacts.append("BUILD_AUDIT_REPORT.txt")
+    if artifacts:
+        print(f"  Compliance: {', '.join(artifacts)}")
+    if os.environ.get("CODE_SIGN_PFX"):
+        print("  Signed:  Yes (Authenticode SHA-256)")
+    else:
+        print("  Signed:  No (set CODE_SIGN_PFX to enable)")
+    print()
+    print("  To run: Double-click ICCSFlux.exe")
     print("=" * 60)
 
     return 0

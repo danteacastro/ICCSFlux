@@ -82,29 +82,72 @@ const categories = computed(() => {
     }
     cats.get(sym.category)!.push(sym)
   }
+
+  // Add Templates category (if any saved templates)
+  if (store.pidTemplates.length > 0) {
+    const q = searchQuery.value.toLowerCase()
+    const templates = store.pidTemplates
+      .filter(t => !q || t.name.toLowerCase().includes(q) || 'templates'.includes(q))
+      .map(t => ({
+        type: `template:${t.id}` as ScadaSymbolType,
+        name: t.name,
+        category: 'Templates'
+      }))
+    if (templates.length > 0) cats.set('Templates', templates)
+  }
+
   return cats
 })
 
-// Get symbol SVG for thumbnail (process symbols from SCADA_SYMBOLS, HMI controls from catalog, custom symbols)
+// Get symbol SVG for thumbnail (process symbols from SCADA_SYMBOLS, HMI controls from catalog, custom symbols, templates)
 function getSymbolSvg(type: ScadaSymbolType | string): string {
+  if (type.startsWith('template:')) {
+    const templateId = type.slice('template:'.length)
+    const tmpl = store.pidTemplates.find(t => t.id === templateId)
+    if (tmpl?.thumbnail) return `<img src="${tmpl.thumbnail}" style="width:100%;height:100%;object-fit:contain" />`
+    // Fallback: generic template icon
+    return '<svg viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="50" height="50" rx="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4,3"/><rect x="12" y="14" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1"/><rect x="32" y="14" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1"/><line x1="28" y1="20" x2="32" y2="20" stroke="currentColor" stroke-width="1"/><circle cx="30" cy="40" r="6" stroke="currentColor" stroke-width="1"/></svg>'
+  }
   if (isHmiControl(type)) return getHmiThumbnail(type)
   if (store.pidCustomSymbols[type]) return store.pidCustomSymbols[type].svg
   return SCADA_SYMBOLS[type as ScadaSymbolType] || ''
 }
 
+// Check if type is a template reference
+function isTemplateType(type: string): boolean {
+  return type.startsWith('template:')
+}
+
+// Delete a template
+function deleteTemplate(type: string) {
+  if (!isTemplateType(type)) return
+  const templateId = type.slice('template:'.length)
+  store.deletePidTemplate(templateId)
+}
+
 // Drag start handler
 function onDragStart(event: DragEvent, type: ScadaSymbolType | string) {
   if (!event.dataTransfer) return
-  event.dataTransfer.setData('application/x-pid-symbol', type)
+  if (isTemplateType(type)) {
+    event.dataTransfer.setData('application/x-pid-template', type.slice('template:'.length))
+  } else {
+    event.dataTransfer.setData('application/x-pid-symbol', type)
+  }
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-// Double-click to place symbol at viewport center
+// Double-click to place symbol/template at viewport center
 function onSymbolDblClick(type: ScadaSymbolType | string) {
   const zoom = store.pidZoom || 1
-  // Estimate visible canvas center (~600x400 is typical canvas size)
   const cx = (-store.pidPanX + 600) / zoom
   const cy = (-store.pidPanY + 300) / zoom
+
+  if (isTemplateType(type)) {
+    const templateId = type.slice('template:'.length)
+    store.instantiatePidTemplate(templateId, Math.round(cx), Math.round(cy))
+    return
+  }
+
   const w = 60, h = 60
   store.addPidSymbolWithUndo({
     type,
@@ -214,11 +257,18 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
             :title="`${sym.name} (double-click to place)`"
           >
             <span
+              v-if="!isTemplateType(sym.type)"
               class="tile-fav"
               :class="{ active: store.pidFavoriteSymbols.includes(sym.type) }"
               @click.stop.prevent="store.pidToggleFavorite(sym.type)"
               title="Toggle Favorite"
             >&#9733;</span>
+            <span
+              v-if="isTemplateType(sym.type)"
+              class="tile-delete"
+              @click.stop.prevent="deleteTemplate(sym.type)"
+              title="Delete Template"
+            >&times;</span>
             <div class="tile-svg" v-html="getSymbolSvg(sym.type)" />
             <span class="tile-name">{{ sym.name }}</span>
           </div>
@@ -494,6 +544,21 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 .tile-fav:hover {
   color: #facc15;
 }
+
+.tile-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 12px;
+  color: var(--text-disabled);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  z-index: 1;
+  line-height: 1;
+}
+.symbol-tile:hover .tile-delete { opacity: 1; }
+.tile-delete:hover { color: #ef4444; }
 
 .tile-svg {
   width: 36px;

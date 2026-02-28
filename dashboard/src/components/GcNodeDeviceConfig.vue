@@ -251,7 +251,7 @@ async function pushConfig(node: GCNodeConfig) {
   showFeedback('success', `Pushing config to ${node.node_id}...`)
 
   try {
-    mqtt.sendCommand(`nodes/${node.node_id}/config/push`, {
+    mqtt.sendNodeCommand('config/push', {
       node_id: node.node_id,
       node_name: node.node_name,
       gc_type: node.gc_type,
@@ -271,7 +271,7 @@ async function pushConfig(node: GCNodeConfig) {
       serial_protocol: node.serial_protocol,
       analysis_method: node.analysis_method,
       analysis_components: node.analysis_components,
-    })
+    }, node.node_id)
     showFeedback('success', `Config pushed to ${node.node_id}`)
   } catch (e: any) {
     showFeedback('error', e.message || 'Failed to push config')

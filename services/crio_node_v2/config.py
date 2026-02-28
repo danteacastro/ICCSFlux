@@ -339,10 +339,12 @@ class NodeConfig:
 
     # MQTT
     mqtt_broker: str = "localhost"
-    mqtt_port: int = 1883
+    mqtt_port: int = 8883
     mqtt_username: Optional[str] = None
     mqtt_password: Optional[str] = None
     mqtt_base_topic: str = "nisystem"
+    mqtt_tls_enabled: bool = True
+    mqtt_tls_ca_cert: Optional[str] = None  # Path to CA certificate file
 
     # Timing
     heartbeat_interval_s: float = 5.0
@@ -372,10 +374,14 @@ class NodeConfig:
             publish_rate_hz=system.get('publish_rate_hz', data.get('publish_rate_hz', 4.0)),
             mqtt_broker=system.get('mqtt_broker', system.get('mqtt_host',
                          data.get('mqtt_broker', data.get('mqtt_host', 'localhost')))),
-            mqtt_port=system.get('mqtt_port', data.get('mqtt_port', 1883)),
+            mqtt_port=system.get('mqtt_port', data.get('mqtt_port', 8883)),
             mqtt_username=system.get('mqtt_username', data.get('mqtt_username')),
             mqtt_password=system.get('mqtt_password', data.get('mqtt_password')),
             mqtt_base_topic=system.get('mqtt_base_topic', data.get('mqtt_base_topic', 'nisystem')),
+            mqtt_tls_enabled=system.get('mqtt_tls_enabled', system.get('tls_enabled',
+                              data.get('mqtt_tls_enabled', data.get('tls_enabled', True)))),
+            mqtt_tls_ca_cert=system.get('mqtt_tls_ca_cert', system.get('tls_ca_cert',
+                              data.get('mqtt_tls_ca_cert', data.get('tls_ca_cert')))),
             heartbeat_interval_s=system.get('heartbeat_interval_s',
                                    data.get('heartbeat_interval_s', 5.0)),
             use_mock_hardware=system.get('use_mock_hardware',
@@ -401,6 +407,8 @@ class NodeConfig:
             'mqtt_port': self.mqtt_port,
             'mqtt_username': self.mqtt_username,
             'mqtt_base_topic': self.mqtt_base_topic,
+            'mqtt_tls_enabled': self.mqtt_tls_enabled,
+            'mqtt_tls_ca_cert': self.mqtt_tls_ca_cert,
             'heartbeat_interval_s': self.heartbeat_interval_s,
             'use_mock_hardware': self.use_mock_hardware,
             'channels': {

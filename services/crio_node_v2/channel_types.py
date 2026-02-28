@@ -126,94 +126,106 @@ class ChannelType(str, Enum):
 # NI C Series module number to default channel type mapping
 MODULE_TYPE_MAP: Dict[str, ChannelType] = {
     # Voltage input modules
-    '9201': ChannelType.VOLTAGE_INPUT,
-    '9202': ChannelType.VOLTAGE_INPUT,
-    '9205': ChannelType.VOLTAGE_INPUT,
-    '9206': ChannelType.VOLTAGE_INPUT,
-    '9215': ChannelType.VOLTAGE_INPUT,
-    '9220': ChannelType.VOLTAGE_INPUT,
-    '9221': ChannelType.VOLTAGE_INPUT,
-    '9222': ChannelType.VOLTAGE_INPUT,
-    '9223': ChannelType.VOLTAGE_INPUT,
-    '9229': ChannelType.VOLTAGE_INPUT,
-    '9239': ChannelType.VOLTAGE_INPUT,
+    '9201': ChannelType.VOLTAGE_INPUT,   # 8-Ch ±10V, 12-bit, 500 kS/s aggregate
+    '9202': ChannelType.VOLTAGE_INPUT,   # 16-Ch ±10V, 24-bit, simultaneous
+    '9204': ChannelType.VOLTAGE_INPUT,   # 16 SE / 8 DIFF, ±0.2V to ±10V, 16-bit, programmable gain
+    '9205': ChannelType.VOLTAGE_INPUT,   # 32 SE / 16 DIFF, ±0.2V to ±10V, 16-bit
+    '9206': ChannelType.VOLTAGE_INPUT,   # 16 DIFF, ±0.2V to ±10V, 16-bit, high isolation
+    '9209': ChannelType.VOLTAGE_INPUT,   # 16 DIFF / 32 SE, ±10V, 24-bit, 500 S/s
+    '9215': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±10V, 16-bit, simultaneous
+    '9220': ChannelType.VOLTAGE_INPUT,   # 16-Ch ±10V, 16-bit, simultaneous
+    '9221': ChannelType.VOLTAGE_INPUT,   # 8-Ch ±60V, 12-bit
+    '9222': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±10V, 16-bit, 500 kS/s simultaneous
+    '9223': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±10V, 16-bit, 1 MS/s simultaneous
+    '9224': ChannelType.VOLTAGE_INPUT,   # 8-Ch ±10.5V, 16-bit
+    '9225': ChannelType.VOLTAGE_INPUT,   # 3-Ch 300 Vrms, 24-bit (high-voltage power)
+    '9228': ChannelType.VOLTAGE_INPUT,   # 8-Ch ±60V, 24-bit
+    '9229': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±60V, 24-bit, isolated simultaneous
+    '9238': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±0.5V, 24-bit (low-voltage precision)
+    '9239': ChannelType.VOLTAGE_INPUT,   # 4-Ch ±10V, 24-bit, simultaneous
+    '9242': ChannelType.VOLTAGE_INPUT,   # 3-Ch 250 Vrms L-N, 24-bit (3-phase power)
+    '9244': ChannelType.VOLTAGE_INPUT,   # 3-Ch 400 Vrms L-N, 24-bit (high-voltage power)
+    '9252': ChannelType.VOLTAGE_INPUT,   # 8-Ch voltage digitizer
 
     # Current input modules
-    '9203': ChannelType.CURRENT_INPUT,
-    '9207': ChannelType.VOLTAGE_INPUT,  # Combo module: ai0-ai7 voltage, ai8-ai15 current
-    '9208': ChannelType.CURRENT_INPUT,
-    '9227': ChannelType.CURRENT_INPUT,
-    '9246': ChannelType.CURRENT_INPUT,
-    '9247': ChannelType.CURRENT_INPUT,
-    '9253': ChannelType.CURRENT_INPUT,
+    '9203': ChannelType.CURRENT_INPUT,   # 8-Ch ±20mA, 16-bit
+    '9207': ChannelType.VOLTAGE_INPUT,   # Combo: ai0-ai7 voltage, ai8-ai15 current
+    '9208': ChannelType.CURRENT_INPUT,   # 16-Ch ±20mA, 24-bit, high-precision
+    '9227': ChannelType.CURRENT_INPUT,   # 4-Ch 5 Arms, 24-bit (AC power current)
+    '9246': ChannelType.CURRENT_INPUT,   # 3-Ch 20 Arms, 24-bit (3-phase power)
+    '9247': ChannelType.CURRENT_INPUT,   # 3-Ch 50 Arms, 24-bit (high-current 3-phase)
+    '9253': ChannelType.CURRENT_INPUT,   # 8-Ch ±20mA, 24-bit, simultaneous
 
     # Thermocouple modules
-    '9210': ChannelType.THERMOCOUPLE,
-    '9211': ChannelType.THERMOCOUPLE,
-    '9212': ChannelType.THERMOCOUPLE,
-    '9213': ChannelType.THERMOCOUPLE,
-    '9214': ChannelType.THERMOCOUPLE,
+    '9210': ChannelType.THERMOCOUPLE,    # 4-Ch, Ch-Ch isolated
+    '9211': ChannelType.THERMOCOUPLE,    # 4-Ch, shared CJC
+    '9212': ChannelType.THERMOCOUPLE,    # 8-Ch, Ch-Ch isolated, simultaneous
+    '9213': ChannelType.THERMOCOUPLE,    # 16-Ch, shared CJC (highest density)
+    '9214': ChannelType.THERMOCOUPLE,    # 16-Ch, isothermal (highest accuracy)
 
-    # Universal module (often used for TC)
-    '9219': ChannelType.BRIDGE_INPUT,
+    # Universal modules (per-channel configurable measurement type)
+    '9218': ChannelType.BRIDGE_INPUT,    # 2-Ch universal AI (V, I, bridge, IEPE)
+    '9219': ChannelType.BRIDGE_INPUT,    # 4-Ch universal AI (V, I, TC, RTD, R, bridge)
 
     # RTD modules
-    '9216': ChannelType.RTD,
-    '9217': ChannelType.RTD,
-    '9226': ChannelType.RTD,
+    '9216': ChannelType.RTD,             # 8-Ch Pt100, 24-bit
+    '9217': ChannelType.RTD,             # 4-Ch Pt100, 24-bit
+    '9226': ChannelType.RTD,             # 8-Ch Pt1000, 24-bit
 
     # IEPE/Accelerometer modules
-    '9230': ChannelType.IEPE_INPUT,
-    '9231': ChannelType.IEPE_INPUT,
-    '9232': ChannelType.IEPE_INPUT,
-    '9233': ChannelType.IEPE_INPUT,
-    '9234': ChannelType.IEPE_INPUT,
-    '9250': ChannelType.IEPE_INPUT,
-    '9251': ChannelType.IEPE_INPUT,
+    '9230': ChannelType.IEPE_INPUT,      # 3-Ch, 24-bit, 12.8 kS/s
+    '9231': ChannelType.IEPE_INPUT,      # 8-Ch, 24-bit, 51.2 kS/s
+    '9232': ChannelType.IEPE_INPUT,      # 3-Ch, 24-bit, 102.4 kS/s
+    '9233': ChannelType.IEPE_INPUT,      # 4-Ch, 24-bit, 50 kS/s
+    '9234': ChannelType.IEPE_INPUT,      # 4-Ch, 24-bit, 51.2 kS/s (TEDS)
+    '9250': ChannelType.IEPE_INPUT,      # 2-Ch, 24-bit, 102.4 kS/s (sound)
+    '9251': ChannelType.IEPE_INPUT,      # 2-Ch, 24-bit, 102.4 kS/s (DSA)
 
     # Strain/Bridge modules
-    '9235': ChannelType.STRAIN_INPUT,
-    '9236': ChannelType.STRAIN_INPUT,
-    '9237': ChannelType.BRIDGE_INPUT,
+    '9235': ChannelType.STRAIN_INPUT,    # 8-Ch quarter-bridge, 120 Ω
+    '9236': ChannelType.STRAIN_INPUT,    # 8-Ch quarter-bridge, 350 Ω
+    '9237': ChannelType.BRIDGE_INPUT,    # 4-Ch full/half/quarter, selectable excitation
 
     # Voltage output modules
-    '9260': ChannelType.VOLTAGE_OUTPUT,
-    '9262': ChannelType.VOLTAGE_OUTPUT,
-    '9263': ChannelType.VOLTAGE_OUTPUT,
-    '9264': ChannelType.VOLTAGE_OUTPUT,
-    '9269': ChannelType.VOLTAGE_OUTPUT,
+    '9260': ChannelType.VOLTAGE_OUTPUT,  # 2-Ch ±3 Vrms (sound exciter)
+    '9262': ChannelType.VOLTAGE_OUTPUT,  # 6-Ch ±10V, 16-bit, 1 MS/s
+    '9263': ChannelType.VOLTAGE_OUTPUT,  # 4-Ch ±10V, 16-bit, 100 kS/s
+    '9264': ChannelType.VOLTAGE_OUTPUT,  # 16-Ch ±10V, 16-bit, 25 kS/s
+    '9269': ChannelType.VOLTAGE_OUTPUT,  # 4-Ch ±10V, 16-bit, Ch-Ch isolated
 
     # Current output modules
-    '9265': ChannelType.CURRENT_OUTPUT,
-    '9266': ChannelType.CURRENT_OUTPUT,
+    '9265': ChannelType.CURRENT_OUTPUT,  # 4-Ch 0-20mA, 16-bit
+    '9266': ChannelType.CURRENT_OUTPUT,  # 8-Ch 0-20mA, 16-bit
 
     # Digital input modules
-    '9375': ChannelType.DIGITAL_INPUT,  # 16 DI + 16 DO combo, default to input
-    '9401': ChannelType.DIGITAL_INPUT,  # Bidirectional, default to input
-    '9402': ChannelType.DIGITAL_INPUT,  # Bidirectional, default to input
-    '9403': ChannelType.DIGITAL_INPUT,  # Bidirectional, default to input
-    '9411': ChannelType.DIGITAL_INPUT,
-    '9421': ChannelType.DIGITAL_INPUT,
-    '9422': ChannelType.DIGITAL_INPUT,
-    '9423': ChannelType.DIGITAL_INPUT,
-    '9425': ChannelType.DIGITAL_INPUT,
-    '9426': ChannelType.DIGITAL_INPUT,
-    '9435': ChannelType.DIGITAL_INPUT,
+    '9375': ChannelType.DIGITAL_INPUT,   # 16 DI + 16 DO combo, default to input
+    '9401': ChannelType.DIGITAL_INPUT,   # 8-Ch bidirectional TTL, 100 ns
+    '9402': ChannelType.DIGITAL_INPUT,   # 4-Ch bidirectional LVTTL, BNC, 55 ns
+    '9403': ChannelType.DIGITAL_INPUT,   # 32-Ch bidirectional TTL
+    '9411': ChannelType.DIGITAL_INPUT,   # 6-Ch differential DI, 500 ns
+    '9421': ChannelType.DIGITAL_INPUT,   # 8-Ch 24V sinking, 100 µs
+    '9422': ChannelType.DIGITAL_INPUT,   # 8-Ch 24V/48V/60V, Ch-Ch isolated
+    '9423': ChannelType.DIGITAL_INPUT,   # 8-Ch 24V, 1 µs (high-speed)
+    '9425': ChannelType.DIGITAL_INPUT,   # 32-Ch 24V sinking
+    '9426': ChannelType.DIGITAL_INPUT,   # 32-Ch 24V sourcing
+    '9435': ChannelType.DIGITAL_INPUT,   # 4-Ch universal (5-250 VDC/VAC), Ch-Ch isolated
+    '9436': ChannelType.DIGITAL_INPUT,   # 8-Ch 12-24V, 1 µs (high-speed industrial)
+    '9437': ChannelType.DIGITAL_INPUT,   # 8-Ch 250 VDC/VAC (high-voltage universal)
 
     # Digital output modules
-    '9470': ChannelType.DIGITAL_OUTPUT,
-    '9472': ChannelType.DIGITAL_OUTPUT,
-    '9474': ChannelType.DIGITAL_OUTPUT,
-    '9475': ChannelType.DIGITAL_OUTPUT,
-    '9476': ChannelType.DIGITAL_OUTPUT,
-    '9477': ChannelType.DIGITAL_OUTPUT,
-    '9478': ChannelType.DIGITAL_OUTPUT,
-    '9481': ChannelType.DIGITAL_OUTPUT,  # Relay
-    '9482': ChannelType.DIGITAL_OUTPUT,  # Relay
-    '9485': ChannelType.DIGITAL_OUTPUT,  # SSR
+    '9470': ChannelType.DIGITAL_OUTPUT,  # 8-Ch 6-30V sourcing
+    '9472': ChannelType.DIGITAL_OUTPUT,  # 8-Ch 6-30V sourcing, 100 µs
+    '9474': ChannelType.DIGITAL_OUTPUT,  # 8-Ch 5-30V sourcing, 1 µs (high-speed)
+    '9475': ChannelType.DIGITAL_OUTPUT,  # 8-Ch 5-60V sourcing
+    '9476': ChannelType.DIGITAL_OUTPUT,  # 32-Ch 6-36V sourcing
+    '9477': ChannelType.DIGITAL_OUTPUT,  # 32-Ch 5-60V sinking
+    '9478': ChannelType.DIGITAL_OUTPUT,  # 16-Ch 5-50V sinking
+    '9481': ChannelType.DIGITAL_OUTPUT,  # 4-Ch SPST relay
+    '9482': ChannelType.DIGITAL_OUTPUT,  # 4-Ch SPDT relay
+    '9485': ChannelType.DIGITAL_OUTPUT,  # 8-Ch SSR
 
     # Counter modules
-    '9361': ChannelType.COUNTER_INPUT,
+    '9361': ChannelType.COUNTER_INPUT,   # 8-Ch counter/DI, 32-bit, 1 MHz
 }
 
 # Combo modules where channel type varies by channel index within the same module

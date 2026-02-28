@@ -1615,6 +1615,8 @@ export const SCADA_SYMBOLS = {
   isaDCSFunction: IsaDCSFunction,
   isaPLCFunction: IsaPLCFunction,
   isaSharedDisplay: IsaSharedDisplay,
+  // Parametric ISA function block (letters + location set per-instance via PidSymbol.isaLetters/isaLocation)
+  isaFunctionBlock: IsaFieldInstrument, // Default preview SVG; runtime uses generateIsaFunctionBlockSvg()
 } as const
 
 export type ScadaSymbolType = keyof typeof SCADA_SYMBOLS
@@ -1899,6 +1901,7 @@ export const SYMBOL_INFO: Record<ScadaSymbolType, SymbolInfoEntry> = {
   isaDCSFunction: { label: 'DCS Function', category: 'Instruments' },
   isaPLCFunction: { label: 'PLC Function', category: 'Instruments' },
   isaSharedDisplay: { label: 'Shared Display', category: 'Instruments' },
+  isaFunctionBlock: { label: 'ISA Function Block', category: 'Instruments' },
 }
 
 /**
@@ -3019,6 +3022,11 @@ export const SYMBOL_PORTS: Record<ScadaSymbolType, SymbolPort[]> = {
   isaSharedDisplay: [
     { id: 'left', x: 0, y: 0.5, direction: 'left', label: 'Process' },
     { id: 'right', x: 1, y: 0.5, direction: 'right', label: 'Signal' },
+  ],
+  isaFunctionBlock: [
+    { id: 'left', x: 0, y: 0.5, direction: 'left', label: 'Process' },
+    { id: 'right', x: 1, y: 0.5, direction: 'right', label: 'Signal' },
+    { id: 'bottom', x: 0.5, y: 1, direction: 'bottom', label: 'Bottom' },
   ],
 }
 

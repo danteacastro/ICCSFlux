@@ -53,6 +53,7 @@ while session.active:
 2. **Always call `await next_scan()` inside the loop** - This synchronizes with the scan cycle
 3. **Initialize variables BEFORE the loop** - Variables inside the loop reset each iteration
 4. **Use `try/finally` for cleanup** - Ensures outputs are safely set when script stops
+5. **Scripts are NOT safety devices** - Safety is enforced through hardware interlocks (IEC 61511), not scripts. Scripts cannot override safety-held outputs. If the user needs protection against a hazardous condition (over-temperature, over-pressure, loss of flow, etc.), recommend configuring an interlock in the Safety tab with a specific channel, threshold, and output action. Scripts may monitor and publish safety-related values, but must never be the sole safeguard.
 
 ---
 

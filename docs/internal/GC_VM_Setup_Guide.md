@@ -8,15 +8,15 @@
 | **Date** | 2026-02-12 |
 | **Classification** | Internal -- IT Infrastructure |
 | **Prepared for** | IT Department |
-| **Author** | NISystem Engineering |
+| **Author** | ICCSFlux Engineering |
 
 ---
 
 ## 1. Overview
 
-This guide covers two methods for connecting Gas Chromatograph (GC) instruments to the NISystem data acquisition platform. The method you use depends on how the GC exposes its data.
+This guide covers two methods for connecting Gas Chromatograph (GC) instruments to the ICCSFlux data acquisition platform. The method you use depends on how the GC exposes its data.
 
-**Option A (preferred): Direct connection.** If the GC instrument provides serial (RS-232/RS-485) or Modbus output, the `gc_node` service runs directly on the NISystem host PC. A USB-to-serial adapter connects the GC to the host. No VM is required. This is the simplest and most reliable approach.
+**Option A (preferred): Direct connection.** If the GC instrument provides serial (RS-232/RS-485) or Modbus output, the `gc_node` service runs directly on the ICCSFlux host PC. A USB-to-serial adapter connects the GC to the host. No VM is required. This is the simplest and most reliable approach.
 
 **Option B: Hyper-V VM.** Some GC instruments only expose data through proprietary vendor software that requires Windows XP or Windows 7. These operating systems are end-of-life and must not be connected to production networks. In this case, the vendor software runs inside an isolated Hyper-V VM on the host PC, and `gc_node` runs inside the VM to parse result files and publish data over MQTT.
 
@@ -24,7 +24,7 @@ This guide covers two methods for connecting Gas Chromatograph (GC) instruments 
 
 - **Legacy OS support.** GC vendor applications that require Windows XP SP3 or Windows 7 SP1 run in isolated VMs without affecting the host OS.
 - **SOC 2 compliance.** VMs connect exclusively to an internal-only virtual switch with no route to the internet or corporate LAN. Data leaves the VM only via authenticated MQTT to the host.
-- **Centralized acquisition.** The gc_node service publishes GC measurements over MQTT. The NISystem DAQ service on the host consumes this data alongside all other instrument channels.
+- **Centralized acquisition.** The gc_node service publishes GC measurements over MQTT. The ICCSFlux DAQ service on the host consumes this data alongside all other instrument channels.
 - **Recovery.** VM snapshots and exports provide rapid rollback if guest OS or vendor software becomes corrupted.
 
 ### Network Diagram
@@ -46,7 +46,7 @@ This guide covers two methods for connecting Gas Chromatograph (GC) instruments 
  |       v                                  |
  |  Mosquitto (localhost:1883)              |
  |       |                                  |
- |  NISystem DAQ Service                    |
+ |  ICCSFlux DAQ Service                    |
  +------------------------------------------+
 
 
@@ -55,7 +55,7 @@ This guide covers two methods for connecting Gas Chromatograph (GC) instruments 
 
  Host PC (Win10/11 Pro or Server 2022+)
  +------------------------------------------------------+
- |  NISystem DAQ Service  <-- MQTT <-- Mosquitto        |
+ |  ICCSFlux DAQ Service  <-- MQTT <-- Mosquitto        |
  |                                     (0.0.0.0:1883)   |
  |                                                      |
  |  Hyper-V                                             |
@@ -88,7 +88,7 @@ This guide covers two methods for connecting Gas Chromatograph (GC) instruments 
 | **Host OS** | Windows 10 Pro (21H2+), Windows 11 Pro, Windows Server 2022, or Windows Server 2025. Home editions do not support Hyper-V. |
 | **CPU** | 64-bit with SLAT, Intel VT-x or AMD-V enabled in BIOS/UEFI. Required only for Option B. |
 | **RAM** | 8 GB minimum (16 GB recommended if running VMs). |
-| **NISystem** | DAQ service installed and running. Mosquitto MQTT broker operational. |
+| **ICCSFlux** | DAQ service installed and running. Mosquitto MQTT broker operational. |
 | **For Option A** | USB-to-serial adapter (FTDI or Prolific chipset recommended). GC serial/Modbus documentation. |
 | **For Option B** | Windows XP SP3 or Windows 7 SP1 ISO with valid license. GC vendor software installation media. gc_node deployment package. |
 
@@ -143,7 +143,7 @@ Use this option when the GC instrument provides data over a serial (RS-232/RS-48
    sc query gc_node
    ```
 
-   Confirm GC values appear in the NISystem dashboard.
+   Confirm GC values appear in the ICCSFlux dashboard.
 
 That is all that is required for a direct connection. The remainder of this guide covers Option B only.
 
@@ -207,7 +207,7 @@ Do not assign a default gateway or DNS server to this adapter. It must serve onl
 
 ### 4d. Mosquitto Configuration
 
-The NISystem Mosquitto broker binds to `0.0.0.0:1883`, which already covers the internal switch adapter. No changes are needed.
+The ICCSFlux Mosquitto broker binds to `0.0.0.0:1883`, which already covers the internal switch adapter. No changes are needed.
 
 Verify:
 
@@ -343,7 +343,7 @@ netsh firewall set opmode enable
 | **CC6.1** | Logical access | MQTT broker requires username/password authentication. Each gc_node uses a unique credential. No interactive accounts on VMs beyond local admin for maintenance. |
 | **CC6.6** | Network segmentation | Internal-only virtual switch. No physical adapter bridged. No default gateway. VMs cannot reach any network outside 10.10.10.0/24. |
 | **CC6.7** | Restrict data transmission | Guest firewall allows only outbound TCP 1883 to 10.10.10.1. All other outbound traffic is blocked. Data leaves the VM exclusively as MQTT messages. |
-| **CC7.2** | Monitoring | NISystem audit trail with SHA-256 hash chain. gc_node publishes heartbeats over MQTT. Mosquitto logs all connection and authentication events. |
+| **CC7.2** | Monitoring | ICCSFlux audit trail with SHA-256 hash chain. gc_node publishes heartbeats over MQTT. Mosquitto logs all connection and authentication events. |
 | **CC8.1** | Change management | VM snapshots taken before any software change. Changes to gc_node configuration logged in audit trail. |
 | **A1.2** | Backup and recovery | Weekly VM exports to network share. Daily gc_node config backup. 4-week retention. Annual restore test documented. |
 
@@ -354,7 +354,7 @@ netsh firewall set opmode enable
 | Frequency | Action | Retention |
 |---|---|---|
 | **Before any change** | VM checkpoint in Hyper-V | Delete after change is verified stable (max 3 per VM) |
-| **Daily** | Copy `gc_node_config.json` from each VM to host `C:\NISystem\backups\gc_nodes\` | 30 days |
+| **Daily** | Copy `gc_node_config.json` from each VM to host `C:\ICCSFlux\backups\gc_nodes\` | 30 days |
 | **Weekly** | Full VM export (`Export-VM`) to network share | 4 weekly exports (rolling, 28-day retention) |
 | **Annually** | Restore test: import VM export to test host, verify gc_node connectivity | Document results |
 
@@ -422,4 +422,4 @@ type C:\gc_node\logs\gc_node.log
 
 ---
 
-*For questions not covered here, contact NISystem Engineering.*
+*For questions not covered here, contact ICCSFlux Engineering.*

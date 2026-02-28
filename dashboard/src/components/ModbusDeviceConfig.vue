@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
-import type { DeviceCommandResult } from '../types'
 import ModbusAddressChanger from './ModbusAddressChanger.vue'
 
 const mqtt = useMqtt()
@@ -44,6 +43,7 @@ const showEditDeviceModal = ref(false)
 const isLoading = ref(false)
 const feedbackMessage = ref('')
 const feedbackType = ref<'success' | 'error'>('success')
+const chassisResponse = ref<{ success: boolean; message: string } | null>(null)
 
 // Form state for add/edit
 const deviceForm = ref<ModbusDevice>({
@@ -52,7 +52,7 @@ const deviceForm = ref<ModbusDevice>({
   enabled: true,
   ip_address: '192.168.1.100',
   port: 502,
-  serial_port: '/dev/ttyUSB0',
+  serial_port: 'COM3',
   baudrate: 9600,
   parity: 'E',
   stopbits: 1,
@@ -66,6 +66,8 @@ const connectionStatus = ref<Record<string, {
   connected: boolean
   error_count: number
   last_error: string | null
+  error_type?: 'connection' | 'exception' | 'modbus_exception' | 'unknown'
+  last_successful_read?: number
 }>>({})
 
 
@@ -108,10 +110,16 @@ function loadDevices() {
 }
 
 function subscribeToStatus() {
-  // Subscribe to modbus connection status updates
-  mqtt.subscribe('nisystem/modbus/status', (message: any) => {
+  // Subscribe to modbus connection status updates (node-prefixed topic)
+  mqtt.subscribe('nisystem/nodes/+/modbus/status', (message: any) => {
     if (message && typeof message === 'object') {
       connectionStatus.value = message
+    }
+  })
+  // Subscribe to chassis command responses (for test connection feedback)
+  mqtt.subscribe('nisystem/nodes/+/chassis/response', (message: any) => {
+    if (message && typeof message === 'object') {
+      chassisResponse.value = message
     }
   })
 }
@@ -123,7 +131,7 @@ function openAddDevice() {
     enabled: true,
     ip_address: '192.168.1.100',
     port: 502,
-    serial_port: '/dev/ttyUSB0',
+    serial_port: 'COM3',
     baudrate: 9600,
     parity: 'E',
     stopbits: 1,
@@ -153,8 +161,8 @@ async function addDevice() {
 
   isLoading.value = true
   try {
-    // Send to backend via MQTT
-    mqtt.sendCommand('chassis/add', {
+    // Send to backend via MQTT (node-prefixed topic)
+    mqtt.sendNodeCommand('chassis/add', {
       name: deviceForm.value.name,
       type: 'modbus_device',
       connection: deviceForm.value.connection_type.toUpperCase(),
@@ -185,8 +193,8 @@ async function addDevice() {
 async function updateDevice() {
   isLoading.value = true
   try {
-    // Send to backend via MQTT
-    mqtt.sendCommand('chassis/update', {
+    // Send to backend via MQTT (node-prefixed topic)
+    mqtt.sendNodeCommand('chassis/update', {
       name: deviceForm.value.name,
       type: 'modbus_device',
       connection: deviceForm.value.connection_type.toUpperCase(),
@@ -224,7 +232,7 @@ async function deleteDevice(deviceName: string) {
 
   isLoading.value = true
   try {
-    mqtt.sendCommand('chassis/delete', { name: deviceName })
+    mqtt.sendNodeCommand('chassis/delete', { name: deviceName })
     devices.value = devices.value.filter(d => d.name !== deviceName)
     if (selectedDevice.value === deviceName) {
       selectedDevice.value = null
@@ -242,20 +250,32 @@ async function testConnection(deviceName: string) {
   isLoading.value = true
   showFeedback('success', `Testing connection to ${deviceName}...`)
 
-  try {
-    // Use sendCommandWithAck to wait for response
-    const result = await mqtt.sendCommandWithAck('chassis/test', { name: deviceName }, 10000)
+  // Clear previous response and wait for chassis/response via subscription
+  chassisResponse.value = null
 
-    if (result.success) {
-      showFeedback('success', (result as DeviceCommandResult).message || `Connection to ${deviceName} successful`)
+  // Send test command (node-prefixed topic)
+  mqtt.sendNodeCommand('chassis/test', { name: deviceName })
+
+  // Poll for response (backend publishes to chassis/response)
+  const deadline = Date.now() + 10000
+  const poll = () => {
+    if (chassisResponse.value) {
+      const resp = chassisResponse.value
+      chassisResponse.value = null
+      if (resp.success) {
+        showFeedback('success', resp.message || `Connection to ${deviceName} successful`)
+      } else {
+        showFeedback('error', resp.message || `Connection to ${deviceName} failed`)
+      }
+      isLoading.value = false
+    } else if (Date.now() < deadline) {
+      setTimeout(poll, 200)
     } else {
-      showFeedback('error', (result as DeviceCommandResult).message || result.error || `Connection to ${deviceName} failed`)
+      showFeedback('error', 'Connection test timed out - check device settings')
+      isLoading.value = false
     }
-  } catch (e: any) {
-    showFeedback('error', e.message || 'Connection test timed out - check device settings')
-  } finally {
-    isLoading.value = false
   }
+  setTimeout(poll, 200)
 }
 
 function showFeedback(type: 'success' | 'error', message: string) {
@@ -362,7 +382,14 @@ watch(() => mqtt.channelConfigs.value, () => {
           </div>
           <div v-if="connectionStatus[device.name]?.last_error" class="detail-row error">
             <span class="label">Last Error:</span>
-            <span class="value">{{ connectionStatus[device.name]?.last_error }}</span>
+            <span class="value">
+              <span v-if="connectionStatus[device.name]?.error_type" class="error-type-tag">{{ connectionStatus[device.name]?.error_type }}</span>
+              {{ connectionStatus[device.name]?.last_error }}
+            </span>
+          </div>
+          <div v-if="connectionStatus[device.name]?.error_count" class="detail-row">
+            <span class="label">Errors:</span>
+            <span class="value">{{ connectionStatus[device.name]?.error_count }}</span>
           </div>
           <div class="detail-row">
             <span class="label">Timeout:</span>
@@ -431,7 +458,7 @@ watch(() => mqtt.channelConfigs.value, () => {
               <h4>Serial Connection</h4>
               <div class="form-row">
                 <label>Serial Port</label>
-                <input v-model="deviceForm.serial_port" type="text" placeholder="/dev/ttyUSB0 or COM3" />
+                <input v-model="deviceForm.serial_port" type="text" placeholder="COM3 or /dev/ttyUSB0" />
               </div>
               <div class="form-row-group">
                 <div class="form-row half">
@@ -542,7 +569,7 @@ watch(() => mqtt.channelConfigs.value, () => {
               <h4>Serial Connection</h4>
               <div class="form-row">
                 <label>Serial Port</label>
-                <input v-model="deviceForm.serial_port" type="text" placeholder="/dev/ttyUSB0 or COM3" />
+                <input v-model="deviceForm.serial_port" type="text" placeholder="COM3 or /dev/ttyUSB0" />
               </div>
               <div class="form-row-group">
                 <div class="form-row half">
@@ -820,6 +847,17 @@ watch(() => mqtt.channelConfigs.value, () => {
 
 .detail-row.error .value {
   color: #ef4444;
+}
+
+.error-type-tag {
+  display: inline-block;
+  padding: 0.1rem 0.3rem;
+  background: rgba(239, 68, 68, 0.2);
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-right: 0.3rem;
 }
 
 .device-actions {
