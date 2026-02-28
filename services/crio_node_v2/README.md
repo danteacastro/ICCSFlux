@@ -2,7 +2,7 @@
 
 Edge node service for NI CompactRIO hardware running NI Linux RT. Reads I/O modules, evaluates safety alarms, runs user scripts, and communicates with the PC-based DAQ service over MQTT.
 
-**Version:** 2.1.0
+**Version:** 2.2.0
 **Replaces:** `services/crio_node/` (deprecated v1 monolith, 7,715 LOC)
 
 ---

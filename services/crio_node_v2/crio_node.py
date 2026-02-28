@@ -14,6 +14,8 @@ The main loop follows the pattern:
 4. Publish values
 """
 
+import ctypes
+import gc
 import json
 import logging
 import math
@@ -40,7 +42,72 @@ from .config import ChannelConfig
 
 logger = logging.getLogger('cRIONode')
 
-__version__ = '2.1.0'
+__version__ = '2.2.0'
+
+# ---------------------------------------------------------------------------
+# Real-time hardening (NI Linux Real-Time)
+# ---------------------------------------------------------------------------
+_SCHED_FIFO = 1
+_MCL_CURRENT = 1
+_MCL_FUTURE = 2
+
+
+def _enable_rt_scheduling(priority: int = 50) -> bool:
+    """Enable SCHED_FIFO real-time scheduling for the current process.
+
+    NI Linux Real-Time is a PREEMPT_RT kernel.  Running with SCHED_FIFO
+    gives the Python process deterministic scheduling priority over all
+    non-RT user-space processes (sshd, syslog, etc.).
+
+    Priority 50 is below NI driver threads (80-99) but above everything
+    else.  The cRIO node already runs as root, so this normally succeeds.
+    """
+    try:
+        os.sched_setscheduler(0, _SCHED_FIFO, os.sched_param(priority))
+        logger.info(f"RT scheduling enabled (SCHED_FIFO priority {priority})")
+        return True
+    except (PermissionError, OSError) as e:
+        logger.warning(f"RT scheduling not available: {e}")
+        return False
+    except AttributeError:
+        # Windows / non-POSIX — sched_setscheduler does not exist
+        logger.debug("RT scheduling not available on this platform")
+        return False
+
+
+def _lock_memory() -> bool:
+    """Lock all current and future pages into RAM (mlockall).
+
+    Prevents the kernel from paging the Python process to swap, which
+    eliminates random 10-50 ms page-fault spikes during the scan loop.
+    """
+    try:
+        libc = ctypes.CDLL('libc.so.6')
+        result = libc.mlockall(_MCL_CURRENT | _MCL_FUTURE)
+        if result == 0:
+            logger.info("Memory locked (mlockall MCL_CURRENT|MCL_FUTURE)")
+            return True
+        else:
+            logger.warning(f"mlockall returned {result}")
+            return False
+    except (OSError, AttributeError) as e:
+        logger.debug(f"mlockall not available: {e}")
+        return False
+
+
+def _set_cpu_affinity(core: int = 1) -> bool:
+    """Pin the process to a single CPU core.
+
+    The cRIO-9056 has 2 cores.  Pinning the scan loop to core 1 while
+    kernel/driver interrupts use core 0 eliminates L1/L2 cache thrashing.
+    """
+    try:
+        os.sched_setaffinity(0, {core})
+        logger.info(f"CPU affinity set to core {core}")
+        return True
+    except (OSError, AttributeError) as e:
+        logger.debug(f"CPU affinity not available: {e}")
+        return False
 
 
 class ScanTimingStats:
@@ -229,7 +296,9 @@ class CRIONodeV2:
             password=config.mqtt_password,
             client_id=config.node_id,
             base_topic=config.mqtt_base_topic,
-            node_id=config.node_id
+            node_id=config.node_id,
+            tls_enabled=getattr(config, 'mqtt_tls_enabled', False),
+            tls_ca_cert=getattr(config, 'mqtt_tls_ca_cert', None)
         )
         self.mqtt = MQTTInterface(mqtt_config)
         self.mqtt.on_message = self._enqueue_command
@@ -283,6 +352,10 @@ class CRIONodeV2:
         # Script engine
         self.script_engine = ScriptEngine(self)
 
+        # Pre-allocated buffers for hot-path (avoid GC pressure in scan loop)
+        self._safety_snapshot: Dict[str, float] = {}
+        self._publish_batch: Dict[str, Dict[str, Any]] = {}
+
         # Stale value warning tracking
         self._stale_warned: set = set()
 
@@ -306,10 +379,20 @@ class CRIONodeV2:
         # Wait for connection
         if not self.mqtt.wait_for_connection(timeout=10.0):
             logger.error("MQTT connection timeout")
+            # Clean up partially-started MQTT so next attempt starts fresh
+            self.mqtt.disconnect()
             return False
 
         # Set up subscriptions
         self.mqtt.setup_standard_subscriptions()
+
+        # RT hardening (NI Linux Real-Time only — no-ops on Windows/desktop)
+        rt_enabled = _enable_rt_scheduling(priority=50)
+        mem_locked = _lock_memory()
+        cpu_pinned = _set_cpu_affinity(core=1)
+        if rt_enabled or mem_locked or cpu_pinned:
+            logger.info(f"RT hardening: sched_fifo={rt_enabled}, "
+                        f"mlockall={mem_locked}, cpu_affinity={cpu_pinned}")
 
         # Publish initial status
         self._publish_status()
@@ -369,17 +452,34 @@ class CRIONodeV2:
         logger.info("cRIO Node V2 stopped")
 
     def run(self):
-        """Run service (blocking until shutdown)."""
-        if not self.start():
-            return
+        """Run service (blocking until shutdown).
 
-        try:
-            while not self._shutdown.is_set():
-                self._shutdown.wait(1.0)
-        except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received")
-        finally:
-            self.stop()
+        Retries MQTT connection with exponential backoff if broker is
+        unreachable.  The node never exits on its own — it keeps trying
+        until the broker comes up or SIGTERM is received.
+        """
+        backoff = 5.0
+        max_backoff = 60.0
+
+        while not self._shutdown.is_set():
+            if self.start():
+                # Connected — run until shutdown
+                backoff = 5.0  # reset for next reconnect cycle
+                try:
+                    while not self._shutdown.is_set():
+                        self._shutdown.wait(1.0)
+                except KeyboardInterrupt:
+                    logger.info("Keyboard interrupt received")
+                finally:
+                    self.stop()
+                return  # clean shutdown requested
+
+            # start() failed (broker unreachable) — retry with backoff
+            logger.warning(
+                f"MQTT broker unreachable, retrying in {backoff:.0f}s..."
+            )
+            self._shutdown.wait(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
     # =========================================================================
     # MAIN LOOP
@@ -407,6 +507,12 @@ class CRIONodeV2:
         _recovery_attempts = 0
         next_scan_time = time.time()
 
+        # Disable GC during scan loop — collect manually in the sleep window
+        # to prevent unpredictable pauses during read/safety/publish.
+        gc.disable()
+        _gc_counter = 0
+        _GC_INTERVAL = 100  # collect every ~25s at 4 Hz
+
         while not self._shutdown.is_set():
             # Calculate interval dynamically to pick up runtime rate changes
             scan_interval = self._scan_interval
@@ -427,6 +533,12 @@ class CRIONodeV2:
                 if self.state.is_acquiring:
                     self._check_safety()
                 t_safety_end = time.time()
+                if self.state.is_acquiring:
+                    _safety_ms = (t_safety_end - t_read_end) * 1000
+                    if _safety_ms > 10.0:
+                        logger.warning(
+                            f"Safety evaluation took {_safety_ms:.1f}ms (>10ms)"
+                        )
 
                 # 4. COMMUNICATION WATCHDOG (if configured)
                 if self.config.comm_watchdog_timeout_s > 0:
@@ -497,6 +609,12 @@ class CRIONodeV2:
                 t_read_end = t_read_start = t_safety_end = t_pub_end = time.time()
                 published = False
 
+            # Run GC in the sleep window (not during read/safety/publish)
+            _gc_counter += 1
+            if _gc_counter >= _GC_INTERVAL:
+                gc.collect()
+                _gc_counter = 0
+
             # Sleep until next epoch-anchored target (prevents cumulative drift)
             sleep_time = max(0, next_scan_time - time.time())
             # If we fell behind by more than one interval, reset to prevent burst catch-up
@@ -505,6 +623,7 @@ class CRIONodeV2:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+        gc.enable()
         logger.info("Main loop stopped")
 
     def _heartbeat_loop(self):
@@ -1086,16 +1205,23 @@ class CRIONodeV2:
     # =========================================================================
 
     def _read_channels(self):
-        """Read all input channels from hardware."""
+        """Read all input channels from hardware.
+
+        Updates channel_values in-place to avoid dict allocation on every
+        scan cycle (reduces GC pressure in the hot path).
+        """
         readings = self.hardware.read_all()
 
         with self.values_lock:
             for channel, (value, timestamp) in readings.items():
-                self.channel_values[channel] = {
-                    'value': value,
-                    'timestamp': timestamp,
-                    'quality': 'good'
-                }
+                entry = self.channel_values.get(channel)
+                if entry is None:
+                    entry = {'value': value, 'timestamp': timestamp, 'quality': 'good'}
+                    self.channel_values[channel] = entry
+                else:
+                    entry['value'] = value
+                    entry['timestamp'] = timestamp
+                    entry['quality'] = 'good'
 
     # =========================================================================
     # SAFETY & ALARMS (cRIO owns all alarm/safety state)
@@ -1152,15 +1278,18 @@ class CRIONodeV2:
         """
         Single-pass safety check using SafetyManager.
         Also checks session timeout.
+
+        Reuses self._safety_snapshot dict to avoid allocation per scan.
         """
-        # Get current values
+        # Build snapshot in pre-allocated dict (clear + refill, no new dict)
         with self.values_lock:
-            values_snapshot = {ch: data.get('value', 0)
-                              for ch, data in self.channel_values.items()}
+            self._safety_snapshot.clear()
+            for ch, data in self.channel_values.items():
+                self._safety_snapshot[ch] = data.get('value', 0)
 
         # Check alarms (SafetyManager handles state, actions, callbacks)
         configured = set(self.config.channels.keys()) if self.config else set()
-        self.safety.check_all(values_snapshot, configured_channels=configured)
+        self.safety.check_all(self._safety_snapshot, configured_channels=configured)
 
     def _on_alarm_event(self, event: AlarmEvent):
         """Callback when alarm state changes."""
@@ -1414,44 +1543,61 @@ class CRIONodeV2:
     STALE_VALUE_THRESHOLD_S = 10.0
 
     def _publish_values(self):
-        """Publish all channel values as a batch, with stale detection."""
+        """Publish all channel values as a batch, with stale detection.
+
+        Uses self._publish_batch to reduce per-scan allocations.  Per-channel
+        entries are still created/updated, but the batch dict itself is reused.
+        """
         now = time.time()
+        batch = self._publish_batch
+        batch.clear()
+
         with self.values_lock:
-            batch = {}
             for ch, data in self.channel_values.items():
-                entry = dict(data)
+                # Build entry in-place instead of dict(data) copy
+                val = data.get('value', 0)
+                ts = data.get('timestamp', 0)
+                quality = data.get('quality', 'good')
+
                 # Check staleness based on timestamp
-                ts = entry.get('timestamp', 0)
                 if isinstance(ts, (int, float)) and (now - ts) > self.STALE_VALUE_THRESHOLD_S:
-                    entry['quality'] = 'stale'
+                    quality = 'stale'
                     if ch not in self._stale_warned:
                         logger.warning(f"Channel {ch} value is stale ({now - ts:.1f}s old)")
                         self._stale_warned.add(ch)
                 else:
                     self._stale_warned.discard(ch)
+
                 # Mark NaN values as bad quality
-                val = entry.get('value')
                 if isinstance(val, float) and math.isnan(val):
-                    entry['quality'] = 'bad'
+                    quality = 'bad'
+
+                entry = {
+                    'value': val,
+                    'timestamp': ts,
+                    'quality': quality,
+                }
+                # Include high-precision acquisition timestamp for SOE / ALCOA+
+                if isinstance(ts, (int, float)) and ts > 0:
+                    entry['acquisition_ts_us'] = int(ts * 1_000_000)
                 batch[ch] = entry
 
-            # Cap _stale_warned to prevent unbounded growth if channels are removed
-            if len(self._stale_warned) > 500:
-                self._stale_warned = set(list(self._stale_warned)[:500])
+            # Prune _stale_warned to current channels only (prevents growth)
+            if len(self._stale_warned) > len(self.channel_values) + 10:
+                self._stale_warned &= set(self.channel_values.keys())
 
-            # Include output values (snapshot to avoid race with output writes)
-            output_snapshot = dict(self.output_values)
-
-        for ch, val in output_snapshot.items():
-            quality = 'good'
-            if isinstance(val, float) and math.isnan(val):
-                quality = 'bad'
-            batch[ch] = {
-                'value': val,
-                'timestamp': now,
-                'quality': quality,
-                'type': 'output'
-            }
+            # Snapshot output values under lock
+            for ch, val in self.output_values.items():
+                quality = 'good'
+                if isinstance(val, float) and math.isnan(val):
+                    quality = 'bad'
+                batch[ch] = {
+                    'value': val,
+                    'timestamp': now,
+                    'acquisition_ts_us': int(now * 1_000_000),
+                    'quality': quality,
+                    'type': 'output'
+                }
 
         self.mqtt.publish("channels/batch", batch)
 
@@ -1501,6 +1647,10 @@ class CRIONodeV2:
             'hardware_health': {
                 'healthy': self.hardware.is_healthy() if hasattr(self.hardware, 'is_healthy') else True,
                 'error_count': getattr(self.hardware, '_error_count', 0),
+            },
+            'rt_hardening': {
+                'sched_fifo': hasattr(os, 'sched_getscheduler') and os.sched_getscheduler(0) == _SCHED_FIFO,
+                'gc_disabled': not gc.isenabled(),
             },
         }
 
@@ -1994,8 +2144,8 @@ def main():
     node = CRIONodeV2(config)
 
     def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down...")
-        node.stop()
+        logger.info(f"Received signal {signum}, requesting shutdown...")
+        node._shutdown.set()
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
