@@ -1,25 +1,36 @@
 """
 CODESYS Integration Bridge for Opto22 Node
 
-Reads CODESYS variables from groov EPIC via Modbus TCP and maps them
-to NISystem channels. This enables deterministic PID and other real-time
-control logic to run in CODESYS while our Python node handles:
-- Data integration with NISystem MQTT
-- Script execution and safety evaluation
-- Alarm management and audit trail
+Bridges the CODESYS runtime (deterministic PLC control) and the Python
+companion process on the groov EPIC via Modbus TCP on localhost:502.
 
-Connection methods (in priority order):
-1. Modbus TCP (CODESYS exposes variables as Modbus registers)
-2. OPC-UA (if CODESYS OPC-UA server is enabled)
+Two modes of operation:
+1. **Structured mode** — Uses RegisterMap to provide typed access to PID
+   setpoints, interlock commands, process values, and system status.
+2. **Tag map mode** — Legacy freeform tag_map dict for custom Modbus tags.
 
-Usage:
+The bridge provides:
+- Periodic polling of CODESYS registers (configurable rate)
+- Structured read/write methods for PID, interlocks, and system commands
+- Health monitoring (connection status, scan time, error rate)
+- Heartbeat to CODESYS (so the PLC watchdog can detect Python failure)
+- Graceful fallback: `codesys_available` property for scan loop branching
+
+Usage (structured):
+    from .codesys.register_map import RegisterMap
+    rmap = RegisterMap()
+    rmap.allocate_pid_loops(['Zone1_PID'])
+    bridge = CODESYSBridge(register_map=rmap)
+    bridge.start()
+    bridge.write_pid_setpoint('Zone1_PID', 72.0)
+    values = bridge.read_process_values()
+
+Usage (tag map):
     bridge = CODESYSBridge(
-        host='localhost',  # groov EPIC runs CODESYS locally
-        tag_map={'PID1_PV': {'register': 40001, 'type': 'float32'},
-                 'PID1_CV': {'register': 40003, 'type': 'float32'}}
+        tag_map={'PID1_PV': {'register': 40001, 'type': 'float32'}}
     )
     bridge.start()
-    values = bridge.get_values()  # {'PID1_PV': 72.3, 'PID1_CV': 45.1}
+    values = bridge.get_values()
 """
 
 import logging
@@ -37,13 +48,21 @@ try:
 except ImportError:
     MODBUS_AVAILABLE = False
 
+# Import register map (optional — structured mode only)
+try:
+    from .codesys.register_map import RegisterMap, HOLD_SYSTEM_CMD_BASE, SYSCMD_HEARTBEAT
+    REGISTER_MAP_AVAILABLE = True
+except ImportError:
+    REGISTER_MAP_AVAILABLE = False
+
 
 class CODESYSBridge:
     """
     Bridge between CODESYS runtime on groov EPIC and NISystem.
 
     Reads CODESYS-exposed Modbus registers and maps them to channel names
-    that the Opto22 node publishes to MQTT.
+    that the Opto22 node publishes to MQTT. Supports both structured
+    (RegisterMap) and freeform (tag_map) modes.
     """
 
     def __init__(self,
@@ -52,6 +71,7 @@ class CODESYSBridge:
                  unit_id: int = 1,
                  poll_rate_hz: float = 10.0,
                  tag_map: Optional[Dict[str, Dict[str, Any]]] = None,
+                 register_map: Optional['RegisterMap'] = None,
                  on_values_updated: Optional[Callable[[Dict[str, float]], None]] = None):
         """
         Args:
@@ -61,14 +81,26 @@ class CODESYSBridge:
             poll_rate_hz: How often to poll CODESYS registers
             tag_map: Mapping of channel names to Modbus register definitions
                      Example: {'Temp_PV': {'register': 40001, 'type': 'float32', 'scale': 1.0}}
+            register_map: Structured RegisterMap for typed PID/interlock/channel access
             on_values_updated: Callback when new values are read
         """
         self._host = host
         self._port = port
         self._unit_id = unit_id
         self._poll_interval = 1.0 / poll_rate_hz
-        self._tag_map = tag_map or {}
         self._on_values_updated = on_values_updated
+
+        # Register map (structured mode)
+        self._register_map = register_map
+
+        # Tag map: merge explicit tags with register-map-generated tags
+        self._tag_map = tag_map or {}
+        if self._register_map:
+            generated = self._register_map.generate_tag_map()
+            # Explicit tags take precedence
+            merged = dict(generated)
+            merged.update(self._tag_map)
+            self._tag_map = merged
 
         self._client: Optional[ModbusTcpClient] = None
         self._connected = False
@@ -84,6 +116,9 @@ class CODESYSBridge:
         self._read_count = 0
         self._error_count = 0
         self._last_read_time = 0.0
+        self._consecutive_errors = 0
+        self._last_scan_time_us = 0
+        self._heartbeat_counter = 0
 
     def start(self):
         """Start the polling loop."""
@@ -120,15 +155,50 @@ class CODESYSBridge:
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def codesys_available(self) -> bool:
+        """True if CODESYS is connected and responding within tolerance.
+
+        Used by opto22_node.py scan loop to decide between CODESYS mode
+        (delegate PID/interlocks to PLC) and Python fallback mode.
+        """
+        if not self._connected:
+            return False
+        # Check if we've had a successful read recently (within 5 seconds)
+        if self._last_read_time == 0:
+            return False
+        if time.time() - self._last_read_time > 5.0:
+            return False
+        # Check consecutive error count (3+ errors = unhealthy)
+        if self._consecutive_errors >= 3:
+            return False
+        return True
+
     def get_status(self) -> Dict[str, Any]:
         return {
             'connected': self._connected,
+            'codesys_available': self.codesys_available,
             'host': self._host,
             'port': self._port,
             'tags': len(self._tag_map),
             'read_count': self._read_count,
             'error_count': self._error_count,
+            'consecutive_errors': self._consecutive_errors,
             'last_read': self._last_read_time,
+            'last_scan_time_us': self._last_scan_time_us,
+            'heartbeat': self._heartbeat_counter,
+        }
+
+    def get_health(self) -> Dict[str, Any]:
+        """Get health summary for status publishing."""
+        now = time.time()
+        return {
+            'connected': self._connected,
+            'available': self.codesys_available,
+            'last_read_age_s': round(now - self._last_read_time, 2) if self._last_read_time else -1,
+            'scan_time_us': self._last_scan_time_us,
+            'error_rate': round(self._error_count / max(1, self._read_count), 4),
+            'consecutive_errors': self._consecutive_errors,
         }
 
     def load_config(self, config: Dict[str, Any]):
@@ -139,6 +209,118 @@ class CODESYSBridge:
         poll_rate = config.get('poll_rate_hz', 1.0 / self._poll_interval)
         self._poll_interval = 1.0 / max(0.1, poll_rate)
         self._tag_map = config.get('tag_map', self._tag_map)
+
+        # If register map provided in config, rebuild tag map
+        rmap_data = config.get('register_map')
+        if rmap_data and REGISTER_MAP_AVAILABLE:
+            self._register_map = RegisterMap.from_dict(rmap_data)
+            generated = self._register_map.generate_tag_map()
+            merged = dict(generated)
+            merged.update(self._tag_map)
+            self._tag_map = merged
+
+    # =========================================================================
+    # STRUCTURED ACCESS (requires RegisterMap)
+    # =========================================================================
+
+    def write_pid_setpoint(self, loop_id: str, value: float) -> bool:
+        """Write a PID setpoint to CODESYS."""
+        return self.write_tag(f'{loop_id}_SP', value)
+
+    def write_pid_tuning(self, loop_id: str, kp: float, ki: float, kd: float) -> bool:
+        """Write PID tuning parameters to CODESYS."""
+        ok = True
+        ok = self.write_tag(f'{loop_id}_Kp', kp) and ok
+        ok = self.write_tag(f'{loop_id}_Ki', ki) and ok
+        ok = self.write_tag(f'{loop_id}_Kd', kd) and ok
+        return ok
+
+    def write_interlock_command(self, ilk_id: str, arm: bool = False,
+                                bypass: bool = False, reset: bool = False) -> bool:
+        """Write interlock commands to CODESYS via coils."""
+        if not self._connected or not self._client or not self._register_map:
+            return False
+        regs = self._register_map.get_interlock_registers(ilk_id)
+        if not regs:
+            return False
+        try:
+            self._client.write_coil(regs.arm_coil - 1, arm, slave=self._unit_id)
+            self._client.write_coil(regs.bypass_coil - 1, bypass, slave=self._unit_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write interlock command {ilk_id}: {e}")
+            return False
+
+    def write_system_command(self, cmd: str, value: int) -> bool:
+        """Write a system command register."""
+        tag_name = f'SYS_{cmd.upper()}'
+        if tag_name not in self._tag_map:
+            logger.warning(f"Unknown system command: {cmd}")
+            return False
+        return self.write_tag(tag_name, float(value))
+
+    def write_heartbeat(self) -> bool:
+        """Increment and write the Python heartbeat counter to CODESYS.
+
+        CODESYS watches this counter — if it stops incrementing for 5 seconds,
+        the PLC applies safe state (Python companion lost).
+        """
+        self._heartbeat_counter = (self._heartbeat_counter + 1) % 65535
+        return self.write_tag('SYS_HEARTBEAT', float(self._heartbeat_counter))
+
+    def read_pid_outputs(self) -> Dict[str, float]:
+        """Read all PID control variable outputs from CODESYS."""
+        if not self._register_map:
+            return {}
+        results = {}
+        for loop_id in self._register_map.pid_loops:
+            cv = self._values.get(f'{loop_id}_CV')
+            if cv is not None:
+                results[loop_id] = cv
+        return results
+
+    def read_process_values(self) -> Dict[str, float]:
+        """Read all channel process values from CODESYS."""
+        if not self._register_map:
+            return {}
+        results = {}
+        for name in self._register_map.channels:
+            pv = self._values.get(f'{name}_PV')
+            if pv is not None:
+                results[name] = pv
+        return results
+
+    def read_interlock_status(self) -> Dict[str, Dict[str, Any]]:
+        """Read interlock status from CODESYS.
+
+        Returns dict: {ilk_id: {'state': int, 'trips': int, 'tripped': bool}}
+        """
+        if not self._register_map:
+            return {}
+        results = {}
+        for ilk_id in self._register_map.interlocks:
+            state = self._values.get(f'{ilk_id}_STATE')
+            trips = self._values.get(f'{ilk_id}_TRIPS')
+            if state is not None:
+                results[ilk_id] = {
+                    'state': int(state),
+                    'trips': int(trips) if trips is not None else 0,
+                    'tripped': int(state) == 2,
+                }
+        return results
+
+    def read_system_status(self) -> Dict[str, Any]:
+        """Read CODESYS system diagnostics."""
+        scan_time = self._values.get('SYS_SCAN_TIME')
+        errors = self._values.get('SYS_ERRORS')
+        watchdog = self._values.get('SYS_WATCHDOG')
+        if scan_time is not None:
+            self._last_scan_time_us = int(scan_time)
+        return {
+            'scan_time_us': int(scan_time) if scan_time is not None else -1,
+            'error_count': int(errors) if errors is not None else -1,
+            'watchdog': int(watchdog) if watchdog is not None else -1,
+        }
 
     # =========================================================================
     # INTERNAL
@@ -196,6 +378,7 @@ class CODESYSBridge:
 
                 self._read_count += 1
                 self._last_read_time = now
+                self._consecutive_errors = 0
 
                 if self._on_values_updated and values:
                     try:
@@ -205,6 +388,7 @@ class CODESYSBridge:
 
             except Exception as e:
                 self._error_count += 1
+                self._consecutive_errors += 1
                 logger.warning(f"CODESYS read error: {e}")
                 self._disconnect()
 
@@ -232,11 +416,16 @@ class CODESYSBridge:
         return values
 
     def _read_tag(self, tag_def: Dict[str, Any]) -> Optional[float]:
-        """Read a single tag from CODESYS via Modbus."""
+        """Read a single tag from CODESYS via Modbus.
+
+        Automatically selects holding vs input registers based on Modbus
+        address convention (4xxxx = holding, 3xxxx = input).
+        """
         register = tag_def.get('register', 0)
         data_type = tag_def.get('type', 'float32')
 
-        # Convert Modbus address convention (40001 = holding register 0)
+        # Determine register type and compute zero-based address
+        use_input_registers = 30001 <= register < 40001
         if register >= 40001:
             address = register - 40001
         elif register >= 30001:
@@ -244,40 +433,35 @@ class CODESYSBridge:
         else:
             address = register
 
+        def _read_regs(addr: int, count: int):
+            if use_input_registers:
+                return self._client.read_input_registers(addr, count=count, slave=self._unit_id)
+            return self._client.read_holding_registers(addr, count=count, slave=self._unit_id)
+
         if data_type == 'float32':
-            result = self._client.read_holding_registers(
-                address, count=2, slave=self._unit_id
-            )
+            result = _read_regs(address, 2)
             if result.isError():
                 return None
-            # Combine two 16-bit registers into float32
             raw = struct.pack('>HH', result.registers[0], result.registers[1])
             return struct.unpack('>f', raw)[0]
 
         elif data_type == 'int16':
-            result = self._client.read_holding_registers(
-                address, count=1, slave=self._unit_id
-            )
+            result = _read_regs(address, 1)
             if result.isError():
                 return None
             val = result.registers[0]
-            # Handle signed
             if val >= 0x8000:
                 val -= 0x10000
             return float(val)
 
         elif data_type == 'uint16':
-            result = self._client.read_holding_registers(
-                address, count=1, slave=self._unit_id
-            )
+            result = _read_regs(address, 1)
             if result.isError():
                 return None
             return float(result.registers[0])
 
         elif data_type == 'int32':
-            result = self._client.read_holding_registers(
-                address, count=2, slave=self._unit_id
-            )
+            result = _read_regs(address, 2)
             if result.isError():
                 return None
             raw = struct.pack('>HH', result.registers[0], result.registers[1])

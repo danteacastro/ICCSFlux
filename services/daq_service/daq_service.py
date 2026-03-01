@@ -349,6 +349,9 @@ class DAQService:
         # Opto22 config push tracking (mirrors cRIO pattern)
         self._opto22_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
 
+        # CFP config push tracking (mirrors cRIO/Opto22 pattern)
+        self._cfp_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
+
         # Non-blocking MQTT publish queue (prevents scan loop blocking on slow broker)
         self._publish_queue: queue.Queue[Tuple[str, str, int, bool]] = queue.Queue(maxsize=10000)
         self._publish_thread: Optional[threading.Thread] = None
@@ -2913,6 +2916,10 @@ Unit conversions:
         except Exception as e:
             logger.error(f"Failed to initialize audit trail: {e}")
             self.audit_trail = None
+
+        # Wire audit trail to safety manager for 21 CFR Part 11 interlock tracking
+        if self.safety_manager and self.audit_trail:
+            self.safety_manager._audit_trail = self.audit_trail
 
     def _init_user_session_manager(self):
         """Initialize the user session manager for role-based access control"""
@@ -7565,6 +7572,10 @@ Unit conversions:
         if not autosave_data:
             return
 
+        # Inject backend-authoritative state (PID loops)
+        if self.pid_engine and self.pid_engine.loops:
+            autosave_data["pidLoops"] = self.pid_engine.to_config_dict()
+
         autosave_path = self._get_autosave_path()
 
         try:
@@ -7760,6 +7771,11 @@ Unit conversions:
 
         if not project_data.get("created"):
             project_data["created"] = datetime.now().isoformat()
+
+        # Inject backend-authoritative state that the frontend doesn't track
+        # PID loops are configured via MQTT commands and live in pid_engine
+        if self.pid_engine and self.pid_engine.loops:
+            project_data["pidLoops"] = self.pid_engine.to_config_dict()
 
         # Use project manager for backup, validation, and save
         if self.project_manager:
@@ -8645,7 +8661,7 @@ Unit conversions:
 
     def _handle_crio_node_status(self, topic: str, payload: Dict[str, Any]):
         """
-        Handle status message from a remote cRIO or Opto22 node.
+        Handle status message from a remote cRIO, Opto22, GC, or CFP node.
 
         When a remote node publishes to {mqtt_base}/nodes/{node_id}/status/system,
         we register it with device_discovery so it appears in the Configuration tab.
@@ -8657,9 +8673,9 @@ Unit conversions:
         if not isinstance(payload, dict):
             return
 
-        # Only process if it's a remote node (cRIO or Opto22)
+        # Only process if it's a remote node (cRIO, Opto22, GC, or CFP)
         node_type = payload.get('node_type')
-        if node_type not in ('crio', 'opto22', 'gc'):
+        if node_type not in ('crio', 'opto22', 'gc', 'cfp'):
             return
 
         # Extract node_id from topic: nisystem/nodes/{node_id}/status/system
@@ -8690,8 +8706,10 @@ Unit conversions:
             existing_nodes = {n.node_id for n in self.device_discovery.get_opto22_nodes()}
         elif node_type == 'gc':
             existing_nodes = {n.node_id for n in self.device_discovery.get_gc_nodes()}
+        elif node_type == 'cfp':
+            existing_nodes = {n.node_id for n in self.device_discovery.get_cfp_nodes()}
         else:
-            return  # CFP uses cDAQ pattern — no remote node registration
+            return
         is_new_node = node_id not in existing_nodes
 
         if status == 'offline':
@@ -8699,6 +8717,8 @@ Unit conversions:
                 self.device_discovery.mark_crio_offline(node_id)
             elif node_type == 'opto22':
                 self.device_discovery.mark_opto22_offline(node_id)
+            elif node_type == 'cfp':
+                self.device_discovery.mark_cfp_offline(node_id)
             else:  # gc
                 self.device_discovery.mark_gc_offline(node_id)
         else:
@@ -8706,6 +8726,8 @@ Unit conversions:
                 self.device_discovery.register_crio_node(node_id, payload)
             elif node_type == 'opto22':
                 self.device_discovery.register_opto22_node(node_id, payload)
+            elif node_type == 'cfp':
+                self.device_discovery.register_cfp_node(node_id, payload)
             else:  # gc
                 self.device_discovery.register_gc_node(node_id, payload)
 
@@ -8721,7 +8743,7 @@ Unit conversions:
                     "node_id": node_id,
                     "node_type": node_type,
                     "status": status,
-                    "product_type": payload.get('product_type', {'crio': 'cRIO', 'opto22': 'groov EPIC'}.get(node_type, 'GC Analyzer')),
+                    "product_type": payload.get('product_type', {'crio': 'cRIO', 'opto22': 'groov EPIC', 'cfp': 'CompactFieldPoint', 'gc': 'GC Analyzer'}.get(node_type, 'Unknown')),
                     "channels": payload.get('channels', 0),
                     "timestamp": datetime.now().isoformat()
                 }),
@@ -8746,6 +8768,8 @@ Unit conversions:
                 reported_version = payload.get('config_version', '')
                 if node_type == 'opto22':
                     expected_version = self._opto22_config_versions.get(node_id, '')
+                elif node_type == 'cfp':
+                    expected_version = self._cfp_config_versions.get(node_id, '')
                 else:
                     expected_version = self._crio_config_versions.get(node_id, '')
                 if expected_version:
@@ -8763,6 +8787,8 @@ Unit conversions:
                 logger.info(f"Auto-pushing config to {node_type.upper()} {node_id}: {reason}")
                 if node_type == 'opto22':
                     self._push_opto22_channel_config(node_id)
+                elif node_type == 'cfp':
+                    self._push_cfp_channel_config(node_id)
                 else:
                     self._push_crio_channel_config(node_id)
 
@@ -8781,9 +8807,9 @@ Unit conversions:
         if not isinstance(payload, dict):
             return
 
-        # Only process cRIO and Opto22 heartbeats
+        # Only process cRIO, Opto22, GC, and CFP heartbeats
         node_type = payload.get('node_type')
-        if node_type not in ('crio', 'opto22', 'gc'):
+        if node_type not in ('crio', 'opto22', 'gc', 'cfp'):
             return
 
         # Extract node_id from topic: nisystem/nodes/{node_id}/heartbeat
@@ -8818,6 +8844,8 @@ Unit conversions:
             self.device_discovery.update_crio_heartbeat(node_id, heartbeat_data)
         elif node_type == 'opto22':
             self.device_discovery.update_opto22_heartbeat(node_id, heartbeat_data)
+        elif node_type == 'cfp':
+            self.device_discovery.update_cfp_heartbeat(node_id, heartbeat_data)
         else:  # gc
             self.device_discovery.update_gc_heartbeat(node_id, heartbeat_data)
 
@@ -9696,13 +9724,14 @@ Unit conversions:
 
     def _push_config_to_all_crio_nodes(self):
         """
-        Push channel configuration to all known online cRIO and Opto22 nodes.
+        Push channel configuration to all known online cRIO, Opto22, and CFP nodes.
         Called automatically after project load/import to ensure remote nodes
         have the TAG name -> physical channel mappings.
 
         Each node receives only its own channels:
         - cRIO: filtered by physical_channel.startswith('Mod')
         - Opto22: filtered by source_type=='opto22' and source_node_id match
+        - CFP: filtered by source_type=='cfp' and source_node_id match
         So multiple nodes of the same type get independent configs.
         """
         if not self.mqtt_client or not self.device_discovery:
@@ -9730,6 +9759,16 @@ Unit conversions:
             self._push_opto22_channel_config(node.node_id)
             pushed += 1
 
+        # Push to CFP nodes
+        cfp_nodes = self.device_discovery.get_cfp_nodes()
+        for node in (cfp_nodes or []):
+            if node.status != 'online':
+                logger.debug(f"Skipping offline CFP node: {node.node_id}")
+                continue
+            logger.info(f"Auto-pushing config to CFP node: {node.node_id}")
+            self._push_cfp_channel_config(node.node_id)
+            pushed += 1
+
         if pushed > 0:
             logger.info(f"Auto-pushed config to {pushed} remote node(s) after project load")
 
@@ -9746,12 +9785,20 @@ Unit conversions:
         if not self.mqtt_client or not self.config:
             return
 
-        # Filter channels that are cRIO channels (physical_channel starts with 'Mod')
+        # Filter channels belonging to this cRIO node by source_type + source_node_id
+        # Fallback: if no source_type set, match by physical_channel starting with 'Mod'
         # Build as dict keyed by TAG name (cRIO expects dict, not list)
         crio_channels = {}
         for name, channel in self.config.channels.items():
+            source_type = getattr(channel, 'source_type', 'local') or 'local'
+            source_node = getattr(channel, 'source_node_id', '') or ''
             physical_ch = getattr(channel, 'physical_channel', '') or ''
-            if physical_ch and physical_ch.startswith('Mod'):
+            # Match by source_type/node_id (preferred), or by physical_channel for legacy configs
+            is_crio_channel = (
+                (source_type == 'crio' and source_node == node_id) or
+                (source_type == 'local' and physical_ch.startswith('Mod'))
+            )
+            if is_crio_channel:
                 # Build channel config dict with TAG name as 'name' field
                 ch_dict = {
                     'name': name,  # TAG name (e.g., 'tag_72')
@@ -9805,6 +9852,12 @@ Unit conversions:
                     ch_dict['alarm_deadband'] = channel.alarm_deadband
                 if hasattr(channel, 'alarm_delay_sec') and channel.alarm_delay_sec is not None:
                     ch_dict['alarm_delay_sec'] = channel.alarm_delay_sec
+                if hasattr(channel, 'alarm_off_delay_sec') and channel.alarm_off_delay_sec is not None:
+                    ch_dict['alarm_off_delay_sec'] = channel.alarm_off_delay_sec
+                if hasattr(channel, 'rate_of_change_limit') and channel.rate_of_change_limit is not None:
+                    ch_dict['rate_of_change_limit'] = channel.rate_of_change_limit
+                if hasattr(channel, 'rate_of_change_period_s') and channel.rate_of_change_period_s is not None:
+                    ch_dict['rate_of_change_period_s'] = channel.rate_of_change_period_s
                 # Safety configuration (for autonomous cRIO safety)
                 if hasattr(channel, 'safety_action') and channel.safety_action:
                     ch_dict['safety_action'] = channel.safety_action
@@ -10105,6 +10158,27 @@ Unit conversions:
         config_str = json.dumps(config_for_hash, sort_keys=True)
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
+        # Build CODESYS config section (PID loops + register map for deterministic control)
+        codesys_config_data = None
+        if self.pid_engine:
+            opto22_channel_names = set(opto22_channels.keys())
+            codesys_pid_loops = []
+            for loop_id, loop in self.pid_engine.loops.items():
+                # Include PID loops whose PV or CV channel belongs to this node
+                if loop.pv_channel in opto22_channel_names or (
+                    loop.cv_channel and loop.cv_channel in opto22_channel_names
+                ):
+                    codesys_pid_loops.append(loop.to_config_dict())
+
+            if codesys_pid_loops or node_interlocks:
+                codesys_config_data = {
+                    'enabled': True,
+                    'pid_loops': codesys_pid_loops,
+                    'register_map_version': '1.0',
+                    'interlock_count': len(node_interlocks),
+                    'channel_count': len(opto22_channels),
+                }
+
         # Build and publish config
         mqtt_base = self.config.system.mqtt_base_topic
         config_data = {
@@ -10124,13 +10198,195 @@ Unit conversions:
         }
         if safe_state_data:
             config_data['safe_state_config'] = safe_state_data
+        if codesys_config_data:
+            config_data['codesys_config'] = codesys_config_data
 
         # Store expected version for sync tracking
         self._opto22_config_versions[node_id] = config_hash
 
         topic = f"{mqtt_base}/nodes/{node_id}/config/full"
         self.mqtt_client.publish(topic, json.dumps(config_data), qos=1)
-        logger.info(f"Pushed {len(opto22_channels)} channels + {len(safety_actions_data)} safety actions + {len(node_interlocks)} interlocks to Opto22 {node_id} (version: {config_hash})")
+        codesys_info = ""
+        if codesys_config_data:
+            codesys_info = f" + CODESYS ({len(codesys_config_data.get('pid_loops', []))} PID loops)"
+        logger.info(f"Pushed {len(opto22_channels)} channels + {len(safety_actions_data)} safety actions + {len(node_interlocks)} interlocks{codesys_info} to Opto22 {node_id} (version: {config_hash})")
+
+        self._cleanup_stale_channel_values()
+
+    def _push_cfp_channel_config(self, node_id: str):
+        """
+        Push channel configuration to a CompactFieldPoint (CFP) node.
+
+        Filters channels where source_type == 'cfp' and source_node_id matches,
+        builds Modbus-specific channel config dicts (address, register_type,
+        data_type, slave_id), filters interlocks with controls targeting this
+        node's channels, and publishes to the node's config/full topic.
+
+        Args:
+            node_id: Target CFP node ID (e.g., 'cfp-001')
+        """
+        if not self.mqtt_client or not self.config:
+            return
+
+        # Filter channels that belong to this CFP node
+        cfp_channels = {}
+        for name, channel in self.config.channels.items():
+            source_type = getattr(channel, 'source_type', 'local') or 'local'
+            source_node = getattr(channel, 'source_node_id', '') or ''
+            if source_type == 'cfp' and source_node == node_id:
+                ch_dict = {
+                    'name': name,
+                    'channel_type': channel.channel_type.value if hasattr(channel.channel_type, 'value') else str(channel.channel_type),
+                }
+                # Modbus-specific fields (CFP uses Modbus transport)
+                if hasattr(channel, 'modbus_address') and channel.modbus_address is not None:
+                    ch_dict['address'] = channel.modbus_address
+                elif hasattr(channel, 'register_address') and channel.register_address is not None:
+                    ch_dict['address'] = channel.register_address
+                else:
+                    ch_dict['address'] = 0
+                ch_dict['register_type'] = getattr(channel, 'register_type', 'holding') or 'holding'
+                ch_dict['data_type'] = getattr(channel, 'data_type', 'int16') or 'int16'
+                ch_dict['slave_id'] = getattr(channel, 'modbus_slave_id', getattr(channel, 'slave_id', 1)) or 1
+
+                # Scaling (CFP uses scale/offset rather than scale_slope/scale_offset)
+                scale_slope = getattr(channel, 'scale_slope', None)
+                scale_offset = getattr(channel, 'scale_offset', None)
+                if scale_slope is not None:
+                    ch_dict['scale'] = scale_slope
+                if scale_offset is not None:
+                    ch_dict['offset'] = scale_offset
+
+                # Writable flag (output channels)
+                ch_type_str = ch_dict['channel_type']
+                is_output = ch_type_str in (
+                    'voltage_output', 'current_output', 'digital_output',
+                    'counter_output', 'pulse_output', 'modbus_coil'
+                )
+                ch_dict['writable'] = is_output
+                if hasattr(channel, 'default_state'):
+                    ch_dict['default_value'] = channel.default_state
+
+                # Unit
+                if hasattr(channel, 'unit') and channel.unit:
+                    ch_dict['unit'] = channel.unit
+
+                # Alarm configuration (ISA-18.2)
+                if hasattr(channel, 'alarm_enabled'):
+                    ch_dict['alarm_enabled'] = channel.alarm_enabled
+                for limit_attr in ('hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit',
+                                   'high_limit', 'low_limit'):
+                    val = getattr(channel, limit_attr, None)
+                    if val is not None:
+                        ch_dict[limit_attr] = val
+                if hasattr(channel, 'alarm_deadband') and channel.alarm_deadband is not None:
+                    ch_dict['alarm_deadband'] = channel.alarm_deadband
+                if hasattr(channel, 'alarm_delay_sec') and channel.alarm_delay_sec is not None:
+                    ch_dict['alarm_delay_sec'] = channel.alarm_delay_sec
+                if hasattr(channel, 'alarm_priority') and channel.alarm_priority:
+                    ch_dict['alarm_priority'] = channel.alarm_priority
+                if hasattr(channel, 'alarm_off_delay_sec') and channel.alarm_off_delay_sec is not None:
+                    ch_dict['alarm_off_delay_sec'] = channel.alarm_off_delay_sec
+                if hasattr(channel, 'rate_of_change_limit') and channel.rate_of_change_limit is not None:
+                    ch_dict['rate_of_change_limit'] = channel.rate_of_change_limit
+                if hasattr(channel, 'rate_of_change_period_s') and channel.rate_of_change_period_s is not None:
+                    ch_dict['rate_of_change_period_s'] = channel.rate_of_change_period_s
+
+                # Safety configuration
+                if hasattr(channel, 'safety_action') and channel.safety_action:
+                    ch_dict['safety_action'] = channel.safety_action
+                if hasattr(channel, 'safety_interlock') and channel.safety_interlock:
+                    ch_dict['safety_interlock'] = channel.safety_interlock
+
+                cfp_channels[name] = ch_dict
+
+        if not cfp_channels:
+            logger.debug(f"No CFP channels to push to {node_id}")
+            return
+
+        # Build safety_actions dict (filter to CFP-relevant outputs only)
+        safety_actions_data = {}
+        if hasattr(self.config, 'safety_actions'):
+            for action_name, action in self.config.safety_actions.items():
+                node_actions = {}
+                for ch_name, value in action.actions.items():
+                    if ch_name in cfp_channels:
+                        node_actions[ch_name] = value
+                if node_actions:
+                    safety_actions_data[action_name] = {
+                        'name': action_name,
+                        'description': getattr(action, 'description', ''),
+                        'actions': node_actions,
+                        'trigger_alarm': getattr(action, 'trigger_alarm', False),
+                        'alarm_message': getattr(action, 'alarm_message', '')
+                    }
+
+        # Build interlocks for this node (filter to interlocks with controls on node channels)
+        _DAQ_ONLY_CONDITION_TYPES = {
+            'mqtt_connected', 'daq_connected', 'not_recording',
+            'variable_value', 'expression'
+        }
+        node_interlocks = []
+        if self.safety_manager:
+            cfp_channel_names = set(cfp_channels.keys())
+            for interlock in self.safety_manager.get_all_interlocks():
+                has_node_control = any(
+                    ctrl.channel in cfp_channel_names
+                    for ctrl in interlock.controls
+                    if ctrl.channel
+                )
+                has_stop = any(
+                    ctrl.control_type == 'stop_session'
+                    for ctrl in interlock.controls
+                )
+                if has_node_control or has_stop:
+                    if interlock.conditions and all(
+                        c.condition_type in _DAQ_ONLY_CONDITION_TYPES
+                        for c in interlock.conditions
+                    ):
+                        logger.warning(
+                            f"Interlock '{interlock.name}' has only DAQ-only conditions "
+                            f"-- skipping push to CFP node (DAQ will evaluate it)")
+                        continue
+                    node_interlocks.append(interlock.to_dict())
+
+        # Build safe state config
+        safe_state_data = None
+        if self.safety_manager:
+            safe_state_data = self.safety_manager.safe_state_config.to_dict()
+
+        # Generate config version hash
+        import hashlib
+        config_for_hash = {
+            'channels': cfp_channels,
+            'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
+            'scan_rate_hz': self.config.system.scan_rate_hz,
+            'publish_rate_hz': self.config.system.publish_rate_hz
+        }
+        config_str = json.dumps(config_for_hash, sort_keys=True)
+        config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
+
+        # Build and publish config
+        mqtt_base = self.config.system.mqtt_base_topic
+        config_data = {
+            'channels': cfp_channels,
+            'safety_actions': safety_actions_data,
+            'interlocks': node_interlocks,
+            'scan_rate_hz': self.config.system.scan_rate_hz,
+            'publish_rate_hz': self.config.system.publish_rate_hz,
+            'timestamp': datetime.now().isoformat(),
+            'config_version': config_hash
+        }
+        if safe_state_data:
+            config_data['safe_state_config'] = safe_state_data
+
+        # Store expected version for sync tracking
+        self._cfp_config_versions[node_id] = config_hash
+
+        topic = f"{mqtt_base}/nodes/{node_id}/config/full"
+        self.mqtt_client.publish(topic, json.dumps(config_data), qos=1)
+        logger.info(f"Pushed {len(cfp_channels)} channels + {len(safety_actions_data)} safety actions + {len(node_interlocks)} interlocks to CFP {node_id} (version: {config_hash})")
 
         self._cleanup_stale_channel_values()
 
@@ -10196,6 +10452,7 @@ Unit conversions:
             # This ensures START will push fresh config after channel modifications
             self._crio_config_versions.clear()
             self._opto22_config_versions.clear()
+            self._cfp_config_versions.clear()
             logger.debug("[DEBOUNCE] Cleared confirmed config versions (channels modified)")
 
             # Cancel existing timer if pending
@@ -13254,9 +13511,19 @@ Unit conversions:
         if not self.safety_manager or not isinstance(payload, dict):
             return
         user = payload.get('user', 'system')
+        reason = payload.get('reason', '')
         interlock = Interlock.from_dict(payload)
-        self.safety_manager.add_interlock(interlock, user)
-        logger.info(f"Interlock added: {interlock.name}")
+        result = self.safety_manager.add_interlock(interlock, user, reason)
+        if result:
+            logger.info(f"Interlock added: {interlock.name}")
+        else:
+            # Blocked by safety guard — notify frontend
+            base = self.get_topic_base()
+            self.mqtt_client.publish(
+                f"{base}/interlocks/error",
+                json.dumps({'error': 'blocked', 'interlock_id': interlock.id,
+                           'message': 'Cannot modify critical interlock while ARMED/TRIPPED'}),
+                qos=1)
 
     def _handle_interlock_update(self, payload: Any):
         """Update an existing interlock"""
@@ -13264,9 +13531,18 @@ Unit conversions:
             return
         interlock_id = payload.get('id')
         user = payload.get('user', 'system')
+        reason = payload.get('reason', '')
         if interlock_id:
-            self.safety_manager.update_interlock(interlock_id, payload, user)
-            logger.info(f"Interlock updated: {interlock_id}")
+            success = self.safety_manager.update_interlock(interlock_id, payload, user, reason)
+            if success:
+                logger.info(f"Interlock updated: {interlock_id}")
+            else:
+                base = self.get_topic_base()
+                self.mqtt_client.publish(
+                    f"{base}/interlocks/error",
+                    json.dumps({'error': 'blocked', 'interlock_id': interlock_id,
+                               'message': 'Cannot modify critical interlock while ARMED/TRIPPED'}),
+                    qos=1)
 
     def _handle_interlock_remove(self, payload: Any):
         """Remove an interlock"""
@@ -13274,9 +13550,18 @@ Unit conversions:
             return
         interlock_id = payload.get('id')
         user = payload.get('user', 'system')
+        reason = payload.get('reason', '')
         if interlock_id:
-            self.safety_manager.remove_interlock(interlock_id, user)
-            logger.info(f"Interlock removed: {interlock_id}")
+            success = self.safety_manager.remove_interlock(interlock_id, user, reason)
+            if success:
+                logger.info(f"Interlock removed: {interlock_id}")
+            else:
+                base = self.get_topic_base()
+                self.mqtt_client.publish(
+                    f"{base}/interlocks/error",
+                    json.dumps({'error': 'blocked', 'interlock_id': interlock_id,
+                               'message': 'Cannot remove critical interlock while ARMED/TRIPPED'}),
+                    qos=1)
 
     def _handle_interlock_bypass(self, payload: Any):
         """Bypass or un-bypass an interlock"""
@@ -13295,8 +13580,9 @@ Unit conversions:
         """Sync interlock from frontend (add or update)"""
         if not self.safety_manager or not isinstance(payload, dict):
             return
+        reason = payload.get('reason', 'frontend_sync')
         interlock = Interlock.from_dict(payload)
-        self.safety_manager.add_interlock(interlock, 'frontend_sync')
+        self.safety_manager.add_interlock(interlock, 'frontend_sync', reason)
 
     def _handle_interlocks_list(self):
         """Publish list of all interlocks"""

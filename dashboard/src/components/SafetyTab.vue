@@ -753,6 +753,7 @@ const newInterlock = ref({
   silRating: undefined as 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4' | undefined,
   priority: 'medium' as 'critical' | 'high' | 'medium' | 'low',
   requiresAcknowledgment: false,
+  isCritical: false,
   proofTestInterval: undefined as number | undefined,
   conditions: [] as InterlockCondition[],
   controls: [] as InterlockControl[]
@@ -870,6 +871,7 @@ function openNewInterlockModal() {
     silRating: undefined,
     priority: 'medium',
     requiresAcknowledgment: false,
+    isCritical: false,
     proofTestInterval: undefined,
     conditions: [],
     controls: []
@@ -893,6 +895,7 @@ function openEditInterlockModal(interlockId: string) {
     silRating: interlock.silRating,
     priority: interlock.priority || 'medium',
     requiresAcknowledgment: interlock.requiresAcknowledgment || false,
+    isCritical: interlock.isCritical || false,
     proofTestInterval: interlock.proofTestInterval,
     conditions: interlock.conditions.map(c => ({ ...c })),
     controls: interlock.controls.map(c => ({ ...c }))
@@ -931,6 +934,14 @@ function saveInterlock() {
   if (newInterlock.value.conditions.length === 0) return
   if (newInterlock.value.controls.length === 0) return
 
+  // If system is acquiring, require a reason for audit trail
+  let reason: string | undefined
+  if (store.isAcquiring) {
+    const input = prompt('System is acquiring. Enter reason for modifying interlock (required):')
+    if (!input) return  // User cancelled — abort
+    reason = input
+  }
+
   isSavingInterlock.value = true
 
   if (editingInterlock.value) {
@@ -944,10 +955,11 @@ function saveInterlock() {
       silRating: newInterlock.value.silRating,
       priority: newInterlock.value.priority,
       requiresAcknowledgment: newInterlock.value.requiresAcknowledgment,
+      isCritical: newInterlock.value.isCritical,
       proofTestInterval: newInterlock.value.proofTestInterval,
       conditions: newInterlock.value.conditions,
       controls: newInterlock.value.controls
-    })
+    }, undefined, reason)
   } else {
     // Create new
     safety.addInterlock({
@@ -960,11 +972,12 @@ function saveInterlock() {
       silRating: newInterlock.value.silRating,
       priority: newInterlock.value.priority,
       requiresAcknowledgment: newInterlock.value.requiresAcknowledgment,
+      isCritical: newInterlock.value.isCritical,
       proofTestInterval: newInterlock.value.proofTestInterval,
       bypassed: false,
       conditions: newInterlock.value.conditions,
       controls: newInterlock.value.controls
-    })
+    }, undefined, reason)
   }
 
   showInterlockModal.value = false
@@ -973,17 +986,57 @@ function saveInterlock() {
 
 function deleteInterlock(id: string) {
   if (!requireEditPermission()) return
-  if (confirm('Delete this interlock?')) {
-    safety.removeInterlock(id)
+  const interlock = safety.interlocks.value.find(i => i.id === id)
+  if (!interlock) return
+
+  // Critical interlocks require Admin role
+  if (interlock.isCritical) {
+    if (!auth.isAdmin.value) {
+      alert('Critical interlocks require Admin role to delete.')
+      return
+    }
+  }
+
+  const controls = interlock.controls.map(c =>
+    c.channel ? `${c.type}: ${c.channel}` : c.type
+  ).join(', ')
+
+  const message = interlock.isCritical
+    ? `WARNING: This is a CRITICAL safety interlock.\n\nName: ${interlock.name}\nControls: ${controls}\n\nDeleting this interlock will remove safety protection. Continue?`
+    : `Delete interlock "${interlock.name}"?\n\nControls: ${controls}`
+
+  if (confirm(message)) {
+    let reason: string | undefined
+    if (store.isAcquiring) {
+      const input = prompt('System is acquiring. Enter reason for deleting interlock (required):')
+      if (!input) return
+      reason = input
+    }
+    safety.removeInterlock(id, undefined, reason)
   }
 }
 
 function toggleInterlockEnabled(id: string) {
   if (!requireEditPermission()) return
   const interlock = safety.interlocks.value.find(i => i.id === id)
-  if (interlock) {
-    safety.updateInterlock(id, { enabled: !interlock.enabled })
+  if (!interlock) return
+
+  // Critical interlocks require Admin to enable/disable
+  if (interlock.isCritical) {
+    if (!auth.isAdmin.value) {
+      alert('Critical interlocks can only be enabled/disabled by Admin users.')
+      return
+    }
   }
+
+  let reason: string | undefined
+  if (store.isAcquiring) {
+    const input = prompt(`System is acquiring. Enter reason for ${interlock.enabled ? 'disabling' : 'enabling'} interlock (required):`)
+    if (!input) return
+    reason = input
+  }
+
+  safety.updateInterlock(id, { enabled: !interlock.enabled }, undefined, reason)
 }
 
 function toggleInterlockBypass(id: string) {
@@ -1560,6 +1613,11 @@ function getControlDescription(ctrl: InterlockControl): string {
 
     <!-- INTERLOCKS SECTION -->
     <div v-else-if="activeSection === 'interlocks'" class="interlocks-content">
+      <!-- Warning: system is acquiring -->
+      <div v-if="store.isAcquiring" class="safety-acquiring-banner">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+        <span>System is acquiring &mdash; interlock modifications require a reason and are audit-logged. Critical interlocks cannot be modified while ARMED or TRIPPED.</span>
+      </div>
       <!-- Left: Interlock Status -->
       <div class="interlocks-status-panel">
         <div class="panel-header">
@@ -1604,6 +1662,7 @@ function getControlDescription(ctrl: InterlockControl): string {
               </div>
               <div class="interlock-name">
                 {{ status.name }}
+                <svg v-if="safety.interlocks.value.find(i => i.id === status.id)?.isCritical" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="critical-lock-icon" title="Critical safety interlock"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
                 <span v-if="status.bypassed" class="bypass-badge">BYPASSED</span>
                 <span v-if="!status.enabled" class="disabled-badge">DISABLED</span>
               </div>
@@ -2074,6 +2133,16 @@ function getControlDescription(ctrl: InterlockControl): string {
                 Require trip acknowledgment
               </label>
             </div>
+          </div>
+
+          <!-- Critical Safety Interlock -->
+          <div class="form-group">
+            <label class="checkbox-label critical-checkbox">
+              <input type="checkbox" v-model="newInterlock.isCritical" />
+              <svg v-if="newInterlock.isCritical" width="14" height="14" viewBox="0 0 24 24" fill="#dc2626"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+              Critical Safety Interlock
+            </label>
+            <p class="form-hint">Cannot be modified while ARMED/TRIPPED. Requires Admin to delete.</p>
           </div>
 
           <!-- Conditions -->
@@ -3167,6 +3236,45 @@ function getControlDescription(ctrl: InterlockControl): string {
 @keyframes pulse-latch {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+/* ============================================
+   Safety Acquiring Banner
+   ============================================ */
+
+.safety-acquiring-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fef3c7;
+  border-left: 4px solid #f59e0b;
+  color: #92400e;
+  font-size: 12px;
+  grid-column: 1 / -1;
+}
+
+.safety-acquiring-banner svg {
+  flex-shrink: 0;
+  color: #f59e0b;
+}
+
+.critical-lock-icon {
+  color: #dc2626;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.critical-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-hint {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
 }
 
 /* ============================================

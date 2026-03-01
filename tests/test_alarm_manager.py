@@ -21,8 +21,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# Add parent directory to path for imports
+# Add parent and tests directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'services' / 'daq_service'))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_helpers import wait_until
 
 from alarm_manager import (
     AlarmManager, AlarmConfig, AlarmSeverity, AlarmState,
@@ -231,7 +234,7 @@ class TestOnDelay:
             name="Delay Test",
             severity=AlarmSeverity.MEDIUM,
             high=100.0,
-            on_delay_s=1.0  # 1 second delay
+            on_delay_s=0.2  # 200 ms delay (shorter than original 1 s)
         )
         manager.add_alarm_config(config)
 
@@ -239,10 +242,13 @@ class TestOnDelay:
         # Should not trigger immediately
         assert len(manager.active_alarms) == 0
 
-        # Wait for delay
-        time.sleep(1.1)
-        manager.process_value("TestCh", 110.0)
-        assert len(manager.active_alarms) == 1
+        # Poll until the on-delay elapses and alarm activates
+        def _alarm_active():
+            manager.process_value("TestCh", 110.0)
+            return len(manager.active_alarms) == 1
+
+        assert wait_until(_alarm_active, timeout=3.0), \
+            "Alarm did not activate after on_delay elapsed"
 
 
 class TestFirstOut:
@@ -623,19 +629,17 @@ class TestUnshelveReEvaluation:
         assert "expiry-test" in manager.active_alarms
 
         # Shelve with short duration
-        manager.shelve_alarm("expiry-test", "operator", "quick check", duration_s=0.3)
+        manager.shelve_alarm("expiry-test", "operator", "quick check", duration_s=0.15)
         assert manager.active_alarms["expiry-test"].state == AlarmState.SHELVED
 
-        # Wait for expiry
-        time.sleep(0.5)
+        # Poll until shelve expires (process_value triggers the expiry check)
+        def _unshelved():
+            manager.process_value("Pressure", 600.0)
+            alarm = manager.active_alarms.get("expiry-test")
+            return alarm is not None and alarm.state != AlarmState.SHELVED
 
-        # Process value triggers shelve expiry check — should not crash
-        manager.process_value("Pressure", 600.0)
-
-        # Alarm should be unshelved (back to active, not crashed)
-        alarm = manager.active_alarms.get("expiry-test")
-        assert alarm is not None
-        assert alarm.state != AlarmState.SHELVED
+        assert wait_until(_unshelved, timeout=3.0), \
+            "Alarm shelve did not expire"
 
 
 if __name__ == '__main__':

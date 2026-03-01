@@ -6,7 +6,7 @@
 - **Frontend**: Vue 3 + TypeScript dashboard (`dashboard/`) — connects via WebSocket to MQTT
 - **Broker**: Mosquitto MQTT — TCP 1883 (authenticated, for services + cRIO) and WebSocket 9002 (localhost-only, anonymous, for dashboard)
 - **cRIO**: Python node (`services/crio_node_v2/`) deployed to NI cRIO hardware over SSH
-- **Opto22**: Python node (`services/opto22_node/`) deployed to groov EPIC/RIO — hybrid architecture with groov Manage MQTT for I/O + Python for scripts, safety, PID, sequences
+- **Opto22**: Python + CODESYS hybrid node (`services/opto22_node/`) deployed to groov EPIC/RIO — groov Manage MQTT for native I/O, optional CODESYS runtime for deterministic PID/interlocks via Modbus TCP, Python companion for scripts, safety fallback, sequences
 - **Azure**: Separate `AzureUploader` exe uploads to Azure IoT Hub (external process, not part of main DAQ service)
 - **Portable build**: PyInstaller compiles to `dist/ICCSFlux-Portable/` — runs on any Windows PC without Python/Node installed
 
@@ -117,28 +117,33 @@ Deployed to NI cRIO hardware. Independent of PC — can survive PC disconnection
 
 ### Section 8: Opto22 Node (Remote Controller)
 
-Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for native I/O scanning + Python node for scripts, safety, PID, sequences.
+Deployed to Opto22 groov EPIC/RIO. **Hybrid CODESYS + Python architecture**: CODESYS runtime handles deterministic PID and interlocks via IEC 61131-3 Structured Text, Python companion handles scripts, sequencing, MQTT orchestration, and serves as automatic fallback when CODESYS is unavailable.
+
+**Runtime modes** (auto-switching, see `opto22_node.py:1190`):
+- **CODESYS mode**: PID loops and interlocks execute in PLC (1 ms cycle). Python reads PID outputs and interlock status via Modbus TCP, pushes setpoints/commands, publishes to MQTT.
+- **Python fallback mode**: If CODESYS connection lost (3 consecutive errors or 5 s timeout), Python PID engine and safety.py take over automatically. Logged as `"CODESYS lost — falling back to Python PID/safety"`.
 
 **Core:**
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| `services/opto22_node/opto22_node.py` | 1,350 | Main service orchestrator: dual MQTT, scan loop, command dispatch, stale I/O detection, groov MQTT health monitoring |
+| `services/opto22_node/opto22_node.py` | 1,350 | Main service orchestrator: dual MQTT, scan loop, CODESYS/Python mode switching, command dispatch, stale I/O detection |
 | `services/opto22_node/state_machine.py` | ~200 | States: IDLE → CONNECTING_MQTT → ACQUIRING → SESSION |
-| `services/opto22_node/mqtt_interface.py` | ~375 | Dual MQTT: SystemMQTT (NISystem) + GroovMQTT (groov Manage). Both have `reconnect()` |
+| `services/opto22_node/mqtt_interface.py` | ~375 | Dual MQTT: SystemMQTT (NISystem broker, TLS) + GroovMQTT (groov Manage, local). Both have `reconnect()` |
 | `services/opto22_node/hardware.py` | ~310 | GroovIOSubscriber (MQTT I/O with stale detection) + GroovRestFallback (REST API). HardwareInterface auto-wires groov MQTT → subscriber |
-| `services/opto22_node/config.py` | ~500 | NodeConfig, ChannelConfig, groov MQTT + REST settings |
+| `services/opto22_node/config.py` | ~590 | NodeConfig, ChannelConfig, CODESYSConfig, groov MQTT + REST settings |
 | `services/opto22_node/channel_types.py` | ~300 | ChannelType enum + Opto22 module database (GRV-series) |
 
-**Intelligence (shared with cRIO v2):**
+**CODESYS integration layer:**
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| `services/opto22_node/script_engine.py` | ~1,800 | Script sandbox (same API as DAQ service). 4 Hz rate limiting. **MUST keep blocked lists in sync with script_manager.py** |
-| `services/opto22_node/safety.py` | 1,855 | Synced copy of cRIO safety.py (logger='Opto22Node'). ISA-18.2 alarms + IEC 61511 interlocks, COMM_FAIL, channel_offline. **MUST stay in sync with crio_node_v2/safety.py** |
-| `services/opto22_node/audit_trail.py` | ~150 | SHA-256 hash chain, append-only JSONL, 10 MB rotation |
+| `services/opto22_node/codesys_bridge.py` | ~525 | Modbus TCP bridge to CODESYS runtime (localhost:502). Structured + tag-map modes. Heartbeat, health monitoring, `codesys_available` property for mode switching |
+| `services/opto22_node/codesys/register_map.py` | ~460 | Modbus register allocation: 50 PID loops, 50 interlocks, 100 channels, 50 outputs. Holding/input regs, coils, discrete inputs. No-overlap validation |
+| `services/opto22_node/codesys/st_codegen.py` | ~350 | IEC 61131-3 Structured Text code generator. Produces FB_PID_Loop, FB_Interlock, FB_SafeState, GVL_Registers, Main from project config |
+| `services/opto22_node/codesys/templates/*.st.j2` | 5 files | Jinja2 templates for ST function blocks, GVL, and Main program |
 
-**Autonomous engines (Opto22-unique):**
+**Python fallback engines (active when CODESYS unavailable):**
 
 | File | LOC | Purpose |
 |------|-----|---------|
@@ -146,7 +151,14 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 | `services/opto22_node/sequence_manager.py` | ~130 | Server-side sequences: setOutput, wait, condition, loops |
 | `services/opto22_node/trigger_engine.py` | ~50 | Rising-edge threshold detection → actions |
 | `services/opto22_node/watchdog_engine.py` | ~60 | Stale data + out-of-range monitoring with recovery |
-| `services/opto22_node/codesys_bridge.py` | ~240 | Optional: Modbus TCP bridge to CODESYS runtime for deterministic PID |
+
+**Safety & scripting (always active, shared with cRIO v2):**
+
+| File | LOC | Purpose |
+|------|-----|---------|
+| `services/opto22_node/script_engine.py` | ~1,800 | Script sandbox (same API as DAQ service). 4 Hz rate limiting. **MUST keep blocked lists in sync with script_manager.py** |
+| `services/opto22_node/safety.py` | 1,855 | Synced copy of cRIO safety.py (logger='Opto22Node'). ISA-18.2 alarms + IEC 61511 interlocks, COMM_FAIL, channel_offline. Runs as monitoring layer even in CODESYS mode. **MUST stay in sync with crio_node_v2/safety.py** |
+| `services/opto22_node/audit_trail.py` | ~150 | SHA-256 hash chain, append-only JSONL, 10 MB rotation |
 
 ### Section 9: Other Device Services
 
@@ -183,7 +195,11 @@ Deployed to Opto22 groov EPIC/RIO. Hybrid architecture: groov Manage MQTT for na
 | `scripts/mqtt_credentials.py` | 124 | MQTT credential generation (auto-generated at first run, chmod 600) |
 | `scripts/write_crio_creds.py` | 39 | Generate cRIO credential JSON for deploy_crio_v2.bat (avoids CMD parenthesis issues) |
 | `scripts/read_mqtt_creds.py` | 22 | Read MQTT credentials → print user:pass for deploy_crio_v2.bat |
+| `scripts/deploy_opto22.py` | 345 | 10-step Opto22 deploy pipeline (SSH/SCP, systemd, CODESYS ST files, safety verification) |
+| `scripts/run_opto22.py` | 196 | Opto22 service entry point (on groov EPIC). Rotating log, signal handlers, credential loading |
+| `scripts/opto22_init_service.sh` | ~30 | systemd unit file for opto22_node service (SCP'd to `/etc/systemd/system/`) |
 | `scripts/clear_retained_mqtt.py` | 34 | Clear retained MQTT acquire messages after cRIO deploy |
+| `scripts/generate_codesys_st.py` | ~170 | CLI: generate CODESYS Structured Text from project JSON (PID loops, interlocks, channels → 5 ST files) |
 
 ### Section 11: Dashboard — Core & Stores
 
@@ -544,6 +560,138 @@ Default values:
 
 **Never put complex logic in .bat files.** CMD cannot handle `$`, `()`, `#`, heredocs, or any characters that shell scripts/Python need. Always put logic in Python scripts or `.sh` files and SCP them. The bat file should only be a thin wrapper.
 
+## Opto22 Deployment
+
+**ALWAYS use `deploy_opto22.bat` when deploying changes to the groov EPIC.**
+
+```cmd
+deploy_opto22.bat [epic_host] [broker_host]
+```
+
+Default values:
+- epic_host: 192.168.1.30
+- broker_host: 192.168.1.1
+
+**DO NOT manually scp individual files** — use the deploy script to ensure all files, CODESYS templates, and credentials are deployed together.
+
+### Hybrid Architecture Overview
+
+The Opto22 node runs as a **Python + CODESYS hybrid** on the groov EPIC:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  groov EPIC                                          │
+│                                                      │
+│  ┌──────────────┐     Modbus TCP     ┌────────────┐  │
+│  │ Python Node  │◄──────────────────►│  CODESYS   │  │
+│  │ (companion)  │    localhost:502    │  Runtime   │  │
+│  │              │                    │            │  │
+│  │ • Scripts    │  ── setpoints ──►  │ • PID      │  │
+│  │ • Sequences  │  ── commands ──►   │ • Interlock│  │
+│  │ • MQTT pub   │  ◄── PV/CV ──     │ • Safe     │  │
+│  │ • Safety     │  ◄── status ──     │   state    │  │
+│  │   (fallback) │  ── heartbeat ──►  │ • Watchdog │  │
+│  └──────┬───────┘                    └──────┬─────┘  │
+│         │                                   │        │
+│    MQTT (TLS)                          groov I/O     │
+│    port 8883                          (native scan)  │
+│         │                                   │        │
+└─────────┼───────────────────────────────────┼────────┘
+          │                                   │
+          ▼                                   ▼
+    NISystem Broker                    Physical I/O
+    (PC, port 8883)                    (GRV modules)
+```
+
+**CODESYS runs PID and interlocks at 1 ms cycle** — deterministic, not affected by Python GC or OS scheduling. Python pushes setpoints and reads outputs via Modbus. If CODESYS goes down, Python PID/safety engines activate automatically.
+
+### Deploy Script Architecture
+
+`deploy_opto22.bat` is a thin wrapper that calls `scripts/deploy_opto22.py`. 10-step pipeline:
+
+1. SSH connectivity check (user `dev`)
+2. Stop all processes (split-brain prevention: exactly ONE process allowed)
+3. Python 3 verification on EPIC
+4. Dependency checks (paho-mqtt required, pymodbus for CODESYS bridge)
+5. Deploy files via SCP (15 Python modules + CODESYS package + templates)
+6. Write MQTT credentials (`mqtt_creds.json`, chmod 600)
+7. Import verification (test Python imports on EPIC)
+8. Deploy generated ST files from `dist/codesys_st/` (if present)
+9. Install and start systemd service (`opto22_node.service`)
+10. Safety verification (exactly 1 process running)
+
+**Service management**: systemd unit at `/etc/systemd/system/opto22_node.service` (source: `scripts/opto22_init_service.sh`). `Restart=always`, `RestartSec=5`, security-hardened (`NoNewPrivileges`, `ProtectSystem=strict`).
+
+| Deploy Script/Helper | Purpose |
+|---------------------|---------|
+| `scripts/deploy_opto22.py` | Main deploy logic (SSH/SCP, safety checks, systemd install) |
+| `scripts/run_opto22.py` | Service entry point on EPIC (rotating log, signal handlers, credential loading) |
+| `scripts/opto22_init_service.sh` | systemd unit file (SCP'd to `/etc/systemd/system/opto22_node.service`) |
+
+### CODESYS Structured Text Workflow
+
+The ST code is **generated from project config**, not hand-written:
+
+```bash
+python scripts/generate_codesys_st.py config/projects/MyProject.json
+```
+
+```
+Project JSON ──► generate_codesys_st.py ──► dist/codesys_st/*.st ──► CODESYS IDE ──► groov EPIC PLC
+(with pidLoops)    (reads PID, interlocks,     (5 files)              (manual import)
+                    channels from JSON)
+```
+
+**IMPORTANT**: PID loops must be saved to the project before generating ST code. PID loops are configured via MQTT commands at runtime and are injected into the project JSON by the backend during save. If the project has no `pidLoops` key, the generated ST will have no PID control logic.
+
+**Generated files:**
+| File | Purpose |
+|------|---------|
+| `FB_PID_Loop.st` | PID function block (P/I/D terms, anti-windup, bumpless transfer) |
+| `FB_Interlock.st` | IEC 61511 interlock state machine (SAFE/ARMED/TRIPPED) |
+| `FB_SafeState.st` | Safe state manager (sets all outputs to configured safe values) |
+| `GVL_Registers.st` | Global variable list with Modbus AT declarations |
+| `Main.st` | Main program: read I/O → PID → interlocks → safe state → write outputs |
+
+**CODESYS IDE steps** (manual, after deploy):
+1. Open/create groov EPIC project in CODESYS IDE
+2. Import the 5 ST files as POUs + GVL
+3. Add Modbus TCP Slave device, map variables to GVL_Registers
+4. Set task cycle to 1 ms
+5. Build → Download → Run
+
+**Register map** (`codesys/register_map.py`):
+| Range | Direction | Content |
+|-------|-----------|---------|
+| 40001-40100 | Python → CODESYS | PID setpoints (50 loops, float32) |
+| 40101-40250 | Python → CODESYS | PID tuning (Kp/Ki/Kd triplets) |
+| 40401-40500 | Python → CODESYS | Interlock commands |
+| 40601-40610 | Python → CODESYS | System commands (E-stop, heartbeat, mode) |
+| 30001-30100 | CODESYS → Python | PID CV outputs |
+| 30101-30300 | CODESYS → Python | Process values (100 channels) |
+| 30301-30400 | CODESYS → Python | Interlock status + trip counts |
+
+**Heartbeat**: Python increments counter every scan → CODESYS watchdog detects Python failure after 5 s → PLC applies safe state autonomously.
+
+### Python ↔ CODESYS Mode Switching
+
+In `opto22_node.py` main loop:
+- `codesys_available` = bridge connected AND last successful read < 5 s AND < 3 consecutive errors
+- On mode change: logged as info/warning, published in status MQTT
+- In CODESYS mode: Python still runs safety.py as **monitoring layer** (not control layer), evaluates alarms, publishes to MQTT
+- In Python fallback: PID engine + safety.py handle everything (same behavior as pre-CODESYS)
+
+### Test Coverage
+
+| File | Tests | What |
+|------|-------|------|
+| `tests/test_codesys_codegen.py` | 51 | Register allocation, no-overlap validation, ST condition conversion, GVL generation, Main program wiring, serialization round-trip |
+| `tests/test_opto22_node.py` | — | Node integration tests |
+
+### Reference: docs/ai/AI_Structured_Text_Guide.md
+
+Comprehensive guide for AI-assisted ST code generation. Covers FB interfaces, register map, Main program structure, CODESYS IDE import workflow, and naming conventions.
+
 ## Device CLI
 
 Use `device.bat` for device management operations (NOT for starting services):
@@ -807,3 +955,30 @@ TypeScript 5.9.3 (strict mode)
 Vitest 4.0.16 (unit tests)
 Vite 7.2.4 (bundler)
 ```
+
+## Quality Gates (Claude Code)
+
+After making changes, run these checks BEFORE telling the user you're done. Do not skip these.
+
+### After any frontend edit (.vue, .ts, .tsx)
+1. Run `cd dashboard && npx vue-tsc -b --noEmit` — fix all TypeScript errors before proceeding
+2. If you added a field to a type/interface: grep for every place that type is constructed from external data (MQTT payloads, JSON, localStorage) and add the field there too
+3. If you added a backend MQTT publisher: check that the frontend subscribes to that topic in the relevant composable
+
+### After any backend edit (.py)
+1. Run `python -m pytest tests/test_safety_manager.py tests/test_alarm_manager.py -v` at minimum for safety/alarm changes
+2. If you modified a dataclass `to_dict()`/`from_dict()`: check both camelCase and snake_case paths, and update the corresponding TypeScript type
+
+### After any edge node safety.py edit
+1. Edit cRIO first, then copy to Opto22 and CFP (changing only the logger name)
+2. Verify with `diff` that the files match (minus logger name)
+
+### Cross-cutting consistency checks
+- When adding a field to `Interlock`, `InterlockCondition`, or `InterlockControl`: update ALL of these locations:
+  - `services/daq_service/safety_manager.py` (dataclass + to_dict + from_dict)
+  - `services/crio_node_v2/safety.py` (dataclass + to_dict + from_dict) → copy to opto22/cfp
+  - `dashboard/src/types/index.ts` (TypeScript interface)
+  - `dashboard/src/composables/useSafety.ts` (syncInterlockToBackend payload + handleBackendInterlockList deserialization)
+  - `dashboard/src/components/SafetyTab.vue` (newInterlock ref + openNewInterlockModal reset + openEditInterlockModal copy + saveInterlock fields)
+- When adding a field to `AlarmConfig`: update safety_manager.py, alarm_manager.py, types/index.ts, useSafety.ts, SafetyTab.vue
+- Never pass a function with optional params directly to `.forEach()` / `.map()` — wrap in a lambda to avoid index/array leaking into optional params

@@ -1921,6 +1921,8 @@ export interface Interlock {
   priority?: 'critical' | 'high' | 'medium' | 'low'
   // Require operator acknowledgment after trip (IEC 61511)
   requiresAcknowledgment?: boolean
+  // Critical safety interlock — requires Admin to modify, cannot be changed while ARMED/TRIPPED
+  isCritical?: boolean
   // Proof test interval in days (IEC 61511)
   proofTestInterval?: number
   lastProofTest?: string
@@ -1956,6 +1958,7 @@ export interface InterlockStatus {
   priority?: 'critical' | 'high' | 'medium' | 'low'
   silRating?: 'SIL1' | 'SIL2' | 'SIL3' | 'SIL4'
   requiresAcknowledgment?: boolean
+  isCritical?: boolean
   tripAcknowledged?: boolean
   tripAcknowledgedBy?: string
   tripAcknowledgedAt?: string

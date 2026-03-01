@@ -1585,7 +1585,7 @@ class HardwareReader:
                         logger.warning(f"Recovery attempt {self._recovery_attempts}/{self._max_recovery_attempts}")
                         try:
                             # Close and recreate tasks
-                            self._close_tasks()
+                            self.close()
                             time.sleep(1.0)  # Brief pause before recreating
                             self._create_tasks()
                             self._error_count = 0

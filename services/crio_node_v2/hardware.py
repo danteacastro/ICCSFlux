@@ -1167,7 +1167,29 @@ class NIDAQmxHardware(HardwareInterface):
                         bool_value = bool(value)
                         if ch_config.invert:
                             bool_value = not bool_value
-                        task.write(bool_value)
+
+                        if len(channels) == 1:
+                            # Single-channel task — scalar write is correct
+                            task.write(bool_value)
+                        else:
+                            # Multi-channel task — must write array to avoid
+                            # overwriting other channels on the same module
+                            ch_idx = channels.index(channel)
+                            with self._output_lock:
+                                values_array = []
+                                for ch_name in channels:
+                                    if ch_name == channel:
+                                        values_array.append(bool_value)
+                                    else:
+                                        # Use current known output state
+                                        cur = self._output_values.get(ch_name, 0.0)
+                                        ch_cfg = self.config.channels.get(ch_name)
+                                        cur_bool = bool(cur)
+                                        if ch_cfg and ch_cfg.invert:
+                                            cur_bool = not cur_bool
+                                        values_array.append(cur_bool)
+                            task.write(values_array)
+
                         with self._output_lock:
                             self._output_values[channel] = 1.0 if value else 0.0
 
@@ -1191,7 +1213,21 @@ class NIDAQmxHardware(HardwareInterface):
                 for task_key, channels in self._ao_channels.items():
                     if channel in channels:
                         task = self._ao_tasks[task_key]
-                        task.write(float(value))
+                        if len(channels) == 1:
+                            # Single-channel task — scalar write is correct
+                            task.write(float(value))
+                        else:
+                            # Multi-channel task — must write array to avoid
+                            # overwriting other channels on the same module
+                            with self._output_lock:
+                                values_array = []
+                                for ch_name in channels:
+                                    if ch_name == channel:
+                                        values_array.append(float(value))
+                                    else:
+                                        values_array.append(float(
+                                            self._output_values.get(ch_name, 0.0)))
+                            task.write(values_array)
                         with self._output_lock:
                             self._output_values[channel] = value
                         return True

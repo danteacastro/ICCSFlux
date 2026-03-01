@@ -1,73 +1,84 @@
-# ICCSFlux - Configuration-Driven Data Acquisition for NI Hardware
+# ICCSFlux — Configuration-Driven Industrial Data Acquisition & Control
 
-A dynamic, configuration-driven alternative to LabVIEW for National Instruments cDAQ and cRIO hardware. Python backend with MQTT messaging, Vue 3 dashboard, and portable Windows deployment.
+A Python-based, open-architecture alternative to LabVIEW for National Instruments hardware and multi-vendor industrial I/O. Configuration-driven (JSON, not code), browser-based dashboard, distributed safety on real-time controllers, and portable single-exe deployment.
+
+**~239k LOC** across 250+ files — Python backend, Vue 3 + TypeScript frontend, MQTT messaging.
 
 ## Architecture
 
 ```
-                        Vue 3 Dashboard
-           (TypeScript, Tailwind, WebSocket MQTT)
-                            |
-                    WebSocket :9002
-                            |
-                   Mosquitto MQTT Broker
-                   TCP :1883 (authenticated)
-                    /                \
-            DAQ Service           cRIO Node v2
-             (Python)              (Python)
-            nidaqmx /             Deployed via
-           simulation              SSH/SCP
-               |                      |
-           NI cDAQ               NI cRIO-9035
-         (USB/Ethernet)         (USB Ethernet)
+                          Vue 3 Dashboard
+             (TypeScript, Tailwind, WebSocket MQTT)
+                              |
+                      WebSocket :9002
+                              |
+                     Mosquitto MQTT Broker
+              TCP :1883 (local)  |  TLS :8883 (remote)
+                   /             |             \
+           DAQ Service      cRIO Node       Opto22 Node
+            (Python)         (Python)         (Python)
+           nidaqmx /        NI-DAQmx        groov MQTT
+          simulation                        + REST API
+              |                |                |
+          NI cDAQ           NI cRIO         Opto22 groov
+        (USB/Ethernet)   (USB Ethernet)     EPIC / RIO
+                                \              /
+                          Modbus / OPC-UA / EtherNet-IP / REST
+                            (additional data sources)
 ```
 
-**DAQ Service** (`services/daq_service/`) -- Python process that reads NI hardware (or runs in simulation mode), applies scaling/formulas, manages alarms, recording, scripting, PID loops, notifications, and publishes everything over MQTT.
+**DAQ Service** (`services/daq_service/`, ~13k lines) — Reads NI hardware (or simulation), manages alarms (ISA-18.2), interlocks (IEC 61511), recording, scripting, PID loops, notifications, user variables, and publishes over MQTT.
 
-**cRIO Node v2** (`services/crio_node_v2/`) -- Lightweight Python agent deployed to NI cRIO real-time hardware. Runs user scripts, reads/writes channels, and communicates back to DAQ via MQTT.
+**Edge Nodes** — Lightweight Python agents deployed to remote controllers. Each runs safety logic independently (survives PC disconnect):
+- **cRIO Node** (`services/crio_node_v2/`) — NI cRIO real-time controllers via SSH/SCP
+- **Opto22 Node** (`services/opto22_node/`) — groov EPIC/RIO via groov Manage MQTT + REST
+- **CFP Node** (`services/cfp_node/`) — NI Compact FieldPoint via Modbus
 
-**Dashboard** (`dashboard/`) -- Vue 3 + TypeScript SPA with live data, trend charts, recording controls, script editor, safety monitor, configuration editor, and admin panel. Connects to MQTT over WebSocket.
+**Dashboard** (`dashboard/`) — Vue 3 + TypeScript SPA: live data, 30+ widget types, trend charts, P&ID editor (50+ SCADA symbols), ISA-101 HMI controls, script editor, safety monitor, recording, and admin panel.
 
-**Portable Build** -- PyInstaller compiles the DAQ service, dashboard, and Mosquitto broker into a single `dist/ICCSFlux-Portable/` directory that runs on any Windows PC without Python or Node.js installed.
+**Portable Build** — PyInstaller compiles everything into `dist/ICCSFlux-Portable/` (~80 MB). Runs on any Windows PC without Python or Node.js.
 
 ## Features
 
-- **Configuration-Driven** -- All channels, scaling, limits, and safety defined in INI config files. Add/remove channels without code changes.
-- **Simulation Mode** -- Full hardware simulation when no NI hardware is present. Develop and test anywhere.
-- **Python Scripting Engine** -- Sandboxed `exec()` environment with 17 built-in helper classes:
-  - Core: Counter, RateCalculator, Accumulator, EdgeDetector, RollingStats, Scheduler, StateMachine
-  - Signal Processing: SignalFilter (EMA), LookupTable, RampSoak, TrendLine, RingBuffer, PeakDetector
-  - Advanced (DAQ-only): SpectralAnalysis (FFT), SPCChart, BiquadFilter, DataLog
-- **PID Control** -- Built-in PID engine with auto-tune, anti-windup, and output limiting.
-- **Safety System** -- Configurable alarms, interlocks, and safety actions with dependency tracking.
-- **Data Recording** -- CSV recording with rotation (size/time/samples), circular mode, ALCOA+ integrity (SHA-256 checksums, read-only files).
-- **Test Sessions** -- Session lifecycle with variable resets, scheduler/recording/sequence automation, and timeout management.
-- **Notifications** -- Twilio SMS and SMTP email alerts with 7-layer filtering (event type, severity, group, alarm selection, cooldown, daily limit, quiet hours).
-- **Azure IoT Hub** -- Optional uploader pushes data to Azure for cloud analytics.
-- **User Authentication** -- Role-based access control (Viewer, Operator, Supervisor, Admin) with session management.
-- **cRIO Support** -- Deploy scripts to NI cRIO hardware over SSH. Group A helper classes available on both platforms; Group B raises clear errors on cRIO.
+- **Configuration-Driven** — Channels, scaling, alarms, interlocks, recording, PID, scripts, and dashboard layout defined in a single JSON project file. No application code changes needed.
+- **Simulation Mode** — Full hardware simulation when no NI hardware is present. Develop and test anywhere.
+- **Multi-Vendor Hardware** — NI cDAQ/cRIO, Opto22 groov EPIC/RIO, Modbus TCP/RTU, OPC-UA, EtherNet/IP (Allen-Bradley), REST APIs.
+- **Python Scripting** — Sandboxed (AST-validated) engine with 17 built-in helper classes: SignalFilter, LookupTable, RampSoak, TrendLine, RingBuffer, PeakDetector, SpectralAnalysis, SPCChart, BiquadFilter, and more. Same API on DAQ service and edge nodes.
+- **Safety System** — ISA-18.2 alarms (deadband, delays, rate-of-change, shelving, latch) + IEC 61511 interlocks (latch state machine, bypass tracking, demand counting, proof test). Runs on DAQ service and edge nodes independently.
+- **PID Control** — Auto/manual/cascade modes, anti-windup, derivative-on-PV, bumpless transfer.
+- **Data Recording** — CSV/TDMS with rotation (size/time/samples), circular mode, ALCOA+ integrity (SHA-256 hash chain, read-only, tamper detection).
+- **Test Sessions** — Session lifecycle with variable resets, scheduler/recording/sequence automation, timeout management.
+- **Notifications** — Twilio SMS + SMTP email with 7-layer filtering (event type, severity, group, alarm selection, cooldown, daily limit, quiet hours).
+- **P&ID Editor** — Draw process diagrams with 50+ SCADA symbols, pipe routing (A* pathfinding), channel binding, runtime faceplates, multi-page support.
+- **User Authentication** — Role-based access (Viewer, Operator, Supervisor, Admin) with session management, idle timeout, and audit trail.
+- **Azure IoT Hub** — Optional uploader for cloud analytics (isolated process, separate paho-mqtt version).
+- **AI-Assisted Scripting** — "Copy AI Context" button exports project context (channels, alarms, interlocks, variables) for use with any AI to generate scripts. See [docs/ai/](docs/ai/).
 
 ## Supported Hardware
 
-| Type | Module Examples | Description |
-|------|-----------------|-------------|
-| Thermocouple | NI 9213 | Temperature measurement (J, K, T, E, N, S, R, B types) |
-| Voltage | NI 9239, NI 9201 | Analog voltage input |
-| Current | NI 9203 | 4-20 mA current loop |
-| Digital Input | NI 9423 | Discrete input |
-| Digital Output | NI 9472 | Discrete output |
-| Analog Output | NI 9263 | Analog voltage output |
-| Counter | NI 9361 | Counter/pulse input with rollover detection |
+| Type | NI Module Examples | Description |
+|------|-------------------|-------------|
+| Thermocouple | NI 9213 | Temperature (J, K, T, E, N, S, R, B types) |
+| RTD | NI 9217 | Resistance temperature detector |
+| Voltage Input | NI 9239, NI 9201, NI 9202 | Analog voltage |
+| Current Input | NI 9203 | 4-20 mA current loop |
+| Voltage Output | NI 9263, NI 9264 | Analog voltage output |
+| Current Output | NI 9265, NI 9266 | Analog current output |
+| Digital Input | NI 9423, NI 9425 | Discrete input |
+| Digital Output | NI 9472, NI 9474 | Discrete output |
+| Counter | NI 9361 | Counter/pulse with rollover detection |
+| Strain / Bridge | NI 9237 | Strain gauge / Wheatstone bridge |
+| IEPE | NI 9234 | Accelerometer / microphone |
 
-Also supports Modbus TCP/RTU, EtherNet/IP, OPC UA, and REST data sources.
+**Additional protocols:** Modbus TCP/RTU (holding/input registers, coils), OPC-UA, EtherNet/IP (Allen-Bradley), REST API polling (BASIC, BEARER, API_KEY, OAUTH2 auth).
 
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.10+ with venv
+- Python 3.11+ with venv
 - Node.js 18+ with npm
-- Mosquitto MQTT broker
+- NI-DAQmx drivers (optional — runs in simulation mode without them)
 
 ### Development
 
@@ -75,15 +86,13 @@ Also supports Modbus TCP/RTU, EtherNet/IP, OPC UA, and REST data sources.
 # Backend
 python -m venv venv
 venv\Scripts\activate
-pip install -r services/daq_service/requirements.txt
+pip install -r requirements.txt
 
 # Dashboard
-cd dashboard
-npm install
-npm run dev
+cd dashboard && npm install
 
-# Start services
-start.bat          # Starts MQTT broker + DAQ service
+# Start everything (auto-generates MQTT credentials + TLS certs on first run)
+start.bat
 ```
 
 Dashboard opens at http://localhost:5173
@@ -91,10 +100,10 @@ Dashboard opens at http://localhost:5173
 ### Portable Build
 
 ```bash
-build.bat          # Builds portable exe (PyInstaller + npm build)
+build.bat          # PyInstaller + npm build → dist/ICCSFlux-Portable/
 ```
 
-Output: `dist/ICCSFlux-Portable/` -- run `ICCSFlux.exe` on any Windows PC.
+Run `ICCSFlux.exe` on any Windows PC — no dependencies required. Auto-generates credentials, starts MQTT broker, DAQ service, and web dashboard.
 
 ### cRIO Deployment
 
@@ -108,63 +117,73 @@ Defaults: cRIO at 192.168.1.20, broker at 192.168.1.1.
 
 ```
 NISystem/
-  config/                     # INI configuration files
-  services/
-    daq_service/              # Main DAQ service (~13k lines)
-      daq_service.py          # Core service
-      script_manager.py       # Script engine + 17 helper classes
-      recording_manager.py    # CSV recording with ALCOA+ integrity
-      alarm_manager.py        # Alarm management
-      pid_engine.py           # PID control loops
-      notification_manager.py # SMS + Email notifications
-      safety_manager.py       # Interlocks and safety actions
-      user_variables.py       # Session management + user variables
-      ...
-    crio_node_v2/             # cRIO agent (deployed to hardware)
-      script_engine.py        # Script engine (11 helper classes + 4 stubs)
-      crio_node.py            # Main node process
-      ...
-  dashboard/                  # Vue 3 + TypeScript SPA
-    src/
-      components/             # Vue components (tabs, modals, widgets)
-      composables/            # Reusable logic (MQTT, auth, scripts)
-      stores/                 # Pinia state management
-      types/                  # TypeScript type definitions
-  tests/                      # 477 tests across 7 unit test files
-  scripts/                    # Build, deploy, and utility scripts
-  docs/                       # User manual, scripting guide, admin guide
-  vendor/                     # Offline dependencies for air-gapped builds
-  dist/                       # Build output (portable exe)
+├── services/
+│   ├── daq_service/              # Main DAQ service (~13k lines)
+│   │   ├── daq_service.py        # Core: MQTT, scan loop, orchestration
+│   │   ├── safety_manager.py     # IEC 61511 interlocks + latch state machine
+│   │   ├── alarm_manager.py      # ISA-18.2 alarms
+│   │   ├── script_manager.py     # Script sandbox + 17 helper classes
+│   │   ├── recording_manager.py  # CSV/TDMS recording with ALCOA+
+│   │   ├── pid_engine.py         # PID control loops
+│   │   ├── notification_manager.py  # SMS + Email
+│   │   └── ...                   # 20+ modules
+│   ├── crio_node_v2/             # NI cRIO edge node
+│   ├── opto22_node/              # Opto22 groov edge node
+│   └── cfp_node/                 # NI Compact FieldPoint edge node
+├── dashboard/                    # Vue 3 + TypeScript SPA
+│   └── src/
+│       ├── components/           # 40+ components (tabs, modals, P&ID)
+│       ├── composables/          # 26 composables (MQTT, safety, auth, scripts)
+│       ├── widgets/              # 30+ dashboard widget types
+│       ├── stores/               # Pinia state management
+│       └── types/                # TypeScript definitions
+├── tests/                        # 558 unit tests + HIL + system validation
+├── scripts/                      # Build, deploy, and utility scripts
+├── config/                       # Project JSON files + TLS certs
+├── docs/                         # User manual, admin guide, AI scripting docs
+├── vendor/                       # Offline dependencies for air-gapped builds
+└── dist/                         # Build output
 ```
 
 ## Testing
+
+### Unit Tests (no external deps required)
 
 ```bash
 python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py \
   tests/test_security_and_resilience.py tests/test_crio_script_engine_unit.py \
   tests/test_recording_manager.py tests/test_session_and_recording.py \
-  tests/test_script_helpers.py -v
+  tests/test_script_helpers.py tests/test_safety_manager.py \
+  tests/test_hot_unplug_resilience.py -v
 ```
 
-**477 tests** across 7 files -- no external dependencies required:
+**558 tests** across 9 files:
 
 | File | Tests | Coverage |
 |------|-------|---------|
 | test_daq_orchestration.py | 68 | State machine, alarm manager, script sandbox, channel config |
 | test_longevity.py | 32 | Counter rollover, cumulative mode, notification overflow, cleanup |
-| test_security_and_resilience.py | 98 | Sandbox security, notification manager, state persistence |
+| test_security_and_resilience.py | 98 | Sandbox security (AST validation), notification manager, persistence |
 | test_crio_script_engine_unit.py | 75 | cRIO helper classes, shared variables, APIs |
 | test_recording_manager.py | 37 | Recording config, rotation, triggers, thread safety |
 | test_session_and_recording.py | 63 | Session lifecycle, ALCOA+ integrity, acquisition cascade |
-| test_script_helpers.py | 104 | All 10 new helper classes, cRIO stubs |
+| test_script_helpers.py | 104 | SignalFilter, LookupTable, RampSoak, TrendLine, PeakDetector, etc. |
+| test_safety_manager.py | 47 | Interlock latch (SAFE/ARMED/TRIPPED), conditions, bypass, persistence |
+| test_hot_unplug_resilience.py | 34 | COMM_FAIL alarms, channel_offline, discovery staleness, Opto22 I/O |
 
-## Documentation
+### Dashboard Tests
 
-- [User Manual](docs/ICCSFlux_User_Manual.md) -- Complete operation guide
-- [Python Scripting Guide](docs/ICCSFlux_Python_Scripting_Guide.md) -- Script API reference
-- [Administrator Guide](docs/ICCSFlux_Administrator_Guide.md) -- Deployment and security
-- [Remote Nodes Guide](docs/ICCSFlux_Remote_Nodes_Guide.md) -- cRIO deployment
-- [Quick Reference](docs/ICCSFlux_Quick_Reference.md) -- One-page cheat sheet
+```bash
+cd dashboard && npx vitest run     # 2200+ tests
+cd dashboard && npm run build      # Type check + production build
+```
+
+### System Validation (auto-starts services)
+
+```bash
+python -m pytest tests/test_system_validation.py -v   # 9-layer, 34 tests
+python -m pytest tests/test_hardware_hil.py -v         # Hardware-in-the-loop, 4 tiers
+```
 
 ## MQTT Topics
 
@@ -177,8 +196,29 @@ python -m pytest tests/test_daq_orchestration.py tests/test_longevity.py \
 | `nisystem/system/acquire/start\|stop` | Acquisition control |
 | `nisystem/system/recording/start\|stop` | Recording control |
 | `nisystem/system/session/start\|stop` | Session control |
-| `nisystem/scripts/{id}/...` | Script management (create, start, stop, status) |
-| `nisystem/pid/{loop}/...` | PID loop control and tuning |
+| `nisystem/scripts/{id}/...` | Script management |
+| `nisystem/pid/{loop}/...` | PID loop control |
+| `nisystem/safety/interlocks` | Interlock status |
+
+### MQTT Listeners
+
+| Port | Transport | Auth | Purpose |
+|------|-----------|------|---------|
+| 1883 | TCP | Authenticated | Local services (DAQ, watchdog) |
+| 8883 | TCP + TLS | Authenticated | Remote edge nodes (cRIO, Opto22, CFP) |
+| 9002 | WebSocket | Anonymous | Dashboard (localhost only) |
+| 9003 | WebSocket | Authenticated | Remote dashboards (LAN) |
+
+## Documentation
+
+- [User Manual](docs/ICCSFlux_User_Manual.md) — Complete operation guide
+- [Python Scripting Guide](docs/ICCSFlux_Python_Scripting_Guide.md) — Script API reference
+- [Administrator Guide](docs/ICCSFlux_Administrator_Guide.md) — Deployment and security
+- [Remote Nodes Guide](docs/ICCSFlux_Remote_Nodes_Guide.md) — cRIO / Opto22 / CFP deployment
+- [Quick Reference](docs/ICCSFlux_Quick_Reference.md) — One-page cheat sheet
+- [AI Scripting Docs](docs/ai/) — Feed these to any AI to generate ICCSFlux scripts
+- [Safety Certification Roadmap](docs/Safety_Certification_Roadmap.md) — IEC 61511 / ISA-18.2 path
+- [Standards & Compliance](docs/Standards_and_Compliance.md) — Regulatory mapping
 
 ## License
 

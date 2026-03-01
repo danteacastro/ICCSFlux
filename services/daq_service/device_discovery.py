@@ -300,6 +300,22 @@ class GCNode:
 
 
 @dataclass
+class CFPNode:
+    """Represents a remote CompactFieldPoint node discovered via MQTT"""
+    node_id: str                 # e.g., "cfp-001"
+    ip_address: str              # e.g., "192.168.1.30"
+    product_type: str            # e.g., "cFP-1808"
+    status: str                  # "online", "offline", "unknown"
+    last_seen: str               # ISO timestamp
+    channels: int = 0            # Number of configured channels
+    modules: int = 0             # Number of I/O modules
+    modbus_connected: bool = False
+
+    def to_dict(self) -> Dict:
+        return {**asdict(self), "node_type": "cfp"}
+
+
+@dataclass
 class DiscoveryResult:
     """Complete discovery result"""
     success: bool
@@ -310,6 +326,7 @@ class DiscoveryResult:
     crio_nodes: List[CRIONode] = field(default_factory=list)  # Remote cRIO nodes
     opto22_nodes: List[Opto22Node] = field(default_factory=list)  # Remote Opto22 nodes
     gc_nodes: List[GCNode] = field(default_factory=list)  # Remote GC nodes in VMs
+    cfp_nodes: List[CFPNode] = field(default_factory=list)  # Remote CFP nodes
     total_channels: int = 0
     simulation_mode: bool = False
 
@@ -325,6 +342,7 @@ class DiscoveryResult:
             "crio_nodes": [node.to_dict() for node in self.crio_nodes],
             "opto22_nodes": [node.to_dict() for node in self.opto22_nodes],
             "gc_nodes": [node.to_dict() for node in self.gc_nodes],
+            "cfp_nodes": [node.to_dict() for node in self.cfp_nodes],
         }
 
 
@@ -350,6 +368,9 @@ class DeviceDiscovery:
         # Track GC nodes in Hyper-V VMs that have registered via MQTT
         self._gc_nodes: Dict[str, GCNode] = {}
         self._gc_lock = __import__('threading').Lock()
+        # Track CFP nodes that have registered via MQTT
+        self._cfp_nodes: Dict[str, CFPNode] = {}
+        self._cfp_lock = __import__('threading').Lock()
 
     def register_crio_node(self, node_id: str, status_data: Dict[str, Any]):
         """
@@ -658,6 +679,80 @@ class DeviceDiscovery:
         with self._gc_lock:
             return list(self._gc_nodes.values())
 
+    def register_cfp_node(self, node_id: str, status_data: Dict[str, Any]):
+        """
+        Register or update a CFP node from MQTT status message.
+
+        Called by DAQ service when receiving status from CFP nodes.
+
+        Args:
+            node_id: The node ID (e.g., "cfp-001")
+            status_data: Status payload from CFP node containing:
+                - host: CFP backplane IP address
+                - status: "online" or "offline"
+                - channels: Number of configured channels
+                - modules: Number of I/O modules
+                - modbus_connected: Whether Modbus connection is active
+        """
+        from datetime import datetime
+
+        with self._cfp_lock:
+            self._cfp_nodes[node_id] = CFPNode(
+                node_id=node_id,
+                ip_address=status_data.get('host', status_data.get('ip_address', 'unknown')),
+                product_type=status_data.get('product_type', 'cFP'),
+                status=status_data.get('status', 'online'),
+                last_seen=datetime.utcnow().isoformat(),
+                channels=status_data.get('channels', 0),
+                modules=status_data.get('modules', 0),
+                modbus_connected=status_data.get('modbus_connected', False),
+            )
+            logger.info(f"Registered CFP node: {node_id} ({status_data.get('status', 'online')})")
+
+    def mark_cfp_offline(self, node_id: str):
+        """Mark a CFP node as offline (but don't remove it)"""
+        with self._cfp_lock:
+            if node_id in self._cfp_nodes:
+                self._cfp_nodes[node_id].status = 'offline'
+                logger.info(f"CFP node offline: {node_id}")
+
+    def update_cfp_heartbeat(self, node_id: str, heartbeat_data: Dict[str, Any]):
+        """
+        Update CFP node from heartbeat without overwriting full registration.
+
+        If the node exists, only update heartbeat fields.
+        If the node doesn't exist, create minimal registration.
+        """
+        from datetime import datetime
+        with self._cfp_lock:
+            if node_id in self._cfp_nodes:
+                # Existing node - only update heartbeat fields
+                node = self._cfp_nodes[node_id]
+                node.status = heartbeat_data.get('status', 'online')
+                node.last_seen = datetime.utcnow().isoformat()
+                if 'channels' in heartbeat_data:
+                    node.channels = heartbeat_data.get('channels', 0)
+                if 'modbus_connected' in heartbeat_data:
+                    node.modbus_connected = heartbeat_data.get('modbus_connected', False)
+            else:
+                # New node - create minimal registration from heartbeat
+                self._cfp_nodes[node_id] = CFPNode(
+                    node_id=node_id,
+                    ip_address=heartbeat_data.get('host', heartbeat_data.get('ip_address', 'unknown')),
+                    product_type=heartbeat_data.get('product_type', 'cFP'),
+                    status=heartbeat_data.get('status', 'online'),
+                    last_seen=datetime.utcnow().isoformat(),
+                    channels=heartbeat_data.get('channels', 0),
+                    modules=heartbeat_data.get('modules', 0),
+                    modbus_connected=heartbeat_data.get('modbus_connected', False),
+                )
+                logger.info(f"Registered CFP node: {node_id} ({heartbeat_data.get('status', 'online')})")
+
+    def get_cfp_nodes(self) -> List[CFPNode]:
+        """Get list of known CFP nodes"""
+        with self._cfp_lock:
+            return list(self._cfp_nodes.values())
+
     def scan_cfp(self, ip_address: str, port: int = 502, slave_id: int = 1,
                  backplane_model: str = 'cFP-1808', device_name: str = '') -> Dict[str, Any]:
         """
@@ -828,6 +923,14 @@ class DeviceDiscovery:
         result.total_channels += gc_channels
         if gc_nodes:
             result.message += f", {len(gc_nodes)} GC nodes ({gc_channels} remote channels)"
+
+        # Add CFP nodes to result
+        cfp_nodes = self.get_cfp_nodes()
+        result.cfp_nodes = cfp_nodes
+        cfp_channels = sum(node.channels for node in cfp_nodes)
+        result.total_channels += cfp_channels
+        if cfp_nodes:
+            result.message += f", {len(cfp_nodes)} CFP nodes ({cfp_channels} remote channels)"
 
         self._last_result = result
         self._last_scan_time = __import__('time').time()

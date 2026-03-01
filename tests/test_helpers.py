@@ -8,10 +8,67 @@ that can be imported by test files.
 import time
 import json
 import threading
-from typing import Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Optional
 import configparser
 from pathlib import Path
 import paho.mqtt.client as mqtt
+
+
+# ---------------------------------------------------------------------------
+# General-purpose polling helpers
+# ---------------------------------------------------------------------------
+
+def wait_until(
+    predicate: Callable[[], bool],
+    timeout: float = 3.0,
+    interval: float = 0.05,
+    description: str = "",
+) -> bool:
+    """Poll *predicate* until it returns True or *timeout* expires.
+
+    Returns True if the predicate was satisfied, False on timeout.
+    Typical usage::
+
+        assert wait_until(lambda: mgr.active_alarms.get('a1'),
+                          timeout=3.0), "Alarm did not activate"
+
+    Parameters
+    ----------
+    predicate : callable
+        A zero-argument callable that returns a truthy value on success.
+    timeout : float
+        Maximum seconds to wait (default 3).
+    interval : float
+        Seconds between polls (default 0.05 — 50 ms).
+    description : str
+        Optional label for debugging; included in repr but not raised.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass  # predicate may raise while state is in flux
+        time.sleep(interval)
+    # One final attempt (avoids off-by-one on tight timeouts)
+    try:
+        return bool(predicate())
+    except Exception:
+        return False
+
+
+def wait_until_value(
+    getter: Callable[[], Any],
+    expected: Any,
+    timeout: float = 3.0,
+    interval: float = 0.05,
+) -> bool:
+    """Poll *getter* until its return value equals *expected*.
+
+    Convenience wrapper around :func:`wait_until` for equality checks.
+    """
+    return wait_until(lambda: getter() == expected, timeout=timeout, interval=interval)
 
 
 def _load_system_settings() -> dict:

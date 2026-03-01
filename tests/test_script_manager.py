@@ -20,6 +20,9 @@ from datetime import datetime
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'daq_service'))
+sys.path.insert(0, os.path.dirname(__file__))
+
+from test_helpers import wait_until
 
 from script_manager import (
     ScriptManager, Script, ScriptRuntime, ScriptState, ScriptRunMode, StopScript
@@ -209,12 +212,11 @@ class TestScriptExecution:
 
         script_manager.start_script('test-script-123')
 
-        # Give thread time to start
-        time.sleep(0.1)
-
+        # Script is simple and may finish immediately; wait for it to have run
         script = script_manager.scripts['test-script-123']
-        # Script might have already finished (simple code), so check it ran
-        assert script.state in [ScriptState.RUNNING, ScriptState.IDLE]
+        assert wait_until(
+            lambda: script.state in [ScriptState.RUNNING, ScriptState.IDLE],
+            timeout=3.0), "Script did not run"
 
     def test_stop_script_changes_state(self, script_manager, sample_script):
         """Should change script state when stopped"""
@@ -222,13 +224,16 @@ class TestScriptExecution:
         script_manager.add_script(sample_script)
 
         script_manager.start_script('test-script-123')
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: script_manager.scripts['test-script-123'].state == ScriptState.RUNNING,
+            timeout=3.0), "Script did not start"
 
         script_manager.stop_script('test-script-123')
-        time.sleep(0.2)
 
         script = script_manager.scripts['test-script-123']
-        assert script.state in [ScriptState.IDLE, ScriptState.STOPPING]
+        assert wait_until(
+            lambda: script.state in [ScriptState.IDLE, ScriptState.STOPPING],
+            timeout=3.0), "Script did not stop"
 
     def test_stop_all_scripts(self, script_manager):
         """Should stop all running scripts"""
@@ -497,7 +502,9 @@ class TestScriptManagerIntegration:
 
         # Start (simple script finishes immediately)
         script_manager.start_script('lifecycle-test')
-        time.sleep(0.1)
+        wait_until(
+            lambda: script_manager.scripts['lifecycle-test'].state in [ScriptState.RUNNING, ScriptState.IDLE],
+            timeout=3.0)
 
         # Stop (may already be stopped)
         script_manager.stop_script('lifecycle-test')
@@ -521,7 +528,13 @@ class TestScriptManagerIntegration:
         for i in range(3):
             script_manager.start_script(f'concurrent-{i}')
 
-        time.sleep(0.2)
+        # Wait for all to have executed (simple code finishes quickly)
+        wait_until(
+            lambda: all(
+                script_manager.scripts[f'concurrent-{i}'].state in [ScriptState.RUNNING, ScriptState.IDLE]
+                for i in range(3)
+            ),
+            timeout=3.0)
 
         # Stop all
         script_manager.stop_all_scripts()

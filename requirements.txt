@@ -27,6 +27,7 @@ psutil>=5.9.0
 # ===========================================
 # requests (listed above)
 # numpy, scipy (listed above)
+jinja2>=3.1.0              # CODESYS Structured Text code generation
 
 # ===========================================
 # CRIO NODE

@@ -14,6 +14,9 @@ from unittest.mock import Mock, MagicMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_helpers import wait_until
 
 from safety_manager import (
     SafetyManager, LatchState, ConditionOperator,
@@ -684,7 +687,7 @@ class TestSafetyManager:
                                    channel="temp_1", operator="<", value=50)  # Will fail
             ],
             controls=[
-                InterlockControl(control_type="digital_output", channel="heater")
+                InterlockControl(control_type="set_digital_output", channel="heater")
             ]
         )
         safety_manager.add_interlock(interlock)
@@ -768,19 +771,18 @@ class TestSafetyManager:
             channel="temp_1",
             operator="<",
             value=100,
-            delay_s=0.5  # 500ms delay
+            delay_s=0.2  # 200 ms delay (shorter for faster test)
         )
 
         # First evaluation - starts the timer
         result1 = safety_manager._evaluate_condition(condition)
         assert result1['satisfied'] is False  # Not satisfied yet, waiting for delay
 
-        # Wait for delay
-        time.sleep(0.6)
-
-        # Second evaluation - delay elapsed
-        result2 = safety_manager._evaluate_condition(condition)
-        assert result2['satisfied'] is True
+        # Poll until the delay elapses and condition becomes satisfied
+        assert wait_until(
+            lambda: safety_manager._evaluate_condition(condition)['satisfied'],
+            timeout=3.0,
+        ), "Condition delay did not elapse"
 
     def test_clear_all(self, safety_manager):
         """Test clearing all safety state"""
@@ -840,7 +842,7 @@ class TestBypassExpiration:
             name="Expiring Bypass",
             enabled=True,
             bypass_allowed=True,
-            max_bypass_duration=0.5,  # 500ms
+            max_bypass_duration=0.2,  # 200 ms (shorter for faster test)
             conditions=[
                 InterlockCondition(id="c1", condition_type="channel_value",
                                    channel="temp", operator="<", value=100)
@@ -852,14 +854,13 @@ class TestBypassExpiration:
         manager.bypass_interlock("expire-test", True, "admin", "Testing")
         assert manager.get_interlock("expire-test").bypassed is True
 
-        # Wait for expiration
-        time.sleep(0.6)
+        # Poll until bypass expires (evaluate triggers the expiry check)
+        def _bypass_expired():
+            manager.evaluate_interlock(manager.get_interlock("expire-test"))
+            return manager.get_interlock("expire-test").bypassed is False
 
-        # Evaluate should clear the bypass
-        manager.evaluate_interlock(manager.get_interlock("expire-test"))
-
-        # Bypass should be removed
-        assert manager.get_interlock("expire-test").bypassed is False
+        assert wait_until(_bypass_expired, timeout=3.0), \
+            "Bypass did not expire"
 
 
 class TestSafetyAcceptance:
@@ -999,7 +1000,7 @@ class TestSafetyAcceptance:
                                    channel="temp", operator="<", value=100.0)
             ],
             controls=[
-                InterlockControl(control_type="digital_output", channel="valve", set_value=0)
+                InterlockControl(control_type="set_digital_output", channel="valve", set_value=0)
             ],
             condition_logic="AND"
         )
@@ -1027,7 +1028,7 @@ class TestSafetyAcceptance:
             conditions=[
                 InterlockCondition(id="c1", condition_type="channel_value",
                                    channel="temp", operator="<", value=100.0,
-                                   delay_s=0.5)
+                                   delay_s=0.2)  # 200 ms (shorter for faster test)
             ],
             controls=[],
             condition_logic="AND"
@@ -1038,9 +1039,288 @@ class TestSafetyAcceptance:
         status = manager.evaluate_interlock(interlock)
         assert status.satisfied is False  # Delay holds back "satisfied"
 
-        # Wait for delay
-        time.sleep(0.6)
+        # Poll until the delay elapses
+        assert wait_until(
+            lambda: manager.evaluate_interlock(interlock).satisfied,
+            timeout=3.0,
+        ), "Condition delay did not elapse"
 
-        # Now satisfied should pass through
-        status = manager.evaluate_interlock(interlock)
-        assert status.satisfied is True
+
+class TestInterlockGuards:
+    """Tests for IEC 61511 interlock modification guards (safety hardening).
+
+    Covers:
+    - Latch-state guards preventing modification of critical interlocks
+    - Audit trail integration (SHA-256 hash chain)
+    - Event recording for remove_interlock
+    - Control channel validation
+    - is_critical serialization round-trip
+    - Fix for is_update detection bug
+    """
+
+    @pytest.fixture
+    def data_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def audit_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def _make_manager(self, data_dir, channel_values=None):
+        """Create a SafetyManager with mocked callbacks."""
+        if channel_values is None:
+            channel_values = {'temp': 75.0, 'heater': 0, 'valve': 1}
+
+        def get_channel_value(name):
+            return channel_values.get(name)
+
+        return SafetyManager(
+            data_dir=data_dir,
+            get_channel_value=get_channel_value,
+            get_channel_type=lambda x: 'digital_output' if x in ('heater', 'valve') else 'voltage_input',
+            get_all_channels=lambda: {
+                'heater': {'channel_type': 'digital_output'},
+                'valve': {'channel_type': 'digital_output'},
+                'temp': {'channel_type': 'voltage_input'},
+            },
+            publish_callback=Mock(),
+            set_output_callback=Mock(),
+            stop_session_callback=Mock(),
+            get_system_state=lambda: {'status': 'online', 'acquiring': True},
+            get_alarm_state=lambda: {'active_count': 0}
+        )
+
+    def _make_critical_interlock(self, ilk_id="critical-1"):
+        """Create a critical interlock with a satisfied condition."""
+        return Interlock(
+            id=ilk_id, name="Overtemp Protection",
+            is_critical=True, enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100)
+            ],
+            controls=[
+                InterlockControl(control_type="set_output", channel="heater", set_value=0)
+            ]
+        )
+
+    def _make_normal_interlock(self, ilk_id="normal-1"):
+        """Create a non-critical interlock."""
+        return Interlock(
+            id=ilk_id, name="Normal Interlock",
+            is_critical=False, enabled=True,
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100)
+            ]
+        )
+
+    # ---- Latch-state guards ----
+
+    def test_block_modify_critical_while_armed(self, data_dir):
+        """Critical interlock cannot be modified while ARMED."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_critical_interlock()
+        mgr.add_interlock(interlock, "admin", "Initial setup")
+
+        # Arm the latch
+        mgr.arm_latch("operator")
+        assert mgr.latch_state == LatchState.ARMED
+
+        # Try to update — should fail
+        result = mgr.update_interlock("critical-1", {'name': 'Changed'}, 'user', 'Testing')
+        assert result is False
+        assert mgr.get_interlock("critical-1").name == "Overtemp Protection"
+
+    def test_block_remove_critical_while_armed(self, data_dir):
+        """Critical interlock cannot be removed while ARMED."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_critical_interlock("critical-2")
+        mgr.add_interlock(interlock, "admin")
+        mgr.arm_latch("operator")
+
+        result = mgr.remove_interlock("critical-2", "user", "Testing")
+        assert result is False
+        assert "critical-2" in mgr.interlocks
+
+    def test_allow_modify_noncritical_while_armed(self, data_dir):
+        """Non-critical interlock CAN be modified while ARMED (with warning log)."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_normal_interlock()
+        mgr.add_interlock(interlock, "admin")
+        mgr.arm_latch("operator")
+
+        result = mgr.update_interlock("normal-1", {'name': 'Changed'}, 'user', 'Testing')
+        assert result is True
+        assert mgr.get_interlock("normal-1").name == "Changed"
+
+    def test_block_modify_critical_while_tripped(self, data_dir):
+        """Critical interlock cannot be modified while TRIPPED."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_critical_interlock("critical-3")
+        mgr.add_interlock(interlock, "admin")
+        mgr.trip_system("Test trip")
+        assert mgr.latch_state == LatchState.TRIPPED
+
+        result = mgr.update_interlock("critical-3", {'name': 'Changed'}, 'user')
+        assert result is False
+
+    def test_block_add_update_critical_while_armed(self, data_dir):
+        """Re-adding a critical interlock (update path) is blocked while ARMED."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_critical_interlock()
+        mgr.add_interlock(interlock, "admin")
+        mgr.arm_latch("operator")
+
+        # Re-add (update) with changed name
+        updated = self._make_critical_interlock()
+        updated.name = "Changed Name"
+        result = mgr.add_interlock(updated, "user", "Trying to change")
+        assert result == ""  # Blocked
+        assert mgr.get_interlock("critical-1").name == "Overtemp Protection"
+
+    def test_allow_remove_noncritical_while_armed(self, data_dir):
+        """Non-critical interlock CAN be removed while ARMED."""
+        mgr = self._make_manager(data_dir)
+        interlock = self._make_normal_interlock()
+        mgr.add_interlock(interlock, "admin")
+        mgr.arm_latch("operator")
+
+        result = mgr.remove_interlock("normal-1", "operator", "No longer needed")
+        assert result is True
+        assert "normal-1" not in mgr.interlocks
+
+    # ---- Event recording fixes ----
+
+    def test_remove_records_event(self, data_dir):
+        """remove_interlock() must record event to in-memory history."""
+        mgr = self._make_manager(data_dir)
+        interlock = Interlock(id="remove-audit", name="To Remove")
+        mgr.add_interlock(interlock, "admin")
+        initial_history = len(mgr.history)
+
+        mgr.remove_interlock("remove-audit", "admin", "Decommissioned")
+
+        assert len(mgr.history) > initial_history
+        last_event = mgr.history[-1]
+        assert last_event.event == 'removed'
+        assert last_event.reason == 'Decommissioned'
+        assert last_event.interlock_name == "To Remove"
+
+    def test_add_interlock_created_vs_modified(self, data_dir):
+        """New interlock records 'created', existing records 'modified'."""
+        mgr = self._make_manager(data_dir)
+
+        # First add — should record 'created'
+        interlock = Interlock(id="event-test", name="Test")
+        mgr.add_interlock(interlock, "admin")
+        created_event = [e for e in mgr.history if e.interlock_id == "event-test" and e.event == 'created']
+        assert len(created_event) == 1
+
+        # Second add (update) — should record 'modified'
+        interlock.name = "Updated"
+        mgr.add_interlock(interlock, "admin")
+        modified_events = [e for e in mgr.history if e.interlock_id == "event-test" and e.event == 'modified']
+        assert len(modified_events) >= 1
+
+    # ---- Audit trail integration ----
+
+    def test_audit_trail_integration(self, data_dir, audit_dir):
+        """All CRUD operations write to SHA-256 tamper-proof audit trail."""
+        import importlib.util
+        daq_audit_path = Path(__file__).parent.parent / "services" / "daq_service" / "audit_trail.py"
+        spec = importlib.util.spec_from_file_location("daq_audit_trail", daq_audit_path)
+        daq_audit_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(daq_audit_mod)
+        AuditTrail = daq_audit_mod.AuditTrail
+        # Ensure safety_manager has the correct AuditEventType (may have loaded
+        # edge node's audit_trail which lacks this enum)
+        import safety_manager as sm_mod
+        if sm_mod.AuditEventType is None:
+            sm_mod.AuditEventType = daq_audit_mod.AuditEventType
+
+        mgr = self._make_manager(data_dir)
+        audit = AuditTrail(audit_dir=audit_dir, node_id="test")
+        mgr._audit_trail = audit
+        initial_seq = audit.sequence
+
+        # Add
+        interlock = Interlock(id="audit-test", name="Audit Test")
+        mgr.add_interlock(interlock, "admin", "Creating for audit test")
+        seq_after_add = audit.sequence
+        assert seq_after_add > initial_seq
+
+        # Update
+        mgr.update_interlock("audit-test", {'name': 'Updated'}, "admin", "Rename")
+        seq_after_update = audit.sequence
+        assert seq_after_update > seq_after_add
+
+        # Remove
+        mgr.remove_interlock("audit-test", "admin", "Cleanup")
+        seq_after_remove = audit.sequence
+        assert seq_after_remove > seq_after_update
+
+        # Verify chain integrity
+        is_valid, errors, entries_checked = audit.verify_integrity()
+        assert is_valid, f"Audit chain broken: {errors}"
+        assert entries_checked >= 4  # startup + 3 CRUD events
+
+    # ---- Control channel validation ----
+
+    def test_control_channel_validation_warns(self, data_dir):
+        """add_interlock warns when control channel doesn't exist in hardware config."""
+        mgr = self._make_manager(data_dir)
+        interlock = Interlock(
+            id="bad-ctrl", name="Bad Control",
+            conditions=[
+                InterlockCondition(id="c1", condition_type="channel_value",
+                                   channel="temp", operator="<", value=100)
+            ],
+            controls=[
+                InterlockControl(control_type="set_output",
+                                 channel="nonexistent_channel", set_value=0)
+            ]
+        )
+        # Should log warning but still succeed
+        result = mgr.add_interlock(interlock, "admin")
+        assert result == "bad-ctrl"
+        assert "bad-ctrl" in mgr.interlocks
+
+    # ---- is_critical serialization ----
+
+    def test_is_critical_serialization_camelcase(self):
+        """is_critical round-trips through to_dict/from_dict (camelCase)."""
+        interlock = Interlock(id="ser-test", name="Test", is_critical=True)
+        d = interlock.to_dict()
+        assert d['isCritical'] is True
+
+        restored = Interlock.from_dict(d)
+        assert restored.is_critical is True
+
+    def test_is_critical_serialization_snakecase(self):
+        """is_critical accepts snake_case input (edge node format)."""
+        d = {'id': 'x', 'name': 'X', 'is_critical': True}
+        restored = Interlock.from_dict(d)
+        assert restored.is_critical is True
+
+    def test_is_critical_defaults_false(self):
+        """is_critical defaults to False when not in dict."""
+        d = {'id': 'y', 'name': 'Y'}
+        restored = Interlock.from_dict(d)
+        assert restored.is_critical is False
+
+    # ---- Return value changes ----
+
+    def test_remove_returns_false_for_nonexistent(self, data_dir):
+        """remove_interlock returns False for non-existent IDs."""
+        mgr = self._make_manager(data_dir)
+        result = mgr.remove_interlock("does-not-exist", "admin")
+        assert result is False
+
+    def test_update_returns_false_for_nonexistent(self, data_dir):
+        """update_interlock returns False for non-existent IDs."""
+        mgr = self._make_manager(data_dir)
+        result = mgr.update_interlock("does-not-exist", {'name': 'X'}, "admin")
+        assert result is False

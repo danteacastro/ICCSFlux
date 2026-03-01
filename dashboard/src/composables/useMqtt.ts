@@ -22,6 +22,148 @@ interface PendingCommand {
 }
 
 // ============================================================================
+// H2: Typed MQTT payload interfaces (replaces `any` in handlers)
+// ============================================================================
+
+/** Channel value payload from backend (individual or within batch) */
+interface MqttChannelValuePayload {
+  value: number | null
+  timestamp?: string | number
+  node_id?: string
+  quality?: string
+  status?: string
+  value_string?: string | null
+  acquisition_ts_us?: number
+}
+
+/** Batch channel values from cRIO nodes */
+type MqttBatchChannelPayload = Record<string, { value: number; timestamp: number }>
+
+/** System status payload from backend — partial SystemStatus with extra node fields */
+type MqttStatusPayload = Partial<SystemStatus> & {
+  node_id?: string
+  config_version?: string
+  node_name?: string
+  node_type?: string
+  project_mode?: string
+  channel_count?: number
+  safety_state?: string
+}
+
+/** Channel config payload from backend — dynamic fields, typed at point of use */
+interface MqttChannelConfigPayload {
+  channels: Record<string, Record<string, any>>
+}
+
+/** Alarm payload from backend */
+interface MqttAlarmPayload {
+  alarm_id?: string
+  channel?: string
+  name?: string
+  severity?: string
+  state?: string
+  active?: boolean
+  threshold_type?: string
+  threshold_value?: number
+  triggered_value?: number
+  current_value?: number
+  value?: number
+  triggered_at?: string
+  acknowledged_at?: string
+  acknowledged_by?: string
+  cleared_at?: string
+  sequence_number?: number
+  is_first_out?: boolean
+  shelved_at?: string
+  shelved_by?: string
+  shelve_expires_at?: string
+  shelve_reason?: string
+  message?: string
+  duration_seconds?: number
+  safety_action?: string
+}
+
+/** Discovery result payload from backend */
+interface MqttDiscoveryResultPayload {
+  chassis?: Array<Record<string, unknown>>
+  total_channels?: number
+  [key: string]: unknown
+}
+
+/** Config response payload (ACK from backend) */
+interface MqttConfigResponsePayload {
+  node_id?: string
+  config_version?: string
+  success?: boolean
+  [key: string]: unknown
+}
+
+/** Recording config payload */
+interface MqttRecordingConfigPayload {
+  config?: Partial<BackendRecordingConfig>
+}
+
+/** Recording list payload */
+interface MqttRecordingListPayload {
+  files?: RecordedFile[]
+}
+
+/** Watchdog status payload */
+interface MqttWatchdogPayload {
+  status?: string
+  daq_online?: boolean
+  failsafe_triggered?: boolean
+  failsafe_trigger_time?: string | null
+  last_heartbeat?: string | null
+  timeout_sec?: number
+  timestamp?: string | null
+  event?: string
+  message?: string
+}
+
+/** Command ACK payload */
+interface MqttCommandAckPayload {
+  command?: string
+  request_id?: string
+  success?: boolean
+  error?: string
+}
+
+/** Heartbeat payload */
+interface MqttHeartbeatPayload {
+  [key: string]: unknown
+}
+
+/** Script values payload from backend */
+interface MqttScriptValuesPayload {
+  _timestamp?: number
+  [key: string]: number | undefined
+}
+
+/** Channel deleted notification */
+interface MqttChannelDeletedPayload {
+  channel?: string
+}
+
+/** Bulk create response */
+interface MqttBulkCreatePayload {
+  created?: string[]
+  [key: string]: unknown
+}
+
+/** cRIO discovered payload */
+interface MqttCrioDiscoveredPayload {
+  node_id?: string
+  [key: string]: unknown
+}
+
+/** cRIO channel discovery response */
+interface MqttCrioChannelDiscoveryPayload {
+  node_id?: string
+  channels?: Array<Record<string, unknown>>
+}
+
+// ============================================================================
 // SINGLETON STATE - Shared across all useMqtt() calls
 // ============================================================================
 const client = ref<MqttClient | null>(null)
@@ -113,6 +255,17 @@ const activeNodeId = ref<string | null>(null)  // Currently focused node (null =
 
 // Per-node status map (full SystemStatus per node, not just NodeInfo)
 const nodeStatuses = ref<Map<string, SystemStatus>>(new Map())
+
+// H4: Per-node acquiring state to prevent race conditions
+// isAcquiring is true if ANY node is acquiring, preventing flip-flop when
+// multiple nodes publish status concurrently
+const nodeAcquiringStates = ref<Map<string, boolean>>(new Map())
+const isAnyNodeAcquiring = computed(() => {
+  for (const acquiring of nodeAcquiringStates.value.values()) {
+    if (acquiring) return true
+  }
+  return false
+})
 
 // Node staleness check — marks nodes offline when no message received for 15s
 let _nodeStalenessInterval: ReturnType<typeof setInterval> | null = null
@@ -532,6 +685,9 @@ export function useMqtt(prefix: string = 'nisystem') {
       channelValues.value = {}
       systemStatus.value = null
 
+      // H4: Clear per-node acquiring states on disconnect
+      nodeAcquiringStates.value.clear()
+
       // Clear channel ownership tracking to prevent unbounded growth
       channelOwners.clear()
 
@@ -543,7 +699,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     })
   }
 
-  function handleChannelValue(channelName: string, payload: any, nodeId?: string) {
+  function handleChannelValue(channelName: string, payload: MqttChannelValuePayload, nodeId?: string) {
     const effectiveNodeId = nodeId || payload.node_id || 'node-001'
 
     // Filter by active node — when a specific node is selected, ignore data from other nodes
@@ -580,7 +736,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     const isDisconnected = payload.status === 'disconnected' || payload.quality === 'bad'
     const isOpenTC = payload.status === 'open_thermocouple'
     const isOverflow = payload.status === 'overflow'
-    const value = isNaN ? NaN : payload.value
+    const value = isNaN ? NaN : (payload.value ?? NaN)
 
     // Only check alarms if explicitly enabled and limits are set
     // This prevents false alarms on channels without configured limits
@@ -600,13 +756,13 @@ export function useMqtt(prefix: string = 'nisystem') {
       alarm: payload.quality === 'alarm' || (alarmEnabled && config && !isNaN ? isAlarm(value, config) : false),
       warning: payload.quality === 'warning' || (alarmEnabled && config && !isNaN ? isWarning(value, config) : false),
       // Additional quality indicators
-      quality: payload.quality || 'good',
+      quality: (payload.quality || 'good') as ChannelValue['quality'],
       disconnected: isDisconnected,
       // Specific error states for better UI feedback
       openThermocouple: isOpenTC,
       overflow: isOverflow,
       valueString: payload.value_string || null,  // Human-readable error: "NaN", "Open TC", "Inf"
-      status: payload.status || 'normal',
+      status: (payload.status || 'normal') as ChannelValue['status'],
       // Multi-node: store source node ID
       nodeId: effectiveNodeId,
       // SOE: Store high-precision acquisition timestamp (microseconds since epoch)
@@ -623,7 +779,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     pythonScripts.onScanData()
   }
 
-  function handleBatchChannelValues(payload: Record<string, { value: number, timestamp: number }>, nodeId?: string) {
+  function handleBatchChannelValues(payload: MqttBatchChannelPayload, nodeId?: string) {
     // Handle batched channel values from cRIO nodes
     // cRIO publishes with physical channel names (e.g., "Mod5/ai0") when no config is pushed
     // Dashboard needs to map these back to TAG names using channelConfigs
@@ -687,14 +843,19 @@ export function useMqtt(prefix: string = 'nisystem') {
       )
       const alarmEnabled = config?.alarm_enabled !== false && hasAlarmLimits
 
+      // Detect null/NaN/disconnected values (open TC, broken sensor, etc.)
+      const isDisconnected = value === null || value === undefined ||
+        (typeof value === 'number' && isNaN(value))
+      const safeValue = isDisconnected ? NaN : value
+
       channelValues.value[effectiveName] = {
         name: effectiveName,
-        value,
+        value: safeValue,
         timestamp,
-        alarm: alarmEnabled && config ? isAlarm(value, config) : false,
-        warning: alarmEnabled && config ? isWarning(value, config) : false,
-        quality: 'good',
-        disconnected: false,
+        alarm: !isDisconnected && alarmEnabled && config ? isAlarm(safeValue, config) : false,
+        warning: !isDisconnected && alarmEnabled && config ? isWarning(safeValue, config) : false,
+        quality: isDisconnected ? 'bad' as const : 'good' as const,
+        disconnected: isDisconnected,
         nodeId: effectiveNodeId
       }
 
@@ -751,7 +912,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     return rawValue
   }
 
-  function handleStatus(status: SystemStatus, nodeId?: string) {
+  function handleStatus(status: MqttStatusPayload, nodeId?: string) {
     // Calculate message latency for diagnostics
     const latencyMs = status.timestamp
       ? Date.now() - new Date(status.timestamp).getTime()
@@ -769,19 +930,37 @@ export function useMqtt(prefix: string = 'nisystem') {
       status.node_id = nodeId || status.node_id
     }
 
-    // Store per-node status
+    // Store per-node status — normalize optional fields to required defaults
     const effectiveNodeId = nodeId || status.node_id || 'node-001'
-    nodeStatuses.value.set(effectiveNodeId, status)
+    const normalizedStatus = {
+      ...status,
+      status: status.status ?? 'online',
+      timestamp: status.timestamp ?? new Date().toISOString(),
+      simulation_mode: status.simulation_mode ?? false,
+      acquiring: status.acquiring ?? false,
+      recording: status.recording ?? false,
+    } as SystemStatus
+    nodeStatuses.value.set(effectiveNodeId, normalizedStatus)
+
+    // H4: Track per-node acquiring state to prevent race conditions
+    nodeAcquiringStates.value.set(effectiveNodeId, normalizedStatus.acquiring ?? false)
 
     // Update global systemStatus from the active node, or from the default DAQ node
     const targetNodeId = activeNodeId.value || 'node-001'
     if (effectiveNodeId === targetNodeId) {
-      systemStatus.value = status
-      statusCallbacks.forEach(cb => cb(status))
+      // H4: Merge acquiring state — system is acquiring if ANY node is acquiring.
+      // This prevents race conditions where concurrent node status updates
+      // cause isAcquiring to flip-flop in the dashboard store.
+      const mergedStatus: SystemStatus = {
+        ...normalizedStatus,
+        acquiring: isAnyNodeAcquiring.value
+      }
+      systemStatus.value = mergedStatus
+      statusCallbacks.forEach(cb => cb(mergedStatus))
     }
   }
 
-  function handleScriptValues(payload: Record<string, any>) {
+  function handleScriptValues(payload: MqttScriptValuesPayload) {
     // Handle script-published values from backend (py.* channels)
     // Payload format: { "DrawNumber": 1, "DrawTarget": 10.0, "_timestamp": 1234567890.123 }
     const timestamp = payload._timestamp ? payload._timestamp * 1000 : Date.now()
@@ -814,7 +993,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  function handleChannelConfig(payload: { channels: Record<string, any> }) {
+  function handleChannelConfig(payload: MqttChannelConfigPayload) {
     // Transform backend format to frontend format
     const configs: Record<string, ChannelConfig> = {}
 
@@ -894,7 +1073,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     console.debug('Channel configs loaded:', Object.keys(configs).length)
   }
 
-  function handleAlarm(topic: string, payload: any) {
+  function handleAlarm(topic: string, payload: MqttAlarmPayload) {
     // Parse topic: nisystem/alarms/active/{alarm_id}
     const topicParts = topic.split('/')
     const alarmId = topicParts[topicParts.length - 1] ?? ''
@@ -902,9 +1081,22 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Check if this is a cleared alarm
     if (payload.active === false || payload.state === 'cleared') {
       console.debug('ALARM CLEARED:', alarmId)
+      const clearedAlarm: AlarmCallbackPayload = {
+        id: alarmId,
+        alarm_id: payload.alarm_id || alarmId,
+        channel: payload.channel || '',
+        name: payload.name || payload.channel || alarmId,
+        severity: (payload.severity || 'medium').toLowerCase(),
+        state: 'cleared',
+        value: payload.triggered_value ?? payload.current_value ?? 0,
+        triggered_at: payload.triggered_at || new Date().toISOString(),
+        sequence_number: payload.sequence_number || 0,
+        is_first_out: payload.is_first_out || false,
+        message: payload.message || ''
+      }
       alarmCallbacks.forEach(cb => {
         try {
-          cb({ alarm_id: alarmId, ...payload }, 'cleared')
+          cb(clearedAlarm, 'cleared')
         } catch (e) {
           console.warn('[MQTT] Error in alarm callback (cleared):', e)
         }
@@ -913,7 +1105,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
 
     // Normalize backend alarm format to frontend format
-    const alarm = {
+    const alarm: AlarmCallbackPayload = {
       id: alarmId,
       alarm_id: payload.alarm_id || alarmId,
       channel: payload.channel || '',
@@ -922,7 +1114,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       state: payload.state || 'active',
       threshold_type: payload.threshold_type,
       threshold: payload.threshold_value,
-      value: payload.triggered_value ?? payload.current_value,
+      value: payload.triggered_value ?? payload.current_value ?? 0,
       current_value: payload.current_value,
       triggered_at: payload.triggered_at || new Date().toISOString(),
       acknowledged_at: payload.acknowledged_at,
@@ -953,25 +1145,31 @@ export function useMqtt(prefix: string = 'nisystem') {
     })
   }
 
-  function handleDiscoveryResult(payload: any) {
+  function handleDiscoveryResult(payload: MqttDiscoveryResultPayload) {
     // Clear timeout since we got a response
     if (scanTimeoutId) {
       clearTimeout(scanTimeoutId)
       scanTimeoutId = null
     }
-    discoveryResult.value = payload
+    // Normalize to DiscoveryCallbackPayload — backend omits `success` on success
+    const result = {
+      success: true,
+      total_channels: payload.total_channels ?? 0,
+      ...payload
+    } as DiscoveryCallbackPayload
+    discoveryResult.value = result
     isScanning.value = false
-    console.debug('[MQTT] handleDiscoveryResult - chassis count:', payload?.chassis?.length, 'total channels:', payload?.total_channels)
+    console.debug('[MQTT] handleDiscoveryResult - chassis count:', result.chassis?.length, 'total channels:', result.total_channels)
     console.debug('[MQTT] discoveryResult.value now set, callbacks:', discoveryCallbacks.length)
-    discoveryCallbacks.forEach(cb => cb(payload))
+    discoveryCallbacks.forEach(cb => cb(result))
   }
 
-  function handleDiscoveryChannels(payload: any) {
+  function handleDiscoveryChannels(payload: { channels?: unknown[] }) {
     discoveryChannels.value = payload.channels || []
     console.debug('Discovery channels:', discoveryChannels.value.length)
   }
 
-  function handleCrioDiscovered(payload: any) {
+  function handleCrioDiscovered(payload: MqttCrioDiscoveredPayload) {
     // A new cRIO node was discovered - automatically refresh discovery
     console.debug('[MQTT] New cRIO node discovered:', payload.node_id, '- auto-refreshing discovery')
     // Small delay to ensure cRIO is fully registered before re-scanning
@@ -988,7 +1186,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     }, 500)
   }
 
-  function handleCrioChannelDiscovery(nodeId: string, payload: any) {
+  function handleCrioChannelDiscovery(nodeId: string, payload: MqttCrioChannelDiscoveryPayload) {
     // Handle channel discovery response from a specific cRIO node
     const effectiveNodeId = payload.node_id || nodeId
     console.debug(`[MQTT] Received cRIO channel discovery from ${effectiveNodeId}:`, payload.channels?.length || 0, 'channels')
@@ -1000,7 +1198,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  function handleConfigResponse(payload: any) {
+  function handleConfigResponse(payload: MqttConfigResponsePayload) {
     console.debug('Config response:', payload)
 
     // Track expected config version when cRIO ACK is received
@@ -1032,31 +1230,31 @@ export function useMqtt(prefix: string = 'nisystem') {
     configUpdateCallbacks.forEach(cb => cb(payload))
   }
 
-  function handleRecordingConfig(payload: any) {
+  function handleRecordingConfig(payload: MqttRecordingConfigPayload) {
     if (payload.config) {
       recordingConfig.value = payload.config
     }
     console.debug('Recording config received:', payload)
   }
 
-  function handleRecordingList(payload: any) {
+  function handleRecordingList(payload: MqttRecordingListPayload) {
     if (payload.files) {
       recordedFiles.value = payload.files
     }
     console.debug('Recorded files list received:', payload.files?.length || 0, 'files')
   }
 
-  function handleRecordingResponse(payload: any) {
+  function handleRecordingResponse(payload: RecordingCallbackPayload) {
     console.debug('Recording response:', payload)
     recordingCallbacks.forEach(cb => cb(payload))
   }
 
-  function handleFullConfig(payload: any) {
+  function handleFullConfig(payload: Record<string, unknown>) {
     console.debug('Full config received:', payload)
     fullConfigCallbacks.forEach(cb => cb(payload))
   }
 
-  function handleChannelDeleted(payload: any) {
+  function handleChannelDeleted(payload: MqttChannelDeletedPayload) {
     const channelName = payload.channel
     if (channelName) {
       // Remove from local configs
@@ -1071,26 +1269,26 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  function handleBulkCreateResponse(payload: any) {
+  function handleBulkCreateResponse(payload: MqttBulkCreatePayload) {
     console.debug('Bulk create response:', payload)
     if (payload.created && payload.created.length > 0) {
-      channelCreatedCallbacks.forEach(cb => cb(payload.created))
+      channelCreatedCallbacks.forEach(cb => cb(payload.created!))
     }
-    configUpdateCallbacks.forEach(cb => cb(payload))
+    configUpdateCallbacks.forEach(cb => cb({ success: true, ...payload } as ConfigUpdateCallbackPayload))
   }
 
-  function handleSystemUpdateResponse(payload: any) {
+  function handleSystemUpdateResponse(payload: SystemUpdateCallbackPayload) {
     console.debug('System update response:', payload)
     systemUpdateCallbacks.forEach(cb => cb(payload))
   }
 
-  function handleWatchdogMessage(topic: string, payload: any) {
+  function handleWatchdogMessage(topic: string, payload: MqttWatchdogPayload) {
     const subtopic = topic.split('/').pop()
 
     if (subtopic === 'status') {
       // Update watchdog status
       watchdogStatus.value = {
-        status: payload.status || 'unknown',
+        status: (payload.status || 'unknown') as 'online' | 'offline' | 'unknown',
         daqOnline: payload.daq_online ?? false,
         failsafeTriggered: payload.failsafe_triggered ?? false,
         failsafeTriggerTime: payload.failsafe_trigger_time || null,
@@ -1314,12 +1512,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     playground.handleFormulaBlocksValues(payload)
   }
 
-  function handleHeartbeat(payload: any) {
+  function handleHeartbeat(payload: MqttHeartbeatPayload) {
     lastHeartbeat.value = payload
     lastHeartbeatTime.value = Date.now()
   }
 
-  function handleCommandAck(payload: any) {
+  function handleCommandAck(payload: MqttCommandAckPayload) {
     if (!payload || typeof payload !== 'object') {
       console.warn('[MQTT] Command ack received with invalid payload:', payload)
       return
@@ -2052,7 +2250,7 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Handle cRIO response messages.
    * Called from message handler when crio/response topic is received.
    */
-  function handleCrioResponse(payload: any) {
+  function handleCrioResponse(payload: CrioCallbackPayload) {
     crioCallbacks.forEach(cb => cb(payload))
   }
 
@@ -2060,7 +2258,7 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Handle cRIO list response messages.
    * Called from message handler when crio/list/response topic is received.
    */
-  function handleCrioListResponse(payload: any) {
+  function handleCrioListResponse(payload: CrioCallbackPayload) {
     crioListCallbacks.forEach(cb => cb(payload))
   }
 
@@ -2091,10 +2289,33 @@ export function useMqtt(prefix: string = 'nisystem') {
 
   function disconnect() {
     // Clear pending commands before closing (prevents orphaned timers)
-    for (const [requestId, pending] of pendingCommands.entries()) {
+    for (const [, pending] of pendingCommands.entries()) {
       pending.resolve({ success: false, error: 'MQTT disconnected' })
     }
     pendingCommands.clear()
+
+    // H3: Clear all pending output rate-limit timers
+    for (const [, timer] of pendingOutputTimers.entries()) {
+      clearTimeout(timer)
+    }
+    pendingOutputTimers.clear()
+    lastOutputSendTime.clear()
+
+    // H3: Clear node staleness interval
+    if (_nodeStalenessInterval) {
+      clearInterval(_nodeStalenessInterval)
+      _nodeStalenessInterval = null
+    }
+
+    // H3: Clear scan timeouts
+    if (scanTimeoutId) {
+      clearTimeout(scanTimeoutId)
+      scanTimeoutId = null
+    }
+    if (crioRescanTimeoutId) {
+      clearTimeout(crioRescanTimeoutId)
+      crioRescanTimeoutId = null
+    }
 
     // Clear stale data and ownership tracking
     channelValues.value = {}
@@ -2307,6 +2528,10 @@ export function useMqtt(prefix: string = 'nisystem') {
       }
     },
     getNodeList: () => Array.from(knownNodes.value.values()),
+
+    // H4: Per-node acquiring state (prevents race condition)
+    isAnyNodeAcquiring,
+    nodeAcquiringStates,
 
     // cRIO sync status
     crioSyncStatus,

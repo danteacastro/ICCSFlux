@@ -241,6 +241,43 @@ class ChannelConfig:
 
 
 @dataclass
+class CODESYSConfig:
+    """CODESYS runtime integration configuration.
+
+    When enabled, the Opto22 node delegates PID loops and safety interlocks
+    to the CODESYS runtime on the groov EPIC and communicates via Modbus TCP
+    on localhost. Falls back to Python engines if CODESYS is unavailable.
+    """
+    enabled: bool = False
+    host: str = 'localhost'
+    port: int = 502
+    unit_id: int = 1
+    poll_rate_hz: float = 10.0
+    register_map_version: str = '1.0'
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'CODESYSConfig':
+        return cls(
+            enabled=data.get('enabled', False),
+            host=data.get('host', 'localhost'),
+            port=data.get('port', 502),
+            unit_id=data.get('unit_id', 1),
+            poll_rate_hz=data.get('poll_rate_hz', 10.0),
+            register_map_version=data.get('register_map_version', '1.0'),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'enabled': self.enabled,
+            'host': self.host,
+            'port': self.port,
+            'unit_id': self.unit_id,
+            'poll_rate_hz': self.poll_rate_hz,
+            'register_map_version': self.register_map_version,
+        }
+
+
+@dataclass
 class NodeConfig:
     """Complete Opto22 Node configuration."""
     # Identity
@@ -289,6 +326,9 @@ class NodeConfig:
     # within this timeout, transition to safe state. 0 = disabled.
     comm_watchdog_timeout_s: float = 30.0
 
+    # CODESYS integration
+    codesys: CODESYSConfig = field(default_factory=CODESYSConfig)
+
     # Channels
     channels: Dict[str, ChannelConfig] = field(default_factory=dict)
 
@@ -304,6 +344,8 @@ class NodeConfig:
 
         system = data.get('system', {})
         groov = data.get('groov', {})
+        codesys_data = data.get('codesys', {})
+        codesys = CODESYSConfig.from_dict(codesys_data) if codesys_data else CODESYSConfig()
 
         # Build topic mapping from channels
         topic_mapping = {}
@@ -351,6 +393,7 @@ class NodeConfig:
                                     data.get('watchdog_output_enabled', False)),
             comm_watchdog_timeout_s=float(system.get('comm_watchdog_timeout_s',
                                          data.get('comm_watchdog_timeout_s', 30.0))),
+            codesys=codesys,
             channels=channels,
             topic_mapping=topic_mapping,
         )
@@ -531,6 +574,7 @@ def save_config(config: 'NodeConfig', path: str) -> None:
             }
             for name, ch in config.channels.items()
         },
+        'codesys': config.codesys.to_dict(),
         'topic_mapping': config.topic_mapping,
     }
 

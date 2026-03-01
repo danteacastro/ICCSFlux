@@ -33,8 +33,110 @@ import type {
   ConditionLogic,
   VotingLogic,
   SafetyAction,
-  SafetyActionType
+  SafetyActionType,
+  AlarmState,
+  AlarmSeverity,
+  ThresholdType
 } from '../types'
+
+// ============================================
+// H2: Typed MQTT payload interfaces for safety handlers
+// ============================================
+
+/** Project loaded notification payload */
+interface SafetyProjectLoadedPayload {
+  project_name?: string
+  filename?: string
+}
+
+/** Safety action request from backend AlarmManager */
+interface SafetyActionRequestPayload {
+  action_id: string
+  alarm_id?: string
+  channel?: string
+}
+
+/** Alarms cleared signal from backend */
+interface AlarmsClearedPayload {
+  reason?: string
+}
+
+/** Backend safety status payload (backend-authoritative) */
+interface BackendSafetyStatusPayload {
+  latchState?: string
+  isTripped?: boolean
+  lastTripTime?: string | null
+  lastTripReason?: string | null
+  interlockStatuses?: Array<{
+    id: string
+    satisfied: boolean
+    failedConditions?: Array<{
+      condition: InterlockCondition
+      currentValue?: unknown
+      reason: string
+      delayRemaining?: number
+    }>
+  }>
+}
+
+/** Backend latch state change payload */
+interface BackendLatchStatePayload {
+  state?: string
+  armed?: boolean
+  tripped?: boolean
+  timestamp?: string
+  tripReason?: string
+}
+
+/** Backend trip event payload */
+interface BackendTripEventPayload {
+  reason?: string
+  timestamp?: string
+}
+
+/** Backend interlock list response */
+interface BackendInterlockListPayload {
+  interlocks?: Array<Record<string, unknown>>
+}
+
+/** Backend interlock update payload */
+interface BackendInterlockUpdatePayload {
+  id?: string
+  name?: string
+  [key: string]: unknown
+}
+
+/** Backend interlock error payload */
+interface BackendInterlockErrorPayload {
+  error?: string
+  message?: string
+}
+
+/** Backend alarm payload (received via onAlarm callback) */
+interface BackendAlarmPayload {
+  alarm_id?: string
+  id?: string
+  channel?: string
+  name?: string
+  severity?: string
+  state?: string
+  threshold_type?: string
+  threshold?: number
+  value?: number
+  current_value?: number
+  triggered_at?: string
+  acknowledged_at?: string
+  acknowledged_by?: string
+  shelved_at?: string
+  shelved_by?: string
+  shelve_expires_at?: string
+  shelve_reason?: string
+  sequence_number?: number
+  is_first_out?: boolean
+  message?: string
+  duration_seconds?: number
+  safety_action?: string
+}
 
 // ============================================
 // Singleton State (shared across all instances)
@@ -71,6 +173,9 @@ let initialized = false
 
 // Track current project to detect changes
 let currentProjectId: string | null = null
+
+// H3: Track interval/timeout IDs for cleanup
+let shelveExpiryIntervalId: ReturnType<typeof setInterval> | null = null
 
 // ============================================
 // Composable Factory
@@ -625,43 +730,58 @@ export function useSafety() {
   // Interlock Management
   // ============================================
 
-  function addInterlock(interlock: Omit<Interlock, 'id'>, user: string = 'User') {
+  function addInterlock(interlock: Omit<Interlock, 'id'>, user: string = 'User', reason?: string) {
     const newInterlock: Interlock = {
       ...interlock,
       id: `interlock-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       demandCount: 0
     }
     interlocks.value.push(newInterlock)
-    recordInterlockEvent(newInterlock, 'created', user)
+    recordInterlockEvent(newInterlock, 'created', user, reason)
     saveInterlocks()
-    syncInterlockToBackend(newInterlock)
+    syncInterlockToBackend(newInterlock, reason)
     return newInterlock.id
   }
 
-  function updateInterlock(id: string, updates: Partial<Interlock>, user: string = 'User') {
+  function updateInterlock(id: string, updates: Partial<Interlock>, user: string = 'User', reason?: string) {
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
       const existing = interlocks.value[index]
       if (existing) {
+        // Critical interlocks require Admin role to modify
+        if (existing.isCritical) {
+          const auth = useAuth()
+          if (!auth.isAdmin.value) {
+            console.warn(`[SAFETY] Update critical interlock denied: requires Admin role`)
+            return
+          }
+        }
         const wasEnabled = existing.enabled
         interlocks.value[index] = { ...existing, ...updates } as Interlock
         const updated = interlocks.value[index]
 
         // Track enable/disable events
         if (wasEnabled !== updated.enabled) {
-          recordInterlockEvent(updated, updated.enabled ? 'enabled' : 'disabled', user)
+          recordInterlockEvent(updated, updated.enabled ? 'enabled' : 'disabled', user, reason)
         } else {
-          recordInterlockEvent(updated, 'modified', user)
+          recordInterlockEvent(updated, 'modified', user, reason)
         }
 
         saveInterlocks()
-        syncInterlockToBackend(updated)
+        syncInterlockToBackend(updated, reason)
       }
     }
   }
 
-  function removeInterlock(id: string, user: string = 'User') {
+  function removeInterlock(id: string, user: string = 'User', reason?: string) {
     const auth = useAuth()
+    const interlock = interlocks.value.find(i => i.id === id)
+
+    // Critical interlocks require Admin role (elevated from Supervisor)
+    if (interlock?.isCritical && !auth.isAdmin.value) {
+      console.warn(`[SAFETY] Remove critical interlock denied: requires Admin role`)
+      return
+    }
     if (!auth.isSupervisor.value) {
       console.warn(`[SAFETY] Remove interlock denied: user ${user} lacks supervisor role`)
       return
@@ -669,13 +789,13 @@ export function useSafety() {
     const index = interlocks.value.findIndex(i => i.id === id)
     if (index >= 0) {
       const removed = interlocks.value[index]!
-      recordInterlockEvent(removed, 'removed', user, `Interlock removed: ${removed.name}`)
+      recordInterlockEvent(removed, 'removed', user, reason || `Interlock removed: ${removed.name}`)
       interlocks.value.splice(index, 1)
       saveInterlocks()
 
-      // Remove from backend
+      // Remove from backend (include reason for audit trail)
       if (mqtt.connected.value) {
-        mqtt.sendCommand(`interlocks/remove`, { id })
+        mqtt.sendCommand(`interlocks/remove`, { id, user, reason: reason || '' })
       }
     }
   }
@@ -716,7 +836,7 @@ export function useSafety() {
   // Backend Sync (MQTT)
   // ============================================
 
-  function syncInterlockToBackend(interlock: Interlock) {
+  function syncInterlockToBackend(interlock: Interlock, reason?: string) {
     if (!mqtt.connected.value) return
 
     // Publish interlock state to backend
@@ -727,6 +847,7 @@ export function useSafety() {
       bypassed: interlock.bypassed,
       bypassedBy: interlock.bypassedBy,
       bypassReason: interlock.bypassReason,
+      isCritical: interlock.isCritical ?? false,
       conditions: interlock.conditions.map(c => ({
         type: c.type,
         channel: c.channel,
@@ -739,14 +860,15 @@ export function useSafety() {
         variableId: c.variableId,
         expression: c.expression
       })),
-      controls: interlock.controls
+      controls: interlock.controls,
+      reason: reason || ''
     }
 
     mqtt.sendCommand('interlocks/sync', payload)
   }
 
   function syncAllInterlocksToBackend() {
-    interlocks.value.forEach(syncInterlockToBackend)
+    interlocks.value.forEach(i => syncInterlockToBackend(i))
   }
 
   function syncAlarmConfigsToBackend() {
@@ -1184,6 +1306,10 @@ export function useSafety() {
     return { satisfied, failedConditions: satisfied ? [] : failedConditions }
   }
 
+  // C3: This function is a FALLBACK only. Backend safety_manager.py is authoritative.
+  // Local evaluation runs only when the backend hasn't sent status yet (initial load,
+  // MQTT disconnected). Once backend publishes to safety/status, _backendSatisfied
+  // takes precedence in interlockStatuses computed above.
   function evaluateInterlock(interlock: Interlock): InterlockStatus {
     if (!interlock.enabled) {
       return {
@@ -1346,10 +1472,8 @@ export function useSafety() {
   function saveInterlockHistory() {
     try {
       const systemId = store.systemId || 'default'
-      localStorage.setItem(
-        `nisystem-interlock-history-${systemId}`,
-        JSON.stringify(interlockHistory.value.slice(0, 500))  // Persist last 500
-      )
+      const key = `nisystem-interlock-history-${systemId}`
+      saveWithTimestamp(key, JSON.stringify(interlockHistory.value.slice(0, 500)))
     } catch (e) {
       console.error('Failed to save interlock history:', e)
     }
@@ -1358,8 +1482,14 @@ export function useSafety() {
   function loadInterlockHistory() {
     try {
       const systemId = store.systemId || 'default'
-      const saved = localStorage.getItem(`nisystem-interlock-history-${systemId}`)
+      const key = `nisystem-interlock-history-${systemId}`
+      const saved = localStorage.getItem(key)
       if (saved) {
+        // M2: Skip stale interlock history
+        if (isLocalStorageStale(key)) {
+          console.debug('[SAFETY] Skipping stale interlock history from localStorage')
+          return
+        }
         interlockHistory.value = JSON.parse(saved)
       }
     } catch (e) {
@@ -1389,8 +1519,32 @@ export function useSafety() {
   }
 
   // Get all interlock statuses
+  // C3: Backend is authoritative for interlock evaluation. The frontend displays
+  // backend-evaluated status when available (_backendSatisfied). Local evaluation
+  // is only used as a fallback when the backend hasn't sent status yet (e.g., during
+  // initial connection or when MQTT is disconnected). This prevents the frontend from
+  // independently tripping or clearing interlocks.
   const interlockStatuses = computed((): InterlockStatus[] => {
-    return interlocks.value.map(evaluateInterlock)
+    return interlocks.value.map(interlock => {
+      // If backend has sent evaluated status, use it (display-only)
+      if (interlock._backendSatisfied !== undefined) {
+        return {
+          id: interlock.id,
+          name: interlock.name,
+          satisfied: interlock._backendSatisfied,
+          bypassed: interlock.bypassed,
+          enabled: interlock.enabled,
+          failedConditions: interlock._backendFailedConditions || [],
+          controls: interlock.controls,
+          conditionsWithDelay: [],
+          priority: interlock.priority,
+          silRating: interlock.silRating,
+          requiresAcknowledgment: interlock.requiresAcknowledgment,
+        } as InterlockStatus
+      }
+      // Fallback: local evaluation only when backend hasn't reported yet
+      return evaluateInterlock(interlock)
+    })
   })
 
   // Check if a specific control type is blocked
@@ -1587,6 +1741,11 @@ export function useSafety() {
   function loadSafeStateConfig() {
     const saved = localStorage.getItem('nisystem-safe-state-config')
     if (saved) {
+      // M2: Skip stale safe state config
+      if (isLocalStorageStale('nisystem-safe-state-config')) {
+        console.debug('[SAFETY] Skipping stale safe state config from localStorage')
+        return
+      }
       try {
         Object.assign(safeStateConfig.value, JSON.parse(saved))
       } catch { /* ignore */ }
@@ -1595,7 +1754,7 @@ export function useSafety() {
 
   // Save safe state config
   function saveSafeStateConfig() {
-    localStorage.setItem('nisystem-safe-state-config', JSON.stringify(safeStateConfig.value))
+    saveWithTimestamp('nisystem-safe-state-config', JSON.stringify(safeStateConfig.value))
   }
 
   // Update safe state config
@@ -1773,12 +1932,17 @@ export function useSafety() {
   }
 
   function saveSafetyActions() {
-    localStorage.setItem('nisystem-safety-actions', JSON.stringify(safetyActions.value))
+    saveWithTimestamp('nisystem-safety-actions', JSON.stringify(safetyActions.value))
   }
 
   function loadSafetyActions() {
     const saved = localStorage.getItem('nisystem-safety-actions')
     if (saved) {
+      // M2: Skip stale safety actions
+      if (isLocalStorageStale('nisystem-safety-actions')) {
+        console.debug('[SAFETY] Skipping stale safety actions from localStorage')
+        return
+      }
       try {
         safetyActions.value = JSON.parse(saved)
       } catch { /* ignore */ }
@@ -1804,23 +1968,54 @@ export function useSafety() {
 
   // ============================================
   // Persistence
+  // M2: localStorage is used as a fallback when backend hasn't responded yet.
+  // Backend state always wins when available. Each saved entry includes a
+  // timestamp so stale data (>24 hours) is discarded on load.
   // ============================================
 
+  // M2: Staleness threshold for localStorage data (24 hours)
+  const LOCALSTORAGE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+  /** M2: Check if a localStorage timestamp is too old to trust */
+  function isLocalStorageStale(key: string): boolean {
+    try {
+      const tsStr = localStorage.getItem(`${key}:timestamp`)
+      if (!tsStr) return true // No timestamp = unknown age = stale
+      const savedAt = parseInt(tsStr, 10)
+      return isNaN(savedAt) || (Date.now() - savedAt) > LOCALSTORAGE_MAX_AGE_MS
+    } catch {
+      return true
+    }
+  }
+
+  /** M2: Save a localStorage entry with a timestamp */
+  function saveWithTimestamp(key: string, value: string) {
+    localStorage.setItem(key, value)
+    localStorage.setItem(`${key}:timestamp`, String(Date.now()))
+  }
+
   function saveAlarmConfigs() {
-    localStorage.setItem('nisystem-alarm-configs-v2', JSON.stringify(alarmConfigs.value))
+    saveWithTimestamp('nisystem-alarm-configs-v2', JSON.stringify(alarmConfigs.value))
   }
 
   function loadAlarmConfigs() {
     // Try v2 first, then fall back to v1
     let saved = localStorage.getItem('nisystem-alarm-configs-v2')
+    let key = 'nisystem-alarm-configs-v2'
     if (!saved) {
       saved = localStorage.getItem('nisystem-alarm-configs')
+      key = 'nisystem-alarm-configs'
     }
     if (saved) {
+      // M2: Skip stale data — backend will send fresh configs when it connects
+      if (isLocalStorageStale(key)) {
+        console.debug('[SAFETY] Skipping stale alarm configs from localStorage')
+        return
+      }
       try {
         const parsed = JSON.parse(saved)
         // Migrate old format if needed
-        Object.entries(parsed).forEach(([channel, config]: [string, any]) => {
+        Object.entries(parsed as Record<string, Record<string, any>>).forEach(([channel, config]) => {
           if (!config.id) config.id = `alarm-${channel}`
           if (!config.name) config.name = channel
           if (!config.severity) config.severity = 'medium'
@@ -1833,12 +2028,17 @@ export function useSafety() {
   }
 
   function saveInterlocks() {
-    localStorage.setItem('nisystem-interlocks', JSON.stringify(interlocks.value))
+    saveWithTimestamp('nisystem-interlocks', JSON.stringify(interlocks.value))
   }
 
   function loadInterlocks() {
     const saved = localStorage.getItem('nisystem-interlocks')
     if (saved) {
+      // M2: Skip stale interlock data
+      if (isLocalStorageStale('nisystem-interlocks')) {
+        console.debug('[SAFETY] Skipping stale interlocks from localStorage')
+        return
+      }
       try {
         interlocks.value = JSON.parse(saved)
       } catch { /* ignore */ }
@@ -1848,12 +2048,17 @@ export function useSafety() {
   function saveHistory() {
     // Save last 500 entries
     const entries = alarmHistory.value.slice(0, 500)
-    localStorage.setItem('nisystem-alarm-history', JSON.stringify(entries))
+    saveWithTimestamp('nisystem-alarm-history', JSON.stringify(entries))
   }
 
   function loadHistory() {
     const saved = localStorage.getItem('nisystem-alarm-history')
     if (saved) {
+      // M2: Skip stale history (history is informational, not critical)
+      if (isLocalStorageStale('nisystem-alarm-history')) {
+        console.debug('[SAFETY] Skipping stale alarm history from localStorage')
+        return
+      }
       try {
         alarmHistory.value = JSON.parse(saved)
       } catch { /* ignore */ }
@@ -1886,7 +2091,7 @@ export function useSafety() {
     // This ensures we handle project changes before loading potentially stale data
 
     // Subscribe to project/loaded to clear state on project change
-    mqtt.subscribe('nisystem/nodes/+/project/loaded', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/project/loaded', (payload: SafetyProjectLoadedPayload) => {
       const newProjectName = payload?.project_name || payload?.filename || 'unknown'
       console.debug(`[SAFETY] Project loaded: ${newProjectName}, previous: ${currentProjectId}`)
 
@@ -1979,8 +2184,9 @@ export function useSafety() {
       }
     }, { deep: true })
 
-    // Check shelve expiry every minute
-    setInterval(checkShelveExpiry, 60000)
+    // H3: Check shelve expiry every minute (store ID for cleanup)
+    if (shelveExpiryIntervalId) clearInterval(shelveExpiryIntervalId)
+    shelveExpiryIntervalId = setInterval(checkShelveExpiry, 60000)
 
     // Subscribe to backend alarm events via MQTT
     mqtt.onAlarm((alarm, event) => {
@@ -1989,46 +2195,64 @@ export function useSafety() {
 
     // Subscribe to backend safety_action events via MQTT
     // Backend AlarmManager publishes these when alarms with safety_action trigger
-    mqtt.subscribe('nisystem/safety/action', (payload: any) => {
+    mqtt.subscribe('nisystem/safety/action', (payload: SafetyActionRequestPayload) => {
       handleBackendSafetyAction(payload)
     })
 
     // Subscribe to alarms/cleared signal from backend
     // Backend publishes this when project changes, closes, or at startup with no project
     // This ensures frontend clears stale alarm data and localStorage
-    mqtt.subscribe('nisystem/nodes/+/alarms/cleared', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/alarms/cleared', (payload: AlarmsClearedPayload) => {
       const reason = payload?.reason || 'backend_signal'
       console.debug(`[SAFETY] Received alarms/cleared from backend, reason: ${reason}`)
       clearAllSafetyState(reason)
     })
 
     // Subscribe to backend safety status (backend-authoritative safety logic)
-    mqtt.subscribe('nisystem/nodes/+/safety/status', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/safety/status', (payload: BackendSafetyStatusPayload) => {
       handleBackendSafetyStatus(payload)
     })
 
     // Subscribe to backend latch state changes
-    mqtt.subscribe('nisystem/nodes/+/safety/latch/state', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/safety/latch/state', (payload: BackendLatchStatePayload) => {
       handleBackendLatchState(payload)
     })
 
     // Subscribe to backend trip events
-    mqtt.subscribe('nisystem/nodes/+/safety/trip', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/safety/trip', (payload: BackendTripEventPayload) => {
       handleBackendTripEvent(payload)
     })
 
     // Subscribe to interlock list response from backend
-    mqtt.subscribe('nisystem/nodes/+/interlocks/list/response', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/interlocks/list/response', (payload: BackendInterlockListPayload) => {
       handleBackendInterlockList(payload)
     })
 
     // Subscribe to interlock updates from backend
-    mqtt.subscribe('nisystem/nodes/+/interlocks/updated', (payload: any) => {
+    mqtt.subscribe('nisystem/nodes/+/interlocks/updated', (payload: BackendInterlockUpdatePayload) => {
       handleBackendInterlockUpdate(payload)
     })
 
-    // Request initial safety status from backend
-    mqtt.sendCommand('safety/status/request', {})
+    // Subscribe to interlock error responses (blocked operations on critical interlocks)
+    mqtt.subscribe('nisystem/nodes/+/interlocks/error', (payload: BackendInterlockErrorPayload) => {
+      if (payload?.error === 'blocked') {
+        console.error(`[SAFETY] Backend blocked interlock operation: ${payload.message}`)
+        alert(`Safety guard: ${payload.message || 'Operation blocked by backend safety system'}`)
+      }
+    })
+
+    // M3: Request initial safety status from backend, but only when connected.
+    // If MQTT isn't connected yet, watch for connection and send then.
+    if (mqtt.connected.value) {
+      mqtt.sendCommand('safety/status/request', {})
+    } else {
+      const stopWatching = watch(() => mqtt.connected.value, (isConnected) => {
+        if (isConnected) {
+          mqtt.sendCommand('safety/status/request', {})
+          stopWatching()
+        }
+      })
+    }
 
     initialized = true
   }
@@ -2037,7 +2261,7 @@ export function useSafety() {
    * Handle safety action requests from backend (AlarmManager)
    * This allows backend-initiated safety actions to be executed by frontend
    */
-  function handleBackendSafetyAction(payload: any) {
+  function handleBackendSafetyAction(payload: SafetyActionRequestPayload) {
     const actionId = payload.action_id
     const alarmId = payload.alarm_id
     const channel = payload.channel
@@ -2062,7 +2286,7 @@ export function useSafety() {
    * Handle safety status updates from backend (backend-authoritative)
    * The backend evaluates all interlocks and latch state - frontend is display-only
    */
-  function handleBackendSafetyStatus(payload: any) {
+  function handleBackendSafetyStatus(payload: BackendSafetyStatusPayload) {
     if (!payload) return
 
     // Update latch state from backend
@@ -2095,7 +2319,7 @@ export function useSafety() {
   /**
    * Handle latch state changes from backend
    */
-  function handleBackendLatchState(payload: any) {
+  function handleBackendLatchState(payload: BackendLatchStatePayload) {
     if (!payload) return
 
     console.debug(`[SAFETY] Backend latch state change: ${payload.state} (armed: ${payload.armed}, tripped: ${payload.tripped})`)
@@ -2111,7 +2335,7 @@ export function useSafety() {
   /**
    * Handle trip events from backend
    */
-  function handleBackendTripEvent(payload: any) {
+  function handleBackendTripEvent(payload: BackendTripEventPayload) {
     if (!payload) return
 
     console.warn(`[SAFETY] Backend trip event: ${payload.reason}`)
@@ -2123,7 +2347,7 @@ export function useSafety() {
   /**
    * Handle interlock list from backend (for syncing)
    */
-  function handleBackendInterlockList(payload: any) {
+  function handleBackendInterlockList(payload: BackendInterlockListPayload) {
     if (!payload?.interlocks) return
 
     console.debug(`[SAFETY] Received ${payload.interlocks.length} interlocks from backend`)
@@ -2145,10 +2369,16 @@ export function useSafety() {
           conditionLogic: backendInterlock.conditionLogic || 'AND',
           controls: backendInterlock.controls || [],
           bypassAllowed: backendInterlock.bypassAllowed || false,
+          maxBypassDuration: backendInterlock.maxBypassDuration,
           bypassed: backendInterlock.bypassed || false,
           bypassedBy: backendInterlock.bypassedBy,
           bypassedAt: backendInterlock.bypassedAt,
           bypassReason: backendInterlock.bypassReason,
+          isCritical: backendInterlock.isCritical || false,
+          priority: backendInterlock.priority || 'medium',
+          silRating: backendInterlock.silRating,
+          requiresAcknowledgment: backendInterlock.requiresAcknowledgment || false,
+          proofTestInterval: backendInterlock.proofTestInterval,
           demandCount: backendInterlock.demandCount || 0,
           lastDemandTime: backendInterlock.lastDemandTime,
           lastProofTest: backendInterlock.lastProofTest
@@ -2160,7 +2390,7 @@ export function useSafety() {
   /**
    * Handle individual interlock updates from backend
    */
-  function handleBackendInterlockUpdate(payload: any) {
+  function handleBackendInterlockUpdate(payload: BackendInterlockUpdatePayload) {
     if (!payload?.id) return
 
     const existing = interlocks.value.find(i => i.id === payload.id)
@@ -2173,7 +2403,7 @@ export function useSafety() {
   /**
    * Handle alarms received from the backend via MQTT
    */
-  function handleBackendAlarm(alarm: any, event: 'triggered' | 'updated' | 'cleared') {
+  function handleBackendAlarm(alarm: BackendAlarmPayload, event: 'triggered' | 'updated' | 'cleared') {
     try {
       _processBackendAlarm(alarm, event)
     } catch (e) {
@@ -2181,8 +2411,8 @@ export function useSafety() {
     }
   }
 
-  function _processBackendAlarm(alarm: any, event: 'triggered' | 'updated' | 'cleared') {
-    const alarmId = alarm.alarm_id || alarm.id
+  function _processBackendAlarm(alarm: BackendAlarmPayload, event: 'triggered' | 'updated' | 'cleared') {
+    const alarmId = alarm.alarm_id || alarm.id || `alarm-${Date.now()}`
 
     if (event === 'cleared') {
       // Remove from active alarms
@@ -2224,7 +2454,7 @@ export function useSafety() {
       // Update existing alarm
       const existing = activeAlarms.value[existingIndex]
       if (existing) {
-        existing.state = alarm.state || existing.state
+        existing.state = (alarm.state || existing.state) as AlarmState
         existing.current_value = alarm.current_value
         existing.acknowledged_at = alarm.acknowledged_at
         existing.acknowledged_by = alarm.acknowledged_by
@@ -2232,22 +2462,22 @@ export function useSafety() {
         existing.shelved_by = alarm.shelved_by
         existing.shelve_expires_at = alarm.shelve_expires_at
         existing.shelve_reason = alarm.shelve_reason
-        existing.duration_seconds = alarm.duration_seconds
+        existing.duration_seconds = alarm.duration_seconds ?? existing.duration_seconds
       }
     } else {
       // New alarm from backend
       const activeAlarm: ActiveAlarm = {
         id: alarmId,
         alarm_id: alarmId,
-        channel: alarm.channel,
+        channel: alarm.channel || '',
         name: alarm.name,
         severity: alarm.severity as AlarmSeverityLevel,
-        state: alarm.state || 'active',
-        threshold_type: alarm.threshold_type,
-        threshold: alarm.threshold,
-        value: alarm.value,
+        state: (alarm.state || 'active') as AlarmState,
+        threshold_type: (alarm.threshold_type || 'high') as ActiveAlarm['threshold_type'],
+        threshold: alarm.threshold ?? 0,
+        value: alarm.value ?? 0,
         current_value: alarm.current_value,
-        triggered_at: alarm.triggered_at,
+        triggered_at: alarm.triggered_at || new Date().toISOString(),
         acknowledged_at: alarm.acknowledged_at,
         acknowledged_by: alarm.acknowledged_by,
         sequence_number: alarm.sequence_number || 0,
@@ -2269,13 +2499,13 @@ export function useSafety() {
       addHistoryEntry({
         id: `${alarmId}-triggered-${Date.now()}`,
         alarm_id: alarmId,
-        channel: alarm.channel,
+        channel: alarm.channel || '',
         event_type: 'triggered',
-        severity: alarm.severity,
-        value: alarm.value,
-        threshold: alarm.threshold,
-        threshold_type: alarm.threshold_type,
-        triggered_at: alarm.triggered_at,
+        severity: alarm.severity as AlarmSeverityLevel,
+        value: alarm.value ?? 0,
+        threshold: alarm.threshold ?? 0,
+        threshold_type: (alarm.threshold_type || 'high') as ActiveAlarm['threshold_type'],
+        triggered_at: alarm.triggered_at || new Date().toISOString(),
         message: alarm.message
       })
 

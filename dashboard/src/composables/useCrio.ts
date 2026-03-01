@@ -91,6 +91,7 @@ const heartbeatTimeoutMs = 5000  // Consider offline after 5s without heartbeat
 
 // Initialization flag
 let initialized = false
+let heartbeatIntervalId: number | null = null
 
 // ============================================
 // Composable Factory
@@ -197,10 +198,9 @@ export function useCrio() {
 
       mqtt.sendCommand('crio/do/set', payload)
 
-      // Optimistically update local state
-      if (crioStatus.value?.output_states) {
-        crioStatus.value.output_states[name] = value
-      }
+      // Do NOT optimistically update — wait for cRIO status message to confirm.
+      // If the cRIO rejects the write (safety interlock blocking), the dashboard
+      // would show wrong output state until the next status message.
 
       resolve(true)
     })
@@ -221,10 +221,7 @@ export function useCrio() {
 
       mqtt.sendCommand('crio/do/set', payload)
 
-      // Optimistically update local state
-      if (crioStatus.value?.output_states) {
-        Object.assign(crioStatus.value.output_states, values)
-      }
+      // Do NOT optimistically update — wait for cRIO status confirmation.
 
       resolve(true)
     })
@@ -304,8 +301,11 @@ export function useCrio() {
       }
     }, { immediate: true })
 
-    // Start heartbeat check interval
-    setInterval(checkHeartbeat, 1000)
+    // Start heartbeat check interval (store ID for cleanup)
+    if (heartbeatIntervalId !== null) {
+      clearInterval(heartbeatIntervalId)
+    }
+    heartbeatIntervalId = window.setInterval(checkHeartbeat, 1000)
 
     initialized = true
   }

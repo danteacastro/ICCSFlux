@@ -13,6 +13,7 @@ Provides industrial-grade alarm management with:
 """
 
 import json
+import math
 import time
 import logging
 import threading
@@ -561,6 +562,11 @@ class AlarmManager:
         """Evaluate alarm conditions and manage state"""
         alarm_id = config.id
         current_alarm = self.active_alarms.get(alarm_id)
+
+        # NaN from hardware (open TC, broken sensor) — force alarm active
+        if isinstance(value, float) and math.isnan(value):
+            self._handle_alarm_condition(config, 0.0, timestamp, 'comm_fail', 0.0)
+            return
 
         # Check for digital input alarm first
         if config.digital_alarm_enabled:

@@ -156,6 +156,10 @@ export interface ProjectData {
     safeStateConfig?: any          // Safe state configuration for trips
     autoExecuteSafetyActions?: boolean
   }
+  // PID control loops (injected by backend during save)
+  pidLoops?: {
+    loops: any[]
+  }
   // Notebook data (v2.1+)
   notebook?: {
     entries?: any[]
@@ -591,6 +595,9 @@ export function useProjectFiles() {
     const service = currentProjectData.value?.service
     // Top-level schedules array (DHW draw schedules) - separate from scripts.schedules
     const topLevelSchedules = currentProjectData.value?.schedules
+    // PID loops — managed by backend, preserved here for round-trip
+    // Backend will overwrite with live pid_engine state during save
+    const pidLoops = currentProjectData.value?.pidLoops
 
     return {
       // Preserve system config (mqtt, scan_rate, etc.) from loaded project
@@ -599,6 +606,8 @@ export function useProjectFiles() {
       ...(service ? { service } : {}),
       // Preserve top-level schedules (DHW draw schedules) from loaded project
       ...(topLevelSchedules ? { schedules: topLevelSchedules } : {}),
+      // Preserve PID loops (backend-authoritative, will be overwritten with live state during save)
+      ...(pidLoops ? { pidLoops } : {}),
       channels,  // Include channels so they're saved!
       layout: {
         widgets: layout.widgets,

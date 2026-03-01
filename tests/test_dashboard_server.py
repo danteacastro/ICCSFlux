@@ -15,8 +15,24 @@ import socket
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from dashboard_server import DashboardServer, DashboardHandler
+from test_helpers import wait_until
+
+
+def _wait_for_server(server, port, timeout=3.0):
+    """Wait until the dashboard server is accepting connections."""
+    wait_until(lambda: server.is_running(), timeout=timeout)
+    # Also verify the port is actually accepting TCP connections
+    def _port_open():
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                return s.connect_ex(('127.0.0.1', port)) == 0
+        except Exception:
+            return False
+    wait_until(_port_open, timeout=timeout)
 
 
 class TestDashboardHandler:
@@ -103,8 +119,7 @@ class TestDashboardServer:
         assert result is True
         assert server.is_running() is True
 
-        # Wait a moment for server to be ready
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         server.stop()
         assert server.is_running() is False
@@ -116,18 +131,18 @@ class TestDashboardServer:
         assert server.is_running() is False
 
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
         assert server.is_running() is True
 
         server.stop()
-        time.sleep(0.2)
-        assert server.is_running() is False
+        assert wait_until(lambda: not server.is_running(), timeout=3.0), \
+            "Server did not stop"
 
     def test_serve_index_html(self, dashboard_dir, free_port):
         """Test serving index.html"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             response = urlopen(f'http://localhost:{free_port}/')
@@ -144,7 +159,7 @@ class TestDashboardServer:
         """Test serving static assets"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             response = urlopen(f'http://localhost:{free_port}/assets/main.js')
@@ -161,7 +176,7 @@ class TestDashboardServer:
         """Test /health endpoint"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             response = urlopen(f'http://localhost:{free_port}/health')
@@ -179,7 +194,7 @@ class TestDashboardServer:
         """Test SPA fallback for unmatched routes"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             # Request a path that doesn't exist should fallback to index.html
@@ -197,7 +212,7 @@ class TestDashboardServer:
         """Test that /api/ routes return 404"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             urlopen(f'http://localhost:{free_port}/api/test')
@@ -212,7 +227,7 @@ class TestDashboardServer:
         """Test handling concurrent requests"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         errors = []
         results = []
@@ -245,7 +260,7 @@ class TestDashboardServer:
         # Start first server
         server1 = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server1.start()
-        time.sleep(0.2)
+        _wait_for_server(server1, free_port)
 
         # Try to start second server on same port
         server2 = DashboardServer(port=free_port, dist_path=dashboard_dir)
@@ -267,7 +282,7 @@ class TestDashboardServer:
         """Test that server thread is a daemon"""
         server = DashboardServer(port=free_port, dist_path=dashboard_dir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         assert server.thread is not None
         assert server.thread.daemon is True
@@ -324,7 +339,7 @@ class TestDirectoryIndex:
         """Test serving index.html from subdirectory"""
         server = DashboardServer(port=free_port, dist_path=dashboard_with_subdir)
         server.start()
-        time.sleep(0.2)
+        _wait_for_server(server, free_port)
 
         try:
             response = urlopen(f'http://localhost:{free_port}/docs/')

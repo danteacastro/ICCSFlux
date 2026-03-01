@@ -1,44 +1,104 @@
-import { defineAsyncComponent } from 'vue'
+import { defineAsyncComponent, defineComponent, h } from 'vue'
 import type { WidgetType } from '../types'
+
+// H7: Error boundary component for async widgets.
+// When a widget fails to load (chunk error, syntax error, etc.), this component
+// renders an error message instead of crashing the entire dashboard.
+const WidgetLoadError = defineComponent({
+  name: 'WidgetLoadError',
+  props: {
+    error: { type: Error, default: null }
+  },
+  setup(props) {
+    return () => h('div', {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        padding: '8px',
+        color: '#ef4444',
+        fontSize: '12px',
+        textAlign: 'center',
+        background: '#1e1e1e',
+        border: '1px solid #333',
+        borderRadius: '4px',
+      }
+    }, [
+      h('span', {}, `Widget failed to load${props.error ? ': ' + props.error.message : ''}`)
+    ])
+  }
+})
+
+// H7: Loading placeholder shown while widget chunk is being fetched
+const WidgetLoading = defineComponent({
+  name: 'WidgetLoading',
+  setup() {
+    return () => h('div', {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        padding: '8px',
+        color: '#666',
+        fontSize: '12px',
+        background: '#1e1e1e',
+      }
+    }, 'Loading...')
+  }
+})
+
+// H7: Helper that wraps defineAsyncComponent with error/loading boundaries
+// so a single widget failure doesn't crash the whole dashboard
+function defineWidgetComponent(loader: () => Promise<unknown>) {
+  return defineAsyncComponent({
+    loader: loader as () => Promise<{ default: ReturnType<typeof defineComponent> }>,
+    errorComponent: WidgetLoadError,
+    loadingComponent: WidgetLoading,
+    delay: 200,    // Show loading after 200ms delay
+    timeout: 30000 // Fail after 30 seconds
+  })
+}
 
 // Widget component registry
 export const widgetComponents: Record<string, ReturnType<typeof defineAsyncComponent>> = {
-  numeric: defineAsyncComponent(() => import('./NumericDisplay.vue')),
-  led: defineAsyncComponent(() => import('./LedIndicator.vue')),
-  chart: defineAsyncComponent(() => import('./TrendChart.vue')),
-  toggle: defineAsyncComponent(() => import('./ToggleSwitch.vue')),
-  title: defineAsyncComponent(() => import('./TitleLabel.vue')),
-  sparkline: defineAsyncComponent(() => import('./SparklineWidget.vue')),
-  alarm_summary: defineAsyncComponent(() => import('./AlarmSummaryWidget.vue')),
-  recording_status: defineAsyncComponent(() => import('./RecordingStatusWidget.vue')),
-  system_status: defineAsyncComponent(() => import('./SystemStatusWidget.vue')),
-  interlock_status: defineAsyncComponent(() => import('./InterlockStatusWidget.vue')),
+  numeric: defineWidgetComponent(() => import('./NumericDisplay.vue')),
+  led: defineWidgetComponent(() => import('./LedIndicator.vue')),
+  chart: defineWidgetComponent(() => import('./TrendChart.vue')),
+  toggle: defineWidgetComponent(() => import('./ToggleSwitch.vue')),
+  title: defineWidgetComponent(() => import('./TitleLabel.vue')),
+  sparkline: defineWidgetComponent(() => import('./SparklineWidget.vue')),
+  alarm_summary: defineWidgetComponent(() => import('./AlarmSummaryWidget.vue')),
+  recording_status: defineWidgetComponent(() => import('./RecordingStatusWidget.vue')),
+  system_status: defineWidgetComponent(() => import('./SystemStatusWidget.vue')),
+  interlock_status: defineWidgetComponent(() => import('./InterlockStatusWidget.vue')),
   // multi_channel_table removed - use value_table instead
-  action_button: defineAsyncComponent(() => import('./ActionButtonWidget.vue')),
-  clock: defineAsyncComponent(() => import('./ClockWidget.vue')),
-  gauge: defineAsyncComponent(() => import('./GaugeWidget.vue')),
-  divider: defineAsyncComponent(() => import('./DividerWidget.vue')),
-  setpoint: defineAsyncComponent(() => import('./SetpointWidget.vue')),
-  bar_graph: defineAsyncComponent(() => import('./BarGraphWidget.vue')),
-  scheduler_status: defineAsyncComponent(() => import('./SchedulerStatusWidget.vue')),
+  action_button: defineWidgetComponent(() => import('./ActionButtonWidget.vue')),
+  clock: defineWidgetComponent(() => import('./ClockWidget.vue')),
+  gauge: defineWidgetComponent(() => import('./GaugeWidget.vue')),
+  divider: defineWidgetComponent(() => import('./DividerWidget.vue')),
+  setpoint: defineWidgetComponent(() => import('./SetpointWidget.vue')),
+  bar_graph: defineWidgetComponent(() => import('./BarGraphWidget.vue')),
+  scheduler_status: defineWidgetComponent(() => import('./SchedulerStatusWidget.vue')),
   // sequence_status removed - use script_monitor with py.SM_* tags
-  svg_symbol: defineAsyncComponent(() => import('./SvgSymbolWidget.vue')),
+  svg_symbol: defineWidgetComponent(() => import('./SvgSymbolWidget.vue')),
   // text_label removed - use title instead
-  value_table: defineAsyncComponent(() => import('./ValueTableWidget.vue')),
-  crio_status: defineAsyncComponent(() => import('./CrioStatusWidget.vue')),
-  latch_switch: defineAsyncComponent(() => import('./LatchSwitchWidget.vue')),
-  script_monitor: defineAsyncComponent(() => import('./ScriptMonitorWidget.vue')),
-  python_console: defineAsyncComponent(() => import('./PythonConsoleWidget.vue')),
-  script_output: defineAsyncComponent(() => import('./ScriptOutputWidget.vue')),
-  variable_explorer: defineAsyncComponent(() => import('./VariableExplorerWidget.vue')),
-  variable_input: defineAsyncComponent(() => import('./VariableInputWidget.vue')),
-  pid_loop: defineAsyncComponent(() => import('./PidLoopWidget.vue')),
-  heater_zone: defineAsyncComponent(() => import('./HeaterZoneWidget.vue')),
-  status_messages: defineAsyncComponent(() => import('./StatusMessages.vue')),
-  image: defineAsyncComponent(() => import('./ImageWidget.vue')),
-  gc_chromatogram: defineAsyncComponent(() => import('./GcChromatogramWidget.vue')),
-  gc_overview: defineAsyncComponent(() => import('./GcOverviewWidget.vue')),
-  small_multiples: defineAsyncComponent(() => import('./SmallMultiplesWidget.vue')),
+  value_table: defineWidgetComponent(() => import('./ValueTableWidget.vue')),
+  crio_status: defineWidgetComponent(() => import('./CrioStatusWidget.vue')),
+  latch_switch: defineWidgetComponent(() => import('./LatchSwitchWidget.vue')),
+  script_monitor: defineWidgetComponent(() => import('./ScriptMonitorWidget.vue')),
+  python_console: defineWidgetComponent(() => import('./PythonConsoleWidget.vue')),
+  script_output: defineWidgetComponent(() => import('./ScriptOutputWidget.vue')),
+  variable_explorer: defineWidgetComponent(() => import('./VariableExplorerWidget.vue')),
+  variable_input: defineWidgetComponent(() => import('./VariableInputWidget.vue')),
+  pid_loop: defineWidgetComponent(() => import('./PidLoopWidget.vue')),
+  heater_zone: defineWidgetComponent(() => import('./HeaterZoneWidget.vue')),
+  status_messages: defineWidgetComponent(() => import('./StatusMessages.vue')),
+  image: defineWidgetComponent(() => import('./ImageWidget.vue')),
+  gc_chromatogram: defineWidgetComponent(() => import('./GcChromatogramWidget.vue')),
+  gc_overview: defineWidgetComponent(() => import('./GcOverviewWidget.vue')),
+  small_multiples: defineWidgetComponent(() => import('./SmallMultiplesWidget.vue')),
 }
 
 export function getWidgetComponent(type: WidgetType | string) {

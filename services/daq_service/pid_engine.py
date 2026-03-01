@@ -21,6 +21,7 @@ Copyright (c) 2026 NISystem
 
 import json
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field, asdict
@@ -418,6 +419,9 @@ class PIDEngine:
                 pv = channel_values.get(loop.pv_channel)
                 if pv is None:
                     continue
+                # NaN from hardware (open TC, broken sensor) — skip PID calc
+                if isinstance(pv, float) and math.isnan(pv):
+                    continue
 
                 # Get setpoint (may come from another channel in cascade mode)
                 sp = self._get_setpoint(loop, channel_values)
@@ -469,6 +473,10 @@ class PIDEngine:
         - Output rate limiting
         - Bumpless manual/auto transfer
         """
+        # Guard against invalid dt (zero, negative, or absurdly large)
+        if dt <= 0 or dt > 10.0:
+            return loop.output
+
         # Manual mode - use manual output directly
         if loop.mode == PIDMode.MANUAL:
             loop.output = loop.manual_output

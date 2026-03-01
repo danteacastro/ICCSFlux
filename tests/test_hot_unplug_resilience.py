@@ -222,7 +222,7 @@ class TestNodeCommFailAlarm:
         assert len(comm_fails) == 1
         assert comm_fails[0].channel == 'TC_Zone2'
         assert comm_fails[0].severity == node_safety.AlarmSeverity.CRITICAL
-        assert math.isnan(comm_fails[0].value)
+        assert comm_fails[0].value == 0.0  # 0.0 not NaN (NaN breaks JSON serialization)
 
     def test_comm_fail_clear_on_recovery(self, safety):
         """COMM_FAIL clears when channel comes back online."""

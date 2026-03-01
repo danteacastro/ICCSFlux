@@ -12,9 +12,12 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
-# Add services to path
+# Add services and tests to path
 services_dir = Path(__file__).parent.parent / "services" / "daq_service"
 sys.path.insert(0, str(services_dir))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_helpers import wait_until
 
 from sequence_manager import (
     SequenceManager, Sequence, SequenceStep, SequenceState, StepType
@@ -214,10 +217,8 @@ class TestSequenceExecution:
         result = manager.start_sequence("test")
         assert result == True
 
-        # Wait for execution
-        time.sleep(0.3)
-
-        assert ("started", "test") in manager.events
+        assert wait_until(lambda: ("started", "test") in manager.events,
+                          timeout=3.0), "Sequence did not start"
 
     def test_start_disabled_sequence(self, manager):
         """Test that disabled sequences cannot be started"""
@@ -239,7 +240,9 @@ class TestSequenceExecution:
         manager.add_sequence(seq2)
 
         manager.start_sequence("seq1")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["seq1"].state == SequenceState.RUNNING,
+            timeout=3.0), "seq1 did not start"
 
         result = manager.start_sequence("seq2")
         assert result == False
@@ -258,11 +261,9 @@ class TestSequenceExecution:
         manager.add_sequence(seq)
         manager.start_sequence("test")
 
-        # Wait for execution
-        time.sleep(0.5)
-
-        assert ("valve1", 1) in manager.outputs_set
-        assert ("pump", 1) in manager.outputs_set
+        assert wait_until(
+            lambda: ("valve1", 1) in manager.outputs_set and ("pump", 1) in manager.outputs_set,
+            timeout=3.0), "setOutput steps did not execute"
 
     def test_sequence_completion(self, manager):
         """Test sequence completion"""
@@ -273,10 +274,9 @@ class TestSequenceExecution:
         manager.add_sequence(seq)
         manager.start_sequence("test")
 
-        # Wait for completion
-        time.sleep(0.5)
-
-        assert ("completed", "test") in manager.events
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=3.0), "Sequence did not complete"
         assert manager.sequences["test"].state == SequenceState.COMPLETED
 
 
@@ -300,7 +300,9 @@ class TestSequencePauseResume:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         result = manager.pause_sequence("test")
         assert result == True
@@ -316,18 +318,22 @@ class TestSequencePauseResume:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         manager.pause_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.PAUSED,
+            timeout=3.0), "Sequence did not pause"
 
         result = manager.resume_sequence("test")
         assert result == True
         assert manager.sequences["test"].state == SequenceState.RUNNING
 
-        # Wait for completion
-        time.sleep(0.8)
-        assert ("completed", "test") in manager.events
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=5.0), "Sequence did not complete after resume"
 
     def test_cannot_pause_non_running_sequence(self, manager):
         """Test that non-running sequences cannot be paused"""
@@ -358,13 +364,16 @@ class TestSequenceAbort:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         result = manager.abort_sequence("test")
         assert result == True
 
-        time.sleep(0.2)
-        assert ("aborted", "test") in manager.events
+        assert wait_until(
+            lambda: ("aborted", "test") in manager.events,
+            timeout=3.0), "Sequence did not abort"
         assert manager.sequences["test"].state == SequenceState.ABORTED
 
     def test_abort_paused_sequence(self, manager):
@@ -375,10 +384,14 @@ class TestSequenceAbort:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         manager.pause_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.PAUSED,
+            timeout=3.0), "Sequence did not pause"
 
         result = manager.abort_sequence("test")
         assert result == True
@@ -391,7 +404,9 @@ class TestSequenceAbort:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         result = manager.remove_sequence("test")
         assert result == False
@@ -422,12 +437,12 @@ class TestWaitDuration:
         start = time.time()
         manager.start_sequence("test")
 
-        # Wait for completion
-        time.sleep(0.6)
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=5.0), "Sequence did not complete"
 
         elapsed = time.time() - start
         assert elapsed >= 0.3  # Should have waited at least 300ms
-        assert ("completed", "test") in manager.events
 
 
 class TestWaitCondition:
@@ -462,9 +477,10 @@ class TestWaitCondition:
         manager.channel_values["temp"] = 150
 
         manager.start_sequence("test")
-        time.sleep(0.3)
 
-        assert ("completed", "test") in manager.events
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=3.0), "Sequence did not complete"
 
     def test_wait_condition_met_during_wait(self, manager):
         """Test condition that becomes true during wait"""
@@ -482,13 +498,16 @@ class TestWaitCondition:
         manager.channel_values["temp"] = 50  # Not met initially
 
         manager.start_sequence("test")
-        time.sleep(0.2)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         # Now set value to meet condition
         manager.channel_values["temp"] = 150
-        time.sleep(0.3)
 
-        assert ("completed", "test") in manager.events
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=5.0), "Sequence did not complete after condition met"
 
     def test_wait_condition_timeout(self, manager):
         """Test condition timeout"""
@@ -506,10 +525,11 @@ class TestWaitCondition:
         manager.channel_values["temp"] = 50  # Never met
 
         manager.start_sequence("test")
-        time.sleep(0.8)
 
         # Should complete (with timeout) rather than hang
-        assert ("completed", "test") in manager.events
+        assert wait_until(
+            lambda: ("completed", "test") in manager.events,
+            timeout=5.0), "Sequence did not complete on timeout"
 
     def test_condition_operators(self, manager):
         """Test different condition operators"""
@@ -564,11 +584,10 @@ class TestLoops:
         manager.add_sequence(seq)
         manager.start_sequence("test")
 
-        time.sleep(0.5)
-
         # Should have executed setOutput 3 times
-        counter_outputs = [o for o in manager.outputs_set if o[0] == "counter"]
-        assert len(counter_outputs) == 3
+        assert wait_until(
+            lambda: len([o for o in manager.outputs_set if o[0] == "counter"]) == 3,
+            timeout=3.0), "Loop did not execute 3 times"
 
 
 class TestStatus:
@@ -600,7 +619,9 @@ class TestStatus:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         status = manager.get_status()
         assert status["running_sequence_id"] == "test"
@@ -621,10 +642,11 @@ class TestStatus:
         assert manager.get_running_sequence() is None
 
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.get_running_sequence() is not None,
+            timeout=3.0), "No running sequence found"
 
         running = manager.get_running_sequence()
-        assert running is not None
         assert running.id == "test"
 
         manager.abort_sequence("test")
@@ -650,12 +672,15 @@ class TestShutdown:
         )
         manager.add_sequence(seq)
         manager.start_sequence("test")
-        time.sleep(0.1)
+        assert wait_until(
+            lambda: manager.sequences["test"].state == SequenceState.RUNNING,
+            timeout=3.0), "Sequence did not start running"
 
         manager.shutdown()
-        time.sleep(0.2)
 
-        assert ("aborted", "test") in manager.events
+        assert wait_until(
+            lambda: ("aborted", "test") in manager.events,
+            timeout=3.0), "Sequence was not aborted on shutdown"
 
 
 if __name__ == "__main__":

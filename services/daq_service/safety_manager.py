@@ -16,6 +16,7 @@ The frontend becomes display-only - all safety logic runs here.
 """
 
 import json
+import math
 import time
 import logging
 import threading
@@ -25,6 +26,13 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Callable, Set
 from enum import Enum
 import uuid
+
+try:
+    from audit_trail import AuditEventType
+    if not hasattr(AuditEventType, 'SAFETY_INTERLOCK_MODIFIED'):
+        AuditEventType = None  # Edge node audit_trail loaded (wrong module)
+except (ImportError, AttributeError):
+    AuditEventType = None  # Not available in edge node context
 
 logger = logging.getLogger('SafetyManager')
 
@@ -81,7 +89,7 @@ class InterlockCondition:
             d['expression'] = self.expression
         return d
 
-    VALID_OPERATORS = {'==', '!=', '<', '>', '<=', '>='}
+    VALID_OPERATORS = {'=', '==', '!=', '<', '>', '<=', '>='}
     VALID_CONDITION_TYPES = {
         'channel_value', 'digital_input',
         'mqtt_connected', 'daq_connected',
@@ -170,20 +178,23 @@ class Interlock:
     bypass_allowed: bool = False
     bypassed: bool = False
     bypassed_by: Optional[str] = None
-    bypassed_at: Optional[str] = None
+    bypassed_at: Optional[float] = None  # Unix timestamp (time.time())
     bypass_reason: Optional[str] = None
     max_bypass_duration: Optional[float] = None  # seconds
 
     # Tracking
     demand_count: int = 0
-    last_demand_time: Optional[str] = None
-    last_proof_test: Optional[str] = None
+    last_demand_time: Optional[float] = None  # Unix timestamp
+    last_proof_test: Optional[float] = None  # Unix timestamp
     proof_test_interval_days: Optional[float] = None  # IEC 61511: periodic verification interval
 
     # IEC 61511 / ISA-18.2 compliance
     priority: str = "medium"  # critical, high, medium, low — operational display priority
     sil_rating: Optional[str] = None  # SIL1, SIL2, SIL3, SIL4
     requires_acknowledgment: bool = False  # Require operator ack after trip
+
+    # Critical safety flag — requires Admin role; blocks modification while ARMED/TRIPPED
+    is_critical: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -206,8 +217,23 @@ class Interlock:
             'proofTestIntervalDays': self.proof_test_interval_days,
             'priority': self.priority,
             'silRating': self.sil_rating,
-            'requiresAcknowledgment': self.requires_acknowledgment
+            'requiresAcknowledgment': self.requires_acknowledgment,
+            'isCritical': self.is_critical
         }
+
+    @staticmethod
+    def _coerce_timestamp(val) -> Optional[float]:
+        """Convert timestamp to float. Handles float, int, ISO string (legacy), and None."""
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            try:
+                return datetime.fromisoformat(val).timestamp()
+            except (ValueError, TypeError):
+                return None
+        return None
 
     @staticmethod
     def from_dict(d: dict) -> 'Interlock':
@@ -222,16 +248,17 @@ class Interlock:
             bypass_allowed=d.get('bypassAllowed', d.get('bypass_allowed', False)),
             bypassed=d.get('bypassed', False),
             bypassed_by=d.get('bypassedBy', d.get('bypassed_by')),
-            bypassed_at=d.get('bypassedAt', d.get('bypassed_at')),
+            bypassed_at=Interlock._coerce_timestamp(d.get('bypassedAt', d.get('bypassed_at'))),
             bypass_reason=d.get('bypassReason', d.get('bypass_reason')),
             max_bypass_duration=d.get('maxBypassDuration', d.get('max_bypass_duration')),
             demand_count=d.get('demandCount', d.get('demand_count', 0)),
-            last_demand_time=d.get('lastDemandTime', d.get('last_demand_time')),
-            last_proof_test=d.get('lastProofTest', d.get('last_proof_test')),
+            last_demand_time=Interlock._coerce_timestamp(d.get('lastDemandTime', d.get('last_demand_time'))),
+            last_proof_test=Interlock._coerce_timestamp(d.get('lastProofTest', d.get('last_proof_test'))),
             proof_test_interval_days=d.get('proofTestIntervalDays', d.get('proof_test_interval_days')),
             priority=d.get('priority', 'medium'),
             sil_rating=d.get('silRating', d.get('sil_rating')),
-            requires_acknowledgment=d.get('requiresAcknowledgment', d.get('requires_acknowledgment', False))
+            requires_acknowledgment=d.get('requiresAcknowledgment', d.get('requires_acknowledgment', False)),
+            is_critical=d.get('isCritical', d.get('is_critical', False))
         )
 
 
@@ -380,6 +407,9 @@ class SafetyManager:
         self._get_alarm_state = get_alarm_state
         self._trigger_safe_state = trigger_safe_state_callback
 
+        # 21 CFR Part 11 audit trail (set by DAQ service after init)
+        self._audit_trail = None
+
         # Thread safety
         self.lock = threading.RLock()
 
@@ -428,64 +458,167 @@ class SafetyManager:
     # Interlock Management
     # ========================================================================
 
-    def add_interlock(self, interlock: Interlock, user: str = "system") -> str:
-        """Add or update an interlock. Warns if condition channels don't exist."""
-        # Cross-validate: check condition channels exist in current hardware config
-        if self._get_all_channels:
-            try:
-                all_channels = self._get_all_channels()
-                if all_channels:
-                    known = set(all_channels.keys())
-                    for cond in interlock.conditions:
-                        if cond.channel and cond.channel not in known:
-                            logger.warning(
-                                f"Interlock '{interlock.name}': condition channel "
-                                f"'{cond.channel}' not found in hardware config"
-                            )
-            except Exception as e:
-                logger.debug(f"Channel cross-validation skipped: {e}")
+    def add_interlock(self, interlock: Interlock, user: str = "system",
+                      reason: str = "") -> str:
+        """Add or update an interlock with IEC 61511 safety guards.
 
+        Guards:
+        - Blocks modification of critical interlocks while ARMED/TRIPPED
+        - Warns if condition or control channels don't exist
+        - Records to in-memory history AND tamper-proof audit trail
+
+        Returns interlock ID on success, empty string if blocked.
+        """
         with self.lock:
+            # Determine if this is an update vs new creation BEFORE insertion
+            is_update = interlock.id in self.interlocks
+
+            # Guard: block modification of critical interlocks while ARMED/TRIPPED
+            if is_update:
+                existing = self.interlocks[interlock.id]
+                if existing.is_critical and self.latch_state in (LatchState.ARMED, LatchState.TRIPPED):
+                    logger.error(
+                        f"BLOCKED: Cannot modify critical interlock '{existing.name}' "
+                        f"while latch is {self.latch_state.value} (user={user})")
+                    return ""
+
+            if self.latch_state == LatchState.ARMED:
+                logger.warning(
+                    f"Modifying interlock '{interlock.name}' while latch is ARMED "
+                    f"(user={user}, reason={reason})")
+
+            # Cross-validate: check condition channels exist in current hardware config
+            if self._get_all_channels:
+                try:
+                    all_channels = self._get_all_channels()
+                    if all_channels:
+                        known = set(all_channels.keys())
+                        for cond in interlock.conditions:
+                            if cond.channel and cond.channel not in known:
+                                logger.warning(
+                                    f"Interlock '{interlock.name}': condition channel "
+                                    f"'{cond.channel}' not found in hardware config"
+                                )
+                        # Validate control channels too
+                        for ctrl in interlock.controls:
+                            if ctrl.channel and ctrl.channel not in known:
+                                logger.warning(
+                                    f"Interlock '{interlock.name}': control channel "
+                                    f"'{ctrl.channel}' not found in hardware config"
+                                )
+                except Exception as e:
+                    logger.debug(f"Channel cross-validation skipped: {e}")
+
+            previous_dict = self.interlocks[interlock.id].to_dict() if is_update else None
             self.interlocks[interlock.id] = interlock
-            self._record_event(interlock, 'created' if interlock.id not in self.interlocks else 'modified', user)
+            event = 'modified' if is_update else 'created'
+            self._record_event(interlock, event, user, reason)
+            self._audit_log(event, interlock, user, reason,
+                           previous_value=previous_dict,
+                           new_value=interlock.to_dict())
             self._save_interlocks()
             self._publish_interlock_update(interlock)
-            logger.info(f"Added/updated interlock: {interlock.name}")
+            logger.info(f"{'Updated' if is_update else 'Added'} interlock: {interlock.name}")
             return interlock.id
 
-    def remove_interlock(self, interlock_id: str, user: str = "system"):
-        """Remove an interlock"""
-        with self.lock:
-            if interlock_id in self.interlocks:
-                interlock = self.interlocks.pop(interlock_id)
-                self._save_interlocks()
-                if self._publish:
-                    self._publish('interlocks/removed', {'id': interlock_id})
-                logger.info(f"Removed interlock: {interlock.name}")
+    def remove_interlock(self, interlock_id: str, user: str = "system",
+                         reason: str = "") -> bool:
+        """Remove an interlock with IEC 61511 safety guards.
 
-    def update_interlock(self, interlock_id: str, updates: Dict[str, Any], user: str = "system"):
-        """Update interlock properties"""
+        Guards:
+        - Blocks removal of critical interlocks while ARMED/TRIPPED
+        - Records removal to in-memory history AND tamper-proof audit trail
+
+        Returns True if removed, False if blocked or not found.
+        """
         with self.lock:
             if interlock_id not in self.interlocks:
-                return
+                return False
 
             interlock = self.interlocks[interlock_id]
+
+            # Guard: block removal of critical interlock while ARMED/TRIPPED
+            if interlock.is_critical and self.latch_state in (LatchState.ARMED, LatchState.TRIPPED):
+                logger.error(
+                    f"BLOCKED: Cannot remove critical interlock '{interlock.name}' "
+                    f"while latch is {self.latch_state.value} (user={user})")
+                return False
+
+            if self.latch_state == LatchState.ARMED:
+                logger.warning(
+                    f"Removing interlock '{interlock.name}' while latch is ARMED "
+                    f"(user={user}, reason={reason})")
+
+            # Record BEFORE removal (so we have the interlock data)
+            self._record_event(interlock, 'removed', user, reason)
+            self._audit_log('removed', interlock, user, reason,
+                           previous_value=interlock.to_dict(),
+                           new_value=None)
+
+            self.interlocks.pop(interlock_id)
+            self._save_interlocks()
+            if self._publish:
+                self._publish('interlocks/removed', {'id': interlock_id})
+            logger.info(f"Removed interlock: {interlock.name}")
+            return True
+
+    def update_interlock(self, interlock_id: str, updates: Dict[str, Any],
+                         user: str = "system", reason: str = "") -> bool:
+        """Update interlock properties with IEC 61511 safety guards.
+
+        Guards:
+        - Blocks modification of critical interlocks while ARMED/TRIPPED
+        - Records to in-memory history AND tamper-proof audit trail with before/after
+
+        Returns True if updated, False if blocked or not found.
+        """
+        with self.lock:
+            if interlock_id not in self.interlocks:
+                return False
+
+            interlock = self.interlocks[interlock_id]
+
+            # Guard: block update of critical interlock while ARMED/TRIPPED
+            if interlock.is_critical and self.latch_state in (LatchState.ARMED, LatchState.TRIPPED):
+                logger.error(
+                    f"BLOCKED: Cannot modify critical interlock '{interlock.name}' "
+                    f"while latch is {self.latch_state.value} (user={user})")
+                return False
+
+            if self.latch_state == LatchState.ARMED:
+                logger.warning(
+                    f"Modifying interlock '{interlock.name}' while latch is ARMED "
+                    f"(user={user}, reason={reason})")
+
+            # Capture previous state for audit trail
+            previous_dict = interlock.to_dict()
             was_enabled = interlock.enabled
 
-            # Apply updates
+            # Apply updates (whitelist to prevent modifying internal fields)
+            ALLOWED_UPDATE_KEYS = {
+                'name', 'enabled', 'conditions', 'controls', 'logic',
+                'priority', 'sil_rating', 'bypass_allowed', 'bypassed',
+                'requires_acknowledgment', 'is_critical',
+                'proof_test_interval_days', 'description'
+            }
             for key, value in updates.items():
-                if hasattr(interlock, key):
+                if key in ALLOWED_UPDATE_KEYS and hasattr(interlock, key):
                     setattr(interlock, key, value)
 
             # Track enable/disable
             if was_enabled != interlock.enabled:
                 event = 'enabled' if interlock.enabled else 'disabled'
-                self._record_event(interlock, event, user)
+                self._record_event(interlock, event, user, reason)
             else:
-                self._record_event(interlock, 'modified', user)
+                self._record_event(interlock, 'modified', user, reason)
+
+            self._audit_log('modified', interlock, user, reason,
+                           previous_value=previous_dict,
+                           new_value=interlock.to_dict())
 
             self._save_interlocks()
             self._publish_interlock_update(interlock)
+            return True
 
     def bypass_interlock(self, interlock_id: str, bypass: bool, user: str, reason: str = ""):
         """Bypass or un-bypass an interlock"""
@@ -502,17 +635,19 @@ class SafetyManager:
             interlock.bypassed = bypass
 
             if bypass:
-                interlock.bypassed_at = datetime.now().isoformat()
+                interlock.bypassed_at = time.time()
                 interlock.bypassed_by = user
                 interlock.bypass_reason = reason
                 if not was_bypassed:
                     self._record_event(interlock, 'bypassed', user, reason)
+                    self._audit_log('bypassed', interlock, user, reason)
             else:
                 interlock.bypassed_at = None
                 interlock.bypassed_by = None
                 interlock.bypass_reason = None
                 if was_bypassed:
                     self._record_event(interlock, 'bypass_removed', user, reason)
+                    self._audit_log('bypass_removed', interlock, user, reason)
 
             self._save_interlocks()
             self._publish_interlock_update(interlock)
@@ -594,12 +729,18 @@ class SafetyManager:
                 if value is None:
                     result['reason'] = f'Channel {condition.channel} has no value (OFFLINE?)'
                     result['channel_offline'] = True
+                elif isinstance(value, float) and math.isnan(value):
+                    result['reason'] = f'Channel {condition.channel} has NaN value (OFFLINE?)'
+                    result['channel_offline'] = True
                 else:
                     satisfied = self._compare_values(value, condition.operator, condition.value)
+                    if condition.invert:
+                        satisfied = not satisfied
+                    invert_note = ' [inverted]' if condition.invert else ''
                     result = {
                         'satisfied': satisfied,
                         'current_value': value,
-                        'reason': f'{condition.channel} = {value:.2f} ({("OK" if satisfied else f"requires {condition.operator} {condition.value}")})'
+                        'reason': f'{condition.channel} = {value:.2f}{invert_note} ({("OK" if satisfied else f"requires {condition.operator} {condition.value}")})'
                     }
 
         elif cond_type == 'digital_input':
@@ -609,6 +750,9 @@ class SafetyManager:
                 value = self._get_channel_value(condition.channel)
                 if value is None:
                     result['reason'] = f'Channel {condition.channel} has no value (OFFLINE?)'
+                    result['channel_offline'] = True
+                elif isinstance(value, float) and math.isnan(value):
+                    result['reason'] = f'Channel {condition.channel} has NaN value (OFFLINE?)'
                     result['channel_offline'] = True
                 else:
                     raw_state = value != 0
@@ -754,8 +898,7 @@ class SafetyManager:
         # Check bypass expiration
         if interlock.bypassed and interlock.max_bypass_duration and interlock.bypassed_at:
             try:
-                bypass_time = datetime.fromisoformat(interlock.bypassed_at).timestamp()
-                elapsed = time.time() - bypass_time
+                elapsed = time.time() - float(interlock.bypassed_at)
                 if elapsed >= interlock.max_bypass_duration:
                     self.bypass_interlock(interlock.id, False, 'system', 'Bypass time expired')
             except Exception as e:
@@ -806,7 +949,7 @@ class SafetyManager:
         was_satisfied = self._previous_states.get(interlock.id)
         if was_satisfied is True and not satisfied:
             interlock.demand_count += 1
-            interlock.last_demand_time = datetime.now().isoformat()
+            interlock.last_demand_time = time.time()
             self._record_event(interlock, 'demand', 'system', None, {
                 'failedConditions': [fc['reason'] for fc in failed_conditions]
             })
@@ -953,6 +1096,19 @@ class SafetyManager:
             self._publish_trip_event(reason)
             self._publish_latch_state(tripped=True, trip_reason=reason)
 
+            # Audit trail for trip event
+            if self._audit_trail and AuditEventType:
+                try:
+                    self._audit_trail.log_event(
+                        event_type=AuditEventType.SAFETY_INTERLOCK_MODIFIED,
+                        user="system",
+                        description=f"SYSTEM TRIP: {reason}",
+                        details={'action': 'trip', 'reason': reason,
+                                 'latch_state': 'tripped'},
+                        reason=reason)
+                except Exception as e:
+                    logger.error(f"Audit trail write failed for trip: {e}")
+
     def reset_trip(self, user: str = "system") -> bool:
         """Reset the trip state (after operator acknowledges and clears interlocks)"""
         with self.lock:
@@ -965,6 +1121,16 @@ class SafetyManager:
             self.latch_state = LatchState.SAFE
             self._publish_latch_state(user=user)
             logger.info(f"Trip reset by {user}")
+            if self._audit_trail and AuditEventType:
+                try:
+                    self._audit_trail.log_event(
+                        event_type=AuditEventType.SAFETY_INTERLOCK_MODIFIED,
+                        user=user,
+                        description=f"Trip RESET by {user}",
+                        details={'action': 'reset_trip', 'latch_state': 'safe'},
+                        reason=f"Trip reset by {user}")
+                except Exception as e:
+                    logger.error(f"Audit trail write failed for trip reset: {e}")
             return True
 
     def acknowledge_trip(self, interlock_id: str, user: str, reason: str = "") -> bool:
@@ -989,6 +1155,7 @@ class SafetyManager:
                 'reason': reason
             }
             self._record_event(interlock, 'trip_acknowledged', user, reason)
+            self._audit_log('trip_acknowledged', interlock, user, reason)
             logger.info(f"Trip acknowledged for interlock '{interlock.name}' by {user}")
             return True
 
@@ -1061,15 +1228,18 @@ class SafetyManager:
                         self.execute_interlock_actions(interlock)
                     self._previous_states[interlock.id + "_action"] = False
                 else:
-                    # Clear action tracking when interlock recovers
-                    if not self._previous_states.get(interlock.id + "_action", True):
+                    # Clear action tracking when interlock recovers — but NOT while tripped.
+                    # Safety outputs must stay held until trip is explicitly reset by operator.
+                    was_failed = not self._previous_states.get(interlock.id + "_action", True)
+                    if was_failed and not self.is_tripped:
                         self.clear_interlock_action_tracking(interlock.id)
                     self._previous_states[interlock.id + "_action"] = True
 
             # Check if we should trip
             if any_failed and self.latch_state == LatchState.ARMED and not self.is_tripped:
-                failed = self.get_failed_interlocks()
-                reason = f"Interlock failed: {', '.join([f.name for f in failed])}"
+                failed_names = [s.name for s in statuses
+                                if s.enabled and not s.satisfied and not s.bypassed]
+                reason = f"Interlock failed: {', '.join(failed_names)}"
                 self.trip_system(reason)
 
             # Collect proof test status for interlocks with intervals
@@ -1109,13 +1279,13 @@ class SafetyManager:
 
             for control in interlock.controls:
                 if control.control_type == control_type:
-                    if control_type in ('digital_output', 'analog_output') and identifier:
+                    if control_type in ('set_digital_output', 'set_analog_output') and identifier:
                         if control.channel == identifier:
                             blocked_by.append(status)
                     elif control_type == 'button_action' and identifier:
                         if control.button_id == identifier:
                             blocked_by.append(status)
-                    elif control_type not in ('digital_output', 'analog_output', 'button_action'):
+                    elif control_type not in ('set_digital_output', 'set_analog_output', 'button_action'):
                         blocked_by.append(status)
 
         return {
@@ -1125,8 +1295,8 @@ class SafetyManager:
 
     def is_output_blocked(self, channel: str) -> Dict[str, Any]:
         """Check if an output channel is blocked"""
-        do_result = self.is_control_blocked('digital_output', channel)
-        ao_result = self.is_control_blocked('analog_output', channel)
+        do_result = self.is_control_blocked('set_digital_output', channel)
+        ao_result = self.is_control_blocked('set_analog_output', channel)
 
         all_blocked_by = do_result['blockedBy'] + ao_result['blockedBy']
         return {
@@ -1178,6 +1348,31 @@ class SafetyManager:
 
         logger.info(f"[Interlock] {event}: {interlock.name}{f' - {reason}' if reason else ''}")
 
+    def _audit_log(self, action: str, interlock: Interlock, user: str,
+                   reason: str = "", previous_value=None, new_value=None):
+        """Write interlock event to 21 CFR Part 11 tamper-proof audit trail (SHA-256 hash chain)."""
+        if not self._audit_trail or not AuditEventType:
+            return
+        try:
+            self._audit_trail.log_event(
+                event_type=AuditEventType.SAFETY_INTERLOCK_MODIFIED,
+                user=user,
+                description=f"Interlock {action}: {interlock.name} ({interlock.id})",
+                details={
+                    'interlock_id': interlock.id,
+                    'interlock_name': interlock.name,
+                    'action': action,
+                    'is_critical': interlock.is_critical,
+                    'sil_rating': interlock.sil_rating,
+                    'priority': interlock.priority
+                },
+                previous_value=previous_value,
+                new_value=new_value,
+                reason=reason
+            )
+        except Exception as e:
+            logger.error(f"Audit trail write failed for interlock {action}: {e}")
+
     def get_history(self, limit: int = 100, interlock_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get interlock history entries"""
         entries = self.history.copy()
@@ -1210,11 +1405,14 @@ class SafetyManager:
                 logger.warning(f"Cannot record proof test: interlock {interlock_id} not found")
                 return False
 
-            interlock.last_proof_test = datetime.now().isoformat()
+            interlock.last_proof_test = time.time()
             self._record_event(interlock, 'proof_test', user, notes, {
                 'result': result,
                 'notes': notes
             })
+            self._audit_log('proof_test', interlock, user, notes,
+                           new_value={'result': result, 'notes': notes,
+                                      'timestamp': interlock.last_proof_test})
             self._save_interlocks()
 
             logger.info(f"Proof test recorded for '{interlock.name}': {result} by {user}")
@@ -1264,7 +1462,8 @@ class SafetyManager:
 
         if interlock.last_proof_test:
             try:
-                last_test_dt = datetime.fromisoformat(interlock.last_proof_test)
+                last_test_ts = float(interlock.last_proof_test)
+                last_test_dt = datetime.fromtimestamp(last_test_ts)
                 next_due_dt = last_test_dt + timedelta(days=interlock.proof_test_interval_days)
                 now = datetime.now()
                 days_until = (next_due_dt - now).total_seconds() / 86400.0
@@ -1361,13 +1560,30 @@ class SafetyManager:
     # Persistence
     # ========================================================================
 
+    def _atomic_write(self, path: Path, data):
+        """Atomic file write: write-to-temp, fsync, rename. Crash-safe."""
+        import os
+        tmp_path = path.with_suffix('.tmp')
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp_path.replace(path)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+
     def _save_interlocks(self):
         """Save interlocks to disk"""
         try:
             path = self.data_dir / 'interlocks.json'
             data = [i.to_dict() for i in self.interlocks.values()]
-            with open(path, 'w') as f:
-                json.dump(data, f, indent=2)
+            self._atomic_write(path, data)
         except Exception as e:
             logger.error(f"Error saving interlocks: {e}")
 
@@ -1389,8 +1605,7 @@ class SafetyManager:
         """Save safe state config to disk"""
         try:
             path = self.data_dir / 'safe_state_config.json'
-            with open(path, 'w') as f:
-                json.dump(self.safe_state_config.to_dict(), f, indent=2)
+            self._atomic_write(path, self.safe_state_config.to_dict())
         except Exception as e:
             logger.error(f"Error saving safe state config: {e}")
 
@@ -1410,9 +1625,8 @@ class SafetyManager:
         """Save interlock history to disk"""
         try:
             path = self.data_dir / 'interlock_history.json'
-            data = [e.to_dict() for e in self.history[-500:]]  # Save last 500
-            with open(path, 'w') as f:
-                json.dump(data, f, indent=2)
+            data = [e.to_dict() for e in self.history[-self.max_history:]]
+            self._atomic_write(path, data)
         except Exception as e:
             logger.error(f"Error saving interlock history: {e}")
 

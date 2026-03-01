@@ -10,6 +10,8 @@ Safety:
 - TLS listener (8883) is added when certs exist so edge nodes can connect
 """
 
+import atexit
+import glob
 import json
 import os
 import socket
@@ -21,6 +23,38 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
+# Track temp log files for cleanup on unexpected exit
+_temp_log_files: list = []
+
+
+def _cleanup_temp_logs():
+    """Remove temp log files on exit (atexit handler)."""
+    for p in _temp_log_files:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except Exception:
+            pass
+    _temp_log_files.clear()
+
+
+def cleanup_stale_test_logs(max_age_hours: float = 24.0):
+    """Remove stale daq_test_*.log files from previous crashed runs."""
+    logs_dir = PROJECT_ROOT / 'logs'
+    if not logs_dir.exists():
+        return
+    cutoff = time.time() - (max_age_hours * 3600)
+    for f in logs_dir.glob('daq_test_*.log'):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_temp_logs)
+# Clean up stale logs from previous crashed runs on import
+cleanup_stale_test_logs()
 
 # Windows CREATE_NO_WINDOW flag (suppress console windows)
 _NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
@@ -334,6 +368,7 @@ def start_daq_service(
         dir=str(PROJECT_ROOT / 'logs'), delete=False,
     )
     log_path = Path(log_file.name)
+    _temp_log_files.append(log_path)
 
     creationflags = _NO_WINDOW if sys.platform == 'win32' else 0
     proc = subprocess.Popen(

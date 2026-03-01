@@ -1113,7 +1113,14 @@ class CRIONodeV2:
             reason = "channels" if channels_changed else "scan rate"
             logger.info(f"Config changed ({reason}) while acquiring - restarting hardware")
             self.hardware.stop()
-            self.hardware.start()
+            if not self.hardware.start():
+                logger.error("Hardware failed to restart after config change — entering degraded mode")
+                if self.mqtt:
+                    self.mqtt.publish("status/degraded", {
+                        'reason': 'hardware_restart_failed',
+                        'config_change': reason,
+                        'timestamp': time.time()
+                    })
 
         # Save config to disk so it persists across restarts
         self._save_config_to_disk()
@@ -1735,7 +1742,13 @@ class CRIONodeV2:
         """Called when entering ACQUIRING state."""
         logger.info("Starting hardware acquisition")
         self._scan_timing.reset()
-        self.hardware.start()
+        if not self.hardware.start():
+            logger.error("Hardware failed to start — entering degraded mode")
+            if self.mqtt:
+                self.mqtt.publish("status/degraded", {
+                    'reason': 'hardware_start_failed',
+                    'timestamp': time.time()
+                })
         self.safety._acquiring = True
         # Auto-start acquisition-mode scripts
         self.script_engine.auto_start('acquisition')

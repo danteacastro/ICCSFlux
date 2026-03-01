@@ -27,6 +27,9 @@ import pytest
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from test_helpers import wait_until
 
 from user_variables import (
     UserVariableManager, UserVariable, TestSessionConfig, TestSession,

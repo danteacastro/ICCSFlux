@@ -94,7 +94,7 @@ def _lock_memory() -> bool:
 from .state_machine import Opto22StateMachine, Opto22State
 from .mqtt_interface import SystemMQTT, GroovMQTT, MQTTConfig, GroovMQTTConfig
 from .hardware import HardwareInterface
-from .config import NodeConfig, ChannelConfig, load_config, save_config
+from .config import NodeConfig, ChannelConfig, CODESYSConfig, load_config, save_config
 from .channel_types import ChannelType
 from .safety import SafetyManager, AlarmState, AlarmConfig
 from .audit_trail import AuditTrail
@@ -102,6 +102,14 @@ from .pid_engine import PIDEngine, PIDLoop
 from .sequence_manager import SequenceManager, Sequence
 from .trigger_engine import TriggerEngine
 from .watchdog_engine import WatchdogEngine
+from .codesys_bridge import CODESYSBridge
+
+# Optional: CODESYS structured register map
+try:
+    from .codesys.register_map import RegisterMap
+    CODESYS_STRUCTURED_AVAILABLE = True
+except ImportError:
+    CODESYS_STRUCTURED_AVAILABLE = False
 
 # Optional: script engine (large dependency)
 try:
@@ -253,9 +261,15 @@ class Opto22NodeService:
         self.safety.on_interlock_action = self._on_safety_action
         self.safety.on_publish = self._on_safety_publish
 
-        # PID engine
+        # PID engine (Python fallback — used when CODESYS unavailable)
         self.pid_engine = PIDEngine(on_set_output=self._set_output_internal)
         self.pid_engine.set_status_callback(self._publish_pid_status)
+
+        # CODESYS bridge (PLC control layer — optional)
+        self._codesys_bridge: Optional[CODESYSBridge] = None
+        self._codesys_mode_active = False
+        self._pending_setpoint_writes: List[tuple] = []  # [(loop_id, value), ...]
+        self._pending_interlock_cmds: List[tuple] = []   # [(ilk_id, arm, bypass, reset), ...]
 
         # Sequence manager
         self.sequence_manager = SequenceManager()
@@ -1061,6 +1075,9 @@ class Opto22NodeService:
         )
         self.scan_thread.start()
 
+        # Start CODESYS bridge if configured
+        self._init_codesys_bridge()
+
         # Notify engines
         self.pid_engine.on_acquisition_start()
         self.sequence_manager.on_acquisition_start()
@@ -1074,6 +1091,12 @@ class Opto22NodeService:
         """Stop data acquisition."""
         if not self._acquiring.is_set():
             return
+
+        # Stop CODESYS bridge
+        if self._codesys_bridge:
+            self._codesys_bridge.stop()
+            self._codesys_mode_active = False
+            logger.info("CODESYS bridge stopped")
 
         # Stop watchdog output (external relay detects loss of pulse)
         self._stop_watchdog_output()
@@ -1156,9 +1179,63 @@ class Opto22NodeService:
                     values_snap = dict(self.channel_values)
                     ts_snap = dict(self.channel_timestamps)
 
+                # ── CODESYS Mode vs Python Fallback ──────────────────────
+                # If CODESYS runtime is connected and healthy, PID and
+                # interlocks run deterministically in the PLC at 1 ms.
+                # Python reads results via Modbus and handles alarms,
+                # scripts, audit trail, and MQTT publishing.
+                #
+                # If CODESYS is unavailable, fall back to Python engines
+                # (same behavior as before CODESYS integration).
+                codesys_active = (self._codesys_bridge is not None
+                                  and self._codesys_bridge.codesys_available)
+
+                if codesys_active and not self._codesys_mode_active:
+                    logger.info("CODESYS mode activated — PID/interlocks running in PLC")
+                    self._codesys_mode_active = True
+                elif not codesys_active and self._codesys_mode_active:
+                    logger.warning("CODESYS lost — falling back to Python PID/safety")
+                    self._codesys_mode_active = False
+
+                if codesys_active:
+                    # CODESYS mode: merge PLC process values into channel values
+                    try:
+                        codesys_pvs = self._codesys_bridge.read_process_values()
+                        pid_cvs = self._codesys_bridge.read_pid_outputs()
+                        with self.values_lock:
+                            for name, val in codesys_pvs.items():
+                                self.channel_values[name] = val
+                                self.channel_timestamps[name] = now
+                            for loop_id, cv in pid_cvs.items():
+                                self.channel_values[f'{loop_id}_CV'] = cv
+                                self.channel_timestamps[f'{loop_id}_CV'] = now
+
+                        # Push pending setpoint/command writes to CODESYS
+                        for loop_id, sp_val in self._pending_setpoint_writes:
+                            self._codesys_bridge.write_pid_setpoint(loop_id, sp_val)
+                        self._pending_setpoint_writes.clear()
+
+                        for ilk_id, arm, bypass, reset in self._pending_interlock_cmds:
+                            self._codesys_bridge.write_interlock_command(ilk_id, arm, bypass, reset)
+                        self._pending_interlock_cmds.clear()
+
+                        # Write heartbeat so CODESYS knows Python is alive
+                        self._codesys_bridge.write_heartbeat()
+
+                        # Read CODESYS system status for observability
+                        self._codesys_bridge.read_system_status()
+
+                    except Exception as e:
+                        logger.error(f"CODESYS bridge error: {e}")
+
+                    # Re-snapshot with merged CODESYS values
+                    with self.values_lock:
+                        values_snap = dict(self.channel_values)
+                        ts_snap = dict(self.channel_timestamps)
+
                 # Safety checks (ISA-18.2 alarms + interlocks)
-                # Remove stale channels from safety snapshot so COMM_FAIL fires
-                # for channels that groov MQTT has stopped updating
+                # In CODESYS mode, interlocks run in the PLC but Python still
+                # runs alarm evaluation for MQTT publishing and audit trail.
                 configured = set(self.config.channels.keys()) if self.config else set()
                 if stale_channels:
                     values_for_safety = {k: v for k, v in values_snap.items()
@@ -1167,12 +1244,13 @@ class Opto22NodeService:
                     values_for_safety = values_snap
                 self.safety.check_all(values_for_safety, configured_channels=configured)
 
-                # PID control
-                dt = time.time() - loop_start
-                try:
-                    self.pid_engine.process_scan(values_snap, dt)
-                except Exception as e:
-                    logger.error(f"PID engine error: {e}")
+                # PID control (Python fallback — skipped when CODESYS handles PID)
+                if not codesys_active:
+                    dt = time.time() - loop_start
+                    try:
+                        self.pid_engine.process_scan(values_snap, dt)
+                    except Exception as e:
+                        logger.error(f"PID engine error: {e}")
 
                 # Triggers
                 try:
@@ -1241,6 +1319,12 @@ class Opto22NodeService:
                 'stale_channels': self.hardware.get_stale_channels(10.0) if self.hardware else [],
                 'channel_count': self.hardware.io.channel_count if self.hardware else 0,
             },
+            'codesys': {
+                'enabled': self.config.codesys.enabled if self.config else False,
+                'available': self._codesys_bridge.codesys_available if self._codesys_bridge else False,
+                'mode_active': self._codesys_mode_active,
+                'health': self._codesys_bridge.get_health() if self._codesys_bridge else None,
+            },
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }, retain=True)
 
@@ -1274,6 +1358,59 @@ class Opto22NodeService:
         if self.safety._interlocks:
             self._publish(self._topic('interlock/status'),
                           self.safety.get_interlock_status())
+
+    # =========================================================================
+    # CODESYS INTEGRATION
+    # =========================================================================
+
+    def _init_codesys_bridge(self):
+        """Initialize CODESYS bridge if configured.
+
+        Creates a CODESYSBridge with the structured RegisterMap (if available)
+        or falls back to tag_map mode. The bridge starts polling CODESYS
+        registers in a background thread.
+        """
+        if not self.config or not self.config.codesys.enabled:
+            logger.info("CODESYS integration disabled")
+            return
+
+        codesys_cfg = self.config.codesys
+        register_map = None
+
+        # Build structured register map from PID and interlock config
+        if CODESYS_STRUCTURED_AVAILABLE:
+            register_map = RegisterMap()
+            # Allocate PID loop registers
+            if hasattr(self.pid_engine, 'loops') and self.pid_engine.loops:
+                register_map.allocate_pid_loops(list(self.pid_engine.loops.keys()))
+            # Allocate interlock registers
+            if hasattr(self.safety, '_interlocks') and self.safety._interlocks:
+                register_map.allocate_interlocks(
+                    [ilk.id for ilk in self.safety._interlocks])
+            # Allocate channel registers
+            register_map.allocate_channels(list(self.config.channels.keys()))
+            # Allocate output registers
+            output_names = [name for name, ch in self.config.channels.items()
+                            if ch.channel_type in ('voltage_output', 'current_output',
+                                                   'digital_output', 'analog_output')]
+            register_map.allocate_outputs(output_names)
+
+            errors = register_map.validate()
+            if errors:
+                for err in errors:
+                    logger.error(f"Register map error: {err}")
+                logger.error("CODESYS bridge NOT started due to register map errors")
+                return
+
+        self._codesys_bridge = CODESYSBridge(
+            host=codesys_cfg.host,
+            port=codesys_cfg.port,
+            unit_id=codesys_cfg.unit_id,
+            poll_rate_hz=codesys_cfg.poll_rate_hz,
+            register_map=register_map,
+        )
+        self._codesys_bridge.start()
+        logger.info(f"CODESYS bridge started: {codesys_cfg.host}:{codesys_cfg.port}")
 
     # =========================================================================
     # CONFIG PERSISTENCE

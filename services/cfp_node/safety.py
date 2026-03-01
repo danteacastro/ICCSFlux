@@ -1,5 +1,5 @@
 """
-Safety Module for CFP Node V2
+Safety Module for cRIO Node V2
 
 Provides single-pass safety checking with:
 - Configurable alarm limits (HIHI, HI, LO, LOLO)
@@ -17,6 +17,7 @@ Provides single-pass safety checking with:
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -121,7 +122,7 @@ class InterlockCondition:
     def to_dict(self) -> dict:
         return {
             'id': self.id,
-            'condition_type': self.condition_type,
+            'type': self.condition_type,
             'channel': self.channel,
             'operator': self.operator,
             'value': self.value,
@@ -152,9 +153,9 @@ class InterlockControl:
 
     def to_dict(self) -> dict:
         return {
-            'control_type': self.control_type,
+            'type': self.control_type,
             'channel': self.channel,
-            'set_value': self.set_value,
+            'setValue': self.set_value,
         }
 
     @staticmethod
@@ -189,6 +190,7 @@ class Interlock:
     priority: str = "medium"
     sil_rating: Optional[str] = None
     requires_acknowledgment: bool = False
+    is_critical: bool = False  # Requires Admin; blocks modify while ARMED/TRIPPED
 
     def to_dict(self) -> dict:
         return {
@@ -197,20 +199,21 @@ class Interlock:
             'description': self.description,
             'enabled': self.enabled,
             'conditions': [c.to_dict() for c in self.conditions],
-            'condition_logic': self.condition_logic,
+            'conditionLogic': self.condition_logic,
             'controls': [c.to_dict() for c in self.controls],
-            'bypass_allowed': self.bypass_allowed,
+            'bypassAllowed': self.bypass_allowed,
             'bypassed': self.bypassed,
-            'bypassed_by': self.bypassed_by,
-            'bypassed_at': self.bypassed_at,
-            'max_bypass_duration': self.max_bypass_duration,
-            'demand_count': self.demand_count,
-            'last_demand_time': self.last_demand_time,
-            'last_proof_test': self.last_proof_test,
-            'proof_test_interval_days': self.proof_test_interval_days,
+            'bypassedBy': self.bypassed_by,
+            'bypassedAt': self.bypassed_at,
+            'maxBypassDuration': self.max_bypass_duration,
+            'demandCount': self.demand_count,
+            'lastDemandTime': self.last_demand_time,
+            'lastProofTest': self.last_proof_test,
+            'proofTestIntervalDays': self.proof_test_interval_days,
             'priority': self.priority,
-            'sil_rating': self.sil_rating,
-            'requires_acknowledgment': self.requires_acknowledgment,
+            'silRating': self.sil_rating,
+            'requiresAcknowledgment': self.requires_acknowledgment,
+            'isCritical': self.is_critical,
         }
 
     @staticmethod
@@ -236,6 +239,7 @@ class Interlock:
             priority=d.get('priority', 'medium'),
             sil_rating=d.get('silRating', d.get('sil_rating')),
             requires_acknowledgment=d.get('requiresAcknowledgment', d.get('requires_acknowledgment', False)),
+            is_critical=d.get('isCritical', d.get('is_critical', False)),
         )
 
 
@@ -251,8 +255,8 @@ class SafeStateConfig:
 
     def to_dict(self) -> dict:
         return {
-            'channel_safe_values': dict(self.channel_safe_values),
-            'stop_session': self.stop_session,
+            'channelSafeValues': dict(self.channel_safe_values),
+            'stopSession': self.stop_session,
         }
 
     @staticmethod
@@ -557,7 +561,7 @@ class SafetyManager:
                     state_changed = True
                     event = AlarmEvent(
                         channel=channel, alarm_type='comm_fail',
-                        value=float('nan'), limit=0.0,
+                        value=0.0, limit=0.0,  # Use 0.0 instead of NaN (NaN breaks JSON serialization)
                         severity=AlarmSeverity.CRITICAL, timestamp=now,
                         state=AlarmState.ACTIVE,
                     )
@@ -647,6 +651,21 @@ class SafetyManager:
             self._states[channel] = state
 
         state.last_value = value
+
+        # NaN from hardware (open TC, broken sensor) — treat as COMM_FAIL
+        if isinstance(value, float) and math.isnan(value):
+            if state.state != AlarmState.ACTIVE or state.active_alarm_type != 'comm_fail':
+                state.state = AlarmState.ACTIVE
+                state.active_alarm_type = 'comm_fail'
+                state.active_since = now
+                state.acknowledged = False
+                return AlarmEvent(
+                    channel=channel, alarm_type='comm_fail',
+                    value=0.0, limit=0.0,
+                    severity=AlarmSeverity.CRITICAL, timestamp=now,
+                    state=AlarmState.ACTIVE,
+                )
+            return None
 
         # Determine alarm condition
         alarm_type = None
@@ -1039,7 +1058,19 @@ class SafetyManager:
     # =========================================================================
 
     def configure_interlocks(self, interlocks_data: List[Dict[str, Any]]):
-        """Load interlocks from config push. Replaces all existing interlocks."""
+        """Load interlocks from config push. Preserves latch/trip state for existing IDs."""
+        # Snapshot runtime state BEFORE clearing (IEC 61511: trip state survives config update)
+        prev_latch = self._latch_state
+        prev_tripped = self._is_tripped
+        prev_trip_time = getattr(self, '_last_trip_time', None)
+        prev_trip_reason = getattr(self, '_last_trip_reason', None)
+        prev_states = dict(self._interlock_prev_states)
+        prev_executed = set(self._executed_actions)
+        prev_held = dict(self._interlock_held_outputs)
+        prev_ack = dict(self._trip_ack_state)
+        prev_delay = dict(self._condition_delay_state)
+
+        # Rebuild interlock definitions from new config
         self._interlocks.clear()
         for data in interlocks_data:
             try:
@@ -1047,8 +1078,50 @@ class SafetyManager:
                 self._interlocks[interlock.id] = interlock
             except Exception as e:
                 logger.error(f"Failed to parse interlock: {e}")
+
+        # Restore system-wide latch/trip state (independent of individual interlocks)
+        self._latch_state = prev_latch
+        self._is_tripped = prev_tripped
+        if hasattr(self, '_last_trip_time'):
+            self._last_trip_time = prev_trip_time
+        if hasattr(self, '_last_trip_reason'):
+            self._last_trip_reason = prev_trip_reason
+
+        # Restore per-interlock state only for IDs that still exist
+        surviving_ids = set(self._interlocks.keys())
+        new_prev_states = {}
+        for key, val in prev_states.items():
+            # Keys are either interlock_id or "{interlock_id}_action"
+            base_id = key.replace('_action', '') if key.endswith('_action') else key
+            if base_id in surviving_ids:
+                new_prev_states[key] = val
+        self._interlock_prev_states = new_prev_states
+
+        # Restore executed actions for surviving interlocks
+        new_executed = set()
+        for key in prev_executed:
+            parts = key.split('-', 1)
+            if parts[0] in surviving_ids:
+                new_executed.add(key)
+        self._executed_actions = new_executed
+
+        # Restore held outputs for surviving interlocks
+        new_held = {}
+        for ch, iid in prev_held.items():
+            if iid in surviving_ids:
+                new_held[ch] = iid
+        self._interlock_held_outputs = new_held
+
+        # Restore ack state for surviving interlocks
+        new_ack = {iid: ack for iid, ack in prev_ack.items() if iid in surviving_ids}
+        self._trip_ack_state = new_ack
+
+        # Restore delay state (condition IDs are stable across config pushes)
+        self._condition_delay_state = prev_delay
+
         self._save_interlocks()
-        logger.info(f"Configured {len(self._interlocks)} interlocks")
+        logger.info(f"Configured {len(self._interlocks)} interlocks "
+                    f"(latch={self._latch_state.value}, tripped={self._is_tripped})")
 
     def add_interlock(self, interlock: Interlock):
         """Add or update a single interlock."""
@@ -1061,6 +1134,14 @@ class SafetyManager:
             del self._interlocks[interlock_id]
             self._interlock_prev_states.pop(interlock_id, None)
             self._interlock_prev_states.pop(f"{interlock_id}_action", None)
+            # Clean up per-interlock runtime state
+            self._clear_interlock_action_tracking(interlock_id)
+            self._trip_ack_state.pop(interlock_id, None)
+            # Clean up condition delay state for this interlock's conditions
+            delay_keys = [k for k in self._condition_delay_state
+                          if k.startswith(interlock_id)]
+            for k in delay_keys:
+                del self._condition_delay_state[k]
             self._save_interlocks()
 
     # =========================================================================
@@ -1082,6 +1163,10 @@ class SafetyManager:
                 result['reason'] = f'Channel {cond.channel} has no value (OFFLINE?)'
                 result['channel_offline'] = True
                 return result
+            if isinstance(value, float) and math.isnan(value):
+                result['reason'] = f'Channel {cond.channel} has NaN value (OFFLINE?)'
+                result['channel_offline'] = True
+                return result
             satisfied = self._compare(value, cond.operator, cond.value)
             if cond.invert:
                 satisfied = not satisfied
@@ -1095,6 +1180,10 @@ class SafetyManager:
             value = channel_values.get(cond.channel)
             if value is None:
                 result['reason'] = f'Channel {cond.channel} has no value (OFFLINE?)'
+                result['channel_offline'] = True
+                return result
+            if isinstance(value, float) and math.isnan(value):
+                result['reason'] = f'Channel {cond.channel} has NaN value (OFFLINE?)'
                 result['channel_offline'] = True
                 return result
             raw_state = value != 0
@@ -1301,8 +1390,10 @@ class SafetyManager:
             else:
                 action_key = f"{interlock.id}_action"
                 was_failed = not self._interlock_prev_states.get(action_key, True)
-                if was_failed:
-                    # Interlock recovered — clear action tracking
+                if was_failed and not self._is_tripped:
+                    # Interlock recovered and system is not tripped — clear action tracking.
+                    # Do NOT release holds while system is TRIPPED (safety outputs must stay held
+                    # until trip is explicitly reset by operator).
                     self._clear_interlock_action_tracking(interlock.id)
                 self._interlock_prev_states[action_key] = True
 
@@ -1429,10 +1520,15 @@ class SafetyManager:
                 pass
         return True, msg
 
-    def disarm_latch(self, user: str = "system"):
-        """Disarm the safety system."""
+    def disarm_latch(self, user: str = "system") -> Tuple[bool, str]:
+        """Disarm the safety system. Refuses if system is tripped (must reset first)."""
+        if self._is_tripped:
+            msg = "Cannot disarm: system is tripped (reset trip first)"
+            logger.warning(msg)
+            return False, msg
         self._latch_state = LatchState.SAFE
-        logger.info(f"Safety latch DISARMED by {user}")
+        msg = f"Safety latch DISARMED by {user}"
+        logger.info(msg)
         if self.on_publish:
             try:
                 self.on_publish('safety/latch/state', {
@@ -1440,6 +1536,7 @@ class SafetyManager:
                 })
             except Exception:
                 pass
+        return True, msg
 
     def reset_trip(self, user: str = "system") -> Tuple[bool, str]:
         """Reset after trip. Only allowed when all interlocks are satisfied."""
