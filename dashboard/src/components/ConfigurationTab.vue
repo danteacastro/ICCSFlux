@@ -19,7 +19,6 @@ import {
 import { useMqtt } from '../composables/useMqtt'
 import { useProjectManager } from '../composables/useProjectManager'
 import { useProjectFiles } from '../composables/useProjectFiles'
-import { useTheme } from '../composables/useTheme'
 import { useSafety } from '../composables/useSafety'
 import { useTagDependencies } from '../composables/useTagDependencies'
 import { useBackendScripts } from '../composables/useBackendScripts'
@@ -213,9 +212,6 @@ function getModuleChannelType(productType: string, channelName?: string): { chan
 
 // MQTT connection - get from parent or create new
 const mqtt = useMqtt()
-
-// Theme toggle
-const { theme, toggleTheme } = useTheme()
 
 // Safety system - for safety action dropdown
 const safety = useSafety()
@@ -758,6 +754,17 @@ const systemSettingsForm = ref({
     threshold: 10,
     window_s: 60
   },
+  // Logging settings (per-project, defaults from system.ini)
+  log_level: 'INFO' as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR',
+  log_max_file_size_mb: 50,
+  log_backup_count: 3,
+  // Service timing (per-project, defaults from system.ini)
+  service_heartbeat_interval_sec: 2.0,
+  service_health_timeout_sec: 10.0,
+  service_shutdown_timeout_sec: 10.0,
+  service_command_ack_timeout_sec: 5.0,
+  // Data viewer retention (per-project, defaults from system.ini)
+  dataviewer_retention_days: 30,
   notifications: getDefaultNotificationSettings()
 })
 
@@ -1707,6 +1714,14 @@ function openSystemSettings() {
     },
     confirm_output_changes: (projectFiles.currentProjectData.value?.system as any)?.confirm_output_changes ?? false,
     alarm_flood: (projectFiles.currentProjectData.value?.safety as any)?.alarmFlood ?? { threshold: 10, window_s: 60 },
+    log_level: (store.status?.log_level as 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR') || 'INFO',
+    log_max_file_size_mb: store.status?.log_max_file_size_mb ?? 50,
+    log_backup_count: store.status?.log_backup_count ?? 3,
+    service_heartbeat_interval_sec: store.status?.service_heartbeat_interval_sec ?? 2.0,
+    service_health_timeout_sec: store.status?.service_health_timeout_sec ?? 10.0,
+    service_shutdown_timeout_sec: store.status?.service_shutdown_timeout_sec ?? 10.0,
+    service_command_ack_timeout_sec: store.status?.service_command_ack_timeout_sec ?? 5.0,
+    dataviewer_retention_days: store.status?.dataviewer_retention_days ?? 30,
     notifications: (projectFiles.currentProjectData.value?.system as any)?.notifications ?? getDefaultNotificationSettings()
   }
   showSystemSettings.value = true
@@ -1734,6 +1749,14 @@ function saveSystemSettings() {
     (projectFiles.currentProjectData.value.system as any).project_mode = newMode
     ;(projectFiles.currentProjectData.value.system as any).confirm_output_changes = systemSettingsForm.value.confirm_output_changes
     ;(projectFiles.currentProjectData.value.system as any).notifications = systemSettingsForm.value.notifications
+    ;(projectFiles.currentProjectData.value.system as any).log_level = systemSettingsForm.value.log_level
+    ;(projectFiles.currentProjectData.value.system as any).log_max_file_size_mb = systemSettingsForm.value.log_max_file_size_mb
+    ;(projectFiles.currentProjectData.value.system as any).log_backup_count = systemSettingsForm.value.log_backup_count
+    ;(projectFiles.currentProjectData.value.system as any).service_heartbeat_interval_sec = systemSettingsForm.value.service_heartbeat_interval_sec
+    ;(projectFiles.currentProjectData.value.system as any).service_health_timeout_sec = systemSettingsForm.value.service_health_timeout_sec
+    ;(projectFiles.currentProjectData.value.system as any).service_shutdown_timeout_sec = systemSettingsForm.value.service_shutdown_timeout_sec
+    ;(projectFiles.currentProjectData.value.system as any).service_command_ack_timeout_sec = systemSettingsForm.value.service_command_ack_timeout_sec
+    ;(projectFiles.currentProjectData.value.system as any).dataviewer_retention_days = systemSettingsForm.value.dataviewer_retention_days
     // Persist alarm flood settings in safety section
     if (!(projectFiles.currentProjectData.value as any).safety) {
       ;(projectFiles.currentProjectData.value as any).safety = {}
@@ -1760,7 +1783,15 @@ function saveSystemSettings() {
     publish_rate_hz: systemSettingsForm.value.publish_rate_hz,
     project_mode: systemSettingsForm.value.project_mode,
     watchdog_output: systemSettingsForm.value.watchdog_output,
-    alarm_flood: systemSettingsForm.value.alarm_flood
+    alarm_flood: systemSettingsForm.value.alarm_flood,
+    log_level: systemSettingsForm.value.log_level,
+    log_max_file_size_mb: systemSettingsForm.value.log_max_file_size_mb,
+    log_backup_count: systemSettingsForm.value.log_backup_count,
+    service_heartbeat_interval_sec: systemSettingsForm.value.service_heartbeat_interval_sec,
+    service_health_timeout_sec: systemSettingsForm.value.service_health_timeout_sec,
+    service_shutdown_timeout_sec: systemSettingsForm.value.service_shutdown_timeout_sec,
+    service_command_ack_timeout_sec: systemSettingsForm.value.service_command_ack_timeout_sec,
+    dataviewer_retention_days: systemSettingsForm.value.dataviewer_retention_days,
   })
   showFeedback('info', 'Updating system settings...')
   showSystemSettings.value = false
@@ -2750,7 +2781,9 @@ function getCurrentValue(channelName: string): string {
     return value.valueString || 'NaN'
   }
 
-  return value.value.toFixed(2)
+  // Show value + age for debugging update rate
+  const age = value.timestamp ? Math.round((Date.now() - value.timestamp) / 1000) : '?'
+  return `${value.value.toFixed(4)} [${age}s]`
 }
 
 // Get raw value (before scaling) for voltage/current inputs
@@ -2759,7 +2792,7 @@ function getRawValue(channelName: string): string {
   if (!value) return '--'
   // Backend may provide raw_value; otherwise use main value
   const raw = value.raw_value ?? value.value
-  return raw.toFixed(3)
+  return raw.toFixed(5)
 }
 
 // Get scaled value (after engineering unit conversion)
@@ -2771,21 +2804,21 @@ function getScaledValue(channelName: string): string {
   // Apply scaling based on config
   if (config?.scale_type === 'linear' && config.scale_slope !== undefined) {
     const scaled = value.value * config.scale_slope + (config.scale_offset || 0)
-    return `${scaled.toFixed(2)} ${config.unit || ''}`
+    return `${scaled.toFixed(4)} ${config.unit || ''}`
   } else if (config?.scale_type === 'map' && config.pre_scaled_min !== undefined) {
     const rawRange = (config.pre_scaled_max || 10) - (config.pre_scaled_min || 0)
     const scaledRange = (config.scaled_max || 100) - (config.scaled_min || 0)
     const normalized = (value.value - (config.pre_scaled_min || 0)) / rawRange
     const scaled = normalized * scaledRange + (config.scaled_min || 0)
-    return `${scaled.toFixed(2)} ${config.unit || ''}`
+    return `${scaled.toFixed(4)} ${config.unit || ''}`
   } else if (config?.four_twenty_scaling && config.eng_units_min !== undefined) {
     const normalized = (value.value - 4) / 16
     const scaled = normalized * ((config.eng_units_max || 100) - (config.eng_units_min || 0)) + (config.eng_units_min || 0)
-    return `${scaled.toFixed(2)} ${config.unit || ''}`
+    return `${scaled.toFixed(4)} ${config.unit || ''}`
   }
 
   // No scaling - show raw with unit
-  return `${value.value.toFixed(2)} ${config?.unit || ''}`
+  return `${value.value.toFixed(4)} ${config?.unit || ''}`
 }
 
 // Get raw min value from channel config (for scaling display)
@@ -4218,13 +4251,12 @@ watch(
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
-        <button class="action-btn" @click="openSystemSettings" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'System settings (scan rate, publish rate)'" :class="{ 'no-permission': !hasEditPermission }">
+        <button v-if="isAdmin" class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
           </svg>
           Settings
-          <span v-if="!hasEditPermission" class="lock-badge">🔒</span>
         </button>
         <button class="action-btn accent" @click="autoGenerateWidgets" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -4382,14 +4414,6 @@ watch(
         <span class="status-item mqtt" :class="{ connected: mqtt.connected.value }">
           {{ mqtt.connected.value ? 'MQTT' : 'Disconnected' }}
         </span>
-        <button class="theme-toggle-small" @click="toggleTheme" :title="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
-          <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
-          </svg>
-        </button>
       </div>
     </div>
 
@@ -4399,6 +4423,15 @@ watch(
         {{ feedbackMessage.text }}
       </div>
     </Transition>
+
+    <!-- DEBUG: Data flow counters -->
+    <div style="padding: 6px 16px; font-size: 0.72rem; font-family: monospace; background: #1a1a2e; color: #0f0; line-height: 1.6;">
+      <div>CONN: {{ mqtt.connected.value ? 'YES' : 'NO' }} | MQTT IN: msgs={{ mqtt.batchDebug.value.msg_total }} matched={{ mqtt.batchDebug.value.msg_node_match }} crio={{ mqtt.batchDebug.value.msg_crio }} batch_topic={{ mqtt.batchDebug.value.msg_batch_topic }}</div>
+      <div>HANDLERS: batch={{ mqtt.batchDebug.value.batch_entered }} individual={{ mqtt.batchDebug.value.individual_entered }} last_ch={{ mqtt.batchDebug.value.individual_last_channel }}</div>
+      <div>OUTPUT: callbacks={{ mqtt.batchDebug.value.callbacks_fired }} cb_count={{ mqtt.batchDebug.value.callbacks_count }} store_vals={{ mqtt.batchDebug.value.store_values_count }}</div>
+      <div>LAST: topic={{ mqtt.batchDebug.value.last_topic }} | crio={{ mqtt.batchDebug.value.last_crio_topic }}</div>
+      <div style="color: #ff0;">NOTE: If CONN=YES but msgs=0, do a FULL page reload (Ctrl+Shift+R) — HMR breaks message handler</div>
+    </div>
 
     <!-- Populating Channels Indicator -->
     <Transition name="fade">
@@ -6973,6 +7006,82 @@ watch(
             </div>
 
             <!-- ============================================ -->
+            <!-- Logging -->
+            <!-- ============================================ -->
+            <div class="settings-section">
+              <h4>Logging</h4>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Log Level</label>
+                  <select v-model="systemSettingsForm.log_level">
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                  </select>
+                  <span class="form-hint">Minimum severity to log</span>
+                </div>
+                <div class="form-row half">
+                  <label>Max File Size (MB)</label>
+                  <input type="number" v-model.number="systemSettingsForm.log_max_file_size_mb" min="1" max="500" />
+                  <span class="form-hint">Per log file</span>
+                </div>
+              </div>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Backup Count</label>
+                  <input type="number" v-model.number="systemSettingsForm.log_backup_count" min="0" max="20" />
+                  <span class="form-hint">Rotated log files to keep</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ============================================ -->
+            <!-- Service Timing -->
+            <!-- ============================================ -->
+            <div class="settings-section">
+              <h4>Service Timing</h4>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Heartbeat Interval (s)</label>
+                  <input type="number" v-model.number="systemSettingsForm.service_heartbeat_interval_sec" min="0.5" max="30" step="0.5" />
+                  <span class="form-hint">Status publish interval</span>
+                </div>
+                <div class="form-row half">
+                  <label>Health Timeout (s)</label>
+                  <input type="number" v-model.number="systemSettingsForm.service_health_timeout_sec" min="1" max="60" step="1" />
+                  <span class="form-hint">Before marking unhealthy</span>
+                </div>
+              </div>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Shutdown Timeout (s)</label>
+                  <input type="number" v-model.number="systemSettingsForm.service_shutdown_timeout_sec" min="1" max="60" step="1" />
+                  <span class="form-hint">Grace period on stop</span>
+                </div>
+                <div class="form-row half">
+                  <label>Command ACK Timeout (s)</label>
+                  <input type="number" v-model.number="systemSettingsForm.service_command_ack_timeout_sec" min="1" max="30" step="1" />
+                  <span class="form-hint">Wait for command response</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ============================================ -->
+            <!-- Data Viewer -->
+            <!-- ============================================ -->
+            <div class="settings-section">
+              <h4>Data Viewer</h4>
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Retention (days)</label>
+                  <input type="number" v-model.number="systemSettingsForm.dataviewer_retention_days" min="1" max="365" />
+                  <span class="form-hint">Local cache retention</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ============================================ -->
             <!-- SMS Notifications (Twilio) -->
             <!-- ============================================ -->
             <div class="settings-section">
@@ -7934,25 +8043,6 @@ watch(
 .status-item.mqtt.connected {
   background: var(--indicator-success-bg);
   color: var(--indicator-success-text);
-}
-
-.theme-toggle-small {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  background: var(--bg-surface);
-  border: 1px solid var(--bg-hover);
-  border-radius: 4px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.theme-toggle-small:hover {
-  background: var(--bg-hover);
-  color: var(--text-bright);
 }
 
 .type-tab {

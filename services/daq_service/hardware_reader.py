@@ -658,8 +658,17 @@ class HardwareReader:
                 samps_per_chan=BUFFER_SIZE
             )
 
+            # Check what rate the hardware actually accepted
+            actual_rate = task.timing.samp_clk_rate
+            if abs(actual_rate - self.sample_rate) > 0.01:
+                logger.warning(
+                    f"[RATE COERCED] {task_name}: requested {self.sample_rate} Hz, "
+                    f"hardware accepted {actual_rate:.4f} Hz ({len(channel_names)} channels)"
+                )
+
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             # Store task with channel type info for the reader thread
             task_group = TaskGroup(
@@ -673,7 +682,7 @@ class HardwareReader:
             )
 
             self.tasks[task_name] = task_group
-            logger.info(f"Created combined analog task {task_name} with {len(channel_names)} channels at {self.sample_rate} Hz")
+            logger.info(f"Created combined analog task {task_name} with {len(channel_names)} channels at {actual_rate:.4f} Hz")
 
         except Exception as e:
             task.close()
@@ -726,8 +735,20 @@ class HardwareReader:
                 samps_per_chan=BUFFER_SIZE
             )
 
+            # Check what rate the hardware actually accepted (NI-DAQmx coerces)
+            actual_rate = task.timing.samp_clk_rate
+            if abs(actual_rate - self.sample_rate) > 0.01:
+                logger.warning(
+                    f"[TC RATE COERCED] {task_name}: requested {self.sample_rate} Hz, "
+                    f"hardware accepted {actual_rate:.4f} Hz "
+                    f"({len(channel_names)} TC channels, autozero+CJC overhead)"
+                )
+            else:
+                logger.info(f"[TC RATE OK] {task_name}: {actual_rate:.4f} Hz confirmed")
+
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -737,7 +758,7 @@ class HardwareReader:
                 is_continuous=True,
                 reader=reader
             )
-            logger.info(f"Configured {task_name} for continuous acquisition at {self.sample_rate} Hz")
+            logger.info(f"Configured {task_name} for continuous acquisition at {actual_rate:.4f} Hz (requested {self.sample_rate})")
 
         except Exception as e:
             task.close()
@@ -774,6 +795,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -827,6 +849,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -902,6 +925,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -961,6 +985,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -1013,6 +1038,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -1068,6 +1094,7 @@ class HardwareReader:
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
+            reader.verify_array_shape = False  # Skip shape check in hot loop (NI perf recommendation)
 
             self.tasks[task_name] = TaskGroup(
                 task=task,
@@ -1462,9 +1489,20 @@ class HardwareReader:
                 # Read a small batch each iteration (latest samples only)
                 task_buffers[task_name] = np.zeros((num_channels, 1), dtype=np.float64)
 
+        # Diagnostic timing — log every 30s to show read performance
+        _diag_interval = 30.0
+        _diag_next = time.time() + _diag_interval
+        _diag_loop_count = 0
+        _diag_read_count = 0
+        _diag_total_read_ms = 0.0
+        _diag_max_read_ms = 0.0
+        _diag_empty_polls = 0
+        _diag_task_times: Dict[str, float] = {}  # task_name -> total ms
+
         while self._running:
             try:
                 now = time.time()
+                _diag_loop_count += 1
 
                 # Read from each continuous task
                 for task_name, task_group in self.tasks.items():
@@ -1482,11 +1520,18 @@ class HardwareReader:
                             buffer = np.zeros((num_channels, samples_to_read), dtype=np.float64)
 
                             # Read using stream reader (more efficient than task.read())
+                            _t_read = time.time()
                             task_group.reader.read_many_sample(
                                 buffer,
                                 number_of_samples_per_channel=samples_to_read,
                                 timeout=0.1  # Short timeout since data should be ready
                             )
+                            _read_ms = (time.time() - _t_read) * 1000
+                            _diag_read_count += 1
+                            _diag_total_read_ms += _read_ms
+                            if _read_ms > _diag_max_read_ms:
+                                _diag_max_read_ms = _read_ms
+                            _diag_task_times[task_name] = _diag_task_times.get(task_name, 0) + _read_ms
 
                             # Update latest values (last sample from each channel)
                             with self.lock:
@@ -1503,6 +1548,8 @@ class HardwareReader:
                                     self.value_timestamps[name] = now
 
                             self._error_count = 0  # Reset error count on success
+                        else:
+                            _diag_empty_polls += 1
 
                     except Exception as e:
                         self._error_count += 1
@@ -1607,7 +1654,27 @@ class HardwareReader:
                             logger.warning(f"Recovery error callback failed: {e}")
                     break
 
-                # Small sleep to prevent CPU spinning (10Hz effective read rate)
+                # Periodic diagnostic log — shows hardware read performance
+                if now >= _diag_next:
+                    avg_ms = (_diag_total_read_ms / _diag_read_count) if _diag_read_count > 0 else 0
+                    reads_per_sec = _diag_read_count / _diag_interval
+                    task_summary = ', '.join(f"{tn}={ms:.1f}ms" for tn, ms in sorted(_diag_task_times.items()))
+                    logger.info(
+                        f"[READER DIAG] {_diag_interval:.0f}s: "
+                        f"loops={_diag_loop_count}, reads={_diag_read_count} ({reads_per_sec:.1f}/s), "
+                        f"empty_polls={_diag_empty_polls}, "
+                        f"avg_read={avg_ms:.2f}ms, max_read={_diag_max_read_ms:.2f}ms, "
+                        f"tasks: {task_summary}"
+                    )
+                    _diag_next = now + _diag_interval
+                    _diag_loop_count = 0
+                    _diag_read_count = 0
+                    _diag_total_read_ms = 0.0
+                    _diag_max_read_ms = 0.0
+                    _diag_empty_polls = 0
+                    _diag_task_times.clear()
+
+                # Small sleep to prevent CPU spinning (20Hz effective poll rate)
                 time.sleep(0.05)
 
             except Exception as e:

@@ -15,6 +15,10 @@ RESTART_DELAY=5
 
 # Wrapper that auto-restarts on crash (run_crio_v2.py loads mqtt_creds.json)
 run_with_restart() {
+    # NTP sync runs in background — does not block node startup.
+    # ntp_sync.py waits for the broker to be reachable then sets the clock.
+    # Any failure is non-fatal; the node starts immediately regardless.
+    (python3 $WORKDIR/ntp_sync.py >> $LOGFILE 2>&1) &
     while true; do
         echo "$(date): Starting cRIO Node V2..." >> $LOGFILE
         cd $WORKDIR

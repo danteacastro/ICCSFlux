@@ -7,6 +7,10 @@ import { useBackendScripts } from '../composables/useBackendScripts'
 import { useSafety } from '../composables/useSafety'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useAzureIot } from '../composables/useAzureIot'
+import DataViewerTab from './DataViewerTab.vue'
+
+// Sub-tab navigation
+const activeSubTab = ref<'recording' | 'viewer'>('recording')
 
 const store = useDashboardStore()
 const mqtt = useMqtt()
@@ -787,6 +791,25 @@ const scheduleDayLabels = [
 
 <template>
   <div class="data-tab">
+    <!-- Sub-tab navigation -->
+    <div class="sub-tab-bar">
+      <button
+        class="sub-tab-btn"
+        :class="{ active: activeSubTab === 'recording' }"
+        @click="activeSubTab = 'recording'"
+      >Recording</button>
+      <button
+        class="sub-tab-btn"
+        :class="{ active: activeSubTab === 'viewer' }"
+        @click="activeSubTab = 'viewer'"
+      >Viewer</button>
+    </div>
+
+    <!-- Viewer sub-tab -->
+    <DataViewerTab v-if="activeSubTab === 'viewer'" />
+
+    <!-- Recording sub-tab (original DataTab content) -->
+    <template v-if="activeSubTab === 'recording'">
     <div v-if="!hasEditPermission" class="view-only-notice">
       <span class="lock-icon">🔒</span>
       <span>View Only - Operator access required to manage recordings</span>
@@ -1466,6 +1489,20 @@ const scheduleDayLabels = [
               </div>
             </div>
           </div>
+
+          <!-- Auto-Record on Acquire -->
+          <div class="form-group auto-record-group">
+            <label class="checkbox-label">
+              <input
+                type="checkbox"
+                :checked="recordingConfig.autoStartOnAcquire"
+                :disabled="configLocked"
+                @change="recordingConfig.autoStartOnAcquire = !recordingConfig.autoStartOnAcquire"
+              />
+              <span>Auto-start recording when acquisition begins</span>
+            </label>
+            <span class="hint">Ensures data is always captured during unattended operation</span>
+          </div>
         </div>
 
         <!-- Cloud Streaming Section -->
@@ -2075,10 +2112,42 @@ const scheduleDayLabels = [
         </div>
       </div>
     </Transition>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.sub-tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.sub-tab-btn {
+  padding: 5px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.sub-tab-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sub-tab-btn.active {
+  background: var(--accent-primary);
+  color: #fff;
+}
+
 .data-tab {
   display: flex;
   flex-direction: column;
@@ -2676,6 +2745,20 @@ const scheduleDayLabels = [
   padding: 16px;
   background: var(--bg-widget);
   border-radius: 4px;
+}
+
+.auto-record-group {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color, #333);
+}
+
+.auto-record-group .hint {
+  display: block;
+  font-size: 0.7rem;
+  color: #777;
+  margin-top: 4px;
+  margin-left: 22px;
 }
 
 /* Rate Info Enhanced */

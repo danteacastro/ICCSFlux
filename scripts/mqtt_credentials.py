@@ -9,7 +9,9 @@ MQTT users, writes:
   - config/mosquitto_passwd       (mosquitto password file, PBKDF2-SHA512)
   - dashboard/.env.local          (Vite env vars for dashboard)
 
-Idempotent: skips if config/mqtt_credentials.json already exists.
+Idempotent: skips if all credential files exist and are in sync.
+If the JSON exists but mosquitto_passwd is missing or stale, re-hashes
+from the JSON without generating new passwords.
 """
 
 import base64
@@ -52,19 +54,86 @@ def hash_mosquitto_password(password: str, iterations: int = 101) -> str:
     return f"$7${iterations}${salt_b64}${hash_b64}"
 
 
-def write_mosquitto_passwd(users: dict) -> None:
-    """Write mosquitto password file with hashed credentials."""
+def verify_mosquitto_password(password: str, stored_hash: str) -> bool:
+    """
+    Verify a plaintext password against a stored mosquitto PBKDF2-SHA512 hash.
+
+    Parses the salt and iterations from the stored hash, re-derives the key,
+    and compares. Returns True if the password matches.
+    """
+    try:
+        # Format: $7$<iterations>$<base64(salt)>$<base64(hash)>
+        parts = stored_hash.split('$')
+        if len(parts) != 5 or parts[1] != '7':
+            return False
+        iterations = int(parts[2])
+        salt = base64.b64decode(parts[3])
+        expected_dk = base64.b64decode(parts[4])
+        actual_dk = hashlib.pbkdf2_hmac(
+            'sha512',
+            password.encode('utf-8'),
+            salt,
+            iterations,
+            dklen=64
+        )
+        return actual_dk == expected_dk
+    except Exception:
+        return False
+
+
+def passwd_file_matches(creds: dict, passwd_file: str = None) -> bool:
+    """
+    Check whether every user in mqtt_credentials.json has a matching hash
+    in mosquitto_passwd. Returns False if any user is missing or mismatched.
+
+    Args:
+        creds: Credentials dict (same format as mqtt_credentials.json)
+        passwd_file: Path to mosquitto_passwd (defaults to module-level PASSWD_FILE)
+    """
+    pf = passwd_file or PASSWD_FILE
+    if not os.path.exists(pf):
+        return False
+    try:
+        # Parse passwd file into {username: hash}
+        stored = {}
+        with open(pf) as f:
+            for line in f:
+                line = line.strip()
+                if ':' in line:
+                    user, hsh = line.split(':', 1)
+                    stored[user] = hsh
+
+        for user_key, user_data in creds.items():
+            username = user_data['username']
+            password = user_data['password']
+            if username not in stored:
+                return False
+            if not verify_mosquitto_password(password, stored[username]):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def write_mosquitto_passwd(users: dict, passwd_file: str = None) -> None:
+    """Write mosquitto password file with hashed credentials.
+
+    Args:
+        users: Dict of {username: plaintext_password}
+        passwd_file: Path to write (defaults to module-level PASSWD_FILE)
+    """
+    pf = passwd_file or PASSWD_FILE
     lines = []
     for username, password in users.items():
         hashed = hash_mosquitto_password(password)
         lines.append(f"{username}:{hashed}")
 
-    with open(PASSWD_FILE, 'w', newline='\n') as f:
+    with open(pf, 'w', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
 
     # Restrict file permissions on non-Windows
     if os.name != 'nt':
-        os.chmod(PASSWD_FILE, 0o600)
+        os.chmod(pf, 0o600)
 
 
 def write_dashboard_env(username: str, password: str) -> None:
@@ -79,15 +148,47 @@ def write_dashboard_env(username: str, password: str) -> None:
         f.write(content)
 
 
+def ensure_passwd_file(creds: dict) -> None:
+    """Regenerate mosquitto_passwd and dashboard .env.local from existing credentials JSON."""
+    backend_pass = creds['backend']['password']
+    dashboard_pass = creds['dashboard']['password']
+
+    write_mosquitto_passwd({
+        'backend': backend_pass,
+        'dashboard': dashboard_pass,
+    })
+    print(f"[MQTT]   Password file synced: {PASSWD_FILE}")
+
+    write_dashboard_env('dashboard', dashboard_pass)
+    print(f"[MQTT]   Dashboard env synced: {ENV_FILE}")
+
+
 def main() -> int:
-    # Idempotent: skip if credentials already exist
+    # If credentials JSON exists, verify passwd file actually matches.
+    # This catches: passwd deleted, passwd corrupted, passwd from old passwords,
+    # or any other desync between the plaintext JSON and the hashed passwd file.
     if os.path.exists(CRED_FILE):
-        print(f"[MQTT] Credentials already exist: {CRED_FILE}")
+        with open(CRED_FILE) as f:
+            creds = json.load(f)
+
+        if passwd_file_matches(creds):
+            print(f"[MQTT] Credentials verified OK: {CRED_FILE}")
+            return 0
+
+        # Determine reason for re-sync (for logging)
+        if not os.path.exists(PASSWD_FILE):
+            reason = "password file missing"
+        else:
+            reason = "password hashes do not match credentials"
+
+        print(f"[MQTT] Credentials exist but {reason} — syncing...")
+        ensure_passwd_file(creds)
+        print("[MQTT] Credentials synced successfully.")
         return 0
 
+    # First run: generate everything from scratch
     print("[MQTT] Generating MQTT credentials (first-run setup)...")
 
-    # Generate random passwords
     backend_pass = generate_password()
     dashboard_pass = generate_password()
 
@@ -96,7 +197,7 @@ def main() -> int:
         'dashboard': {'username': 'dashboard', 'password': dashboard_pass},
     }
 
-    # 1. Write credential store (JSON)
+    # 1. Write credential store (JSON) — source of truth
     os.makedirs(os.path.dirname(CRED_FILE), exist_ok=True)
     with open(CRED_FILE, 'w') as f:
         json.dump(creds, f, indent=2)
@@ -104,16 +205,8 @@ def main() -> int:
         os.chmod(CRED_FILE, 0o600)
     print(f"[MQTT]   Credentials saved: {CRED_FILE}")
 
-    # 2. Write mosquitto password file (PBKDF2-SHA512 hashes)
-    write_mosquitto_passwd({
-        'backend': backend_pass,
-        'dashboard': dashboard_pass,
-    })
-    print(f"[MQTT]   Password file saved: {PASSWD_FILE}")
-
-    # 3. Write dashboard .env.local
-    write_dashboard_env('dashboard', dashboard_pass)
-    print(f"[MQTT]   Dashboard env saved: {ENV_FILE}")
+    # 2. Write derived files (passwd + dashboard env)
+    ensure_passwd_file(creds)
 
     print("[MQTT] Credentials generated successfully.")
     print("[MQTT] To regenerate: delete config/mqtt_credentials.json and restart.")

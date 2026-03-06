@@ -12,12 +12,21 @@ Usage:
     channels = discovery.get_available_channels()
 """
 
+import json
 import logging
+import os
+import socket
+import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Any
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Persistence file for known edge nodes (survives DAQ service restarts)
+_DATA_DIR = Path(__file__).resolve().parent.parent.parent / 'data'
+KNOWN_NODES_FILE = _DATA_DIR / 'known_nodes.json'
 
 # Try to import nidaqmx - gracefully handle if not available
 try:
@@ -371,6 +380,150 @@ class DeviceDiscovery:
         # Track CFP nodes that have registered via MQTT
         self._cfp_nodes: Dict[str, CFPNode] = {}
         self._cfp_lock = __import__('threading').Lock()
+        # Debounce persistence writes
+        self._last_persist_time: float = 0
+        self._persist_interval: float = 30.0  # seconds
+        # Load previously known nodes from disk
+        self._load_known_nodes()
+
+    # ── Node Persistence ─────────────────────────────────────────────────────
+
+    def _load_known_nodes(self):
+        """Load previously known edge nodes from disk as offline placeholders."""
+        if not KNOWN_NODES_FILE.exists():
+            return
+        try:
+            with open(KNOWN_NODES_FILE, 'r') as f:
+                data = json.load(f)
+            for node_id, info in data.get('crio', {}).items():
+                self._crio_nodes[node_id] = CRIONode(
+                    node_id=node_id,
+                    ip_address=info.get('ip_address', 'unknown'),
+                    product_type=info.get('product_type', 'cRIO'),
+                    serial_number=info.get('serial_number', ''),
+                    status='offline',
+                    last_seen=info.get('last_seen', ''),
+                    channels=info.get('channels', 0),
+                    mac_address=info.get('mac_address', ''),
+                    modules=[],
+                )
+            for node_id, info in data.get('opto22', {}).items():
+                self._opto22_nodes[node_id] = Opto22Node(
+                    node_id=node_id,
+                    ip_address=info.get('ip_address', 'unknown'),
+                    product_type=info.get('product_type', 'groov EPIC'),
+                    serial_number=info.get('serial_number', ''),
+                    status='offline',
+                    last_seen=info.get('last_seen', ''),
+                    channels=info.get('channels', 0),
+                    modules=[],
+                )
+            for node_id, info in data.get('cfp', {}).items():
+                self._cfp_nodes[node_id] = CFPNode(
+                    node_id=node_id,
+                    ip_address=info.get('ip_address', 'unknown'),
+                    product_type=info.get('product_type', 'cFP'),
+                    status='offline',
+                    last_seen=info.get('last_seen', ''),
+                    channels=info.get('channels', 0),
+                )
+            total = len(self._crio_nodes) + len(self._opto22_nodes) + len(self._cfp_nodes)
+            if total > 0:
+                logger.info(f"Loaded {total} known node(s) from disk (offline until MQTT reconnect)")
+        except Exception as e:
+            logger.warning(f"Could not load known nodes: {e}")
+
+    def _persist_known_nodes(self):
+        """Save known edge nodes to disk (debounced)."""
+        now = time.time()
+        if now - self._last_persist_time < self._persist_interval:
+            return
+        self._last_persist_time = now
+        self._persist_known_nodes_now()
+
+    def _persist_known_nodes_now(self):
+        """Save known edge nodes to disk immediately."""
+        data: Dict[str, Any] = {'crio': {}, 'opto22': {}, 'cfp': {}}
+        with self._crio_lock:
+            for nid, node in self._crio_nodes.items():
+                data['crio'][nid] = {
+                    'ip_address': node.ip_address,
+                    'product_type': node.product_type,
+                    'serial_number': node.serial_number,
+                    'last_seen': node.last_seen,
+                    'channels': node.channels,
+                    'mac_address': node.mac_address,
+                }
+        with self._opto22_lock:
+            for nid, node in self._opto22_nodes.items():
+                data['opto22'][nid] = {
+                    'ip_address': node.ip_address,
+                    'product_type': node.product_type,
+                    'serial_number': node.serial_number,
+                    'last_seen': node.last_seen,
+                    'channels': node.channels,
+                }
+        with self._cfp_lock:
+            for nid, node in self._cfp_nodes.items():
+                data['cfp'][nid] = {
+                    'ip_address': node.ip_address,
+                    'product_type': node.product_type,
+                    'last_seen': node.last_seen,
+                    'channels': node.channels,
+                }
+        try:
+            KNOWN_NODES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(KNOWN_NODES_FILE) + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, str(KNOWN_NODES_FILE))
+        except Exception as e:
+            logger.warning(f"Could not persist known nodes: {e}")
+
+    def check_node_reachable(self, ip_address: str, port: int = 22,
+                             timeout: float = 2.0) -> bool:
+        """Check if a node is reachable on the network via TCP connect."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                return s.connect_ex((ip_address, port)) == 0
+        except Exception:
+            return False
+
+    def get_offline_nodes(self) -> Dict[str, Dict[str, Any]]:
+        """Get all known nodes that are currently offline, with reachability info.
+
+        Returns dict keyed by node_id with ip_address, node_type, product_type.
+        """
+        offline: Dict[str, Dict[str, Any]] = {}
+        with self._crio_lock:
+            for nid, node in self._crio_nodes.items():
+                if node.status == 'offline' and node.ip_address != 'unknown':
+                    offline[nid] = {
+                        'ip_address': node.ip_address,
+                        'node_type': 'crio',
+                        'product_type': node.product_type,
+                        'last_seen': node.last_seen,
+                    }
+        with self._opto22_lock:
+            for nid, node in self._opto22_nodes.items():
+                if node.status == 'offline' and node.ip_address != 'unknown':
+                    offline[nid] = {
+                        'ip_address': node.ip_address,
+                        'node_type': 'opto22',
+                        'product_type': node.product_type,
+                        'last_seen': node.last_seen,
+                    }
+        with self._cfp_lock:
+            for nid, node in self._cfp_nodes.items():
+                if node.status == 'offline' and node.ip_address != 'unknown':
+                    offline[nid] = {
+                        'ip_address': node.ip_address,
+                        'node_type': 'cfp',
+                        'product_type': node.product_type,
+                        'last_seen': node.last_seen,
+                    }
+        return offline
 
     def register_crio_node(self, node_id: str, status_data: Dict[str, Any]):
         """
@@ -391,17 +544,23 @@ class DeviceDiscovery:
         from datetime import datetime
 
         with self._crio_lock:
+            is_new = node_id not in self._crio_nodes
             # Parse modules if provided
             modules = []
             for mod_data in status_data.get('modules', []):
+                prod = mod_data.get('product_type', '')
+                db_info = NI_MODULE_DATABASE.get(prod, {})
+                db_cat = db_info.get('category', 'unknown')
+                if isinstance(db_cat, ModuleCategory):
+                    db_cat = db_cat.value
                 mod = Module(
                     name=mod_data.get('name', ''),
-                    product_type=mod_data.get('product_type', ''),
+                    product_type=prod,
                     serial_number=mod_data.get('serial_number', ''),
                     slot=mod_data.get('slot', 0),
                     chassis=node_id,
-                    category=mod_data.get('category', 'unknown'),
-                    description=mod_data.get('description', '')
+                    category=mod_data.get('category', '') or db_cat,
+                    description=mod_data.get('description', '') or db_info.get('description', prod)
                 )
                 # Parse channels - mark as cRIO source with node_id
                 for ch_data in mod_data.get('channels', []):
@@ -431,9 +590,11 @@ class DeviceDiscovery:
                 mac_address=status_data.get('mac_address', ''),
                 modules=modules
             )
-            serial_info = f", serial={status_data.get('serial_number', '')}" if status_data.get('serial_number') else ""
-            mac_info = f", mac={status_data.get('mac_address', '')}" if status_data.get('mac_address') else ""
-            logger.info(f"Registered cRIO node: {node_id} ({status_data.get('status', 'online')}{serial_info}{mac_info})")
+            if is_new:
+                serial_info = f", serial={status_data.get('serial_number', '')}" if status_data.get('serial_number') else ""
+                mac_info = f", mac={status_data.get('mac_address', '')}" if status_data.get('mac_address') else ""
+                logger.info(f"Registered cRIO node: {node_id} ({status_data.get('status', 'online')}{serial_info}{mac_info})")
+        self._persist_known_nodes()
 
     def unregister_crio_node(self, node_id: str):
         """Remove a cRIO node from tracking"""
@@ -480,6 +641,7 @@ class DeviceDiscovery:
                     modules=[]  # Will be populated when full status arrives
                 )
                 logger.info(f"Registered cRIO node: {node_id} ({heartbeat_data.get('status', 'online')})")
+        self._persist_known_nodes()
 
     def get_crio_nodes(self) -> List[CRIONode]:
         """Get list of known cRIO nodes"""
@@ -505,17 +667,23 @@ class DeviceDiscovery:
         from datetime import datetime
 
         with self._opto22_lock:
+            is_new = node_id not in self._opto22_nodes
             # Parse modules if provided
             modules = []
             for mod_data in status_data.get('modules', []):
+                prod = mod_data.get('product_type', '')
+                db_info = NI_MODULE_DATABASE.get(prod, {})
+                db_cat = db_info.get('category', 'unknown')
+                if isinstance(db_cat, ModuleCategory):
+                    db_cat = db_cat.value
                 mod = Module(
                     name=mod_data.get('name', ''),
-                    product_type=mod_data.get('product_type', ''),
+                    product_type=prod,
                     serial_number=mod_data.get('serial_number', ''),
                     slot=mod_data.get('slot', 0),
                     chassis=node_id,
-                    category=mod_data.get('category', 'unknown'),
-                    description=mod_data.get('description', '')
+                    category=mod_data.get('category', '') or db_cat,
+                    description=mod_data.get('description', '') or db_info.get('description', prod)
                 )
                 # Parse channels - mark as Opto22 source with node_id
                 for ch_data in mod_data.get('channels', []):
@@ -544,7 +712,9 @@ class DeviceDiscovery:
                 channels=status_data.get('channels', 0),
                 modules=modules
             )
-            logger.info(f"Registered Opto22 node: {node_id} ({status_data.get('status', 'online')})")
+            if is_new:
+                logger.info(f"Registered Opto22 node: {node_id} ({status_data.get('status', 'online')})")
+        self._persist_known_nodes()
 
     def unregister_opto22_node(self, node_id: str):
         """Remove an Opto22 node from tracking"""
@@ -590,6 +760,7 @@ class DeviceDiscovery:
                     modules=[]  # Will be populated when full status arrives
                 )
                 logger.info(f"Registered Opto22 node: {node_id} ({heartbeat_data.get('status', 'online')})")
+        self._persist_known_nodes()
 
     def get_opto22_nodes(self) -> List[Opto22Node]:
         """Get list of known Opto22 nodes"""
@@ -616,6 +787,7 @@ class DeviceDiscovery:
         from datetime import datetime
 
         with self._gc_lock:
+            is_new = node_id not in self._gc_nodes
             self._gc_nodes[node_id] = GCNode(
                 node_id=node_id,
                 ip_address=status_data.get('ip_address', 'unknown'),
@@ -627,7 +799,8 @@ class DeviceDiscovery:
                 analysis_count=status_data.get('analysis_count', 0),
                 source_type=status_data.get('source_type', ''),
             )
-            logger.info(f"Registered GC node: {node_id} ({status_data.get('status', 'online')})")
+            if is_new:
+                logger.info(f"Registered GC node: {node_id} ({status_data.get('status', 'online')})")
 
     def unregister_gc_node(self, node_id: str):
         """Remove a GC node from tracking"""
@@ -697,6 +870,7 @@ class DeviceDiscovery:
         from datetime import datetime
 
         with self._cfp_lock:
+            is_new = node_id not in self._cfp_nodes
             self._cfp_nodes[node_id] = CFPNode(
                 node_id=node_id,
                 ip_address=status_data.get('host', status_data.get('ip_address', 'unknown')),
@@ -707,7 +881,9 @@ class DeviceDiscovery:
                 modules=status_data.get('modules', 0),
                 modbus_connected=status_data.get('modbus_connected', False),
             )
-            logger.info(f"Registered CFP node: {node_id} ({status_data.get('status', 'online')})")
+            if is_new:
+                logger.info(f"Registered CFP node: {node_id} ({status_data.get('status', 'online')})")
+        self._persist_known_nodes()
 
     def mark_cfp_offline(self, node_id: str):
         """Mark a CFP node as offline (but don't remove it)"""
@@ -747,6 +923,7 @@ class DeviceDiscovery:
                     modbus_connected=heartbeat_data.get('modbus_connected', False),
                 )
                 logger.info(f"Registered CFP node: {node_id} ({heartbeat_data.get('status', 'online')})")
+        self._persist_known_nodes()
 
     def get_cfp_nodes(self) -> List[CFPNode]:
         """Get list of known CFP nodes"""

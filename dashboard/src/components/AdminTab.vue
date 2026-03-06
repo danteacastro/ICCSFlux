@@ -255,6 +255,70 @@
           </table>
         </div>
       </div>
+
+      <!-- Settings Section -->
+      <div v-if="activeSection === 'settings'" class="section-panel">
+        <div class="panel-header">
+          <h3>Broker Connection</h3>
+        </div>
+
+        <div class="settings-form">
+          <div class="form-group">
+            <label>Broker URL</label>
+            <input
+              v-model="brokerUrlInput"
+              type="text"
+              placeholder="ws://localhost:9002"
+              spellcheck="false"
+              class="mono-input"
+            />
+            <span class="form-hint">Local: ws://localhost:9002 | Remote: ws://192.168.1.x:9003</span>
+          </div>
+
+          <template v-if="isBrokerRemote">
+            <div class="form-group">
+              <label>Username</label>
+              <input
+                v-model="brokerUsernameInput"
+                type="text"
+                placeholder="dashboard"
+                autocomplete="username"
+              />
+            </div>
+            <div class="form-group">
+              <label>Password</label>
+              <input
+                v-model="brokerPasswordInput"
+                type="password"
+                placeholder="From mqtt_credentials.json on target PC"
+                autocomplete="current-password"
+              />
+            </div>
+            <div class="broker-remote-notice">
+              Remote connections use port 9003 (authenticated WebSocket).
+              Get credentials from the target PC's config/mqtt_credentials.json.
+            </div>
+          </template>
+
+          <div v-if="brokerTestMessage" class="broker-test-result" :class="brokerTestStatus">
+            {{ brokerTestMessage }}
+          </div>
+
+          <div class="broker-actions">
+            <button class="btn-secondary" @click="resetBrokerToLocal">Reset to Local</button>
+            <div class="broker-actions-right">
+              <button
+                class="btn-secondary"
+                @click="testBrokerConnection"
+                :disabled="brokerTestStatus === 'testing'"
+              >
+                {{ brokerTestStatus === 'testing' ? 'Testing...' : 'Test Connection' }}
+              </button>
+              <button class="btn-primary" @click="applyBrokerAndConnect">Connect</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Create/Edit User Dialog -->
@@ -393,6 +457,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../composables/useAuth'
+import { useBrokerConfig } from '../composables/useBrokerConfig'
+import { useMqtt } from '../composables/useMqtt'
+import mqtt from 'mqtt'
 import NodeManagerPanel from './NodeManagerPanel.vue'
 
 const {
@@ -425,7 +492,8 @@ const allSections = [
   { id: 'nodes', icon: '🖥️', label: 'Nodes', requiresAdmin: false },
   { id: 'users', icon: '👥', label: 'Users', requiresAdmin: true },
   { id: 'audit', icon: '📋', label: 'Audit Trail', requiresAdmin: false },
-  { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false }
+  { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false },
+  { id: 'settings', icon: '⚙️', label: 'Settings', requiresAdmin: false },
 ]
 const sections = computed(() =>
   allSections.filter(s => !s.requiresAdmin || canManageUsers.value)
@@ -455,6 +523,108 @@ const auditFilters = ref({
 
 // Selected event for details view
 const selectedEvent = ref<AuditEvent | null>(null)
+
+// ============================================================================
+// BROKER CONNECTION
+// ============================================================================
+
+const brokerConfig = useBrokerConfig()
+const mqttClient = useMqtt()
+
+const brokerUrlInput = ref(brokerConfig.brokerUrl.value)
+const brokerUsernameInput = ref(brokerConfig.brokerUsername.value)
+const brokerPasswordInput = ref(brokerConfig.brokerPassword.value)
+const brokerTestStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
+const brokerTestMessage = ref('')
+
+const isBrokerRemote = computed(() => {
+  try {
+    const parsed = new URL(brokerUrlInput.value)
+    const host = parsed.hostname
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1'
+  } catch {
+    return false
+  }
+})
+
+async function testBrokerConnection() {
+  brokerTestStatus.value = 'testing'
+  brokerTestMessage.value = 'Connecting...'
+
+  const options: mqtt.IClientOptions = {
+    clientId: `nisystem-test-${Math.random().toString(16).slice(2, 8)}`,
+    clean: true,
+    connectTimeout: 5000,
+    reconnectPeriod: 0,
+  }
+
+  if (brokerUsernameInput.value && brokerPasswordInput.value) {
+    options.username = brokerUsernameInput.value
+    options.password = brokerPasswordInput.value
+  }
+
+  try {
+    const client = mqtt.connect(brokerUrlInput.value, options)
+
+    const result = await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        client.end(true)
+        resolve(false)
+      }, 5000)
+
+      client.on('connect', () => {
+        clearTimeout(timeout)
+        client.end()
+        resolve(true)
+      })
+
+      client.on('error', () => {
+        clearTimeout(timeout)
+        client.end(true)
+        resolve(false)
+      })
+    })
+
+    if (result) {
+      brokerTestStatus.value = 'success'
+      brokerTestMessage.value = 'Connection successful'
+    } else {
+      brokerTestStatus.value = 'error'
+      brokerTestMessage.value = 'Connection failed — check URL and credentials'
+    }
+  } catch {
+    brokerTestStatus.value = 'error'
+    brokerTestMessage.value = 'Connection failed — invalid URL'
+  }
+}
+
+function applyBrokerAndConnect() {
+  brokerConfig.setBrokerUrl(brokerUrlInput.value)
+  if (isBrokerRemote.value) {
+    brokerConfig.setBrokerCredentials(brokerUsernameInput.value, brokerPasswordInput.value)
+  } else {
+    brokerConfig.setBrokerCredentials('', '')
+  }
+  mqttClient.disconnect()
+  setTimeout(() => {
+    mqttClient.connect(
+      brokerConfig.brokerUrl.value,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+    )
+  }, 100)
+}
+
+function resetBrokerToLocal() {
+  brokerConfig.resetToLocal()
+  brokerUrlInput.value = brokerConfig.DEFAULT_URL
+  brokerUsernameInput.value = ''
+  brokerPasswordInput.value = ''
+  mqttClient.disconnect()
+  setTimeout(() => {
+    mqttClient.connect(brokerConfig.DEFAULT_URL)
+  }, 100)
+}
 
 // ============================================================================
 // LIFECYCLE
@@ -1202,5 +1372,100 @@ function formatBytes(bytes: number): string {
   margin: 0;
   color: var(--color-error-light);
   font-size: 0.875rem;
+}
+
+/* Settings / Broker Connection */
+.settings-form {
+  max-width: 500px;
+}
+
+.settings-form .form-group {
+  margin-bottom: 16px;
+}
+
+.settings-form .form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-form .form-group input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  box-sizing: border-box;
+}
+
+.settings-form .form-group input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.mono-input {
+  font-family: 'SF Mono', 'Cascadia Code', monospace !important;
+}
+
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.broker-remote-notice {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.broker-test-result {
+  font-size: 0.8rem;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.broker-test-result.testing {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.broker-test-result.success {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.broker-test-result.error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.broker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.broker-actions-right {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

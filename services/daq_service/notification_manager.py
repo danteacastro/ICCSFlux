@@ -20,6 +20,7 @@ Architecture:
   - Config persisted to data/notification_config.json
 """
 
+import gzip
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ import stat
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -206,6 +207,13 @@ class NotificationManager:
         self._running = False
         self._worker: Optional[threading.Thread] = None
 
+        # Append-only JSONL delivery log (survives restarts, no truncation)
+        self._log_dir = self._data_dir / 'logs' / 'notifications'
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_file: Optional[Path] = None
+        self._max_log_size_mb = 20.0
+        self._init_log_file()
+
         # Load persisted config
         self._load_config()
 
@@ -312,6 +320,81 @@ class NotificationManager:
             logger.error(f"[NOTIFY] Test {channel} failed: {e}")
             return {'success': False, 'message': str(e)}
 
+    # ------------------------------------------------------------------
+    # Append-Only JSONL Delivery Log
+    # ------------------------------------------------------------------
+
+    def _init_log_file(self):
+        """Find newest .jsonl file under max size, or create a new one."""
+        existing = sorted(self._log_dir.glob('notification_log_*.jsonl'), reverse=True)
+        for f in existing:
+            try:
+                if f.stat().st_size / (1024 * 1024) < self._max_log_size_mb:
+                    self._log_file = f
+                    return
+            except OSError:
+                continue
+        self._create_new_log_file()
+
+    def _create_new_log_file(self):
+        """Create a new timestamped JSONL log file."""
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._log_file = self._log_dir / f'notification_log_{ts}.jsonl'
+
+    def _log_delivery(self, channel: str, alarm_id: str, event_type: str,
+                      status: str, detail: str = ''):
+        """Append a delivery record to the JSONL log file."""
+        try:
+            entry = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'alarm_id': alarm_id,
+                'method': channel,
+                'event_type': event_type,
+                'status': status,
+                'detail': detail,
+            }
+            line = json.dumps(entry, default=str) + '\n'
+            with open(self._log_file, 'a', encoding='utf-8') as f:
+                f.write(line)
+                f.flush()
+            try:
+                if self._log_file.stat().st_size / (1024 * 1024) >= self._max_log_size_mb:
+                    self._create_new_log_file()
+            except OSError:
+                pass
+        except Exception as e:
+            logger.error(f"Error appending to notification log: {e}")
+
+    def _cleanup_old_logs(self):
+        """Gzip files > 7 days old, delete files > 365 days old."""
+        try:
+            now = datetime.now()
+            for f in self._log_dir.iterdir():
+                if not f.is_file():
+                    continue
+                try:
+                    age = now - datetime.fromtimestamp(f.stat().st_mtime)
+                except OSError:
+                    continue
+                if age > timedelta(days=365):
+                    f.unlink()
+                    logger.info(f"Deleted old notification log: {f.name}")
+                elif age > timedelta(days=7) and f.suffix == '.jsonl' and f != self._log_file:
+                    gz_path = f.with_suffix('.jsonl.gz')
+                    try:
+                        with open(f, 'rb') as src, gzip.open(gz_path, 'wb') as dst:
+                            while True:
+                                chunk = src.read(65536)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                        f.unlink()
+                        logger.info(f"Compressed notification log: {f.name}")
+                    except Exception as e:
+                        logger.error(f"Error compressing {f.name}: {e}")
+        except Exception as e:
+            logger.error(f"Error cleaning up notification logs: {e}")
+
     def shutdown(self):
         """Stop the background worker."""
         self._running = False
@@ -322,6 +405,7 @@ class NotificationManager:
             except queue.Full:
                 pass
             self._worker.join(timeout=5.0)
+        self._cleanup_old_logs()
         logger.info("[NOTIFY] Notification manager shut down")
 
     # ------------------------------------------------------------------
@@ -458,6 +542,7 @@ class NotificationManager:
                     self._daily_count += 1
 
                     logger.info(f"[NOTIFY] {channel} notification sent for alarm {alarm_id} ({event_type})")
+                    self._log_delivery(channel, alarm_id, event_type, 'sent')
 
                     if self._publish:
                         self._publish('notification_sent', {
@@ -469,6 +554,7 @@ class NotificationManager:
 
                 except Exception as e:
                     logger.error(f"[NOTIFY] {channel} send failed for {alarm_id}: {e}")
+                    self._log_delivery(channel, alarm_id, event_type, 'failed', str(e))
                     if self._publish:
                         self._publish('notification_error', {
                             'channel': channel,

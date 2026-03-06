@@ -215,30 +215,30 @@ def main():
     else:
         print("  WARNING: No TLS CA cert found. Node will use plaintext port 1883.")
 
-    # ── [6/10] Write credentials ─────────────────────────────────────────
-    print("\n[6/10] Writing credentials...")
+    # ── [6/10] Write connection config ──────────────────────────────────
+    print("\n[6/10] Writing connection config...")
+    # Port 8883 is anonymous (TLS-only auth via CA cert) — credentials optional.
+    creds = {
+        'broker': broker,
+        'port': port,
+        'tls_enabled': tls_enabled,
+        'tls_ca_cert': tls_ca_remote,
+        'node_id': 'opto22-001',
+    }
     if mqtt_user:
-        creds = {
-            'mqtt_user': mqtt_user,
-            'mqtt_pass': mqtt_pass,
-            'broker': broker,
-            'port': port,
-            'tls_enabled': tls_enabled,
-            'tls_ca_cert': tls_ca_remote,
-            'node_id': 'opto22-001',
-        }
-        tmp_creds = os.path.join(PROJECT_ROOT, '_opto22_creds_tmp.json')
-        try:
-            with open(tmp_creds, 'w') as f:
-                json.dump(creds, f, indent=2)
-            run_scp(host, tmp_creds, f'{DEPLOY_DIR}/mqtt_creds.json')
-            run_ssh(host, f'chmod 600 {DEPLOY_DIR}/mqtt_creds.json')
-            print(f"  Credentials written (user={mqtt_user}, port={port}, TLS={tls_enabled})")
-        finally:
-            if os.path.exists(tmp_creds):
-                os.remove(tmp_creds)
-    else:
-        print("  WARNING: No MQTT credentials found. Run start.bat first.")
+        creds['mqtt_user'] = mqtt_user
+        creds['mqtt_pass'] = mqtt_pass
+    tmp_creds = os.path.join(PROJECT_ROOT, '_opto22_creds_tmp.json')
+    try:
+        with open(tmp_creds, 'w') as f:
+            json.dump(creds, f, indent=2)
+        run_scp(host, tmp_creds, f'{DEPLOY_DIR}/mqtt_creds.json')
+        run_ssh(host, f'chmod 600 {DEPLOY_DIR}/mqtt_creds.json')
+        auth_info = f"user={mqtt_user}" if mqtt_user else "anonymous"
+        print(f"  Config written ({auth_info}, port={port}, TLS={tls_enabled})")
+    finally:
+        if os.path.exists(tmp_creds):
+            os.remove(tmp_creds)
 
     # ── [7/10] Verify deployment ─────────────────────────────────────────
     print("\n[7/10] Verifying deployment...")

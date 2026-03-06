@@ -14,6 +14,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(PROJECT_ROOT / 'scripts' / 'generate_tls_certs.py'), 'scripts'),
+        (str(PROJECT_ROOT / 'scripts' / 'mqtt_credentials.py'), 'scripts'),
         (str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'), '.'),
     ],
     hiddenimports=[

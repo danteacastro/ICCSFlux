@@ -16,6 +16,10 @@ def pytest_configure(config):
         config.addinivalue_line(
             "markers", f"layer{i}: System validation layer {i}"
         )
+    for i in range(1, 7):
+        config.addinivalue_line(
+            "markers", f"order({i}): cRIO acquisition test group {i}"
+        )
 
 import json
 import os

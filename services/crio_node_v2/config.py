@@ -352,6 +352,20 @@ class NodeConfig:
     # Hardware
     use_mock_hardware: bool = False
 
+    # Watchdog output - toggles a digital output so external safety hardware
+    # can detect the cRIO is alive. If the pulse stops, the relay trips.
+    watchdog_output_channel: Optional[str] = None
+    watchdog_output_rate_hz: float = 1.0
+    watchdog_output_enabled: bool = False
+
+    # Communication watchdog - if no command/heartbeat received from PC
+    # within this timeout, transition to safe state. 0 = disabled.
+    comm_watchdog_timeout_s: float = 30.0
+
+    # DI polling rate — how often digital inputs are polled (Hz).
+    # Higher = faster DI response but more CPU. Max 100 Hz.
+    di_poll_rate_hz: float = 20.0
+
     # Channels
     channels: Dict[str, ChannelConfig] = field(default_factory=dict)
 
@@ -386,6 +400,16 @@ class NodeConfig:
                                    data.get('heartbeat_interval_s', 5.0)),
             use_mock_hardware=system.get('use_mock_hardware',
                               data.get('use_mock_hardware', False)),
+            watchdog_output_channel=system.get('watchdog_output_channel',
+                                    data.get('watchdog_output_channel')),
+            watchdog_output_rate_hz=float(system.get('watchdog_output_rate_hz',
+                                          data.get('watchdog_output_rate_hz', 1.0))),
+            watchdog_output_enabled=bool(system.get('watchdog_output_enabled',
+                                         data.get('watchdog_output_enabled', False))),
+            comm_watchdog_timeout_s=float(system.get('comm_watchdog_timeout_s',
+                                          data.get('comm_watchdog_timeout_s', 30.0))),
+            di_poll_rate_hz=float(system.get('di_poll_rate_hz',
+                                  data.get('di_poll_rate_hz', 20.0))),
             channels=channels
         )
 

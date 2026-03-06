@@ -680,158 +680,13 @@ def create_batch_launchers():
     """Create service install/uninstall batch scripts.
 
     Note: ICCSFlux.bat has been deprecated — ICCSFlux.exe is now a native
-    desktop app (pywebview) that users launch directly.
+    desktop app (tkinter) that users launch directly.
     """
     log("Creating launchers...")
-
-    # Service install script - installs all services
-    service_install = '''@echo off
-cd /d "%~dp0"
-echo ============================================================
-echo    ICCSFlux Windows Service Installation
-echo ============================================================
-echo.
-echo This will install ICCSFlux as Windows services:
-echo   - ICCSFlux-MQTT   (Mosquitto MQTT broker)
-echo   - ICCSFlux-DAQ    (Data acquisition service)
-echo   - ICCSFlux-Azure  (Azure IoT Hub uploader)
-echo   - ICCSFlux-Web    (Dashboard web server)
-echo.
-echo NOTE: Run this script as Administrator!
-echo.
-pause
-
-echo.
-echo [0/4] Setting up MQTT credentials...
-"%~dp0ICCSFlux.exe" --setup
-echo     Done.
-
-echo.
-echo [1/4] Installing Mosquitto MQTT Broker...
-nssm\\nssm.exe install ICCSFlux-MQTT "%~dp0mosquitto\\mosquitto.exe" -c "%~dp0config\\mosquitto.conf"
-nssm\\nssm.exe set ICCSFlux-MQTT AppDirectory "%~dp0"
-nssm\\nssm.exe set ICCSFlux-MQTT Description "ICCSFlux MQTT Broker"
-nssm\\nssm.exe set ICCSFlux-MQTT Start SERVICE_AUTO_START
-nssm\\nssm.exe set ICCSFlux-MQTT AppStdout "%~dp0data\\logs\\mosquitto.log"
-nssm\\nssm.exe set ICCSFlux-MQTT AppStderr "%~dp0data\\logs\\mosquitto.log"
-nssm\\nssm.exe set ICCSFlux-MQTT AppRotateFiles 1
-nssm\\nssm.exe set ICCSFlux-MQTT AppRotateBytes 10485760
-REM Auto-restart on failure (industrial-grade reliability)
-nssm\\nssm.exe set ICCSFlux-MQTT AppExit Default Restart
-nssm\\nssm.exe set ICCSFlux-MQTT AppRestartDelay 5000
-nssm\\nssm.exe set ICCSFlux-MQTT AppThrottle 10000
-echo     Done.
-
-echo.
-echo [2/4] Installing DAQ Service...
-nssm\\nssm.exe install ICCSFlux-DAQ "%~dp0DAQService.exe" -c "%~dp0config\\system.ini"
-nssm\\nssm.exe set ICCSFlux-DAQ AppDirectory "%~dp0"
-nssm\\nssm.exe set ICCSFlux-DAQ Description "ICCSFlux Data Acquisition"
-nssm\\nssm.exe set ICCSFlux-DAQ Start SERVICE_AUTO_START
-nssm\\nssm.exe set ICCSFlux-DAQ DependOnService ICCSFlux-MQTT
-nssm\\nssm.exe set ICCSFlux-DAQ AppStdout "%~dp0data\\logs\\daq_service.log"
-nssm\\nssm.exe set ICCSFlux-DAQ AppStderr "%~dp0data\\logs\\daq_service.log"
-nssm\\nssm.exe set ICCSFlux-DAQ AppRotateFiles 1
-nssm\\nssm.exe set ICCSFlux-DAQ AppRotateBytes 10485760
-REM Auto-restart on failure (industrial-grade reliability)
-nssm\\nssm.exe set ICCSFlux-DAQ AppExit Default Restart
-nssm\\nssm.exe set ICCSFlux-DAQ AppRestartDelay 5000
-nssm\\nssm.exe set ICCSFlux-DAQ AppThrottle 10000
-echo     Done.
-
-echo.
-echo [3/4] Installing Azure IoT Hub Uploader...
-if exist "%~dp0AzureUploader.exe" (
-    nssm\\nssm.exe install ICCSFlux-Azure "%~dp0AzureUploader.exe" --host localhost --port 1883
-    nssm\\nssm.exe set ICCSFlux-Azure AppDirectory "%~dp0"
-    nssm\\nssm.exe set ICCSFlux-Azure Description "ICCSFlux Azure IoT Hub Uploader"
-    nssm\\nssm.exe set ICCSFlux-Azure Start SERVICE_AUTO_START
-    nssm\\nssm.exe set ICCSFlux-Azure DependOnService ICCSFlux-MQTT
-    nssm\\nssm.exe set ICCSFlux-Azure AppStdout "%~dp0data\\logs\\azure_uploader.log"
-    nssm\\nssm.exe set ICCSFlux-Azure AppStderr "%~dp0data\\logs\\azure_uploader.log"
-    nssm\\nssm.exe set ICCSFlux-Azure AppRotateFiles 1
-    nssm\\nssm.exe set ICCSFlux-Azure AppRotateBytes 10485760
-    REM Auto-restart on failure (industrial-grade reliability)
-    nssm\\nssm.exe set ICCSFlux-Azure AppExit Default Restart
-    nssm\\nssm.exe set ICCSFlux-Azure AppRestartDelay 5000
-    nssm\\nssm.exe set ICCSFlux-Azure AppThrottle 10000
-    echo     Done.
-) else (
-    echo     Skipped - Azure uploader not installed
-)
-
-echo.
-echo [4/4] Installing Dashboard Web Server...
-nssm\\nssm.exe install ICCSFlux-Web "%~dp0ICCSFlux.exe" --no-browser
-nssm\\nssm.exe set ICCSFlux-Web AppDirectory "%~dp0"
-nssm\\nssm.exe set ICCSFlux-Web Description "ICCSFlux Dashboard Web Server"
-nssm\\nssm.exe set ICCSFlux-Web Start SERVICE_AUTO_START
-nssm\\nssm.exe set ICCSFlux-Web DependOnService ICCSFlux-DAQ
-nssm\\nssm.exe set ICCSFlux-Web AppStdout "%~dp0data\\logs\\web_server.log"
-nssm\\nssm.exe set ICCSFlux-Web AppStderr "%~dp0data\\logs\\web_server.log"
-nssm\\nssm.exe set ICCSFlux-Web AppRotateFiles 1
-nssm\\nssm.exe set ICCSFlux-Web AppRotateBytes 10485760
-REM Auto-restart on failure (industrial-grade reliability)
-nssm\\nssm.exe set ICCSFlux-Web AppExit Default Restart
-nssm\\nssm.exe set ICCSFlux-Web AppRestartDelay 5000
-nssm\\nssm.exe set ICCSFlux-Web AppThrottle 10000
-echo     Done.
-
-echo.
-echo ============================================================
-echo Starting services...
-net start ICCSFlux-MQTT
-timeout /t 2 /nobreak >nul
-net start ICCSFlux-DAQ
-timeout /t 2 /nobreak >nul
-if exist "%~dp0AzureUploader.exe" net start ICCSFlux-Azure
-timeout /t 1 /nobreak >nul
-net start ICCSFlux-Web
-echo.
-echo ============================================================
-echo All services installed and started!
-echo.
-echo Dashboard: http://localhost:5173
-echo ============================================================
-pause
-'''
-    (BUILD_DIR / "Install-Service.bat").write_text(service_install)
-
-    # Service uninstall script
-    service_uninstall = '''@echo off
-cd /d "%~dp0"
-echo ============================================================
-echo    ICCSFlux Windows Service Removal
-echo ============================================================
-echo.
-echo This will remove all ICCSFlux Windows services.
-echo NOTE: Run this script as Administrator!
-echo.
-pause
-
-echo.
-echo Stopping services...
-net stop ICCSFlux-Web 2>nul
-net stop ICCSFlux-Azure 2>nul
-net stop ICCSFlux-DAQ 2>nul
-net stop ICCSFlux-MQTT 2>nul
-
-echo.
-echo Removing services...
-nssm\\nssm.exe remove ICCSFlux-Web confirm
-nssm\\nssm.exe remove ICCSFlux-Azure confirm 2>nul
-nssm\\nssm.exe remove ICCSFlux-DAQ confirm
-nssm\\nssm.exe remove ICCSFlux-MQTT confirm
-
-echo.
-echo ============================================================
-echo All ICCSFlux services removed.
-echo ============================================================
-pause
-'''
-    (BUILD_DIR / "Uninstall-Service.bat").write_text(service_uninstall)
-
-    log("Launchers created", "OK")
+    # Legacy bat files are no longer shipped — service management is built into
+    # ICCSFlux.exe (checkbox in UI, or --install-service / --uninstall-service CLI).
+    # The bat templates above are kept for reference but not written to disk.
+    log("Launchers created (service management built into ICCSFlux.exe)", "OK")
     return True
 
 
@@ -869,19 +724,25 @@ Option 1: Desktop Mode (recommended)
   - Pin ICCSFlux.exe to your taskbar for quick access
 
 Option 2: Windows Services (recommended for production)
-  - Run as Administrator: Install-Service.bat
-  - Services auto-start on boot
-  - Run even when logged out
+  - Open ICCSFlux.exe
+  - Check "Start automatically when this computer turns on"
+  - You will be prompted for administrator permission
+  - Services auto-start on boot, run even when logged out
   - Auto-restart on failure
 
-  To uninstall services:
-  - Run as Administrator: Uninstall-Service.bat
+  Or from the command line:
+    ICCSFlux.exe --install-service
+    ICCSFlux.exe --uninstall-service
+
+  To disable auto-start:
+  - Open ICCSFlux.exe
+  - Uncheck "Start automatically when this computer turns on"
 
 SERVICES INSTALLED
 ------------------
-When using Install-Service.bat, you get 4 Windows services:
+When auto-start is enabled, 4 Windows services are created:
 
-  ICCSFlux-MQTT   - MQTT broker (port 1883, 9001)
+  ICCSFlux-MQTT   - MQTT broker (port 1883, 9002)
   ICCSFlux-DAQ    - Data acquisition service
   ICCSFlux-Azure  - Azure uploader (if configured)
   ICCSFlux-Web    - Dashboard web server (port 5173)
@@ -929,8 +790,8 @@ TROUBLESHOOTING
 
 Problem: Services won't start
   - Check logs in data/logs/
-  - Verify ports 1883, 5173, 9001 are not in use
-  - Run Install-Service.bat as Administrator
+  - Verify ports 1883, 5173, 9002 are not in use
+  - Try re-enabling auto-start from ICCSFlux.exe
 
 Problem: Dashboard not loading
   - Check the launcher window for error messages
@@ -938,7 +799,7 @@ Problem: Dashboard not loading
   - Check data/logs/ for service logs
 
 Problem: Port conflicts
-  - Default ports: 1883 (MQTT), 5173 (Dashboard), 9001 (MQTT WebSocket)
+  - Default ports: 1883 (MQTT), 5173 (Dashboard), 9002/9003 (MQTT WebSocket)
   - ICCSFlux will try to find alternative ports if defaults are busy
 
 INDUSTRIAL FEATURES

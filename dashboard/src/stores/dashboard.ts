@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, triggerRef, computed, watch } from 'vue'
 import { useWindowSync } from '../composables/useWindowSync'
 import type {
   ChannelConfig,
@@ -53,6 +53,7 @@ export interface RecordingConfig {
   onLimitReached: 'new_file' | 'stop' | 'circular'
   circularMaxFiles: number
   mode: 'manual' | 'triggered' | 'scheduled'
+  autoStartOnAcquire: boolean
   triggerChannel: string
   triggerCondition: 'above' | 'below' | 'change'
   triggerValue: number
@@ -112,6 +113,7 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   onLimitReached: 'new_file',
   circularMaxFiles: 10,
   mode: 'manual',
+  autoStartOnAcquire: false,
   triggerChannel: '',
   triggerCondition: 'above',
   triggerValue: 0,
@@ -181,6 +183,7 @@ export function toBackendRecordingConfig(
     on_limit_reached: cfg.onLimitReached,
     circular_max_files: cfg.circularMaxFiles,
     mode: cfg.mode,
+    auto_start_on_acquire: cfg.autoStartOnAcquire,
     selected_channels: selectAll ? [] : selectedChannels,
     include_scripts: true,
     trigger_channel: cfg.triggerChannel,
@@ -215,7 +218,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Channel data
   const channels = ref<Record<string, ChannelConfig>>({})
-  const values = ref<Record<string, ChannelValue>>({})
+  const values = shallowRef<Record<string, ChannelValue>>({})
   const status = ref<SystemStatus | null>(null)
 
   // Multi-page dashboard state
@@ -595,43 +598,22 @@ export const useDashboardStore = defineStore('dashboard', () => {
     channels.value = channelConfigs
   }
 
-  function updateValues(newValues: Record<string, number>) {
-    const timestamp = Date.now()
-
-    Object.entries(newValues).forEach(([name, value]) => {
-      const config = channels.value[name]
-
-      values.value[name] = {
-        name,
-        value,
-        timestamp,
-        alarm: config ? checkAlarm(value, config) : false,
-        warning: config ? checkWarning(value, config) : false
-      }
+  function updateValues(newValues: Record<string, ChannelValue>) {
+    const current = values.value
+    Object.entries(newValues).forEach(([name, cv]) => {
+      current[name] = cv
     })
-  }
-
-  function checkAlarm(value: number, config: ChannelConfig): boolean {
-    // Use != null to check both undefined AND null
-    if (config.low_limit != null && value < config.low_limit) return true
-    if (config.high_limit != null && value > config.high_limit) return true
-    return false
-  }
-
-  function checkWarning(value: number, config: ChannelConfig): boolean {
-    // Use != null to check both undefined AND null
-    if (config.low_warning != null && value < config.low_warning) return true
-    if (config.high_warning != null && value > config.high_warning) return true
-    return false
+    triggerRef(values)
   }
 
   // Update values from scripts (calculated params, transformations)
   function updateScriptValues(scriptValues: Record<string, { value: number; name: string }>) {
     const timestamp = Date.now()
+    const current = values.value
 
     Object.entries(scriptValues).forEach(([name, data]) => {
       // Add to values so widgets can bind to them
-      values.value[name] = {
+      current[name] = {
         name,
         value: data.value,
         timestamp,
@@ -650,6 +632,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
         }
       }
     })
+    triggerRef(values)
   }
 
   function setStatus(newStatus: SystemStatus) {

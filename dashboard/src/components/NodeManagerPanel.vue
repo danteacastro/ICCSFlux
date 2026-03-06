@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMqtt } from '../composables/useMqtt'
+import { useCredentialPush } from '../composables/useCredentialPush'
 import type { NodeInfo } from '../types'
 
 const mqtt = useMqtt()
+const credPush = useCredentialPush(mqtt)
 
 const nodes = computed(() => Array.from(mqtt.knownNodes.value.values()))
 const expandedNodeId = ref<string | null>(null)
@@ -307,6 +309,24 @@ onUnmounted(() => {
         <ol>
           <li v-for="(step, i) in getSetupInstructions().steps" :key="i">{{ step }}</li>
         </ol>
+      </div>
+    </div>
+
+    <!-- Offline Node Alert -->
+    <div v-if="credPush.hasDesyncedNodes.value" class="cred-alert-banner">
+      <div class="cred-alert-header">Offline Nodes Detected</div>
+      <div
+        v-for="[nodeId, status] in credPush.desyncedNodes.value"
+        :key="nodeId"
+        class="cred-alert-item"
+      >
+        <div class="cred-alert-info">
+          <span class="cred-node-id">{{ nodeId }}</span>
+          <span class="cred-alert-msg">{{ status.message }}</span>
+        </div>
+        <div class="cred-alert-actions">
+          <button class="btn-dismiss" @click="credPush.dismissNode(nodeId)">Dismiss</button>
+        </div>
       </div>
     </div>
 
@@ -841,4 +861,70 @@ onUnmounted(() => {
   color: var(--text-primary);
   overflow-x: auto;
 }
+
+/* Credential Desync Alert */
+.cred-alert-banner {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.cred-alert-header {
+  font-weight: 600;
+  font-size: 13px;
+  color: #f59e0b;
+  margin-bottom: 8px;
+}
+
+.cred-alert-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+.cred-alert-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cred-node-id {
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cred-alert-msg {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cred-alert-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-dismiss {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-primary);
+}
+
+.btn-dismiss:hover { background: var(--bg-hover); }
+
 </style>

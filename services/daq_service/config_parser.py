@@ -181,6 +181,17 @@ class SystemConfig:
     watchdog_output_enabled: bool = False
     watchdog_output_channel: str = ""
     watchdog_output_rate_hz: float = 1.0
+    # Logging (per-project, defaults from system.ini [logging])
+    log_level: str = "INFO"
+    log_max_file_size_mb: int = 50
+    log_backup_count: int = 3
+    # Service timing (per-project, defaults from system.ini [service])
+    service_heartbeat_interval_sec: float = 2.0
+    service_health_timeout_sec: float = 10.0
+    service_shutdown_timeout_sec: float = 10.0
+    service_command_ack_timeout_sec: float = 5.0
+    # Data viewer retention (per-project, defaults from system.ini [dataviewer])
+    dataviewer_retention_days: int = 30
 
 
 @dataclass
@@ -584,11 +595,27 @@ def load_config(config_path: str) -> NISystemConfig:
             logger.warning(f"Unknown project_mode '{mode_str}', defaulting to 'cdaq'")
             system.project_mode = ProjectMode.CDAQ
 
+    # Parse logging config (from system.ini [logging] section) into SystemConfig
+    if 'logging' in parser:
+        log_section = parser['logging']
+        system.log_level = log_section.get('level', system.log_level).upper()
+        system.log_max_file_size_mb = int(log_section.get('max_file_size_mb', system.log_max_file_size_mb))
+        system.log_backup_count = int(log_section.get('backup_count', system.log_backup_count))
+
+    # Parse service config (from system.ini [service] section) into SystemConfig
+    if 'service' in parser:
+        svc_section = parser['service']
+        system.service_heartbeat_interval_sec = float(svc_section.get('heartbeat_interval_sec', system.service_heartbeat_interval_sec))
+        system.service_health_timeout_sec = float(svc_section.get('health_timeout_sec', system.service_health_timeout_sec))
+        system.service_shutdown_timeout_sec = float(svc_section.get('shutdown_timeout_sec', system.service_shutdown_timeout_sec))
+        system.service_command_ack_timeout_sec = float(svc_section.get('command_ack_timeout_sec', system.service_command_ack_timeout_sec))
+
     # Parse dataviewer config (from system.ini [dataviewer] section)
     dataviewer = DataViewerConfig()
     if 'dataviewer' in parser:
         dv_section = parser['dataviewer']
         dataviewer.retention_days = int(dv_section.get('retention_days', dataviewer.retention_days))
+        system.dataviewer_retention_days = dataviewer.retention_days
 
     # Parse chassis configs
     chassis = {}

@@ -423,9 +423,14 @@ class AuditTrail:
                             continue
 
                         entry_time = datetime.fromisoformat(entry_dict.get('timestamp', ''))
-                        if start_time and entry_time < start_time:
+                        # Normalize to naive for comparison (old entries may be tz-aware)
+                        if entry_time.tzinfo is not None:
+                            entry_time = entry_time.replace(tzinfo=None)
+                        cmp_start = start_time.replace(tzinfo=None) if start_time and start_time.tzinfo else start_time
+                        cmp_end = end_time.replace(tzinfo=None) if end_time and end_time.tzinfo else end_time
+                        if cmp_start and entry_time < cmp_start:
                             continue
-                        if end_time and entry_time > end_time:
+                        if cmp_end and entry_time > cmp_end:
                             continue
 
                         results.append(AuditEntry.from_dict(entry_dict))

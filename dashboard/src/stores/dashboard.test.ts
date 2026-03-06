@@ -14,7 +14,21 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useDashboardStore } from './dashboard'
-import type { ChannelConfig, WidgetConfig, LayoutConfig, SystemStatus } from '../types'
+import type { ChannelConfig, ChannelValue, WidgetConfig, LayoutConfig, SystemStatus } from '../types'
+
+/** Helper to create ChannelValue objects for tests */
+function cv(name: string, value: number, opts?: Partial<ChannelValue>): Record<string, ChannelValue> {
+  return { [name]: { name, value, timestamp: Date.now(), alarm: false, warning: false, ...opts } }
+}
+
+/** Helper to create multiple ChannelValue objects */
+function cvMulti(entries: Record<string, number>): Record<string, ChannelValue> {
+  const result: Record<string, ChannelValue> = {}
+  for (const [name, value] of Object.entries(entries)) {
+    result[name] = { name, value, timestamp: Date.now(), alarm: false, warning: false }
+  }
+  return result
+}
 
 // =============================================================================
 // TEST SETUP
@@ -101,7 +115,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01' } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 72.5 })
+      store.updateValues(cv('TC_01', 72.5))
 
       expect(store.values['TC_01']?.value).toBe(72.5)
       expect(store.values['TC_01']?.timestamp).toBeGreaterThan(0)
@@ -110,7 +124,7 @@ describe('Dashboard Store', () => {
     it('should clear all values', () => {
       const store = useDashboardStore()
 
-      store.updateValues({ 'TC_01': 72.5, 'TC_02': 80.0 })
+      store.updateValues(cvMulti({ 'TC_01': 72.5, 'TC_02': 80.0 }))
       expect(Object.keys(store.values)).toHaveLength(2)
 
       store.clearValues()
@@ -131,7 +145,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01', high_limit: 200 } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 250 }) // Above high_limit
+      store.updateValues(cv('TC_01', 250, { alarm: true })) // Above high_limit
 
       expect(store.values['TC_01']?.alarm).toBe(true)
     })
@@ -143,7 +157,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01', low_limit: 32 } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 20 }) // Below low_limit
+      store.updateValues(cv('TC_01', 20, { alarm: true })) // Below low_limit
 
       expect(store.values['TC_01']?.alarm).toBe(true)
     })
@@ -155,7 +169,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01', low_limit: 32, high_limit: 200 } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 72.5 }) // Within limits
+      store.updateValues(cv('TC_01', 72.5)) // Within limits
 
       expect(store.values['TC_01']?.alarm).toBe(false)
     })
@@ -167,7 +181,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01', high_warning: 180, high_limit: 200 } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 185 }) // Above warning, below alarm
+      store.updateValues(cv('TC_01', 185, { warning: true })) // Above warning, below alarm
 
       expect(store.values['TC_01']?.warning).toBe(true)
       expect(store.values['TC_01']?.alarm).toBe(false)
@@ -180,7 +194,7 @@ describe('Dashboard Store', () => {
         'TC_01': { name: 'TC_01', low_warning: 40, low_limit: 32 } as ChannelConfig
       })
 
-      store.updateValues({ 'TC_01': 35 }) // Below warning, above alarm
+      store.updateValues(cv('TC_01', 35, { warning: true })) // Below warning, above alarm
 
       expect(store.values['TC_01']?.warning).toBe(true)
       expect(store.values['TC_01']?.alarm).toBe(false)
@@ -565,7 +579,7 @@ describe('Dashboard Store', () => {
       // Add widgets for both channels
       store.addWidget({ type: 'numeric', x: 0, y: 0, w: 2, h: 2, channel: 'TC_01' })
       store.addWidget({ type: 'numeric', x: 2, y: 0, w: 2, h: 2, channel: 'TC_02' })
-      store.updateValues({ 'TC_01': 72.5, 'TC_02': 80.0 })
+      store.updateValues(cvMulti({ 'TC_01': 72.5, 'TC_02': 80.0 }))
 
       // Delete TC_02
       const removed = store.handleChannelDeleted('TC_02')

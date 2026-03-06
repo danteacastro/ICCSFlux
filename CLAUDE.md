@@ -419,7 +419,57 @@ python -m pytest tests/test_hardware_hil.py -v -k "tier4"
 | Mod3 | NI 9425 | 32 DI (spring) | 2 switches on ch0-1 |
 | Mod4 | NI 9472 | 8 DO | 4 relays on ch0-1 |
 | Mod5 | NI 9213 | 16 TC | TC on ch0 only |
-| Mod6 | NI 9266 | 8 AO (current) | Unused |
+| Mod6 | NI 9266 | 8 AO (current) | Wired to Mod7 CI (CO loopback) |
+| Mod7 | NI 9208 | 8 CI (4-20mA current) | CO loopback from Mod6 |
+
+### cRIO Hardware Acquisition Test Suite
+
+**81-test end-to-end validation** of the full cRIO hardware acquisition pipeline. Tests are grouped and run in order (pytest-ordering); each group depends on prior groups passing.
+
+**No manual startup required** — the `mqtt_broker` and `daq_service` session fixtures auto-start Mosquitto (ports 1883 + 8883 TLS + 9002 WS) and the DAQ service. Only the cRIO itself must be powered on.
+
+**Prerequisites (hardware only):**
+- cRIO-9056 powered on and accessible at 192.168.1.20 (service starts at boot via `/etc/init.d/crio_node`)
+- Loopback wiring in place: AO Mod2→AI Mod1, DO Mod4→DI Mod3, CO Mod6→CI Mod7 (ai0-7)
+- Mod7 ai8-ai15 must be unwired (used for open-circuit detection — naturally reads ~0mA)
+
+```bash
+# Full suite (81 tests) — auto-starts broker + DAQ service
+python -m pytest tests/test_crio_acquisition.py -v --tb=short
+
+# Individual groups
+python -m pytest tests/test_crio_acquisition.py -v -k "Group1"
+python -m pytest tests/test_crio_acquisition.py -v -k "Group11 or Group12 or Group13"
+python -m pytest tests/test_crio_acquisition.py -v -k "Group14"
+
+# New groups only (faster iteration on command/safety features)
+python -m pytest tests/test_crio_acquisition.py -v -k "Group11 or Group12 or Group13 or Group14"
+```
+
+| Group | Tests | What it validates |
+|-------|-------|-------------------|
+| 1 — Infrastructure | 7 | MQTT online, cRIO node heartbeat, project load, acquisition start, NTP config, NTP sync status |
+| 2 — Channel Discovery | 4 | All 105 channels arriving, channel count, group presence, module slots |
+| 3 — Thermocouple (Mod5) | 4 | TC readings realistic (−40–250°C), TC type, open-sensor detection |
+| 4 — Analog Input (Mod1) | 5 | AI baseline, accuracy at 5V reference, noise floor, all 16 channels |
+| 5 — Analog Output (Mod2) | 4 | AO write → AI read loopback accuracy at 0/2.5/5V |
+| 6 — Digital Input (Mod3) | 4 | DI channel count, debounce, switch state |
+| 7 — Digital Output (Mod4) | 4 | DO write → DI read loopback, relay states |
+| 8 — AO→AI Full Sweep | 5 | Multi-point sweep 0–10V, linearity, hysteresis, channel cross-talk |
+| 9 — AO/AI Simultaneous | 6 | Simultaneous multi-channel AO→AI, scan-rate timing, update rate |
+| 10 — Safety Interlocks | 8 | DI interlock condition, latch arm/trip/reset, DO safe state, bypass, output blocking |
+| 11 — Alarms | 8 | Alarm config push, Hi alarm fires on AO→AI loopback, acknowledge, clear on return, shelve suppresses, unshelve fires, OOS suppresses, cleanup |
+| 12 — Scripts | 6 | Script add/start/stop/remove on real cRIO, script publishes computed values, clear-all |
+| 13 — Interlock Bypass | 5 | Configure bypass-allowed interlock, bypass suppresses trip, unbypass restores trip, cleanup |
+| 14 — Current I/O (Mod6/7) | 7 | CI channels arriving, CO→CI loopback accuracy, all 8 channels at 12mA, ramp monotonicity, 4-20mA scaling (0/50/100%), open-circuit detection (CI_Mod7_ch08 = Mod7/ai8, physically unwired, reads ~0mA, LOLO fires), cleanup |
+
+**Test project:** `config/projects/_CrioAcquisitionTest.json` — 105 channels across 7 modules. Mod7: ai0-7 wired (CO loopback from Mod6), ai8 unwired (genuine open-circuit for LOLO detection). Alarm on AI_Mod1_ch00 (Hi/HiHi for Group 11) and CI_Mod7_ch08 (LoLo, always active as open-circuit alarm).
+
+**Key file:** `tests/test_crio_acquisition.py`
+
+**Skip behavior:** Groups 2-14 auto-skip if acquisition is not running (Group 1 must pass first). Groups 10-13 auto-skip if earlier safety/script infrastructure is missing.
+
+**NTP tests (Group 1):** SSH into cRIO, read `/etc/ntp.conf`, verify `minpoll 4 maxpoll 6` polling parameters; run `ntpq -p`, verify a synced peer (`*`), and clock offset < 1000ms. Skips with a note if NTP is still converging.
 
 ### System Validation Suite (Field Diagnostics)
 

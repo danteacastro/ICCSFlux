@@ -315,7 +315,7 @@ export interface ChannelValue {
   timestamp: number
   alarm?: boolean
   warning?: boolean
-  quality?: 'good' | 'bad' | 'alarm' | 'warning' | 'uncertain'  // Data quality indicator
+  quality?: 'good' | 'bad' | 'stale' | 'alarm' | 'warning' | 'uncertain'  // Data quality indicator
   disconnected?: boolean  // True when hardware device is not connected
   // Specific error states for better diagnostics
   openThermocouple?: boolean  // True when thermocouple is open/broken
@@ -345,6 +345,18 @@ export interface NodeInfo {
   recording?: boolean
   channelCount?: number
   safetyState?: 'normal' | 'warning' | 'tripped' | 'emergency'
+}
+
+export interface CredentialStatus {
+  node_id: string
+  ip_address: string
+  node_type: string
+  product_type: string
+  reachable: boolean
+  mqtt_connected: boolean
+  diagnosis: 'offline_reachable' | 'unreachable' | 'ok'
+  message: string
+  timestamp: string
 }
 
 export interface GCNodeConfig {
@@ -424,6 +436,15 @@ export interface SystemStatus {
   db_enabled?: boolean
   db_connected?: boolean
   db_rows_written?: number
+  // Per-project operational settings (from system.ini defaults, overridable per-project)
+  log_level?: string
+  log_max_file_size_mb?: number
+  log_backup_count?: number
+  service_heartbeat_interval_sec?: number
+  service_health_timeout_sec?: number
+  service_shutdown_timeout_sec?: number
+  service_command_ack_timeout_sec?: number
+  dataviewer_retention_days?: number
 }
 
 // Result type for device command responses (test connection, tag browse, etc.)
@@ -471,6 +492,8 @@ export interface BackendRecordingConfig {
   circular_max_files: number
   // Recording mode
   mode: 'manual' | 'triggered' | 'scheduled'
+  // Auto-start recording when acquisition begins (unattended operation)
+  auto_start_on_acquire: boolean
   selected_channels: string[]
   include_scripts: boolean
   // Triggered mode
@@ -2337,6 +2360,7 @@ export interface CrioCallbackPayload {
   error?: string
   node_id?: string
   operation?: string
+  config_version?: string
 }
 
 // =========================================================================
@@ -2382,4 +2406,43 @@ export interface NotificationSettings {
   quiet_hours_enabled: boolean
   quiet_hours_start: string
   quiet_hours_end: string
+}
+
+// Acquisition Event Pipeline
+export interface AcquisitionPipelineEvent {
+  event: string
+  timestamp: string
+  epoch_ms: number
+  severity: 'info' | 'warning' | 'error'
+  flow_id?: string
+  details?: Record<string, unknown>
+}
+
+// System Health Pipeline
+export interface SystemHealth {
+  timestamp: string
+  scan_loop: {
+    healthy: boolean
+    consecutive_errors: number
+    total_errors: number
+    last_successful_scan?: number
+    errors_per_minute: number
+  }
+  hardware: {
+    running: boolean
+    thread_alive: boolean
+    reader_died: boolean
+    error_count: number
+    healthy: boolean
+  } | null
+  safety: {
+    last_eval_time: number
+    eval_failures: number
+    healthy: boolean
+  }
+  channels: {
+    total: number
+    nan_count: number
+    stale_count: number
+  }
 }

@@ -1062,11 +1062,28 @@ class CFPNodeV2:
     # =========================================================================
 
     def _publish_values(self):
-        """Publish channel values in batch format."""
+        """Publish channel values in lean batch format."""
+        now = time.time()
+        ts_us = int(now * 1_000_000)
+        timestamp = datetime.now().isoformat()
+
+        v = {}
+        bad = []
+
         with self.values_lock:
             if not self.channel_values:
                 return
-            batch = dict(self.channel_values)
+            for name, data in self.channel_values.items():
+                val = data.get('value')
+                if val is None or data.get('quality') == 'bad':
+                    v[name] = None
+                    bad.append(name)
+                else:
+                    v[name] = val
+
+        batch = {'t': timestamp, 'ts_us': ts_us, 'v': v}
+        if bad:
+            batch['bad'] = bad
 
         self.mqtt.publish("channels/batch", batch)
 

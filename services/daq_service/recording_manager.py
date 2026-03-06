@@ -128,6 +128,9 @@ class RecordingConfig:
     # Recording mode
     mode: str = "manual"  # 'manual', 'triggered', 'scheduled'
 
+    # Auto-start recording when acquisition begins (unattended weekend operation)
+    auto_start_on_acquire: bool = False
+
     # Triggered mode settings
     trigger_channel: str = ""
     trigger_condition: str = "above"  # 'above', 'below', 'change'

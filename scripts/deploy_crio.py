@@ -14,6 +14,8 @@ SAFETY: Ensures exactly ONE cRIO process runs at all times.
 
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -29,6 +31,26 @@ CRIO_MODULE_FILES = [
 ]
 
 NISYSTEM_DIR = '/home/admin/nisystem'
+
+
+def _get_ntp_timestamp(timeout: float = 3.0) -> int:
+    """Query pool.ntp.org and return current UTC as a Unix timestamp integer.
+
+    Returns 0 if all servers fail (caller falls back to PC wall clock).
+    """
+    for server in ('pool.ntp.org', 'time.cloudflare.com', 'time.windows.com'):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(timeout)
+            s.sendto(b'\x1b' + 47 * b'\0', (server, 123))
+            data, _ = s.recvfrom(1024)
+            s.close()
+            if len(data) >= 44:
+                t = struct.unpack('!I', data[40:44])[0]
+                return t - 2208988800  # NTP epoch → Unix epoch
+        except Exception:
+            pass
+    return 0
 
 
 def run_ssh(host: str, cmd: str, check: bool = True, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -207,45 +229,52 @@ def main():
     else:
         print("  WARNING: No TLS CA cert found. cRIO will use plaintext port 1883.")
 
-    # ── [5/8] Write credentials ───────────────────────────────────────────
-    print("\n[5/8] Writing credentials...")
+    # Deploy NTP sync helper (NI Linux RT has no ntpdate/ntpd — uses Python UDP)
+    run_scp(host, os.path.join(SCRIPT_DIR, 'ntp_sync.py'),
+            f'{NISYSTEM_DIR}/ntp_sync.py')
+    run_ssh(host, f'chmod +x {NISYSTEM_DIR}/ntp_sync.py')
+    print("  NTP sync helper deployed.")
+
+    # ── [5/8] Write connection config ────────────────────────────────────
+    print("\n[5/8] Writing connection config...")
+    # Port 8883 is anonymous (TLS-only auth via CA cert) — credentials optional.
+    # Always write broker/port/TLS settings; include credentials if available.
+    creds = {
+        'broker': broker,
+        'port': port,
+        'tls_enabled': tls_enabled,
+        'tls_ca_cert': tls_ca_remote,
+        'node_id': 'crio-001',
+    }
     if mqtt_user:
-        creds = {
-            'mqtt_user': mqtt_user,
-            'mqtt_pass': mqtt_pass,
-            'broker': broker,
-            'port': port,
-            'tls_enabled': tls_enabled,
-            'tls_ca_cert': tls_ca_remote,
-            'node_id': 'crio-001',
-        }
-        tmp_creds = os.path.join(PROJECT_ROOT, '_crio_creds_tmp.json')
-        try:
-            with open(tmp_creds, 'w') as f:
-                json.dump(creds, f, indent=2)
-            run_scp(host, tmp_creds, f'{NISYSTEM_DIR}/mqtt_creds.json')
-            run_ssh(host, f'chmod 600 {NISYSTEM_DIR}/mqtt_creds.json')
-            print(f"  Credentials written (user={mqtt_user}, port={port}, TLS={tls_enabled})")
-        finally:
-            if os.path.exists(tmp_creds):
-                os.remove(tmp_creds)
+        creds['mqtt_user'] = mqtt_user
+        creds['mqtt_pass'] = mqtt_pass
+    tmp_creds = os.path.join(PROJECT_ROOT, '_crio_creds_tmp.json')
+    try:
+        with open(tmp_creds, 'w') as f:
+            json.dump(creds, f, indent=2)
+        run_scp(host, tmp_creds, f'{NISYSTEM_DIR}/mqtt_creds.json')
+        run_ssh(host, f'chmod 600 {NISYSTEM_DIR}/mqtt_creds.json')
+        auth_info = f"user={mqtt_user}" if mqtt_user else "anonymous"
+        print(f"  Config written ({auth_info}, port={port}, TLS={tls_enabled})")
+    finally:
+        if os.path.exists(tmp_creds):
+            os.remove(tmp_creds)
 
-        # Verify on cRIO
-        r = run_ssh(host, (
-            f'python3 -c "'
-            f"import json; d=json.load(open('{NISYSTEM_DIR}/mqtt_creds.json')); "
-            f"print('  Verified: user=' + d.get('mqtt_user','?') + ' broker=' + d.get('broker','?') + ' port=' + str(d.get('port','?')))"
-            f'"'
-        ), check=False)
-        if r.returncode == 0:
-            print(r.stdout.strip())
-        else:
-            print("  WARNING: Credential verification failed on cRIO!")
+    # Verify on cRIO
+    r = run_ssh(host, (
+        f'python3 -c "'
+        f"import json; d=json.load(open('{NISYSTEM_DIR}/mqtt_creds.json')); "
+        f"print('  Verified: broker=' + d.get('broker','?') + ' port=' + str(d.get('port','?')) + ' TLS=' + str(d.get('tls_enabled','?')))"
+        f'"'
+    ), check=False)
+    if r.returncode == 0:
+        print(r.stdout.strip())
     else:
-        print("  WARNING: No MQTT credentials found. Run start.bat first.")
+        print("  WARNING: Config verification failed on cRIO!")
 
-    # ── [6/8] Verify deployment ───────────────────────────────────────────
-    print("\n[6/8] Verifying deployment...")
+    # ── [6/9] Verify deployment ───────────────────────────────────────────
+    print("\n[6/9] Verifying deployment...")
     r = run_ssh(host, (
         f'python3 -c "'
         f"import sys; sys.path.insert(0, '{NISYSTEM_DIR}'); "
@@ -260,8 +289,58 @@ def main():
         sys.exit(1)
     print(r.stdout.strip())
 
-    # ── [7/8] Install + start init.d service ──────────────────────────────
-    print("\n[7/8] Installing and starting init.d service...")
+    # ── [7/9] NTP time sync ────────────────────────────────────────────────
+    print("\n[7/9] Correcting cRIO clock...")
+    # The cRIO hardware RTC can drift from real UTC. nitsmd (NI Time Sync
+    # manager) continuously re-applies the RTC value, so a simple 'date -s'
+    # reverts within seconds.  Reliable fix:
+    #   1. Obtain authoritative NTP time on the PC (UDP 123 outbound).
+    #   2. Stop nitsmd so it stops fighting us.
+    #   3. Set system clock + write hardware RTC (hwclock -w).
+    #   4. Restart nitsmd — it now reads the corrected RTC as its baseline.
+    ntp_ts = _get_ntp_timestamp()
+    if ntp_ts:
+        ref_ts = ntp_ts
+        ref_source = "NTP"
+    else:
+        # NTP unreachable (firewall) — fall back to PC wall clock.
+        # PC clock may drift slightly from UTC but is good enough for logging.
+        ref_ts = int(time.time())
+        ref_source = "PC clock (NTP unreachable)"
+
+    run_ssh(host, (
+        f"/etc/init.d/nitsmd stop 2>/dev/null; "
+        f"date -s @{ref_ts} && hwclock -w; "
+        f"/etc/init.d/nitsmd start 2>/dev/null; "
+        f"true"
+    ), check=False)
+    print(f"  cRIO clock set from {ref_source} ({ref_ts}).")
+
+    # Verify: read back cRIO time and report offset
+    try:
+        r = run_ssh(host, "date +%s", check=False)
+        lines = [l.strip() for l in r.stdout.splitlines()
+                 if l.strip() and 'NI Linux Real-Time' not in l]
+        if lines:
+            crio_ts = int(lines[0])
+            offset = crio_ts - ref_ts
+            if abs(offset) <= 5:
+                print(f"  Clock verified: cRIO={crio_ts}, ref={ref_ts}, offset={offset:+d}s ✓")
+            else:
+                print(f"  WARNING: clock offset {offset:+d}s after correction "
+                      f"(nitsmd may be syncing to an external PTP reference).")
+    except Exception:
+        pass
+
+    # Also launch ntp_sync.py in background so the service re-syncs if nitsmd
+    # drifts after deploy (runs once at each service restart).
+    run_ssh(host,
+            f"nohup python3 {NISYSTEM_DIR}/ntp_sync.py >> /var/log/crio_node_v2.log 2>&1 &",
+            check=False)
+    print(f"  NTP sync helper started in background.")
+
+    # ── [8/9] Install + start init.d service ──────────────────────────────
+    print("\n[8/9] Installing and starting init.d service...")
 
     # Remove deprecated old crio_service (V1) to prevent conflicts
     run_ssh(host, (
@@ -291,8 +370,8 @@ def main():
     # Wait for service to initialize
     time.sleep(4)
 
-    # ── [8/8] SAFETY VERIFICATION ─────────────────────────────────────────
-    print("\n[8/8] Safety verification...")
+    # ── [9/9] SAFETY VERIFICATION ─────────────────────────────────────────
+    print("\n[9/9] Safety verification...")
     proc_count = count_crio_processes(host)
 
     if proc_count == 0:

@@ -46,11 +46,12 @@ const widgetConfig = computed(() =>
 const channelConfig = computed(() => store.channels[props.channel])
 const channelValue = computed(() => store.values[props.channel])
 
-// Check if data is stale (no update in last 5 seconds) or system not acquiring
+// Check if data is stale — trust server-side quality flag (handles clock skew)
 const isStale = computed(() => {
   if (!channelValue.value?.timestamp) return true
   if (!store.isAcquiring) return true
-  return (Date.now() - channelValue.value.timestamp) > 5000
+  if (channelValue.value.quality === 'stale') return true
+  return (Date.now() - channelValue.value.timestamp) > 15000
 })
 
 const isOn = computed(() => {

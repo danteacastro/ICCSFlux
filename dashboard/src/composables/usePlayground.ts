@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import { useMqtt } from './useMqtt'
 import type {
   UserVariable,
   UserVariableType,
@@ -173,23 +174,19 @@ export function usePlayground() {
   // TEST SESSION MANAGEMENT
   // ========================================================================
 
-  function startTestSession(startedBy: string = 'user', metadata?: {
+  async function startTestSession(startedBy: string = 'user', metadata?: {
     testId?: string
     description?: string
     operatorNotes?: string
     timeoutMinutes?: number
-  }): void {
-    publish('nisystem/test-session/start', {
-      started_by: startedBy,
-      test_id: metadata?.testId || '',
-      description: metadata?.description || '',
-      operator_notes: metadata?.operatorNotes || '',
-      timeout_minutes: metadata?.timeoutMinutes || 0,
-    })
+  }): Promise<{ success: boolean; error?: string }> {
+    const mqtt = useMqtt()
+    return mqtt.startTestSession(startedBy, metadata)
   }
 
-  function stopTestSession(): void {
-    publish('nisystem/test-session/stop', {})
+  async function stopTestSession(): Promise<{ success: boolean; error?: string }> {
+    const mqtt = useMqtt()
+    return mqtt.stopTestSession()
   }
 
   function updateSessionConfig(config: Partial<TestSessionConfig> & { enableTriggerIds?: string[], enableScheduleIds?: string[] }): void {
@@ -204,11 +201,13 @@ export function usePlayground() {
     if (config.enableTriggerIds !== undefined) payload.enable_trigger_ids = config.enableTriggerIds
     if (config.enableScheduleIds !== undefined) payload.enable_schedule_ids = config.enableScheduleIds
 
-    publish('nisystem/test-session/config', payload)
+    const mqtt = useMqtt()
+    mqtt.sendCommand('test-session/config', payload)
   }
 
   function refreshSessionStatus(): void {
-    publish('nisystem/test-session/status', {})
+    const mqtt = useMqtt()
+    mqtt.sendCommand('test-session/status', {})
   }
 
   // ========================================================================

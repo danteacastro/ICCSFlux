@@ -321,7 +321,7 @@ def start_daq_service(
     mqtt_port: int = 1883,
     username: Optional[str] = None,
     password: Optional[str] = None,
-    startup_timeout: float = 30.0,
+    startup_timeout: float = 60.0,
 ) -> Tuple[Optional[subprocess.Popen], bool]:
     """Start DAQ service if not already running.
 
@@ -383,7 +383,8 @@ def start_daq_service(
     proc._daq_log_path = log_path
 
     # Wait for the service to initialize and start publishing status.
-    # Subscribe once and wait for the retained status message to arrive.
+    # Subscribe and wait for a LIVE (non-retained) status message to confirm
+    # the new process is actually running — retained messages may be stale.
     import threading
     try:
         import paho.mqtt.client as mqtt
@@ -397,7 +398,19 @@ def start_daq_service(
             probe.username_pw_set(username, password)
 
         def on_message(client, userdata, msg):
-            ready.set()
+            # Skip retained messages — they may be stale from a previous
+            # DAQ session that is no longer running.  Only a fresh
+            # (non-retained) publish with node_type="daq" proves the new
+            # process is alive (cRIO nodes publish to the same topic pattern).
+            if msg.retain:
+                return
+            try:
+                import json as _json
+                payload = _json.loads(msg.payload.decode())
+                if payload.get('node_type') == 'daq':
+                    ready.set()
+            except Exception:
+                pass  # Malformed payload — ignore
 
         probe.on_message = on_message
         probe.connect(mqtt_host, mqtt_port, keepalive=10)
@@ -467,7 +480,11 @@ def _is_daq_service_running(
     host: str, port: int,
     username: Optional[str], password: Optional[str],
 ) -> bool:
-    """Check if DAQ service is publishing status via MQTT."""
+    """Check if DAQ service is actively publishing status via MQTT.
+
+    Ignores retained messages (stale from previous sessions) and waits
+    for a live status publish to confirm the service is actually running.
+    """
     try:
         import paho.mqtt.client as mqtt
         import threading
@@ -481,14 +498,28 @@ def _is_daq_service_running(
             client.username_pw_set(username, password)
 
         def on_message(client, userdata, msg):
-            received.set()
+            # Skip retained messages — they may be stale from a previous
+            # session that has since exited.  Only a live (non-retained)
+            # publish proves the service is actually running right now.
+            # Also require node_type="daq" — cRIO nodes publish to the same
+            # topic pattern and would otherwise cause a false positive.
+            if msg.retain:
+                return
+            try:
+                import json as _json
+                payload = _json.loads(msg.payload.decode())
+                if payload.get('node_type') == 'daq':
+                    received.set()
+            except Exception:
+                pass  # Malformed payload — ignore
 
         client.on_message = on_message
         client.connect(host, port, keepalive=5)
         client.loop_start()
         client.subscribe(_DAQ_STATUS_TOPIC)
 
-        found = received.wait(timeout=3.0)
+        # DAQ publishes status every ~1s, so 5s is plenty
+        found = received.wait(timeout=5.0)
 
         client.loop_stop()
         client.disconnect()

@@ -230,6 +230,10 @@ class NodeConfig:
             mqtt_base_topic=data.get('mqtt_base_topic', 'nisystem'),
             heartbeat_interval_s=data.get('heartbeat_interval_s', 5.0),
             use_mock_hardware=data.get('use_mock_hardware', False),
+            watchdog_output_channel=data.get('watchdog_output_channel'),
+            watchdog_output_rate_hz=data.get('watchdog_output_rate_hz', 1.0),
+            watchdog_output_enabled=data.get('watchdog_output_enabled', False),
+            comm_watchdog_timeout_s=data.get('comm_watchdog_timeout_s', 30.0),
             channels=channels
         )
 
@@ -284,6 +288,7 @@ class CRIONodeV2:
         hw_config = HardwareConfig(
             device_name=config.device_name,
             scan_rate_hz=config.scan_rate_hz,
+            di_poll_rate_hz=config.di_poll_rate_hz,
             channels=config.channels
         )
         self.hardware = create_hardware(hw_config, config.use_mock_hardware)
@@ -306,8 +311,14 @@ class CRIONodeV2:
 
         # Control flags
         self._shutdown = threading.Event()
-        self._main_thread: Optional[threading.Thread] = None
+        self._scan_thread: Optional[threading.Thread] = None
+        self._publish_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
+
+        # Publish snapshot — scan thread writes, publish thread reads
+        self._publish_snapshot: Dict[str, Any] = {}
+        self._publish_output_snapshot: Dict[str, float] = {}
+        self._publish_snapshot_lock = threading.Lock()
 
         # Timing
         self._last_publish_time = 0.0
@@ -405,16 +416,69 @@ class CRIONodeV2:
         )
         self._heartbeat_thread.start()
 
-        # Start main loop thread
-        self._main_thread = threading.Thread(
-            target=self._main_loop,
-            name="MainLoop",
+        # Start scan thread (hardware read + safety — no MQTT publish)
+        self._scan_thread = threading.Thread(
+            target=self._scan_loop,
+            name="Scan",
             daemon=True
         )
-        self._main_thread.start()
+        self._scan_thread.start()
 
-        logger.info("cRIO Node V2 started")
+        # Start publish thread (MQTT publish from snapshot — decoupled from scan)
+        self._publish_thread = threading.Thread(
+            target=self._publish_loop,
+            name="Publish",
+            daemon=True
+        )
+        self._publish_thread.start()
+
+        logger.info("cRIO Node V2 started (scan + publish threads)")
         return True
+
+    def _apply_isa84_safe_state_on_shutdown(self):
+        """Write configured safe values to all output channels before hardware shutdown.
+
+        ISA 84 / IEC 61511 requirement: when a safety instrumented system
+        shuts down, all outputs must go to their defined safe state — not to
+        the hardware module's power-on default (which varies by module type
+        and is rarely the intended process safe state).
+
+        Uses safety.get_channel_safe_value() so per-channel safe values from
+        SafeStateConfig take precedence over ChannelConfig.default_value. This
+        is the same value source as _cmd_safe_state(), ensuring consistent
+        behavior between emergency safe-state commands and normal shutdown.
+
+        Called from stop() before state.to(IDLE) closes the hardware tasks.
+        Does not publish MQTT (broker may already be disconnecting).
+        """
+        if not self.hardware or not hasattr(self.config, 'channels'):
+            return
+
+        applied = []
+        failed = []
+        for ch_name, ch_config in self.config.channels.items():
+            if 'output' not in ch_config.channel_type:
+                continue
+            safe_value = self.safety.get_channel_safe_value(
+                ch_name, ch_config.default_value)
+            try:
+                self.hardware.write_output(ch_name, safe_value)
+                with self.values_lock:
+                    self.output_values[ch_name] = safe_value
+                applied.append(f"{ch_name}={safe_value}")
+            except Exception as e:
+                failed.append(ch_name)
+                logger.error(f"[SHUTDOWN] Safe state write failed for {ch_name}: {e}")
+
+        # Brief settle time — lets relay coils finish before DAQmx tasks close
+        if applied:
+            time.sleep(0.05)
+
+        n = len(applied)
+        sample = ', '.join(applied[:4]) + ('...' if n > 4 else '')
+        logger.info(f"[SHUTDOWN] ISA-84 safe state applied to {n} outputs ({sample})")
+        if failed:
+            logger.error(f"[SHUTDOWN] {len(failed)} outputs failed safe state write: {failed}")
 
     def stop(self):
         """Stop the cRIO node service."""
@@ -436,12 +500,20 @@ class CRIONodeV2:
         # Persist safety state before shutdown
         self.safety.save_all()
 
+        # ISA 84 / IEC 61511: Write configured safe values to all outputs BEFORE
+        # closing hardware tasks. Hardware module defaults on task-close are
+        # module-dependent and may not match the process safe state.
+        self._apply_isa84_safe_state_on_shutdown()
+
         # Transition to IDLE (stops hardware)
         self.state.to(State.IDLE)
 
         # Wait for threads
-        if self._main_thread and self._main_thread.is_alive():
-            self._main_thread.join(timeout=2.0)
+        if self._scan_thread and self._scan_thread.is_alive():
+            self._scan_thread.join(timeout=2.0)
+
+        if self._publish_thread and self._publish_thread.is_alive():
+            self._publish_thread.join(timeout=2.0)
 
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=2.0)
@@ -482,57 +554,54 @@ class CRIONodeV2:
             backoff = min(backoff * 2, max_backoff)
 
     # =========================================================================
-    # MAIN LOOP
+    # SCAN LOOP — reads hardware, evaluates safety, updates snapshot
     # =========================================================================
 
-    def _main_loop(self):
+    def _scan_loop(self):
         """
-        Main loop - the heart of the service.
+        Scan loop — reads hardware, evaluates safety, updates publish snapshot.
+
+        MQTT channel publishing is handled by _publish_loop() on a separate
+        thread so network I/O never blocks hardware reads.
 
         Uses epoch-anchored timing to prevent cumulative drift.
-        Each scan targets an absolute time rather than sleeping relative
-        to the end of the previous scan.
-
-        Pattern:
-        1. Process all pending commands
-        2. Read channels (if acquiring)
-        3. Check safety (single pass)
-        4. Publish values (rate-limited)
-        5. Sleep until next epoch-anchored target
         """
-        logger.info("Main loop started")
-        _loop_count = 0
+        logger.info("Scan loop started")
+        _first_read_logged = False
 
         _consecutive_errors = 0
         _recovery_attempts = 0
-        next_scan_time = time.time()
+        next_scan_time = time.monotonic()
 
         # Disable GC during scan loop — collect manually in the sleep window
-        # to prevent unpredictable pauses during read/safety/publish.
         gc.disable()
         _gc_counter = 0
         _GC_INTERVAL = 100  # collect every ~25s at 4 Hz
 
         while not self._shutdown.is_set():
-            # Calculate interval dynamically to pick up runtime rate changes
             scan_interval = self._scan_interval
             next_scan_time += scan_interval
-            loop_start = time.time()
+            loop_start = time.monotonic()
 
             try:
                 # 1. PROCESS ALL PENDING COMMANDS
                 self._process_commands()
 
                 # 2. READ CHANNELS (if acquiring)
-                t_read_start = time.time()
+                t_read_start = time.monotonic()
                 if self.state.is_acquiring:
                     self._read_channels()
-                t_read_end = time.time()
+                    if not _first_read_logged:
+                        n_vals = len(self.channel_values)
+                        read_ms = (time.monotonic() - t_read_start) * 1000
+                        logger.info(f"[SCAN] First hardware read: {n_vals} values in {read_ms:.1f}ms")
+                        _first_read_logged = True
+                t_read_end = time.monotonic()
 
                 # 3. CHECK SAFETY (single pass)
                 if self.state.is_acquiring:
                     self._check_safety()
-                t_safety_end = time.time()
+                t_safety_end = time.monotonic()
                 if self.state.is_acquiring:
                     _safety_ms = (t_safety_end - t_read_end) * 1000
                     if _safety_ms > 10.0:
@@ -548,33 +617,26 @@ class CRIONodeV2:
                 if self.state.is_acquiring:
                     self._toggle_watchdog_output()
 
-                # 6. PUBLISH VALUES (rate-limited)
-                now = time.time()
-                published = False
-                if self.state.is_acquiring and (now - self._last_publish_time) >= self._publish_interval:
-                    self._publish_values()
-                    # Advance by interval (not now) to maintain steady cadence
-                    # despite sleep jitter. Reset if we fell behind by >1 interval.
-                    self._last_publish_time += self._publish_interval
-                    if abs(now - self._last_publish_time) > self._publish_interval:
-                        self._last_publish_time = now
-                    published = True
-                t_pub_end = time.time()
+                # 6. UPDATE PUBLISH SNAPSHOT (non-blocking)
+                if self.state.is_acquiring:
+                    with self._publish_snapshot_lock:
+                        self._publish_snapshot = dict(self.channel_values)
+                        self._publish_output_snapshot = dict(self.output_values)
+
+                loop_end = time.monotonic()
 
                 # Track scan timing statistics
                 if self.state.is_acquiring:
-                    loop_dt_ms = (t_pub_end - loop_start) * 1000
+                    loop_dt_ms = (loop_end - loop_start) * 1000
                     self._scan_timing.record(loop_dt_ms)
 
                 _consecutive_errors = 0
 
             except Exception as e:
                 _consecutive_errors += 1
-                logger.error(f"[LOOP] Error in main loop: {e}", exc_info=(_consecutive_errors <= 3))
-                # After 3 consecutive errors, stop acquisition and attempt recovery
-                # (reduced from 10 — faster response to hardware failures)
+                logger.error(f"[SCAN] Error in scan loop: {e}", exc_info=(_consecutive_errors <= 3))
                 if _consecutive_errors >= 3:
-                    logger.critical(f"[LOOP] {_consecutive_errors} consecutive errors — "
+                    logger.critical(f"[SCAN] {_consecutive_errors} consecutive errors — "
                                    f"attempting recovery with backoff...")
                     self.hardware.set_safe_state()
                     self.state.to(State.IDLE)
@@ -585,46 +647,85 @@ class CRIONodeV2:
                         'timestamp': time.time(),
                     }, qos=1)
                     self._publish_status()
-                    # Exponential backoff: 5s, 10s, 20s, max 60s
                     backoff = min(60, 5 * (2 ** (_recovery_attempts)))
                     _recovery_attempts += 1
-                    logger.info(f"[LOOP] Recovery attempt #{_recovery_attempts}, waiting {backoff}s...")
+                    logger.info(f"[SCAN] Recovery attempt #{_recovery_attempts}, waiting {backoff}s...")
                     self._shutdown.wait(backoff)
                     if self._shutdown.is_set():
                         break
-                    # Try to restart
                     try:
                         if self.hardware.start():
                             self.state.to(State.ACQUIRING)
                             _consecutive_errors = 0
                             _recovery_attempts = 0
-                            logger.info("[LOOP] Recovery successful — resuming acquisition")
+                            logger.info("[SCAN] Recovery successful — resuming acquisition")
                         else:
-                            logger.error("[LOOP] Recovery failed — will retry after backoff")
+                            logger.error("[SCAN] Recovery failed — will retry after backoff")
                     except Exception as re:
-                        logger.error(f"[LOOP] Recovery exception: {re}")
+                        logger.error(f"[SCAN] Recovery exception: {re}")
                     self._publish_status()
                     continue
-                # Set timing defaults so sleep still works after error
-                t_read_end = t_read_start = t_safety_end = t_pub_end = time.time()
-                published = False
 
-            # Run GC in the sleep window (not during read/safety/publish)
+            # Run GC in the sleep window (not during read/safety)
             _gc_counter += 1
             if _gc_counter >= _GC_INTERVAL:
                 gc.collect()
                 _gc_counter = 0
 
-            # Sleep until next epoch-anchored target (prevents cumulative drift)
-            sleep_time = max(0, next_scan_time - time.time())
-            # If we fell behind by more than one interval, reset to prevent burst catch-up
-            if time.time() - next_scan_time > scan_interval:
-                next_scan_time = time.time()
+            # Sleep until next monotonic-anchored target
+            sleep_time = max(0, next_scan_time - time.monotonic())
+            if time.monotonic() - next_scan_time > scan_interval:
+                next_scan_time = time.monotonic()
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
         gc.enable()
-        logger.info("Main loop stopped")
+        logger.info("Scan loop stopped")
+
+    # =========================================================================
+    # PUBLISH LOOP — reads snapshot, publishes to MQTT (separate thread)
+    # =========================================================================
+
+    def _publish_loop(self):
+        """
+        Publish loop — runs on its own thread so MQTT network I/O never
+        blocks the scan loop.
+
+        Reads the publish snapshot under lock (instant copy), builds the
+        lean batch payload, and publishes to MQTT at publish_rate_hz.
+        """
+        logger.info("Publish loop started")
+        _first_publish_logged = False
+        next_publish_time = time.monotonic()
+
+        while not self._shutdown.is_set():
+            publish_interval = self._publish_interval
+            next_publish_time += publish_interval
+
+            try:
+                if self.state.is_acquiring:
+                    # Snapshot under lock (instant dict copy)
+                    with self._publish_snapshot_lock:
+                        snap = dict(self._publish_snapshot)
+                        out_snap = dict(self._publish_output_snapshot)
+
+                    if snap:
+                        self._publish_values_from_snapshot(snap, out_snap)
+                        if not _first_publish_logged:
+                            logger.info(f"[PUBLISH] First publish: {len(snap)} channels to MQTT")
+                            _first_publish_logged = True
+
+            except Exception as e:
+                logger.error(f"[PUBLISH] Error in publish loop: {e}", exc_info=True)
+
+            # Sleep until next monotonic-anchored target
+            sleep_time = max(0, next_publish_time - time.monotonic())
+            if time.monotonic() - next_publish_time > publish_interval:
+                next_publish_time = time.monotonic()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        logger.info("Publish loop stopped")
 
     def _heartbeat_loop(self):
         """Heartbeat loop - publish status periodically."""
@@ -679,6 +780,16 @@ class CRIONodeV2:
 
     def _handle_command(self, topic: str, payload: Dict[str, Any]):
         """Route command to appropriate handler."""
+        # Ignore self-published responses — we subscribe to safety/#, script/#,
+        # alarm/#, etc. and our own publishes arrive back as commands.
+        # Exception: alarm/ack is a LEGITIMATE incoming command (acknowledge
+        # an alarm), not a self-published response.  Our alarm responses use
+        # the 'alarms/' prefix which doesn't match our 'alarm/#' subscription.
+        if '/response' in topic:
+            return
+        if '/ack' in topic and '/alarm/ack' not in topic:
+            return
+
         logger.info(f"[CMD] Received command: {topic}")
         # Log payloads at INFO for critical commands (output writes, safety, stop),
         # DEBUG for routine commands (heartbeat, status, discovery)
@@ -704,7 +815,9 @@ class CRIONodeV2:
                 self._cmd_session_stop(payload)
 
         elif '/commands/' in topic:
-            if '/output' in topic:
+            if '/interlock/' in topic:
+                self._handle_interlock_command(topic, payload)
+            elif '/output' in topic:
                 self._cmd_write_output(payload)
 
         elif '/safety/' in topic:
@@ -738,26 +851,35 @@ class CRIONodeV2:
 
     def _cmd_acquire_start(self, payload: Dict[str, Any]):
         """Handle acquire/start command."""
-        logger.info("Command: acquire/start")
         request_id = payload.get('request_id', '')
+        logger.info(f"[ACQUIRE] Command: acquire/start (state={self.state.state.name}, "
+                     f"channels={len(self.config.channels)}, request_id={request_id[:8] if request_id else 'none'})")
 
         if self.state.state == State.IDLE:
             success = self.state.to(State.ACQUIRING)
+            if success:
+                logger.info(f"[ACQUIRE] State transition IDLE -> ACQUIRING succeeded, "
+                             f"{len(self.config.channels)} channels configured")
+            else:
+                logger.error("[ACQUIRE] State transition IDLE -> ACQUIRING FAILED")
             self._publish_system_command_ack('acquire/start', success, request_id=request_id)
         elif self.state.is_acquiring:
             # Already acquiring - success but no-op
+            logger.info("[ACQUIRE] Already acquiring — no-op")
             self._publish_system_command_ack('acquire/start', True,
                                               reason='Already acquiring', request_id=request_id)
         else:
+            logger.warning(f"[ACQUIRE] Cannot start from state {self.state.state.name}")
             self._publish_system_command_ack('acquire/start', False,
-                                              reason='Invalid state', request_id=request_id)
+                                              reason=f'Invalid state: {self.state.state.name}',
+                                              request_id=request_id)
 
         self._publish_status()
 
     def _cmd_acquire_stop(self, payload: Dict[str, Any]):
         """Handle acquire/stop command."""
-        logger.info("Command: acquire/stop")
         request_id = payload.get('request_id', '')
+        logger.info(f"[ACQUIRE] Command: acquire/stop (state={self.state.state.name})")
 
         if self.state.is_acquiring:
             success = self.state.to(State.IDLE)
@@ -958,7 +1080,9 @@ class CRIONodeV2:
 
     def _cmd_config_full(self, payload: Dict[str, Any]):
         """Handle full config push from DAQ."""
-        logger.info("Command: config/full")
+        _config_start = time.time()
+        n_channels = len(payload.get('channels', {}))
+        logger.info(f"[CONFIG] Command: config/full ({n_channels} channels incoming)")
 
         # Update scan/publish rates if provided
         rate_changed = False
@@ -1128,7 +1252,9 @@ class CRIONodeV2:
         # Acknowledge config receipt
         self._publish_config_response(True, "Config applied")
 
-        logger.info(f"Config updated: {len(channels_data)} channels, version {self.config_version}")
+        _config_elapsed = time.time() - _config_start
+        logger.info(f"[CONFIG] Config applied: {len(channels_data)} channels, "
+                     f"version {self.config_version}, took {_config_elapsed:.2f}s")
 
     def _save_config_to_disk(self):
         """
@@ -1217,7 +1343,7 @@ class CRIONodeV2:
         Updates channel_values in-place to avoid dict allocation on every
         scan cycle (reduces GC pressure in the hot path).
         """
-        readings = self.hardware.read_all()
+        readings = self.hardware.read_latest()
 
         with self.values_lock:
             for channel, (value, timestamp) in readings.items():
@@ -1387,6 +1513,9 @@ class CRIONodeV2:
                 'success': True, 'count': len(interlocks),
                 'timestamp': datetime.now().isoformat()
             })
+            # Publish updated status immediately so broker retained msg is current
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
         elif '/arm' in topic:
             user = payload.get('user', 'mqtt')
@@ -1396,6 +1525,9 @@ class CRIONodeV2:
                 'success': success, 'message': msg,
                 'timestamp': datetime.now().isoformat()
             })
+            # Update retained status so subscribers see current latch state
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
         elif '/disarm' in topic:
             user = payload.get('user', 'mqtt')
@@ -1405,6 +1537,8 @@ class CRIONodeV2:
                 'success': True,
                 'timestamp': datetime.now().isoformat()
             })
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
         elif '/bypass' in topic:
             interlock_id = payload.get('interlock_id', '')
@@ -1423,6 +1557,8 @@ class CRIONodeV2:
                 'interlock_id': interlock_id,
                 'timestamp': datetime.now().isoformat()
             })
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
         elif '/acknowledge' in topic:
             interlock_id = payload.get('interlock_id', '')
@@ -1442,10 +1578,12 @@ class CRIONodeV2:
                 'success': success, 'message': msg,
                 'timestamp': datetime.now().isoformat()
             })
+            self.mqtt.publish("interlock/status",
+                              self.safety.get_interlock_status(), retain=True)
 
         elif '/status' in topic:
             status = self.safety.get_interlock_status()
-            self.mqtt.publish("interlock/status", status)
+            self.mqtt.publish("interlock/status", status, retain=True)
 
         elif '/safe_state_config' in topic or '/safe-state-config' in topic:
             self.safety.configure_safe_state(payload)
@@ -1550,44 +1688,39 @@ class CRIONodeV2:
     STALE_VALUE_THRESHOLD_S = 10.0
 
     def _publish_values(self):
-        """Publish all channel values as a batch, with stale detection.
+        """Publish all channel values as a lean batch, with stale detection.
 
-        Uses self._publish_batch to reduce per-scan allocations.  Per-channel
-        entries are still created/updated, but the batch dict itself is reused.
+        Lean format: { t, ts_us, v: {ch: val}, bad: [], stale: [] }
+        Shared fields appear once; per-channel data is just the value.
         """
         now = time.time()
-        batch = self._publish_batch
-        batch.clear()
+        ts_us = int(now * 1_000_000)
+        timestamp = datetime.now().isoformat()
+
+        v = {}
+        bad = []
+        stale = []
 
         with self.values_lock:
             for ch, data in self.channel_values.items():
-                # Build entry in-place instead of dict(data) copy
                 val = data.get('value', 0)
                 ts = data.get('timestamp', 0)
-                quality = data.get('quality', 'good')
 
-                # Check staleness based on timestamp
+                # Check staleness
                 if isinstance(ts, (int, float)) and (now - ts) > self.STALE_VALUE_THRESHOLD_S:
-                    quality = 'stale'
+                    stale.append(ch)
                     if ch not in self._stale_warned:
                         logger.warning(f"Channel {ch} value is stale ({now - ts:.1f}s old)")
                         self._stale_warned.add(ch)
                 else:
                     self._stale_warned.discard(ch)
 
-                # Mark NaN values as bad quality
+                # NaN = bad quality, use None in payload
                 if isinstance(val, float) and math.isnan(val):
-                    quality = 'bad'
-
-                entry = {
-                    'value': val,
-                    'timestamp': ts,
-                    'quality': quality,
-                }
-                # Include high-precision acquisition timestamp for SOE / ALCOA+
-                if isinstance(ts, (int, float)) and ts > 0:
-                    entry['acquisition_ts_us'] = int(ts * 1_000_000)
-                batch[ch] = entry
+                    v[ch] = None
+                    bad.append(ch)
+                else:
+                    v[ch] = val
 
             # Prune _stale_warned to current channels only (prevents growth)
             if len(self._stale_warned) > len(self.channel_values) + 10:
@@ -1595,16 +1728,64 @@ class CRIONodeV2:
 
             # Snapshot output values under lock
             for ch, val in self.output_values.items():
-                quality = 'good'
                 if isinstance(val, float) and math.isnan(val):
-                    quality = 'bad'
-                batch[ch] = {
-                    'value': val,
-                    'timestamp': now,
-                    'acquisition_ts_us': int(now * 1_000_000),
-                    'quality': quality,
-                    'type': 'output'
-                }
+                    v[ch] = None
+                    bad.append(ch)
+                else:
+                    v[ch] = val
+
+        batch = {'t': timestamp, 'ts_us': ts_us, 'v': v}
+        if bad:
+            batch['bad'] = bad
+        if stale:
+            batch['stale'] = stale
+
+        self.mqtt.publish("channels/batch", batch)
+
+    def _publish_values_from_snapshot(self, snap: Dict[str, Any], out_snap: Dict[str, float]):
+        """Publish channel values from a pre-copied snapshot (called by publish thread).
+
+        Same lean format as _publish_values but operates on snapshot dicts
+        instead of self.channel_values / self.output_values.
+        """
+        now = time.time()
+        ts_us = int(now * 1_000_000)
+        timestamp = datetime.now().isoformat()
+
+        v = {}
+        bad = []
+        stale = []
+
+        for ch, data in snap.items():
+            val = data.get('value', 0)
+            ts = data.get('timestamp', 0)
+
+            if isinstance(ts, (int, float)) and (now - ts) > self.STALE_VALUE_THRESHOLD_S:
+                stale.append(ch)
+                if ch not in self._stale_warned:
+                    logger.warning(f"Channel {ch} value is stale ({now - ts:.1f}s old)")
+                    self._stale_warned.add(ch)
+            else:
+                self._stale_warned.discard(ch)
+
+            if isinstance(val, float) and math.isnan(val):
+                v[ch] = None
+                bad.append(ch)
+            else:
+                v[ch] = val
+
+        for ch, val in out_snap.items():
+            if isinstance(val, float) and math.isnan(val):
+                v[ch] = None
+                bad.append(ch)
+            else:
+                v[ch] = val
+
+        batch = {'t': timestamp, 'ts_us': ts_us, 'v': v}
+        if bad:
+            batch['bad'] = bad
+        if stale:
+            batch['stale'] = stale
 
         self.mqtt.publish("channels/batch", batch)
 
@@ -1655,6 +1836,8 @@ class CRIONodeV2:
                 'healthy': self.hardware.is_healthy() if hasattr(self.hardware, 'is_healthy') else True,
                 'error_count': getattr(self.hardware, '_error_count', 0),
             },
+            'reader_stats': self.hardware.get_reader_stats(),
+            'di_poll_rate_hz': self.config.di_poll_rate_hz,
             'rt_hardening': {
                 'sched_fifo': hasattr(os, 'sched_getscheduler') and os.sched_getscheduler(0) == _SCHED_FIFO,
                 'gc_disabled': not gc.isenabled(),
@@ -1675,10 +1858,15 @@ class CRIONodeV2:
 
         self.mqtt.publish("heartbeat", heartbeat)
 
-        # Publish interlock status if interlocks are configured
-        if self.safety._interlocks:
-            self.mqtt.publish("interlock/status",
-                              self.safety.get_interlock_status(), retain=True)
+        # Always publish interlock status (even when empty) so the retained
+        # message on the broker stays current after interlocks are removed.
+        self.mqtt.publish("interlock/status",
+                          self.safety.get_interlock_status(), retain=True)
+
+        # Publish alarm status so the retained message stays current.
+        # Alarm clears (ACTIVE→RETURNED/NORMAL) don't fire _on_alarm_event,
+        # so without this the retained alarms/status goes stale after clear.
+        self._publish_alarm_status()
 
     def _publish_session_status(self):
         """Publish session status."""
@@ -1726,6 +1914,7 @@ class CRIONodeV2:
             'status': 'success' if success else 'error',
             'success': success,  # Keep for backwards compatibility
             'message': message,
+            'node_id': self.config.node_id,
             'channels': len(self.config.channels),
             'config_version': self.config_version,
             'timestamp': datetime.now().isoformat()
@@ -1738,12 +1927,36 @@ class CRIONodeV2:
     # STATE TRANSITION CALLBACKS
     # =========================================================================
 
+    def _publish_state_change(self, old_state_name: str, new_state_name: str, reason: str = ""):
+        """Publish a state transition on a dedicated retained topic (QoS 1).
+
+        The DAQ service subscribes to nodes/+/state to know cRIO state
+        reliably — no polling or guessing needed.
+        """
+        if not self.mqtt:
+            return
+        payload = {
+            'node_id': self.config.node_id,
+            'old_state': old_state_name,
+            'new_state': new_state_name,
+            'reason': reason,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.mqtt.publish("state", payload, qos=1, retain=True)
+        logger.info(f"[STATE] Published {old_state_name} -> {new_state_name}"
+                     f"{f' ({reason})' if reason else ''}")
+
     def _on_enter_acquiring(self, old_state, new_state, payload):
         """Called when entering ACQUIRING state."""
-        logger.info("Starting hardware acquisition")
+        n_ch = len(self.config.channels)
+        logger.info(f"[ACQUIRE] Starting hardware acquisition ({n_ch} channels, "
+                     f"scan={self.config.scan_rate_hz} Hz, publish={self.config.publish_rate_hz} Hz)")
         self._scan_timing.reset()
-        if not self.hardware.start():
-            logger.error("Hardware failed to start — entering degraded mode")
+        hw_ok = self.hardware.start()
+        if hw_ok:
+            logger.info(f"[ACQUIRE] Hardware started successfully — reading {n_ch} channels")
+        else:
+            logger.error("[ACQUIRE] Hardware failed to start — entering degraded mode")
             if self.mqtt:
                 self.mqtt.publish("status/degraded", {
                     'reason': 'hardware_start_failed',
@@ -1752,6 +1965,8 @@ class CRIONodeV2:
         self.safety._acquiring = True
         # Auto-start acquisition-mode scripts
         self.script_engine.auto_start('acquisition')
+        # Publish state transition (QoS 1, retained)
+        self._publish_state_change(old_state.name, new_state.name)
 
     def _on_exit_acquiring(self, old_state, new_state, payload):
         """Called when exiting ACQUIRING state (to IDLE only)."""
@@ -1767,6 +1982,7 @@ class CRIONodeV2:
         logger.info("Session started")
         # Auto-start session-mode scripts
         self.script_engine.auto_start('session')
+        self._publish_state_change(old_state.name, new_state.name)
 
     def _on_exit_session(self, old_state, new_state, payload):
         """Called when exiting SESSION state."""
@@ -1780,6 +1996,7 @@ class CRIONodeV2:
         self._stop_watchdog_output()
         # Ensure outputs are at safe state
         self.hardware.set_safe_state()
+        self._publish_state_change(old_state.name, new_state.name)
 
     def _on_mqtt_connection_change(self, connected: bool):
         """Handle MQTT connection state change."""

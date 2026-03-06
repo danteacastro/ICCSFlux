@@ -16,6 +16,7 @@ Usage:
     python watchdog.py [-c CONFIG] [--timeout SECONDS]
 """
 
+import gzip
 import json
 import os
 import time
@@ -25,7 +26,7 @@ import platform
 import logging
 import argparse
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -78,6 +79,13 @@ class DAQWatchdog:
         # Acquisition state tracking - prevents warning spam
         self._expected_acquiring: Optional[bool] = None
         self._warned_acquisition_stop: bool = False  # Only warn once per stop event
+
+        # Append-only JSONL event log (survives restarts, no truncation)
+        self._log_dir = Path(__file__).resolve().parent.parent.parent / 'data' / 'logs' / 'watchdog'
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_file: Optional[Path] = None
+        self._max_log_size_mb = 10.0
+        self._init_log_file()
 
         # Fail-safe outputs should only come from config - no hardcoded defaults
         # If no failsafe outputs are configured, the watchdog will only log/alarm
@@ -137,8 +145,8 @@ class DAQWatchdog:
                 except Exception as e:
                     logger.warning(f"Could not read MQTT credentials: {e}")
         if mqtt_user and mqtt_pass:
-            self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
-            logger.info(f"MQTT authentication enabled for user: {mqtt_user}")
+            self.mqtt_client.username_pw_set(mqtt_user.strip(), mqtt_pass.strip())
+            logger.info(f"MQTT authentication enabled for user: {mqtt_user.strip()}")
 
         # Set will message - if watchdog dies unexpectedly, broker publishes this
         base = self.config.mqtt_base_topic
@@ -168,6 +176,7 @@ class DAQWatchdog:
         """MQTT connection callback"""
         if reason_code == 0:
             logger.info("Watchdog connected to MQTT broker")
+            self._mqtt_auth_failures = 0
 
             base = self.config.mqtt_base_topic
 
@@ -190,7 +199,17 @@ class DAQWatchdog:
                 qos=1
             )
         else:
-            logger.error(f"Watchdog MQTT connection failed: {reason_code}")
+            rc_str = str(reason_code)
+            is_auth_fail = 'not authorized' in rc_str.lower() or 'bad user' in rc_str.lower()
+            if is_auth_fail:
+                self._mqtt_auth_failures = getattr(self, '_mqtt_auth_failures', 0) + 1
+                if self._mqtt_auth_failures <= 2:
+                    logger.error(f"Watchdog MQTT AUTH FAILED: Broker rejected credentials (rc={rc_str})")
+                    logger.error("Watchdog MQTT AUTH FAILED: Delete config/mqtt_credentials.json and restart")
+                elif self._mqtt_auth_failures % 10 == 0:
+                    logger.critical(f"Watchdog MQTT AUTH STILL FAILING after {self._mqtt_auth_failures} attempts")
+            else:
+                logger.error(f"Watchdog MQTT connection failed: {reason_code}")
 
     def _on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         """MQTT disconnection callback"""
@@ -428,6 +447,49 @@ class DAQWatchdog:
             qos=1
         )
 
+    # ------------------------------------------------------------------
+    # Append-Only JSONL Event Log
+    # ------------------------------------------------------------------
+
+    def _init_log_file(self):
+        """Find newest .jsonl file under max size, or create a new one."""
+        existing = sorted(self._log_dir.glob('watchdog_events_*.jsonl'), reverse=True)
+        for f in existing:
+            try:
+                if f.stat().st_size / (1024 * 1024) < self._max_log_size_mb:
+                    self._log_file = f
+                    return
+            except OSError:
+                continue
+        self._create_new_log_file()
+
+    def _create_new_log_file(self):
+        """Create a new timestamped JSONL log file."""
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._log_file = self._log_dir / f'watchdog_events_{ts}.jsonl'
+
+    def _log_event_to_file(self, event: str, message: str):
+        """Append a watchdog event to the JSONL log file."""
+        try:
+            entry = {
+                'timestamp': datetime.now().isoformat(),
+                'event': event,
+                'message': message,
+                'daq_online': self.daq_online,
+                'failsafe_triggered': self.failsafe_triggered,
+            }
+            line = json.dumps(entry, default=str) + '\n'
+            with open(self._log_file, 'a', encoding='utf-8') as f:
+                f.write(line)
+                f.flush()
+            try:
+                if self._log_file.stat().st_size / (1024 * 1024) >= self._max_log_size_mb:
+                    self._create_new_log_file()
+            except OSError:
+                pass
+        except Exception as e:
+            logger.error(f"Error appending to watchdog event log: {e}")
+
     def _publish_watchdog_event(self, event: str, message: str):
         """Publish a watchdog event"""
         base = self.config.mqtt_base_topic
@@ -441,6 +503,9 @@ class DAQWatchdog:
             }),
             qos=1
         )
+
+        # Persist to JSONL log file
+        self._log_event_to_file(event, message)
 
     def _publish_status(self):
         """Publish watchdog status"""

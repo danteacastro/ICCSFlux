@@ -82,6 +82,7 @@ from project_manager import ProjectManager, ProjectStatus
 from archive_manager import ArchiveManager
 from pid_engine import PIDEngine, PIDLoop, PIDMode
 from state_machine import DAQStateMachine, DAQState
+from acquisition_events import AcquisitionEventPipeline, AcquisitionEvent
 # Note: Azure IoT Hub streaming is handled by external azure_uploader_service.py
 # which runs in a separate Python environment (paho-mqtt 1.x for Azure SDK compatibility)
 
@@ -252,7 +253,7 @@ class DAQService:
 
         # State machine for acquisition lifecycle (replaces _acquiring Event + acquisition_state string)
         self._state_machine = DAQStateMachine(DAQState.STOPPED)
-        self._stop_command_time: Optional[float] = None  # Timestamp of last stop command for cRIO sync cooldown
+        # Legacy: _stop_command_time removed — state sync now uses dedicated /state topic
         logger.info("Acquisition state initialized: STOPPED (safe startup)")
 
         # Command queue: decouples MQTT callback thread from message processing
@@ -280,6 +281,7 @@ class DAQService:
 
         # MQTT connection tracking (None=never connected, True=connected, False=disconnected)
         self._mqtt_connected: Optional[bool] = None
+        self._mqtt_auth_failures: int = 0
 
         # System state - controllable via MQTT
         self.recording = False          # Is data recording active
@@ -338,7 +340,7 @@ class DAQService:
         self._pending_crio_pushes: Dict[str, Dict[str, Any]] = {}  # node_id -> {config, attempts, timestamp}
         self._crio_push_lock = threading.Lock()
         self._crio_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
-        self._CRIO_CONFIG_TIMEOUT = 5.0  # seconds before retry
+        self._CRIO_CONFIG_TIMEOUT = 15.0  # seconds — 96ch over TLS needs ~5-6s
         self._CRIO_CONFIG_MAX_RETRIES = 3
         # Synchronous config push waiting (for START command - must wait for ACK)
         self._crio_config_ack_events: Dict[str, threading.Event] = {}  # node_id -> Event
@@ -404,6 +406,25 @@ class DAQService:
 
         # PID control engine
         self.pid_engine: Optional[PIDEngine] = None
+
+        # Acquisition event pipeline (structured lifecycle event tracking)
+        self._acq_events: Optional[AcquisitionEventPipeline] = None
+
+        # Scan loop health tracking
+        self._scan_consecutive_errors = 0
+        self._scan_total_errors = 0
+        self._scan_loop_healthy = True
+        self._last_successful_scan_time = 0.0
+
+        # Safety evaluation health tracking
+        self._safety_eval_failures = 0
+        self._last_safety_eval_time = 0.0
+
+        # Historian error tracking
+        self._historian_error_count = 0
+
+        # Health publishing
+        self._last_health_publish_time = 0.0
 
         # Note: Azure IoT Hub streaming is handled by external azure_uploader_service
         # Config is stored in self.config.system.azure_iot and used when recording starts
@@ -608,6 +629,9 @@ class DAQService:
                 logger.warning(f"Unknown project_mode '{mode_str}', defaulting to 'cdaq'")
                 project_mode = ProjectMode.CDAQ
 
+            # Fall back to current config (from system.ini) for fields not in project JSON
+            cur = self.config.system if self.config else SystemConfig()
+
             system = SystemConfig(
                 mqtt_broker=sys_data.get("mqtt_broker", "localhost"),
                 mqtt_port=int(sys_data.get("mqtt_port", 1883)),
@@ -617,7 +641,20 @@ class DAQService:
                 simulation_mode=sys_data.get("simulation_mode", False),
                 log_directory=sys_data.get("log_directory", "./logs"),
                 config_reload_topic=sys_data.get("config_reload_topic", "nisystem/config/reload"),
-                project_mode=project_mode
+                project_mode=project_mode,
+                # Preserve infrastructure fields from system.ini
+                node_id=cur.node_id,
+                node_name=cur.node_name,
+                default_project=cur.default_project,
+                # Per-project operational settings (fall back to system.ini defaults)
+                log_level=sys_data.get("log_level", cur.log_level),
+                log_max_file_size_mb=int(sys_data.get("log_max_file_size_mb", cur.log_max_file_size_mb)),
+                log_backup_count=int(sys_data.get("log_backup_count", cur.log_backup_count)),
+                service_heartbeat_interval_sec=float(sys_data.get("service_heartbeat_interval_sec", cur.service_heartbeat_interval_sec)),
+                service_health_timeout_sec=float(sys_data.get("service_health_timeout_sec", cur.service_health_timeout_sec)),
+                service_shutdown_timeout_sec=float(sys_data.get("service_shutdown_timeout_sec", cur.service_shutdown_timeout_sec)),
+                service_command_ack_timeout_sec=float(sys_data.get("service_command_ack_timeout_sec", cur.service_command_ack_timeout_sec)),
+                dataviewer_retention_days=int(sys_data.get("dataviewer_retention_days", cur.dataviewer_retention_days)),
             )
 
             # Parse channels from project
@@ -2577,7 +2614,9 @@ Unit conversions:
         # Only create alarm configs from channels when a project is explicitly loaded
         # This prevents stale alarm configs when no project is loaded
         if not from_project:
-            logger.info("Alarm manager initialized (no project - no alarm configs)")
+            # Clear any persisted configs from previous projects — alarms are per-project
+            self.alarm_manager.clear_all(clear_configs=True)
+            logger.info("Alarm manager initialized (no project - cleared stale alarm configs)")
             return
 
         # Auto-create alarm configs from channel configs
@@ -3431,8 +3470,8 @@ Unit conversions:
                 except Exception as e:
                     logger.warning(f"Could not read MQTT credentials from {cred_file}: {e}")
         if mqtt_user and mqtt_pass:
-            self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
-            logger.info(f"MQTT authentication enabled for user: {mqtt_user}")
+            self.mqtt_client.username_pw_set(mqtt_user.strip(), mqtt_pass.strip())
+            logger.info(f"MQTT authentication enabled for user: {mqtt_user.strip()}")
 
         # Optional TLS for broker connection (e.g., when connecting to remote broker)
         tls_ca = os.environ.get('MQTT_TLS_CA')
@@ -3469,6 +3508,13 @@ Unit conversions:
             else:
                 logger.info("Connected to MQTT broker")
             self._mqtt_connected = True
+            self._mqtt_auth_failures = 0
+
+            # Initialize acquisition event pipeline (after MQTT connected)
+            if self._acq_events is None:
+                self._acq_events = AcquisitionEventPipeline(self.mqtt_client, self.get_topic_base())
+            else:
+                self._acq_events.update_topic_base(self.get_topic_base())
 
             # Subscribe to command topics
             base = self.get_topic_base()
@@ -3652,6 +3698,8 @@ Unit conversions:
             client.subscribe(f"{mqtt_base}/nodes/+/alarm/status")
             # Subscribe to cRIO command acknowledgments (for CRIO mode - explicit ACKs)
             client.subscribe(f"{mqtt_base}/nodes/+/command/ack")
+            # Subscribe to cRIO state transitions (QoS 1, retained — reliable state tracking)
+            client.subscribe(f"{mqtt_base}/nodes/+/state")
 
             # Subscribe to data source management topics (REST API, OPC-UA, etc.)
             client.subscribe(f"{base}/datasource/add")
@@ -3732,7 +3780,23 @@ Unit conversions:
             logger.info("Sent initial cRIO discovery ping on MQTT connect")
 
         else:
-            logger.error(f"MQTT connection failed with code {reason_code}")
+            rc_str = str(reason_code)
+            # Detect auth failures specifically (MQTT 3.1.1 code 5, MQTT 5 code 134/135)
+            is_auth_fail = 'not authorized' in rc_str.lower() or 'bad user' in rc_str.lower()
+            if is_auth_fail:
+                self._mqtt_auth_failures += 1
+                if self._mqtt_auth_failures == 1:
+                    logger.error(f"MQTT AUTH FAILED: Broker rejected credentials (rc={rc_str})")
+                    logger.error("MQTT AUTH FAILED: Check that config/mqtt_credentials.json and config/mosquitto_passwd are in sync")
+                    logger.error("MQTT AUTH FAILED: Fix: delete config/mqtt_credentials.json and restart to regenerate")
+                elif self._mqtt_auth_failures == 3:
+                    logger.critical(f"MQTT AUTH FAILED {self._mqtt_auth_failures} times — credentials are invalid. "
+                                    f"All MQTT communication is down. Dashboard, recording commands, and remote nodes cannot connect. "
+                                    f"Delete config/mqtt_credentials.json and restart.")
+                elif self._mqtt_auth_failures % 10 == 0:
+                    logger.critical(f"MQTT AUTH STILL FAILING after {self._mqtt_auth_failures} attempts — service is running without MQTT")
+            else:
+                logger.error(f"MQTT connection failed with code {reason_code}")
 
     def _on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         """MQTT disconnection callback"""
@@ -3797,8 +3861,8 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] recording/start received")
-            self._handle_recording_start(payload)
+            logger.info(f"[CRITICAL] recording/start received (request_id={request_id})")
+            self._handle_recording_start(payload, request_id)
         except Exception as e:
             logger.error(f"[CRITICAL] recording/start handler failed: {e}", exc_info=True)
 
@@ -3807,8 +3871,8 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] recording/stop received")
-            self._handle_recording_stop()
+            logger.info(f"[CRITICAL] recording/stop received (request_id={request_id})")
+            self._handle_recording_stop(request_id)
         except Exception as e:
             logger.error(f"[CRITICAL] recording/stop handler failed: {e}", exc_info=True)
 
@@ -3817,8 +3881,8 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] test-session/start received")
-            self._handle_test_session_start(payload)
+            logger.info(f"[CRITICAL] test-session/start received (request_id={request_id})")
+            self._handle_test_session_start(payload, request_id)
         except Exception as e:
             logger.error(f"[CRITICAL] test-session/start handler failed: {e}", exc_info=True)
 
@@ -3827,8 +3891,8 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] test-session/stop received")
-            self._handle_test_session_stop()
+            logger.info(f"[CRITICAL] test-session/stop received (request_id={request_id})")
+            self._handle_test_session_stop(request_id)
         except Exception as e:
             logger.error(f"[CRITICAL] test-session/stop handler failed: {e}", exc_info=True)
 
@@ -4082,25 +4146,29 @@ Unit conversions:
             if not payload:
                 return
             logger.info(f"[CMD-FALLBACK] recording/start via queue")
-            self._handle_recording_start(payload)
+            rid = payload.get('request_id') if isinstance(payload, dict) else None
+            self._handle_recording_start(payload, rid)
             return
         elif topic == f"{base}/system/recording/stop":
             if not payload:
                 return
             logger.info(f"[CMD-FALLBACK] recording/stop via queue")
-            self._handle_recording_stop()
+            rid = payload.get('request_id') if isinstance(payload, dict) else None
+            self._handle_recording_stop(rid)
             return
         elif topic == f"{base}/test-session/start":
             if not payload:
                 return
             logger.info(f"[CMD-FALLBACK] test-session/start via queue")
-            self._handle_test_session_start(payload)
+            rid = payload.get('request_id') if isinstance(payload, dict) else None
+            self._handle_test_session_start(payload, rid)
             return
         elif topic == f"{base}/test-session/stop":
             if not payload:
                 return
             logger.info(f"[CMD-FALLBACK] test-session/stop via queue")
-            self._handle_test_session_stop()
+            rid = payload.get('request_id') if isinstance(payload, dict) else None
+            self._handle_test_session_stop(rid)
             return
         elif topic == f"{base}/system/status/request":
             logger.info(f"[CMD-FALLBACK] status/request via queue")
@@ -4526,6 +4594,11 @@ Unit conversions:
         elif "/nodes/" in topic and "/command/ack" in topic:
             self._handle_crio_command_ack(topic, payload)
 
+        # === NODE STATE TRANSITIONS (QoS 1 retained — reliable state tracking) ===
+        # Pattern: {mqtt_base}/nodes/{node_id}/state
+        elif "/nodes/" in topic and topic.endswith("/state"):
+            self._handle_node_state_change(topic, payload)
+
         # === CHANNEL COMMANDS ===
         elif topic.startswith(f"{base}/commands/"):
             channel_name = topic.split('/')[-1]
@@ -4915,11 +4988,17 @@ Unit conversions:
     def _handle_acquire_start(self, request_id: Optional[str] = None):
         """Start data acquisition with command acknowledgment and state validation"""
         _start_time = time.time()
+        flow_id = request_id or str(uuid.uuid4())[:8]
+        if self._acq_events:
+            self._acq_events.start_flow(flow_id)
+            self._acq_events.emit(AcquisitionEvent.START_REQUESTED, {'request_id': request_id})
         try:
             # PERMISSION CHECK
             if not self._has_permission(Permission.START_ACQUISITION):
                 logger.warning("[SECURITY] Acquisition start denied - insufficient permissions")
                 self._publish_command_ack("acquire/start", request_id, False, "Permission denied")
+                if self._acq_events:
+                    self._acq_events.emit(AcquisitionEvent.START_REJECTED, {'reason': 'permission_denied'}, severity='warning')
                 return
             logger.info(f"[TIMING] Permission check: {(time.time()-_start_time)*1000:.1f}ms")
 
@@ -4928,9 +5007,12 @@ Unit conversions:
             if not self._state_machine.to(DAQState.INITIALIZING):
                 logger.warning(f"[STATE] Acquisition start rejected (state={self._state_machine.state.name})")
                 self._publish_command_ack("acquire/start", request_id, False, "Already acquiring")
+                if self._acq_events:
+                    self._acq_events.emit(AcquisitionEvent.START_REJECTED, {'reason': 'already_acquiring', 'state': self._state_machine.state.name}, severity='warning')
                 return
-            # Clear stop cooldown so cRIO ACK for new START isn't filtered
-            self._stop_command_time = None
+            if self._acq_events:
+                self._acq_events.emit(AcquisitionEvent.START_STATE_TRANSITION, {'new_state': 'INITIALIZING'})
+            # (Legacy _stop_command_time removed — state sync uses /state topic)
             logger.info(f"[TIMING] State update: {(time.time()-_start_time)*1000:.1f}ms")
             self._publish_system_status(skip_resource_monitoring=True)  # Fast path for immediate UI feedback
             logger.info(f"[TIMING] Status publish (fast): {(time.time()-_start_time)*1000:.1f}ms")
@@ -5001,9 +5083,35 @@ Unit conversions:
                 )
             logger.info(f"[TIMING] Audit logged: {(time.time()-_start_time)*1000:.1f}ms")
 
+            # Auto-start recording if configured (unattended weekend operation)
+            if (self.recording_manager
+                    and self.recording_manager.config.auto_start_on_acquire
+                    and not self.recording_manager.recording):
+                logger.info("[AUTO-RECORD] Starting recording automatically on acquisition start")
+                if self.recording_manager.start():
+                    self.recording = True
+                    self.recording_start_time = self.recording_manager.recording_start_time
+                    self.recording_filename = self.recording_manager.current_file.name if self.recording_manager.current_file else None
+                    logger.info(f"[AUTO-RECORD] Recording started: {self.recording_filename}")
+                else:
+                    logger.warning("[AUTO-RECORD] Failed to start automatic recording")
+            logger.info(f"[TIMING] Auto-record check: {(time.time()-_start_time)*1000:.1f}ms")
+
             self._publish_system_status()  # Full status with resource monitoring
             self._publish_command_ack("acquire/start", request_id, True)
             logger.info(f"[TIMING] Final status + ack: {(time.time()-_start_time)*1000:.1f}ms")
+            if self._acq_events:
+                self._acq_events.emit(AcquisitionEvent.ACQUIRE_RUNNING, {
+                    'channels': len(self.config.channels) if self.config else 0,
+                    'elapsed_ms': int((time.time() - _start_time) * 1000),
+                })
+
+            # Reset scan health counters on fresh start
+            self._scan_consecutive_errors = 0
+            self._scan_total_errors = 0
+            self._scan_loop_healthy = True
+            self._safety_eval_failures = 0
+            self._historian_error_count = 0
 
             # Forward acquisition start to all connected cRIO nodes
             # Wrapped in separate try-except to prevent rollback after success ack
@@ -5012,9 +5120,18 @@ Unit conversions:
                 logger.info(f"[TIMING] cRIO forward complete: {(time.time()-_start_time)*1000:.1f}ms")
             except Exception as crio_err:
                 logger.error(f"[STATE MACHINE] cRIO forward failed (acquisition still running locally): {crio_err}")
+                if self._acq_events:
+                    self._acq_events.emit(AcquisitionEvent.CRIO_START_ACK_TIMEOUT, {
+                        'error': str(crio_err),
+                    }, severity='warning')
 
         except Exception as e:
             logger.error(f"[STATE] Error starting acquisition: {e}", exc_info=True)
+            if self._acq_events:
+                self._acq_events.emit(AcquisitionEvent.START_FAILED, {
+                    'error': str(e),
+                    'elapsed_ms': int((time.time() - _start_time) * 1000),
+                }, severity='error')
             # STATE ROLLBACK: Force back to stopped on error
             self._state_machine.force_state(DAQState.STOPPED)
             # Unlock safety config on failure
@@ -5023,11 +5140,18 @@ Unit conversions:
             logger.error(f"[STATE] Rolled back to STOPPED (state={self._state_machine.state.name})")
             self._publish_system_status()  # Notify frontend of state rollback
             self._publish_command_ack("acquire/start", request_id, False, str(e))
+        finally:
+            if self._acq_events:
+                self._acq_events.end_flow()
 
     def _handle_acquire_stop(self, request_id: Optional[str] = None):
         """Stop data acquisition with command acknowledgment and state validation"""
         _start_time = time.time()
         logger.info(f"[TIMING] _handle_acquire_stop called at {_start_time}")
+        flow_id = request_id or str(uuid.uuid4())[:8]
+        if self._acq_events:
+            self._acq_events.start_flow(flow_id)
+            self._acq_events.emit(AcquisitionEvent.STOP_REQUESTED, {'request_id': request_id})
         try:
             # PERMISSION CHECK
             if not self._has_permission(Permission.STOP_ACQUISITION):
@@ -5042,7 +5166,7 @@ Unit conversions:
                 logger.warning(f"[STATE] Acquisition stop rejected (state={self._state_machine.state.name})")
                 self._publish_command_ack("acquire/stop", request_id, False, "Not acquiring")
                 return
-            self._stop_command_time = time.time()  # Start cooldown to ignore stale cRIO sync messages
+            # (Legacy _stop_command_time removed — state sync uses /state topic)
             logger.info(f"[TIMING] STOP State update: {(time.time()-_start_time)*1000:.1f}ms")
             self._publish_system_status(skip_resource_monitoring=True)  # Fast path for immediate UI feedback
             logger.info(f"[TIMING] STOP Status publish (fast): {(time.time()-_start_time)*1000:.1f}ms")
@@ -5081,6 +5205,10 @@ Unit conversions:
             self._publish_system_status()  # Full status with resource monitoring
             self._publish_command_ack("acquire/stop", request_id, True)
             logger.info(f"[TIMING] STOP Final status + ack: {(time.time()-_start_time)*1000:.1f}ms")
+            if self._acq_events:
+                self._acq_events.emit(AcquisitionEvent.ACQUIRE_STOPPED, {
+                    'elapsed_ms': int((time.time() - _start_time) * 1000),
+                })
 
             # Forward acquisition stop to all connected cRIO nodes
             self._forward_acquisition_command_to_crio('stop', request_id)
@@ -5089,6 +5217,11 @@ Unit conversions:
         except Exception as e:
             logger.error(f"[STATE MACHINE] Error stopping acquisition: {e}", exc_info=True)
             self._publish_command_ack("acquire/stop", request_id, False, str(e))
+            if self._acq_events:
+                self._acq_events.emit(AcquisitionEvent.STOP_FAILED, {'error': str(e)}, severity='error')
+        finally:
+            if self._acq_events:
+                self._acq_events.end_flow()
 
     def _handle_safe_state(self, payload: Any, request_id: Optional[str] = None):
         """Set all outputs to safe state (DO=0, AO=0)
@@ -5145,12 +5278,12 @@ Unit conversions:
         self._publish_command_ack("system/safe-state", request_id, True)
         logger.info("[SAFE STATE] All outputs set to safe state")
 
-    def _handle_recording_start(self, payload: Any):
+    def _handle_recording_start(self, payload: Any, request_id: Optional[str] = None):
         """Start data recording with state validation"""
         # PERMISSION CHECK
         if not self._has_permission(Permission.START_RECORDING):
             logger.warning("[SECURITY] Recording start denied - insufficient permissions")
-            self._publish_recording_response(False, "Permission denied")
+            self._publish_command_ack("recording/start", request_id, False, "Permission denied")
             return
 
         # STATE VALIDATION: Check prerequisites
@@ -5158,12 +5291,12 @@ Unit conversions:
 
         if not self.acquiring:
             logger.error("[STATE MACHINE] Recording start rejected - acquisition not running (PREREQUISITE FAILED)")
-            self._publish_recording_response(False, "Acquisition must be running to start recording")
+            self._publish_command_ack("recording/start", request_id, False, "Acquisition must be running to start recording")
             return
 
         if self.recording_manager.recording:
             logger.warning("[STATE MACHINE] Recording start rejected - already recording")
-            self._publish_recording_response(False, "Recording already active")
+            self._publish_command_ack("recording/start", request_id, False, "Recording already active")
             return
 
         # STATE TRANSITION: idle → starting
@@ -5175,7 +5308,7 @@ Unit conversions:
             filename = payload.get('filename')
 
             # Also apply any config from payload
-            config_updates = {k: v for k, v in payload.items() if k != 'filename'}
+            config_updates = {k: v for k, v in payload.items() if k != 'filename' and k != 'request_id'}
             if config_updates:
                 logger.info(f"[STATE MACHINE] Applying recording config updates: {list(config_updates.keys())}")
                 self.recording_manager.configure(config_updates)
@@ -5186,7 +5319,7 @@ Unit conversions:
             self.recording_start_time = self.recording_manager.recording_start_time
             self.recording_filename = self.recording_manager.current_file.name if self.recording_manager.current_file else None
             logger.info(f"[STATE MACHINE] Recording started successfully (file: {self.recording_filename})")
-            self._publish_recording_response(True, f"Recording started: {self.recording_filename}")
+            self._publish_command_ack("recording/start", request_id, True)
             self._publish_system_status()
 
             # Start Azure IoT streaming if configured
@@ -5195,14 +5328,14 @@ Unit conversions:
                 self._sync_azure_config_to_historian(streaming=True)
         else:
             logger.error("[STATE MACHINE] Recording start failed - manager returned False")
-            self._publish_recording_response(False, "Failed to start recording")
+            self._publish_command_ack("recording/start", request_id, False, "Failed to start recording")
 
-    def _handle_recording_stop(self):
+    def _handle_recording_stop(self, request_id: Optional[str] = None):
         """Stop data recording with state validation"""
         # PERMISSION CHECK
         if not self._has_permission(Permission.STOP_RECORDING):
             logger.warning("[SECURITY] Recording stop denied - insufficient permissions")
-            self._publish_recording_response(False, "Permission denied")
+            self._publish_command_ack("recording/stop", request_id, False, "Permission denied")
             return
 
         # STATE VALIDATION: Check current state
@@ -5210,7 +5343,7 @@ Unit conversions:
 
         if not self.recording_manager.recording:
             logger.warning("[STATE MACHINE] Recording stop rejected - not recording")
-            self._publish_recording_response(False, "Recording not active")
+            self._publish_command_ack("recording/stop", request_id, False, "Recording not active")
             return
 
         # STATE TRANSITION: recording → stopping
@@ -5223,7 +5356,7 @@ Unit conversions:
             self.recording_start_time = None
             self.recording_filename = None
             logger.info(f"[STATE MACHINE] Recording stopped successfully (file: {filename_for_log})")
-            self._publish_recording_response(True, "Recording stopped")
+            self._publish_command_ack("recording/stop", request_id, True)
             self._publish_system_status()
 
             # Stop Azure IoT streaming if it was active
@@ -5231,7 +5364,7 @@ Unit conversions:
                 self._sync_azure_config_to_historian(streaming=False)
         else:
             logger.error("[STATE MACHINE] Recording stop failed - manager returned False")
-            self._publish_recording_response(False, "Failed to stop recording")
+            self._publish_command_ack("recording/stop", request_id, False, "Failed to stop recording")
 
     def _handle_recording_config(self, payload: Any):
         """Update recording configuration"""
@@ -5761,6 +5894,10 @@ Unit conversions:
         session_cleanup_counter = 0
         session_cleanup_interval = 150
 
+        # Credential health check interval (every ~60s = every 30 heartbeats at 2s interval)
+        credential_health_counter = 0
+        credential_health_interval = 30
+
         while not self._shutdown_requested.wait(timeout=self._heartbeat_interval):
             if not self._running.is_set():
                 continue
@@ -5812,6 +5949,12 @@ Unit conversions:
                     if self.user_session_manager:
                         self.user_session_manager.cleanup_expired_sessions()
 
+                # Periodic credential health check — detect offline nodes that are reachable
+                credential_health_counter += 1
+                if credential_health_counter >= credential_health_interval:
+                    credential_health_counter = 0
+                    self._check_node_credential_health()
+
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
 
@@ -5838,6 +5981,60 @@ Unit conversions:
             json.dumps(payload),
             qos=1
         )
+
+    def _publish_health(self):
+        """Publish continuous health status for diagnostic overlay."""
+        base = self.get_topic_base()
+        now = time.time()
+
+        # Hardware health (reuse existing method if available)
+        hw_health = None
+        if self.hardware_reader:
+            try:
+                hw_health = self.hardware_reader.get_health_status()
+            except Exception:
+                hw_health = {'healthy': False, 'error': 'health_check_failed'}
+
+        # Channel stats
+        nan_count = 0
+        stale_count = 0
+        with self.values_lock:
+            for name, val in self.channel_values.items():
+                if isinstance(val, float) and val != val:  # NaN check
+                    nan_count += 1
+                ts = self.channel_acquisition_ts_us.get(name, 0)
+                if ts > 0 and (now - ts / 1_000_000) > 10.0:
+                    stale_count += 1
+
+        health = {
+            'timestamp': datetime.now().isoformat(),
+            'scan_loop': {
+                'healthy': self._scan_loop_healthy,
+                'consecutive_errors': self._scan_consecutive_errors,
+                'total_errors': self._scan_total_errors,
+                'last_successful_scan': self._last_successful_scan_time,
+                'errors_per_minute': (self._scan_total_errors / max(1, (now - self._last_successful_scan_time))) * 60 if self._last_successful_scan_time > 0 else 0,
+            },
+            'hardware': hw_health,
+            'safety': {
+                'last_eval_time': self._last_safety_eval_time,
+                'eval_failures': self._safety_eval_failures,
+                'healthy': self._safety_eval_failures < 3,
+            },
+            'channels': {
+                'total': len(self.config.channels) if self.config else 0,
+                'nan_count': nan_count,
+                'stale_count': stale_count,
+            },
+        }
+        try:
+            self.mqtt_client.publish(
+                f"{base}/status/health",
+                json.dumps(health),
+                qos=0
+            )
+        except Exception:
+            pass  # Health publish must never disrupt the publish loop
 
     def _publish_system_status(self, skip_resource_monitoring: bool = False):
         """Publish comprehensive system status.
@@ -5900,6 +6097,15 @@ Unit conversions:
             "publish_rate_hz": self.config.system.publish_rate_hz,
             "dt_scan_ms": round(self.last_scan_dt_ms, 2),
             "dt_publish_ms": round(self.last_publish_dt_ms, 2),
+            # Per-project operational settings
+            "log_level": self.config.system.log_level,
+            "log_max_file_size_mb": self.config.system.log_max_file_size_mb,
+            "log_backup_count": self.config.system.log_backup_count,
+            "service_heartbeat_interval_sec": self.config.system.service_heartbeat_interval_sec,
+            "service_health_timeout_sec": self.config.system.service_health_timeout_sec,
+            "service_shutdown_timeout_sec": self.config.system.service_shutdown_timeout_sec,
+            "service_command_ack_timeout_sec": self.config.system.service_command_ack_timeout_sec,
+            "dataviewer_retention_days": self.config.system.dataviewer_retention_days,
             "scan_timing": self._scan_timing.to_dict(),
             "channel_count": len(self.config.channels),
             "config_path": self.config_path,
@@ -6954,6 +7160,32 @@ Unit conversions:
                         window_s=af.get('window_s', 60.0)
                     )
 
+            # Update logging settings if provided
+            if 'log_level' in payload:
+                new_level = str(payload['log_level']).upper()
+                if new_level in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
+                    self.config.system.log_level = new_level
+                    logging.getLogger().setLevel(new_level)
+                    logger.info(f"Log level updated to {new_level}")
+            if 'log_max_file_size_mb' in payload:
+                self.config.system.log_max_file_size_mb = max(1, int(payload['log_max_file_size_mb']))
+            if 'log_backup_count' in payload:
+                self.config.system.log_backup_count = max(0, int(payload['log_backup_count']))
+
+            # Update service timing settings if provided
+            if 'service_heartbeat_interval_sec' in payload:
+                self.config.system.service_heartbeat_interval_sec = max(0.5, float(payload['service_heartbeat_interval_sec']))
+            if 'service_health_timeout_sec' in payload:
+                self.config.system.service_health_timeout_sec = max(1.0, float(payload['service_health_timeout_sec']))
+            if 'service_shutdown_timeout_sec' in payload:
+                self.config.system.service_shutdown_timeout_sec = max(1.0, float(payload['service_shutdown_timeout_sec']))
+            if 'service_command_ack_timeout_sec' in payload:
+                self.config.system.service_command_ack_timeout_sec = max(1.0, float(payload['service_command_ack_timeout_sec']))
+
+            # Update data viewer retention if provided
+            if 'dataviewer_retention_days' in payload:
+                self.config.system.dataviewer_retention_days = max(1, int(payload['dataviewer_retention_days']))
+
             # Publish status to reflect new settings
             self._publish_system_status()
 
@@ -6974,7 +7206,15 @@ Unit conversions:
                         "enabled": self.config.system.watchdog_output_enabled,
                         "channel": self.config.system.watchdog_output_channel,
                         "rate_hz": self.config.system.watchdog_output_rate_hz
-                    }
+                    },
+                    "log_level": self.config.system.log_level,
+                    "log_max_file_size_mb": self.config.system.log_max_file_size_mb,
+                    "log_backup_count": self.config.system.log_backup_count,
+                    "service_heartbeat_interval_sec": self.config.system.service_heartbeat_interval_sec,
+                    "service_health_timeout_sec": self.config.system.service_health_timeout_sec,
+                    "service_shutdown_timeout_sec": self.config.system.service_shutdown_timeout_sec,
+                    "service_command_ack_timeout_sec": self.config.system.service_command_ack_timeout_sec,
+                    "dataviewer_retention_days": self.config.system.dataviewer_retention_days,
                 })
             )
 
@@ -8731,7 +8971,7 @@ Unit conversions:
             else:  # gc
                 self.device_discovery.register_gc_node(node_id, payload)
 
-        logger.debug(f"{node_type.upper()} node status: {node_id} -> {status}")
+        logger.info(f"{node_type.upper()} node status received: {node_id} -> {status}")
 
         # If a new node was discovered, notify frontend so it can refresh discovery
         if is_new_node and status != 'offline':
@@ -8895,21 +9135,34 @@ Unit conversions:
                 self._process_crio_single_value(node_id, channel_suffix, value)
 
     def _process_crio_batch_values(self, node_id: str, batch_payload: Dict[str, Any]):
-        """Process batch channel values from cRIO/Opto22 with SOE timestamps."""
-        with self.values_lock:
-            for crio_channel, ch_data in batch_payload.items():
-                if isinstance(ch_data, dict):
-                    value = ch_data.get('value')
-                    # SOE: Preserve source acquisition timestamp from remote node
-                    acquisition_ts_us = ch_data.get('acquisition_ts_us', 0)
-                    quality = ch_data.get('quality', 'good')
-                else:
-                    value = ch_data  # Simple value format
-                    acquisition_ts_us = 0
-                    quality = 'good'
+        """Process batch channel values from cRIO/Opto22.
 
-                if value is not None:
-                    self._update_crio_channel_value(node_id, crio_channel, value, acquisition_ts_us, quality)
+        Supports lean format: { t, ts_us, v: {ch: val}, bad?: [], stale?: [] }
+        """
+        # Lean format detection
+        if 'v' in batch_payload and 't' in batch_payload:
+            ts_us = batch_payload.get('ts_us', 0)
+            bad_set = set(batch_payload.get('bad', []))
+            with self.values_lock:
+                for crio_channel, value in batch_payload['v'].items():
+                    quality = 'bad' if crio_channel in bad_set else 'good'
+                    if value is not None:
+                        self._update_crio_channel_value(node_id, crio_channel, value, ts_us, quality)
+        else:
+            # Legacy format fallback (should not happen after uniform migration)
+            with self.values_lock:
+                for crio_channel, ch_data in batch_payload.items():
+                    if isinstance(ch_data, dict):
+                        value = ch_data.get('value')
+                        acquisition_ts_us = ch_data.get('acquisition_ts_us', 0)
+                        quality = ch_data.get('quality', 'good')
+                    else:
+                        value = ch_data
+                        acquisition_ts_us = 0
+                        quality = 'good'
+
+                    if value is not None:
+                        self._update_crio_channel_value(node_id, crio_channel, value, acquisition_ts_us, quality)
 
     def _process_crio_single_value(self, node_id: str, crio_channel: str, value: Any):
         """Process single channel value from cRIO."""
@@ -9001,36 +9254,19 @@ Unit conversions:
         Sync local state from cRIO system channels.
 
         In CRIO mode, the cRIO is the source of truth for system state.
-        When cRIO publishes sys.acquiring, sys.session_active, sys.recording,
-        we sync our local state and republish status to the frontend.
+        session_active and recording are synced here; acquiring state is now
+        handled by the dedicated /state topic (see _handle_node_state_change).
 
         Args:
-            channel: System channel name (e.g., 'sys.acquiring')
+            channel: System channel name (e.g., 'sys.session_active')
             value: Channel value (0.0 or 1.0)
         """
         bool_value = bool(value > 0.5) if isinstance(value, (int, float)) else bool(value)
 
         if channel == 'sys.acquiring':
-            # Don't allow cRIO to override state during local state transitions
-            # This prevents race conditions where cRIO sync interferes with START/STOP commands
-            if self.acquisition_state in ('initializing', 'stopping'):
-                logger.debug(f"[CRIO_SYNC] Ignoring cRIO sync during local transition ({self.acquisition_state})")
-                return
-            # Cooldown period after stop command - ignore stale cRIO "acquiring=True" messages
-            # This handles the race condition where cRIO sends status before processing stop command
-            if self._stop_command_time and bool_value:
-                cooldown_elapsed = time.time() - self._stop_command_time
-                if cooldown_elapsed < 3.0:  # 3 second cooldown
-                    logger.debug(f"[CRIO_SYNC] Ignoring cRIO acquiring=True during stop cooldown ({cooldown_elapsed:.1f}s elapsed)")
-                    return
-                else:
-                    # Cooldown expired, clear it
-                    self._stop_command_time = None
-            target = DAQState.RUNNING if bool_value else DAQState.STOPPED
-            if self._state_machine.state != target:
-                logger.info(f"[CRIO_SYNC] Syncing acquiring state from cRIO: {self.acquiring} -> {bool_value}")
-                if self._state_machine.to(target):
-                    self._publish_system_status(skip_resource_monitoring=True)
+            # Acquiring state is now tracked via the dedicated /state topic
+            # (QoS 1 retained). Ignore channel-based sync to avoid race conditions.
+            return
 
         elif channel == 'sys.session_active':
             if self.user_variables:
@@ -9047,6 +9283,66 @@ Unit conversions:
                     logger.info(f"[CRIO_SYNC] Recording state from cRIO: {prev_recording} -> {bool_value}")
                     # Note: We don't directly control recording from cRIO - just log for awareness
                     # Recording should be controlled through explicit commands
+
+    def _handle_node_state_change(self, topic: str, payload: Dict[str, Any]):
+        """Handle cRIO/edge node state transition (QoS 1, retained).
+
+        The cRIO publishes to nodes/{node_id}/state on every state change.
+        This replaces the old _sync_crio_system_state() polling approach and
+        _stop_command_time cooldown hack with a reliable, retained signal.
+
+        Args:
+            topic: e.g. "nisystem/nodes/crio-001/state"
+            payload: {node_id, old_state, new_state, reason, timestamp}
+        """
+        if not isinstance(payload, dict):
+            return
+
+        node_id = payload.get('node_id')
+        old_state = payload.get('old_state', '?')
+        new_state = payload.get('new_state', '?')
+        reason = payload.get('reason', '')
+
+        if not node_id:
+            # Try to extract from topic
+            parts = topic.split('/')
+            for i, p in enumerate(parts):
+                if p == 'nodes' and i + 1 < len(parts):
+                    node_id = parts[i + 1]
+                    break
+        if not node_id:
+            return
+
+        logger.info(f"[NODE_STATE] {node_id}: {old_state} -> {new_state}"
+                     f"{f' ({reason})' if reason else ''}")
+
+        # Update device discovery tracking if available
+        if self.device_discovery:
+            # Look up node across all node type registries
+            node_obj = None
+            with getattr(self.device_discovery, '_crio_lock', threading.Lock()):
+                crio_nodes = getattr(self.device_discovery, '_crio_nodes', {})
+                if node_id in crio_nodes:
+                    node_obj = crio_nodes[node_id]
+            if node_obj is None:
+                opto_nodes = getattr(self.device_discovery, '_opto22_nodes', {})
+                if node_id in opto_nodes:
+                    node_obj = opto_nodes[node_id]
+            if node_obj is None:
+                cfp_nodes = getattr(self.device_discovery, '_cfp_nodes', {})
+                if node_id in cfp_nodes:
+                    node_obj = cfp_nodes[node_id]
+            if node_obj:
+                node_obj.status = new_state.lower() if new_state in ('IDLE', 'ACQUIRING') else node_obj.status
+                # Track state timestamp on the object if it has the attribute
+                if hasattr(node_obj, 'last_seen'):
+                    node_obj.last_seen = payload.get('timestamp', node_obj.last_seen)
+
+        # Log significant transitions for debugging
+        if new_state == 'ACQUIRING':
+            logger.info(f"[NODE_STATE] {node_id} is now acquiring")
+        elif new_state == 'IDLE' and old_state == 'ACQUIRING':
+            logger.info(f"[NODE_STATE] {node_id} stopped acquiring")
 
     def _handle_crio_config_response(self, topic: str, payload: Dict[str, Any]):
         """
@@ -9087,17 +9383,20 @@ Unit conversions:
                     if config_version:
                         self._crio_config_versions[node_id] = config_version
                     logger.info(f"cRIO {node_id} confirmed config: {channels} channels (attempt {attempts})")
-                    self._publish_crio_response(True, f"Config confirmed by {node_id}: {channels} channels")
+                    self._publish_crio_response(
+                        True, f"Config confirmed by {node_id}: {channels} channels",
+                        node_id=node_id, config_version=config_version
+                    )
                     # Signal any waiting threads (e.g., START command waiting for config ACK)
                     if node_id in self._crio_config_ack_events:
                         self._crio_config_ack_events[node_id].set()
                 else:
                     error_msg = payload.get('error', payload.get('message', 'Unknown error'))
-                    logger.error(f"{node_label} {node_id} rejected config: {error_msg}")
+                    logger.error(f"cRIO {node_id} rejected config: {error_msg}")
                     self._publish_crio_response(False, f"Config rejected by {node_id}: {error_msg}")
             else:
                 # Unexpected ACK (maybe from direct push or duplicate)
-                logger.debug(f"{node_label} {node_id} config response (no pending push): {status}")
+                logger.debug(f"cRIO {node_id} config response (no pending push): {status}")
 
     def _handle_crio_session_status(self, topic: str, payload: Dict[str, Any]):
         """
@@ -9362,16 +9661,6 @@ Unit conversions:
             current_state = self._state_machine.state
             if current_state in (DAQState.INITIALIZING, DAQState.STOPPING):
                 logger.debug(f"[CRIO_ACK] Ignoring state sync during transition ({current_state.name})")
-            elif self._stop_command_time and crio_acquiring:
-                cooldown_elapsed = time.time() - self._stop_command_time
-                if cooldown_elapsed < 3.0:
-                    logger.info(f"[CRIO_ACK] Ignoring cRIO acquiring=True during stop cooldown ({cooldown_elapsed:.1f}s)")
-                else:
-                    self._stop_command_time = None
-                    target = DAQState.RUNNING if crio_acquiring else DAQState.STOPPED
-                    if self._state_machine.state != target:
-                        logger.info(f"[CRIO_ACK] Syncing acquiring: {self.acquiring} -> {crio_acquiring}")
-                        self._state_machine.to(target)
             elif self.acquiring != crio_acquiring:
                 target = DAQState.RUNNING if crio_acquiring else DAQState.STOPPED
                 logger.info(f"[CRIO_ACK] Syncing acquiring: {self.acquiring} -> {crio_acquiring}")
@@ -9556,7 +9845,8 @@ Unit conversions:
 
         self._publish_crio_list(nodes_list)
 
-    def _publish_crio_response(self, success: bool, message: str):
+    def _publish_crio_response(self, success: bool, message: str,
+                               node_id: str = '', config_version: str = ''):
         """Publish response to cRIO operation."""
         if not self.mqtt_client:
             return
@@ -9564,15 +9854,17 @@ Unit conversions:
         mqtt_base = self.config.system.mqtt_base_topic
         topic = f"{mqtt_base}/crio/response"
 
-        self.mqtt_client.publish(
-            topic,
-            json.dumps({
-                'success': success,
-                'message': message,
-                'timestamp': datetime.now().isoformat()
-            }),
-            qos=1
-        )
+        payload: Dict[str, Any] = {
+            'success': success,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        }
+        if node_id:
+            payload['node_id'] = node_id
+        if config_version:
+            payload['config_version'] = config_version
+
+        self.mqtt_client.publish(topic, json.dumps(payload), qos=1)
 
     def _publish_crio_list(self, nodes: list):
         """Publish list of cRIO nodes."""
@@ -9592,6 +9884,49 @@ Unit conversions:
             }),
             qos=1
         )
+
+    # ── Node Health Check ────────────────────────────────────────────────────
+
+    def _check_node_credential_health(self):
+        """Check offline nodes — publish diagnostic if reachable but not on MQTT.
+
+        Port 8883 is anonymous (TLS-only), so credential desync is no longer
+        possible. This check helps diagnose other connectivity issues like
+        missing TLS certs or service crashes.
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return
+
+        offline_nodes = self.device_discovery.get_offline_nodes()
+        if not offline_nodes:
+            return
+
+        base = self.get_topic_base()
+
+        for node_id, info in offline_nodes.items():
+            ip = info['ip_address']
+            try:
+                reachable = self.device_discovery.check_node_reachable(ip, port=22, timeout=2.0)
+            except Exception:
+                reachable = False
+
+            if reachable:
+                logger.info(f"Node {node_id} ({ip}) is reachable but offline on MQTT — service may need redeploy")
+                self.mqtt_client.publish(
+                    f"{base}/nodes/{node_id}/credential_status",
+                    json.dumps({
+                        'node_id': node_id,
+                        'ip_address': ip,
+                        'node_type': info.get('node_type', 'unknown'),
+                        'product_type': info.get('product_type', ''),
+                        'reachable': True,
+                        'mqtt_connected': False,
+                        'diagnosis': 'offline_reachable',
+                        'message': f'{info.get("product_type", "Node")} at {ip} is reachable but not connecting to MQTT. Run the deploy script to reinstall.',
+                        'timestamp': datetime.now().isoformat(),
+                    }),
+                    qos=1
+                )
 
     def _forward_acquisition_command_to_crio(self, command: str, request_id: Optional[str] = None):
         """
@@ -9634,11 +9969,12 @@ Unit conversions:
                 if has_confirmed_config:
                     logger.info(f"cRIO {node.node_id} already has confirmed config - sending start directly")
                 else:
-                    # No confirmed config - push and wait for ACK
-                    config_acked = self._push_crio_channel_config_and_wait(node.node_id, timeout=5.0)
-                    if not config_acked:
-                        logger.error(f"cRIO {node.node_id} did not ACK config within timeout - skipping start")
-                        continue
+                    # Fire-and-forget config push — don't block the start path.
+                    # The cRIO handles config arriving during acquisition via
+                    # internal was_acquiring restart.  Config ACK still arrives
+                    # on config/response for diagnostics/logging.
+                    logger.info(f"cRIO {node.node_id} has no confirmed config — pushing (fire-and-forget)")
+                    self._push_crio_channel_config(node.node_id)
 
             topic = f"{mqtt_base}/nodes/{node.node_id}/system/acquire/{command}"
             self.mqtt_client.publish(
@@ -9978,6 +10314,7 @@ Unit conversions:
             'safe_state_outputs': [],
             'scan_rate_hz': self.config.system.scan_rate_hz,
             'publish_rate_hz': self.config.system.publish_rate_hz,
+            'di_poll_rate_hz': getattr(self.config.system, 'di_poll_rate_hz', 20.0),
             'watchdog_output': {
                 'enabled': self.config.system.watchdog_output_enabled,
                 'channel': self.config.system.watchdog_output_channel,
@@ -10658,7 +10995,7 @@ Unit conversions:
     # TEST SESSION HANDLERS
     # =========================================================================
 
-    def _handle_test_session_start(self, payload: Dict[str, Any]):
+    def _handle_test_session_start(self, payload: Dict[str, Any], request_id: Optional[str] = None):
         """Start a test session with safety interlock validation"""
         logger.info("[SESSION] Received test session START request")
         started_by = payload.get('started_by', 'user') if isinstance(payload, dict) else 'user'
@@ -10696,8 +11033,7 @@ Unit conversions:
                         'timestamp': datetime.now().isoformat()
                     })
                 )
-                # Also publish to variable response for toast notification
-                self._publish_variable_response(False, "Session start failed: No cRIO nodes discovered")
+                self._publish_command_ack("test-session/start", request_id, False, "No cRIO nodes discovered")
                 return
             else:
                 logger.info(f"[SESSION] Found {len(crio_nodes)} cRIO node(s): {[n.node_id for n in crio_nodes]}")
@@ -10719,6 +11055,9 @@ Unit conversions:
                     time.sleep(0.2)
                 self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
                 logger.info(f"[SESSION] Forwarded start to cRIO {node.node_id}")
+
+            # ACK that we forwarded successfully (cRIO will publish session/status separately)
+            self._publish_command_ack("test-session/start", request_id, True)
 
             # Audit trail: Log session start (PC audit for cRIO mode)
             if self.audit_trail and crio_nodes:
@@ -10770,7 +11109,7 @@ Unit conversions:
         )
 
         if result.get('success'):
-            self._publish_variable_response(True, "Test session started")
+            self._publish_command_ack("test-session/start", request_id, True)
             self._publish_test_session_status()
             self._publish_user_variables_values()
 
@@ -10788,9 +11127,9 @@ Unit conversions:
                     }
                 )
         else:
-            self._publish_variable_response(False, result.get('error', 'Failed to start session'))
+            self._publish_command_ack("test-session/start", request_id, False, result.get('error', 'Failed to start session'))
 
-    def _handle_test_session_stop(self):
+    def _handle_test_session_stop(self, request_id: Optional[str] = None):
         """Stop the test session"""
         logger.info("[SESSION] Received test session STOP request")
 
@@ -10802,12 +11141,16 @@ Unit conversions:
             crio_nodes = self.device_discovery.get_crio_nodes() if self.device_discovery else []
             if not crio_nodes:
                 logger.warning("[SESSION] No cRIO nodes discovered! Cannot forward session stop.")
+                self._publish_command_ack("test-session/stop", request_id, False, "No cRIO nodes discovered")
                 return
             for node in crio_nodes:
                 crio_topic = f"{mqtt_base}/nodes/{node.node_id}/session/stop"
                 crio_payload = {'reason': 'user_command'}
                 self.mqtt_client.publish(crio_topic, json.dumps(crio_payload), qos=1)
                 logger.info(f"[SESSION] Forwarded stop to cRIO {node.node_id}")
+
+            # ACK that we forwarded successfully
+            self._publish_command_ack("test-session/stop", request_id, True)
 
             # Audit trail: Log session stop (PC audit for cRIO mode)
             if self.audit_trail and crio_nodes:
@@ -10829,7 +11172,7 @@ Unit conversions:
         result = self.user_variables.stop_session()
 
         if result.get('success'):
-            self._publish_variable_response(True, "Test session stopped")
+            self._publish_command_ack("test-session/stop", request_id, True)
             self._publish_test_session_status()
             self._publish_user_variables_values()
 
@@ -10846,7 +11189,7 @@ Unit conversions:
                     }
                 )
         else:
-            self._publish_variable_response(False, result.get('error', 'Failed to stop session'))
+            self._publish_command_ack("test-session/stop", request_id, False, result.get('error', 'Failed to stop session'))
 
     def _handle_test_session_config(self, payload: Dict[str, Any]):
         """Update test session configuration"""
@@ -11958,26 +12301,37 @@ Unit conversions:
                 if not crio_found and crio_count_before == 0:
                     logger.info(f"No cRIO responses after {waited:.1f}s wait")
 
-            # Step 4: Re-scan to include any cRIO nodes (if mode allows)
-            # Re-scan if: new cRIO found, OR count increased, OR there are existing cRIOs (for crio-only mode)
-            crio_count_now = len(self.device_discovery.get_crio_nodes())
-            should_rescan = crio_found or crio_count_now > crio_count_before or (mode == 'crio' and crio_count_now > 0)
-            if mode in ('crio', 'all') and should_rescan:
-                result = self.device_discovery.scan()
-                if not result.success:
-                    logger.warning(f"Re-scan hardware discovery failed: {result.message}")
-                logger.info(f"Re-scanned with cRIO nodes: {result.message}")
+            # Step 4: Build final result based on mode
+            if mode == 'crio':
+                # cRIO-only mode: build result directly from registered nodes
+                # Do NOT call device_discovery.scan() — it enumerates local cDAQ hardware
+                from device_discovery import DiscoveryResult
+                crio_nodes = self.device_discovery.get_crio_nodes()
+                crio_channels = sum(n.channels for n in crio_nodes)
+                crio_msg = f"Found {len(crio_nodes)} cRIO node(s), {crio_channels} channels"
+                result = DiscoveryResult(
+                    success=True,
+                    message=crio_msg,
+                    timestamp=datetime.now().isoformat(),
+                    crio_nodes=crio_nodes,
+                    total_channels=crio_channels
+                )
+                logger.info(f"cRIO discovery: {crio_msg}")
+            else:
+                # For 'all' or 'cdaq' modes, re-scan to include any newly found cRIOs
+                crio_count_now = len(self.device_discovery.get_crio_nodes())
+                should_rescan = crio_found or crio_count_now > crio_count_before
+                if mode == 'all' and should_rescan:
+                    result = self.device_discovery.scan()
+                    if not result.success:
+                        logger.warning(f"Re-scan hardware discovery failed: {result.message}")
+                    logger.info(f"Re-scanned with cRIO nodes: {result.message}")
 
             # Filter result based on mode
             result_dict = result.to_dict()
             if mode == 'cdaq':
                 # Only include local cDAQ chassis, remove remote nodes
                 result_dict['crio_nodes'] = []
-                result_dict['opto22_nodes'] = []
-            elif mode == 'crio':
-                # Only include cRIO nodes, remove local chassis
-                result_dict['chassis'] = []
-                result_dict['standalone_devices'] = []
                 result_dict['opto22_nodes'] = []
             elif mode == 'opto22':
                 # Only include Opto22 nodes
@@ -12586,7 +12940,16 @@ Unit conversions:
                 "scan_rate_hz": self.config.system.scan_rate_hz,
                 "publish_rate_hz": self.config.system.publish_rate_hz,
                 "simulation_mode": self.config.system.simulation_mode,
-                "log_directory": self.config.system.log_directory
+                "log_directory": self.config.system.log_directory,
+                "project_mode": self.config.system.project_mode.value,
+                "log_level": self.config.system.log_level,
+                "log_max_file_size_mb": self.config.system.log_max_file_size_mb,
+                "log_backup_count": self.config.system.log_backup_count,
+                "service_heartbeat_interval_sec": self.config.system.service_heartbeat_interval_sec,
+                "service_health_timeout_sec": self.config.system.service_health_timeout_sec,
+                "service_shutdown_timeout_sec": self.config.system.service_shutdown_timeout_sec,
+                "service_command_ack_timeout_sec": self.config.system.service_command_ack_timeout_sec,
+                "dataviewer_retention_days": self.config.system.dataviewer_retention_days,
             },
             "channels": {
                 name: {
@@ -13176,10 +13539,19 @@ Unit conversions:
 
     def _publish_channels_batch(self, values: Dict[str, Any]):
         """
-        Publish all channel values in a single batch message.
+        Publish all channel values in a single lean batch message.
 
-        This matches the cRIO/Opto22 batch format for frontend compatibility.
-        Format: {channel_name: {value: x, timestamp: t, quality: q, ...}, ...}
+        Lean format — shared fields appear once, per-channel data is minimal:
+        {
+          "t": "2026-03-05T18:03:09",     # timestamp (once)
+          "ts_us": 1741198989619452,       # acquisition epoch µs (once)
+          "v": {"Ch1": 23.45, "Ch2": null},# values (null = bad/disconnected)
+          "bad": ["Ch2"],                  # quality=bad channels
+          "alarm": ["Ch3"],               # quality=alarm channels (over limit)
+          "warn": ["Ch7"]                 # quality=warning channels
+        }
+        Units are sent at config time and omitted from batch.
+        Channels not in bad/alarm/warn are quality=good, status=normal.
         """
         import math
         if not self.mqtt_client:
@@ -13188,68 +13560,51 @@ Unit conversions:
         try:
             base = self.get_topic_base()
             timestamp = datetime.now().isoformat()
-            batch_payload = {}
+            ts_us = int(time.time() * 1_000_000)
+
+            v = {}
+            bad = []
+            alarm = []
+            warn = []
 
             for channel_name, value in values.items():
-                # Skip if channel not in config (sys.* channels handled separately)
                 if channel_name not in self.config.channels:
                     continue
 
                 channel = self.config.channels[channel_name]
 
-                # Skip cRIO channels - they're published when received from cRIO
-                # to avoid double-publishing which causes flickering
                 if getattr(channel, 'is_crio', False):
                     continue
 
-                # Check for NaN
                 is_nan = isinstance(value, float) and math.isnan(value)
 
-                # Get SOE acquisition timestamp
-                acquisition_ts_us = self.channel_acquisition_ts_us.get(channel_name, 0)
-
-                # Get quality from remote node if available
-                remote_quality = getattr(self, 'channel_qualities', {}).get(channel_name)
-
                 if is_nan:
-                    batch_payload[channel_name] = {
-                        'value': None,
-                        'timestamp': timestamp,
-                        'acquisition_ts_us': acquisition_ts_us,
-                        'units': channel.units,
-                        'quality': 'bad',
-                        'status': 'disconnected'
-                    }
+                    v[channel_name] = None
+                    bad.append(channel_name)
                 else:
-                    quality = remote_quality if remote_quality else 'good'
-                    status = 'normal'
+                    v[channel_name] = value
 
-                    # Check limits
-                    if channel.low_limit is not None and channel.high_limit is not None:
-                        numeric_value = float(value) if isinstance(value, (int, float)) else (1.0 if value else 0.0)
-                        if numeric_value < channel.low_limit:
-                            status = 'low_limit'
-                            quality = 'alarm'
-                        elif numeric_value > channel.high_limit:
-                            status = 'high_limit'
-                            quality = 'alarm'
-                        elif channel.low_warning is not None and numeric_value < channel.low_warning:
-                            status = 'low_warning'
-                            quality = 'warning'
-                        elif channel.high_warning is not None and numeric_value > channel.high_warning:
-                            status = 'high_warning'
-                            quality = 'warning'
+                    # Check limits (each limit is independent)
+                    numeric_value = float(value) if isinstance(value, (int, float)) else (1.0 if value else 0.0)
+                    is_alarm = (channel.low_limit is not None and numeric_value < channel.low_limit) or \
+                               (channel.high_limit is not None and numeric_value > channel.high_limit)
+                    is_warn = (not is_alarm) and (
+                        (channel.low_warning is not None and numeric_value < channel.low_warning) or
+                        (channel.high_warning is not None and numeric_value > channel.high_warning)
+                    )
+                    if is_alarm:
+                        alarm.append(channel_name)
+                    elif is_warn:
+                        warn.append(channel_name)
 
-                    batch_payload[channel_name] = {
-                        'value': value,
-                        'timestamp': timestamp,
-                        'acquisition_ts_us': acquisition_ts_us,
-                        'units': channel.units,
-                        'quality': quality,
-                        'status': status
-                    }
+            batch_payload = {'t': timestamp, 'ts_us': ts_us, 'v': v}
+            if bad:
+                batch_payload['bad'] = bad
+            if alarm:
+                batch_payload['alarm'] = alarm
+            if warn:
+                batch_payload['warn'] = warn
 
-            # Publish batch
             self._queue_publish(f"{base}/channels/batch", json.dumps(batch_payload))
 
         except Exception as e:
@@ -14200,6 +14555,14 @@ Unit conversions:
         logger.info(f"Starting scan loop at {self.config.system.scan_rate_hz} Hz")
         next_scan_time = time.time()
 
+        # Periodic scan timing diagnostic
+        _scan_diag_interval = 30.0
+        _scan_diag_next = time.time() + _scan_diag_interval
+        _scan_diag_count = 0
+        _scan_diag_total_ms = 0.0
+        _scan_diag_max_ms = 0.0
+        _scan_diag_overruns = 0
+
         while self.running:
             # Calculate interval dynamically to pick up runtime rate changes
             scan_interval = 1.0 / self.config.system.scan_rate_hz
@@ -14388,20 +14751,97 @@ Unit conversions:
                                     f"[SCAN] Safety evaluation took {_safety_ms:.1f}ms (>10ms)"
                                 )
                     except Exception as e:
-                        logger.error(f"[SCAN] Safety manager evaluation failed: {e}")
+                        self._safety_eval_failures += 1
+                        logger.error(f"[SCAN] Safety eval failed (#{self._safety_eval_failures}): {e}", exc_info=True)
+                        if self._acq_events:
+                            self._acq_events.emit(AcquisitionEvent.SAFETY_EVAL_FAILED, {
+                                'error': str(e), 'consecutive_failures': self._safety_eval_failures,
+                            }, severity='error')
+                        if self._safety_eval_failures >= 3:
+                            logger.critical("[SCAN] 3 consecutive safety eval failures — applying safe state")
+                            if self._acq_events:
+                                self._acq_events.emit(AcquisitionEvent.SAFETY_SAFE_STATE_APPLIED, {
+                                    'reason': 'safety_evaluation_failure',
+                                }, severity='error')
+                            try:
+                                self._handle_safe_state({'reason': 'safety_evaluation_failure'})
+                            except Exception:
+                                logger.error("[SCAN] Failed to apply safe state after safety eval failure")
+                    else:
+                        # Safety eval succeeded — reset failure counter
+                        if self._safety_eval_failures > 0:
+                            logger.info(f"[SCAN] Safety eval recovered after {self._safety_eval_failures} failures")
+                            if self._acq_events:
+                                self._acq_events.emit(AcquisitionEvent.SAFETY_EVAL_RECOVERED, {
+                                    'recovered_after': self._safety_eval_failures,
+                                })
+                            self._safety_eval_failures = 0
+                        self._last_safety_eval_time = time.time()
 
                 except Exception as e:
-                    logger.error(f"Error in scan loop: {e}", exc_info=True)
+                    self._scan_consecutive_errors += 1
+                    self._scan_total_errors += 1
+                    logger.error(f"[SCAN] Error #{self._scan_consecutive_errors}: {e}", exc_info=True)
+                    if self._acq_events:
+                        self._acq_events.emit(AcquisitionEvent.SCAN_LOOP_ERROR, {
+                            'error': str(e), 'consecutive': self._scan_consecutive_errors,
+                        }, severity='error')
+                    if self._scan_consecutive_errors >= 10:
+                        logger.critical("[SCAN] 10 consecutive errors — auto-stopping acquisition")
+                        if self._acq_events:
+                            self._acq_events.emit(AcquisitionEvent.SCAN_LOOP_FATAL, {
+                                'error': 'Auto-stopped after 10 consecutive scan failures',
+                                'total_errors': self._scan_total_errors,
+                            }, severity='error')
+                        self._handle_acquire_stop()
+                        break
+                else:
+                    # Scan succeeded — reset error counter
+                    if self._scan_consecutive_errors > 0:
+                        logger.info(f"[SCAN] Recovered after {self._scan_consecutive_errors} consecutive errors")
+                        if self._acq_events:
+                            self._acq_events.emit(AcquisitionEvent.SCAN_LOOP_RECOVERED, {
+                                'recovered_after': self._scan_consecutive_errors,
+                            })
+                    self._scan_consecutive_errors = 0
+                    self._scan_loop_healthy = True
+                    self._last_successful_scan_time = time.time()
 
             # Track loop timing
             elapsed = time.time() - start_time
             self.last_scan_dt_ms = elapsed * 1000
             self._scan_timing.record(self.last_scan_dt_ms)
 
+            # Diagnostic tracking
+            if self.acquiring:
+                _scan_diag_count += 1
+                _scan_diag_total_ms += self.last_scan_dt_ms
+                if self.last_scan_dt_ms > _scan_diag_max_ms:
+                    _scan_diag_max_ms = self.last_scan_dt_ms
+
+            now_diag = time.time()
+            if now_diag >= _scan_diag_next:
+                if _scan_diag_count > 0:
+                    avg_ms = _scan_diag_total_ms / _scan_diag_count
+                    hz_actual = _scan_diag_count / _scan_diag_interval
+                    logger.info(
+                        f"[SCAN DIAG] {_scan_diag_interval:.0f}s: "
+                        f"scans={_scan_diag_count} ({hz_actual:.2f} Hz actual), "
+                        f"avg={avg_ms:.2f}ms, max={_scan_diag_max_ms:.2f}ms, "
+                        f"overruns={_scan_diag_overruns}, "
+                        f"target={scan_interval*1000:.0f}ms ({self.config.system.scan_rate_hz} Hz)"
+                    )
+                _scan_diag_next = now_diag + _scan_diag_interval
+                _scan_diag_count = 0
+                _scan_diag_total_ms = 0.0
+                _scan_diag_max_ms = 0.0
+                _scan_diag_overruns = 0
+
             # Sleep until next epoch-anchored target (prevents cumulative drift)
             sleep_time = max(0, next_scan_time - time.time())
             # If we fell behind by more than one interval, reset to prevent burst catch-up
             if time.time() - next_scan_time >= scan_interval:
+                _scan_diag_overruns += 1
                 next_scan_time = time.time()
             time.sleep(sleep_time)
 
@@ -14431,19 +14871,10 @@ Unit conversions:
                     if publish_count == 0:
                         logger.info(f"Publishing {len(values)} channels")
 
-                    # Publish local channels only - cRIO channels are published when received
-                    # to avoid double-publishing which causes flickering on frontend
-                    for name, value in values.items():
-                        # Skip channels not in config (stale values from deleted channels)
-                        channel = self.config.channels.get(name)
-                        if not channel:
-                            continue  # Channel no longer exists in config
-                        # Skip cRIO channels - they're published in _update_crio_channel_value()
-                        if getattr(channel, 'is_crio', False):
-                            continue  # cRIO values already published when received
-                        self._publish_channel_value(name, value)
-
-                    # Publish batch for frontend compatibility (cRIO/Opto22 pattern)
+                    # Publish batch only — individual per-channel publishes removed
+                    # to avoid 52+ MQTT messages per cycle (was causing cascading updates
+                    # and ~13x message overhead). The batch contains all values the
+                    # frontend needs in a single message.
                     self._publish_channels_batch(values)
 
                     # Publish session status (cRIO/Opto22 pattern)
@@ -14500,10 +14931,19 @@ Unit conversions:
                     # Historian: silent 1 Hz write of ALL channels (unconditional)
                     if self.historian:
                         try:
-                            units_map = {k: v.get('units', '') for k, v in channel_configs.items()} if channel_configs else {}
-                            self.historian.write_batch(int(time.time() * 1000), values, units=units_map)
-                        except Exception:
-                            pass  # Historian errors must never affect the publish loop
+                            # channel_configs may not be defined if recording is inactive
+                            hist_units = {}
+                            for name, ch in self.config.channels.items():
+                                hist_units[name] = ch.units or ''
+                            self.historian.write_batch(int(time.time() * 1000), values, units=hist_units)
+                        except Exception as hist_err:
+                            self._historian_error_count += 1
+                            if self._historian_error_count <= 5 or self._historian_error_count % 100 == 0:
+                                logger.error(f"[PUBLISH] Historian write failed (#{self._historian_error_count}): {hist_err}")
+                            if self._acq_events and self._historian_error_count <= 5:
+                                self._acq_events.emit(AcquisitionEvent.HISTORIAN_ERROR, {
+                                    'error': str(hist_err), 'total_errors': self._historian_error_count,
+                                }, severity='warning')
 
                     # Note: Azure IoT Hub streaming is handled by external azure_uploader_service
                     # which subscribes to nisystem/nodes/+/channels/values topics directly
@@ -14529,6 +14969,14 @@ Unit conversions:
                 if self._log_publish_counter >= 2:
                     self._log_publish_counter = 0
                     self._drain_and_publish_logs()
+
+                # Publish health status every ~5 seconds
+                if self.acquiring and (time.time() - self._last_health_publish_time >= 5.0):
+                    try:
+                        self._publish_health()
+                        self._last_health_publish_time = time.time()
+                    except Exception:
+                        pass
 
                 # Check for cRIO config push timeouts (non-blocking)
                 self._check_crio_push_timeouts()

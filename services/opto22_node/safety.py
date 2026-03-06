@@ -1119,6 +1119,10 @@ class SafetyManager:
         # Restore delay state (condition IDs are stable across config pushes)
         self._condition_delay_state = prev_delay
 
+        # Clear cached status so get_interlock_status() reflects new config immediately
+        # (check_all will rebuild it on the next scan if interlocks exist)
+        self._interlock_status = None
+
         self._save_interlocks()
         logger.info(f"Configured {len(self._interlocks)} interlocks "
                     f"(latch={self._latch_state.value}, tripped={self._is_tripped})")
@@ -1509,6 +1513,9 @@ class SafetyManager:
                     return False, msg
 
         self._latch_state = LatchState.ARMED
+        # Update cached status so get_interlock_status() returns current latch
+        if self._interlock_status:
+            self._interlock_status['latchState'] = self._latch_state.value
         msg = f"Safety latch ARMED by {user}"
         logger.info(msg)
         if self.on_publish:
@@ -1527,6 +1534,8 @@ class SafetyManager:
             logger.warning(msg)
             return False, msg
         self._latch_state = LatchState.SAFE
+        if self._interlock_status:
+            self._interlock_status['latchState'] = self._latch_state.value
         msg = f"Safety latch DISARMED by {user}"
         logger.info(msg)
         if self.on_publish:
@@ -1558,6 +1567,9 @@ class SafetyManager:
         self._executed_actions.clear()
         self._interlock_held_outputs.clear()
         self._trip_ack_state.clear()
+        if self._interlock_status:
+            self._interlock_status['latchState'] = self._latch_state.value
+            self._interlock_status['isTripped'] = False
         msg = f"Trip RESET by {user}"
         logger.info(msg)
 
@@ -1616,6 +1628,14 @@ class SafetyManager:
             msg = f"Interlock '{interlock.name}' UN-BYPASSED by {user}"
             logger.info(msg)
 
+        # Update cached status inline so get_interlock_status() reflects
+        # the change immediately (avoids stale retained messages on broker)
+        if self._interlock_status:
+            for il_s in self._interlock_status.get('interlockStatuses', []):
+                if il_s.get('id') == interlock_id:
+                    il_s['bypassed'] = bypass
+                    il_s['bypassed_by'] = user if bypass else None
+                    break
         self._save_interlocks()
         return True, msg
 
@@ -1641,13 +1661,26 @@ class SafetyManager:
         """Get current interlock status summary."""
         if self._interlock_status:
             return self._interlock_status
+        # Cache not yet built (before first check_all after configure).
+        # Build a basic status from current interlock definitions so that
+        # callers can see configured interlocks immediately.
+        statuses = []
+        for interlock in self._interlocks.values():
+            statuses.append({
+                'id': interlock.id,
+                'name': interlock.name,
+                'enabled': interlock.enabled,
+                'satisfied': None,  # not yet evaluated
+                'bypassed': interlock.bypassed,
+                'conditions': [],
+            })
         return {
             'latchState': self._latch_state.value,
             'isTripped': self._is_tripped,
             'lastTripTime': self._last_trip_time,
             'lastTripReason': self._last_trip_reason,
             'hasFailedInterlocks': False,
-            'interlockStatuses': [],
+            'interlockStatuses': statuses,
             'timestamp': time.time(),
         }
 

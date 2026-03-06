@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
+const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
+
 const props = defineProps<{
   connected: boolean
   reconnectAttempts: number
@@ -13,20 +15,16 @@ const emit = defineEmits<{
   retryNow: []
 }>()
 
-// Calculate next retry delay based on exponential backoff
+// Reconnect countdown
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
-const GRACE_PERIOD_MS = 4000 // Suppress overlay briefly to allow silent reconnect
+const GRACE_PERIOD_MS = 4000
 
 const nextRetryDelay = computed(() => {
   if (props.connected) return 0
-  return Math.min(
-    RECONNECT_BASE_DELAY_MS * Math.pow(2, props.reconnectAttempts),
-    RECONNECT_MAX_DELAY_MS
-  )
+  return Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, props.reconnectAttempts), RECONNECT_MAX_DELAY_MS)
 })
 
-// Countdown timer
 const countdownSeconds = ref(0)
 let countdownInterval: ReturnType<typeof setInterval> | null = null
 
@@ -35,97 +33,66 @@ watch(() => props.reconnectAttempts, () => {
     countdownSeconds.value = Math.ceil(nextRetryDelay.value / 1000)
     if (countdownInterval) clearInterval(countdownInterval)
     countdownInterval = setInterval(() => {
-      if (countdownSeconds.value > 0) {
-        countdownSeconds.value--
-      }
+      if (countdownSeconds.value > 0) countdownSeconds.value--
     }, 1000)
   }
 }, { immediate: true })
 
 watch(() => props.connected, (isConnected) => {
-  if (isConnected) {
-    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null }
+  if (isConnected && countdownInterval) {
+    clearInterval(countdownInterval)
+    countdownInterval = null
     countdownSeconds.value = 0
   }
 })
 
-onUnmounted(() => {
-  if (countdownInterval) clearInterval(countdownInterval)
-  document.removeEventListener('visibilitychange', onVisibilityChange)
-})
-
-// Grace period: suppress overlay for a few seconds after disconnect
-// to give auto-reconnect a chance to succeed silently
 const inGracePeriod = ref(false)
 let graceTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(() => props.connected, (isConnected, wasConnected) => {
   if (!isConnected && wasConnected) {
-    // Just disconnected — start grace period
     inGracePeriod.value = true
     if (graceTimer) clearTimeout(graceTimer)
-    graceTimer = setTimeout(() => {
-      inGracePeriod.value = false
-      graceTimer = null
-    }, GRACE_PERIOD_MS)
+    graceTimer = setTimeout(() => { inGracePeriod.value = false; graceTimer = null }, GRACE_PERIOD_MS)
   }
   if (isConnected) {
-    // Reconnected during grace — clear it
     inGracePeriod.value = false
     if (graceTimer) { clearTimeout(graceTimer); graceTimer = null }
   }
 })
 
-// Tab visibility: when returning from background, extend grace period
-// since browser throttles WebSocket activity in background tabs
 function onVisibilityChange() {
   if (document.visibilityState === 'visible' && !props.connected) {
     inGracePeriod.value = true
     if (graceTimer) clearTimeout(graceTimer)
-    graceTimer = setTimeout(() => {
-      inGracePeriod.value = false
-      graceTimer = null
-    }, GRACE_PERIOD_MS)
+    graceTimer = setTimeout(() => { inGracePeriod.value = false; graceTimer = null }, GRACE_PERIOD_MS)
   }
 }
 
-onMounted(() => {
-  document.addEventListener('visibilitychange', onVisibilityChange)
+onMounted(() => document.addEventListener('visibilitychange', onVisibilityChange))
+onUnmounted(() => {
+  if (countdownInterval) clearInterval(countdownInterval)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
-// Show overlay when disconnected or data is stale (respecting grace period)
 const showOverlay = computed(() => {
+  if (DEMO_MODE) return false
   if (inGracePeriod.value) return false
   return !props.connected || (props.isAcquiring && props.dataIsStale && props.lastHeartbeatTime > 0)
 })
 
-const overlayMessage = computed(() => {
-  if (!props.connected) {
-    return 'Connection Lost'
-  }
-  if (props.dataIsStale) {
-    return 'Service Not Responding'
-  }
-  return ''
-})
+const overlayMessage = computed(() => !props.connected ? 'Connection Lost' : 'Service Not Responding')
 
 const overlaySubMessage = computed(() => {
   if (!props.connected) {
-    if (props.reconnectAttempts === 0) {
-      return 'Connecting to MQTT broker...'
-    }
+    if (props.reconnectAttempts === 0) return 'Connecting to MQTT broker...'
     return `Reconnecting... (attempt ${props.reconnectAttempts})`
   }
-  if (props.dataIsStale) {
-    const staleFor = Math.round((Date.now() - props.lastHeartbeatTime) / 1000)
-    return `No heartbeat received for ${staleFor} seconds`
-  }
-  return ''
+  const staleFor = Math.round((Date.now() - props.lastHeartbeatTime) / 1000)
+  return `No heartbeat received for ${staleFor} seconds`
 })
 
-const showRetryButton = computed(() => {
-  return !props.connected && props.reconnectAttempts >= 3
-})
+const showRetryButton = computed(() => !props.connected && props.reconnectAttempts >= 3)
 </script>
 
 <template>
@@ -141,11 +108,7 @@ const showRetryButton = computed(() => {
             Next retry in {{ countdownSeconds }}s
           </div>
 
-          <button
-            v-if="showRetryButton"
-            class="retry-button"
-            @click="emit('retryNow')"
-          >
+          <button v-if="showRetryButton" class="retry-button" @click="emit('retryNow')">
             Retry Now
           </button>
 
@@ -162,10 +125,7 @@ const showRetryButton = computed(() => {
 <style scoped>
 .connection-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   background: var(--bg-overlay);
   display: flex;
   align-items: center;
@@ -191,11 +151,7 @@ const showRetryButton = computed(() => {
   margin: 0 auto 1.5rem;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 h2 {
   font-size: 1.5rem;
@@ -216,6 +172,12 @@ h2 {
   margin-bottom: 1rem;
 }
 
+.hint {
+  color: var(--text-disabled);
+  font-size: 0.8rem;
+  margin-top: 1rem;
+}
+
 .retry-button {
   background: var(--color-accent);
   color: var(--text-primary);
@@ -229,24 +191,8 @@ h2 {
   margin-bottom: 1rem;
 }
 
-.retry-button:hover {
-  background: var(--color-accent-dark);
-}
+.retry-button:hover { background: var(--color-accent-dark); }
 
-.hint {
-  color: var(--text-disabled);
-  font-size: 0.8rem;
-  margin-top: 1rem;
-}
-
-/* Fade transition */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

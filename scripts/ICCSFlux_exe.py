@@ -5,26 +5,19 @@ ICCSFlux — Native Desktop Launcher + Service Manager
 Uses tkinter (Python stdlib) for the native window. No external UI
 frameworks, no JS bridges, no web views. Just works.
 
-TODO (1.0): Windows Service integration via NSSM
-  - Register Mosquitto, DAQService, AzureUploader as Windows Services
-  - Launcher becomes a management UI that talks to SCM, not the process parent
-  - Services auto-start on boot, survive user logout
-  - NSSM is already bundled in the portable build (nssm/ directory)
-  - This requires the launcher to use `nssm install/start/stop` instead of
-    subprocess.Popen for service lifecycle
-
-TODO (1.0): MQTT-based graceful shutdown
-  - Launcher publishes a shutdown command to DAQ service via MQTT
-  - DAQ service shuts down cleanly (flushes recordings, closes hardware)
-  - Currently uses TerminateProcess on Windows (no cleanup opportunity)
+Modes:
+  ICCSFlux.exe                    Desktop launcher with tkinter UI
+  ICCSFlux.exe --no-browser       Headless mode (for Windows Service / NSSM)
+  ICCSFlux.exe --setup            Generate MQTT credentials + TLS certs, exit
+  ICCSFlux.exe --install-service  Register as Windows Services (requires admin)
+  ICCSFlux.exe --uninstall-service Remove Windows Services (requires admin)
 """
 
-import base64
 import configparser
-import hashlib
 import json
 import os
 import secrets
+import signal
 import sys
 import subprocess
 import time
@@ -33,8 +26,6 @@ import socket
 import argparse
 import atexit
 import ctypes
-import tkinter as tk
-from tkinter import ttk, messagebox
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
@@ -48,6 +39,22 @@ try:
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
+
+# tkinter is lazy-imported to avoid crashes in headless/service mode (LocalSystem has no desktop)
+tk = None
+ttk = None
+messagebox = None
+
+def _import_tkinter():
+    """Import tkinter on demand. Call before any GUI code."""
+    global tk, ttk, messagebox
+    if tk is not None:
+        return
+    import tkinter as _tk
+    from tkinter import ttk as _ttk, messagebox as _mb
+    tk = _tk
+    ttk = _ttk
+    messagebox = _mb
 
 # Get the directory where this executable/script is located
 if getattr(sys, 'frozen', False):
@@ -67,12 +74,21 @@ WWW = ROOT / "www"
 DATA = ROOT / "data"
 LOCKFILE = ROOT / "data" / ".iccsflux.lock"
 VERSION_FILE = ROOT / "VERSION.txt"
+NSSM = ROOT / "nssm" / "nssm.exe"
 
 # Icon path (bundled by PyInstaller or in assets/)
 if getattr(sys, 'frozen', False):
     ICO_PATH = Path(sys._MEIPASS) / 'iccsflux.ico'
 else:
     ICO_PATH = ROOT.parent / 'assets' / 'icons' / 'iccsflux.ico'
+
+# Service names for Windows Service Control Manager
+SVC_NAMES = {
+    "MQTT": "ICCSFlux-MQTT",
+    "DAQ": "ICCSFlux-DAQ",
+    "AZURE": "ICCSFlux-Azure",
+    "WEB": "ICCSFlux-Web",
+}
 
 # Prevent child processes from spawning console windows
 _NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
@@ -115,6 +131,10 @@ _managed_services = []
 _error_count = 0
 _version_info = "dev"
 _project_name = None
+
+# MQTT auth failure auto-repair
+_mqtt_auth_fail_count = 0
+_mqtt_auth_repaired = False
 
 # ─── File Logger (always works) ─────────────────────────────────────────────
 
@@ -209,6 +229,7 @@ class ProcessOutputReader:
             ).start()
 
     def _read_loop(self):
+        global _mqtt_auth_fail_count
         try:
             for raw_line in iter(self.proc.stdout.readline, b''):
                 try:
@@ -217,6 +238,10 @@ class ProcessOutputReader:
                     line = str(raw_line).rstrip()
                 if line:
                     log_entry(self.tag, line, _classify_line(line))
+                    # Detect MQTT auth failures from service output
+                    lower = line.lower()
+                    if 'mqtt' in lower and ('not authorized' in lower or 'auth failed' in lower):
+                        _mqtt_auth_fail_count += 1
         except Exception:
             pass
 
@@ -373,8 +398,8 @@ class ManagedService:
             except (OSError, subprocess.TimeoutExpired):
                 try:
                     self.proc.kill()
-                    self.proc.wait(timeout=2)
-                except OSError:
+                    self.proc.wait(timeout=3)
+                except (OSError, subprocess.TimeoutExpired):
                     pass
         self.proc = None
         self.status = "stopped"
@@ -442,16 +467,40 @@ def release_single_instance():
         _lockfile_handle = None
 
 
-def _hash_mosquitto_password(password, iterations=101):
-    salt = os.urandom(12)
-    dk = hashlib.pbkdf2_hmac('sha512', password.encode('utf-8'), salt, iterations, dklen=64)
-    salt_b64 = base64.b64encode(salt).decode('ascii')
-    hash_b64 = base64.b64encode(dk).decode('ascii')
-    return f"$7${iterations}${salt_b64}${hash_b64}"
+def _get_mqtt_creds_module():
+    """Import mqtt_credentials module from scripts/ (bundled in PyInstaller or dev tree)."""
+    bundle_dir = getattr(sys, '_MEIPASS', None)
+    if bundle_dir:
+        scripts_path = str(Path(bundle_dir) / "scripts")
+    else:
+        scripts_path = str(ROOT / "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+    import mqtt_credentials
+    return mqtt_credentials
+
+
+def _write_passwd_from_creds(creds: dict):
+    """Regenerate mosquitto_passwd from existing credentials JSON."""
+    mc = _get_mqtt_creds_module()
+    mc.write_mosquitto_passwd(
+        {d['username']: d['password'] for d in creds.values()},
+        passwd_file=str(PASSWD_FILE),
+    )
 
 
 def setup_mqtt_credentials():
+    mc = _get_mqtt_creds_module()
     if CRED_FILE.exists():
+        with open(CRED_FILE) as f:
+            creds = json.load(f)
+        # Verify hashes actually match — catches corruption, old hashes, any desync
+        if mc.passwd_file_matches(creds, passwd_file=str(PASSWD_FILE)):
+            return True
+        reason = "password file missing" if not PASSWD_FILE.exists() else "password hashes do not match"
+        log_entry("LAUNCHER", f"MQTT {reason} — syncing...", "start")
+        _write_passwd_from_creds(creds)
+        log_entry("LAUNCHER", "MQTT password file synced", "ok")
         return True
     log_entry("LAUNCHER", "Generating MQTT credentials (first-run)...", "start")
     backend_pass = secrets.token_urlsafe(24)
@@ -463,12 +512,7 @@ def setup_mqtt_credentials():
     CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CRED_FILE, 'w') as f:
         json.dump(creds, f, indent=2)
-    lines = []
-    for username, password in [('backend', backend_pass), ('dashboard', dashboard_pass)]:
-        hashed = _hash_mosquitto_password(password)
-        lines.append(f"{username}:{hashed}")
-    with open(PASSWD_FILE, 'w', newline='\n') as f:
-        f.write('\n'.join(lines) + '\n')
+    _write_passwd_from_creds(creds)
     log_entry("LAUNCHER", "MQTT credentials generated", "ok")
     return True
 
@@ -482,6 +526,263 @@ def load_mqtt_credentials():
         return creds['backend']['username'], creds['backend']['password']
     except Exception:
         return None, None
+
+
+def setup_tls_if_needed():
+    """Generate TLS certificates if missing. Idempotent."""
+    tls_dir = ROOT / "config" / "tls"
+    if (tls_dir / "ca.crt").exists():
+        return True
+    log_entry("LAUNCHER", "Generating TLS certificates (first-run)...", "start")
+    try:
+        bundle_dir = getattr(sys, '_MEIPASS', None)
+        if bundle_dir:
+            scripts_path = str(Path(bundle_dir) / "scripts")
+        else:
+            scripts_path = str(ROOT / "scripts")
+        sys.path.insert(0, scripts_path)
+        from generate_tls_certs import generate_certificates
+        if generate_certificates(tls_dir):
+            log_entry("LAUNCHER", "TLS certificates generated", "ok")
+            return True
+        else:
+            log_entry("LAUNCHER", "TLS generation failed", "warn")
+            return False
+    except Exception as e:
+        log_entry("LAUNCHER", f"TLS generation failed: {e}", "warn")
+        return False
+    finally:
+        if scripts_path in sys.path:
+            sys.path.remove(scripts_path)
+
+
+# ─── Admin Elevation ─────────────────────────────────────────────────────────
+
+def is_admin():
+    """Check if the current process has admin/elevated privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def elevate_and_run(args_list):
+    """Re-launch this exe with admin privileges via UAC prompt.
+    args_list: list of CLI arguments to pass (e.g. ['--install-service']).
+    Returns True if the elevated process was launched."""
+    try:
+        exe = sys.executable
+        if getattr(sys, 'frozen', False):
+            exe = sys.executable
+        else:
+            # Running as script — use python.exe + script path
+            exe = sys.executable
+            args_list = [__file__] + args_list
+        params = subprocess.list2cmdline(args_list)
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", exe, params, str(ROOT), 1  # SW_SHOWNORMAL
+        )
+        return ret > 32  # ShellExecute returns >32 on success
+    except Exception as e:
+        log_entry("LAUNCHER", f"Failed to elevate: {e}", "error")
+        return False
+
+
+# ─── NSSM Service Management ─────────────────────────────────────────────────
+
+def _run_nssm(*args, check=False):
+    """Run an NSSM command. Returns (returncode, stdout)."""
+    if not NSSM.exists():
+        log_entry("LAUNCHER", f"NSSM not found at {NSSM}", "error")
+        return (1, "NSSM not found")
+    cmd = [str(NSSM)] + list(args)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            creationflags=_NO_WINDOW, timeout=30,
+        )
+        if check and result.returncode != 0:
+            log_entry("LAUNCHER", f"NSSM {' '.join(args[:2])}: {result.stderr.strip() or result.stdout.strip()}", "error")
+        return (result.returncode, result.stdout.strip())
+    except subprocess.TimeoutExpired:
+        return (1, "NSSM command timed out")
+    except Exception as e:
+        return (1, str(e))
+
+
+def service_exists(name):
+    """Check if a Windows service is registered."""
+    try:
+        result = subprocess.run(
+            ["sc", "query", name], capture_output=True, text=True,
+            creationflags=_NO_WINDOW,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def services_installed():
+    """Check if ICCSFlux services are installed (checks MQTT service as proxy)."""
+    return service_exists(SVC_NAMES["MQTT"])
+
+
+def install_services():
+    """Register all ICCSFlux services via NSSM. Requires admin.
+    Generates credentials and TLS certs if needed, then registers 4 services."""
+    if not is_admin():
+        log_entry("LAUNCHER", "Admin privileges required to install services", "error")
+        return False
+
+    if not NSSM.exists():
+        log_entry("LAUNCHER", f"NSSM not found: {NSSM}", "error")
+        return False
+
+    log_entry("LAUNCHER", "Installing ICCSFlux as Windows Services...", "start")
+
+    # Ensure credentials and TLS exist
+    setup_mqtt_credentials()
+    setup_tls_if_needed()
+
+    # Create log directory
+    log_dir = DATA / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load credentials for env vars
+    mqtt_user, mqtt_pass = load_mqtt_credentials()
+
+    # Remove existing services first (idempotent reinstall)
+    for svc_name in SVC_NAMES.values():
+        if service_exists(svc_name):
+            log_entry("LAUNCHER", f"Removing existing service: {svc_name}", "info")
+            subprocess.run(["net", "stop", svc_name], capture_output=True, creationflags=_NO_WINDOW)
+            _run_nssm("remove", svc_name, "confirm")
+
+    exe_path = str(ROOT)  # Base path for all executables
+
+    # 1. Mosquitto MQTT Broker
+    svc = SVC_NAMES["MQTT"]
+    log_entry("LAUNCHER", f"[1/4] Installing {svc}...", "start")
+    _run_nssm("install", svc, str(MOSQUITTO), "-c", str(MOSQUITTO_CONF))
+    _run_nssm("set", svc, "AppDirectory", exe_path)
+    _run_nssm("set", svc, "Description", "ICCSFlux MQTT Broker")
+    _run_nssm("set", svc, "Start", "SERVICE_AUTO_START")
+    _run_nssm("set", svc, "AppStdout", str(log_dir / "mosquitto.log"))
+    _run_nssm("set", svc, "AppStderr", str(log_dir / "mosquitto.log"))
+    _run_nssm("set", svc, "AppRotateFiles", "1")
+    _run_nssm("set", svc, "AppRotateOnline", "1")
+    _run_nssm("set", svc, "AppRotateBytes", "10485760")
+    _run_nssm("set", svc, "AppExit", "Default", "Restart")
+    _run_nssm("set", svc, "AppRestartDelay", "5000")
+    _run_nssm("set", svc, "AppThrottle", "10000")
+    log_entry("LAUNCHER", f"  {svc} installed", "ok")
+
+    # 2. DAQ Service
+    svc = SVC_NAMES["DAQ"]
+    log_entry("LAUNCHER", f"[2/4] Installing {svc}...", "start")
+    _run_nssm("install", svc, str(DAQ_SERVICE), "-c", str(CONFIG))
+    _run_nssm("set", svc, "AppDirectory", exe_path)
+    _run_nssm("set", svc, "Description", "ICCSFlux Data Acquisition")
+    _run_nssm("set", svc, "Start", "SERVICE_AUTO_START")
+    _run_nssm("set", svc, "DependOnService", SVC_NAMES["MQTT"])
+    _run_nssm("set", svc, "AppStdout", str(log_dir / "daq_service.log"))
+    _run_nssm("set", svc, "AppStderr", str(log_dir / "daq_service.log"))
+    _run_nssm("set", svc, "AppRotateFiles", "1")
+    _run_nssm("set", svc, "AppRotateOnline", "1")
+    _run_nssm("set", svc, "AppRotateBytes", "10485760")
+    _run_nssm("set", svc, "AppExit", "Default", "Restart")
+    _run_nssm("set", svc, "AppRestartDelay", "5000")
+    _run_nssm("set", svc, "AppThrottle", "10000")
+    if mqtt_user and mqtt_pass:
+        # NSSM AppEnvironmentExtra: each call appends; first call uses "set", rest use "set+"
+        _run_nssm("set", svc, "AppEnvironmentExtra", f"MQTT_USERNAME={mqtt_user}")
+        _run_nssm("set", svc, "AppEnvironmentExtra+", f"MQTT_PASSWORD={mqtt_pass}")
+        _run_nssm("set", svc, "AppEnvironmentExtra+", f"ICCSFLUX_DATA_DIR={str(DATA)}")
+    log_entry("LAUNCHER", f"  {svc} installed", "ok")
+
+    # 3. Azure IoT Hub Uploader (optional)
+    if AZURE_UPLOADER.exists():
+        svc = SVC_NAMES["AZURE"]
+        log_entry("LAUNCHER", f"[3/4] Installing {svc}...", "start")
+        db_path = DATA / "logs" / "historian" / "historian.db"
+        _run_nssm("install", svc, str(AZURE_UPLOADER), "--db-path", str(db_path))
+        _run_nssm("set", svc, "AppDirectory", exe_path)
+        _run_nssm("set", svc, "Description", "ICCSFlux Azure IoT Hub Uploader")
+        _run_nssm("set", svc, "Start", "SERVICE_AUTO_START")
+        _run_nssm("set", svc, "DependOnService", SVC_NAMES["MQTT"])
+        _run_nssm("set", svc, "AppStdout", str(log_dir / "azure_uploader.log"))
+        _run_nssm("set", svc, "AppStderr", str(log_dir / "azure_uploader.log"))
+        _run_nssm("set", svc, "AppRotateFiles", "1")
+        _run_nssm("set", svc, "AppRotateOnline", "1")
+        _run_nssm("set", svc, "AppRotateBytes", "10485760")
+        _run_nssm("set", svc, "AppExit", "Default", "Restart")
+        _run_nssm("set", svc, "AppRestartDelay", "5000")
+        _run_nssm("set", svc, "AppThrottle", "10000")
+        if mqtt_user and mqtt_pass:
+            _run_nssm("set", svc, "AppEnvironmentExtra", f"MQTT_USERNAME={mqtt_user}")
+            _run_nssm("set", svc, "AppEnvironmentExtra+", f"MQTT_PASSWORD={mqtt_pass}")
+        log_entry("LAUNCHER", f"  {svc} installed", "ok")
+    else:
+        log_entry("LAUNCHER", "[3/4] Azure uploader not present — skipped", "info")
+
+    # 4. Web Server (headless launcher)
+    svc = SVC_NAMES["WEB"]
+    log_entry("LAUNCHER", f"[4/4] Installing {svc}...", "start")
+    # Use ICCSFlux.exe --no-browser for headless mode (no tkinter)
+    if getattr(sys, 'frozen', False):
+        web_exe = str(Path(sys.executable))
+    else:
+        web_exe = str(ROOT / "ICCSFlux.exe")
+    _run_nssm("install", svc, web_exe, "--no-browser")
+    _run_nssm("set", svc, "AppDirectory", exe_path)
+    _run_nssm("set", svc, "Description", "ICCSFlux Dashboard Web Server")
+    _run_nssm("set", svc, "Start", "SERVICE_AUTO_START")
+    _run_nssm("set", svc, "DependOnService", SVC_NAMES["DAQ"])
+    _run_nssm("set", svc, "AppStdout", str(log_dir / "web_server.log"))
+    _run_nssm("set", svc, "AppStderr", str(log_dir / "web_server.log"))
+    _run_nssm("set", svc, "AppRotateFiles", "1")
+    _run_nssm("set", svc, "AppRotateOnline", "1")
+    _run_nssm("set", svc, "AppRotateBytes", "10485760")
+    _run_nssm("set", svc, "AppExit", "Default", "Restart")
+    _run_nssm("set", svc, "AppRestartDelay", "5000")
+    _run_nssm("set", svc, "AppThrottle", "10000")
+    log_entry("LAUNCHER", f"  {svc} installed", "ok")
+
+    # Start all services
+    log_entry("LAUNCHER", "Starting services...", "start")
+    subprocess.run(["net", "start", SVC_NAMES["MQTT"]], capture_output=True, creationflags=_NO_WINDOW)
+    time.sleep(2)
+    subprocess.run(["net", "start", SVC_NAMES["DAQ"]], capture_output=True, creationflags=_NO_WINDOW)
+    time.sleep(2)
+    if AZURE_UPLOADER.exists():
+        subprocess.run(["net", "start", SVC_NAMES["AZURE"]], capture_output=True, creationflags=_NO_WINDOW)
+        time.sleep(1)
+    subprocess.run(["net", "start", SVC_NAMES["WEB"]], capture_output=True, creationflags=_NO_WINDOW)
+
+    log_entry("LAUNCHER", "All services installed and started", "ok")
+    return True
+
+
+def uninstall_services():
+    """Stop and remove all ICCSFlux Windows Services. Requires admin."""
+    if not is_admin():
+        log_entry("LAUNCHER", "Admin privileges required to uninstall services", "error")
+        return False
+
+    log_entry("LAUNCHER", "Removing ICCSFlux Windows Services...", "start")
+
+    # Stop in reverse dependency order
+    for key in ("WEB", "AZURE", "DAQ", "MQTT"):
+        svc_name = SVC_NAMES[key]
+        if service_exists(svc_name):
+            log_entry("LAUNCHER", f"Stopping {svc_name}...", "info")
+            subprocess.run(["net", "stop", svc_name], capture_output=True,
+                          creationflags=_NO_WINDOW, timeout=30)
+            _run_nssm("remove", svc_name, "confirm")
+            log_entry("LAUNCHER", f"  {svc_name} removed", "ok")
+
+    log_entry("LAUNCHER", "All services removed", "ok")
+    return True
 
 
 def read_version():
@@ -538,6 +839,19 @@ class QuietHTTPHandler(SimpleHTTPRequestHandler):
         '.svg': 'image/svg+xml', '.woff': 'font/woff',
         '.woff2': 'font/woff2', '.ttf': 'font/ttf',
     }
+
+    def end_headers(self):
+        # index.html must never be cached — stale cache after a portable update
+        # would load old JS/CSS hashes that no longer exist on disk.
+        # Hashed assets (index-AbC123.js) are immutable and can be cached forever.
+        resolved = self.translate_path(self.path)
+        basename = os.path.basename(resolved.split('?')[0])
+        if basename == 'index.html' or not basename:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+        elif any(basename.endswith(ext) for ext in ('.js', '.mjs', '.css', '.woff', '.woff2', '.ttf')):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        super().end_headers()
 
     def do_GET(self):
         path = self.translate_path(self.path)
@@ -681,9 +995,13 @@ def start_azure_uploader():
     log_dir = ROOT / "logs"
     db_path = log_dir / "historian" / "historian.db"
     env = os.environ.copy()
+    mqtt_user, mqtt_pass = load_mqtt_credentials()
+    if mqtt_user and mqtt_pass:
+        env["MQTT_USERNAME"] = mqtt_user
+        env["MQTT_PASSWORD"] = mqtt_pass
     proc = subprocess.Popen(
         [str(AZURE_UPLOADER), "--db-path", str(db_path)],
-        cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=_NO_WINDOW,
     )
     processes.append(proc)
@@ -698,6 +1016,23 @@ def start_azure_uploader():
     return svc
 
 
+class _WWWHandler(QuietHTTPHandler):
+    """HTTP handler that serves from WWW directory without changing CWD."""
+    def translate_path(self, path):
+        # Override to serve from WWW instead of os.getcwd()
+        import posixpath
+        import urllib.parse
+        path = urllib.parse.unquote(urllib.parse.urlparse(path).path)
+        path = posixpath.normpath(path)
+        parts = path.split('/')
+        result = str(WWW)
+        for part in parts:
+            if not part or part in ('.', '..'):
+                continue
+            result = os.path.join(result, part)
+        return result
+
+
 def start_web_server(port=5173):
     global httpd
     if not WWW.exists():
@@ -709,9 +1044,8 @@ def start_web_server(port=5173):
                 port = p
                 break
     log_entry("HTTP", f"Starting web server on port {port}...", "start")
-    os.chdir(WWW)
     try:
-        httpd = HTTPServer(("127.0.0.1", port), QuietHTTPHandler)
+        httpd = HTTPServer(("127.0.0.1", port), _WWWHandler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         log_entry("HTTP", f"Dashboard available at http://localhost:{port}", "ok")
         # Update health port for HTTP now that we know it
@@ -794,7 +1128,7 @@ def cleanup(kill_services=True):
 
     if kill_services:
         log_entry("LAUNCHER", "Shutting down ICCSFlux services...", "start")
-        # Stop in reverse dependency order — includes external services
+        # Stop in reverse dependency order — skip external services (managed by NSSM)
         stop_order = ["AZURE", "DAQ", "MOSQUITTO"]
         for tag in stop_order:
             for svc in _managed_services:
@@ -806,6 +1140,17 @@ def cleanup(kill_services=True):
                 if proc.poll() is None:
                     proc.kill()
             except OSError:
+                pass
+        # Final force-kill sweep by name — /T kills entire process tree,
+        # catches child processes that survive a direct terminate().
+        for exe_name in ("AzureUploader.exe", "DAQService.exe", "mosquitto.exe"):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/IM", exe_name],
+                    capture_output=True, timeout=3,
+                    creationflags=_NO_WINDOW,
+                )
+            except Exception:
                 pass
         log_entry("LAUNCHER", "All services stopped", "ok")
     else:
@@ -864,8 +1209,9 @@ def restart_service(svc):
         if mqtt_user and mqtt_pass:
             env["MQTT_USERNAME"] = mqtt_user
             env["MQTT_PASSWORD"] = mqtt_pass
+        db_path = DATA / "logs" / "historian" / "historian.db"
         proc = subprocess.Popen(
-            [str(AZURE_UPLOADER), "--host", "localhost", "--port", "1883"],
+            [str(AZURE_UPLOADER), "--db-path", str(db_path)],
             cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             creationflags=_NO_WINDOW,
         )
@@ -873,10 +1219,60 @@ def restart_service(svc):
         svc.attach(proc)
 
 
+def _repair_mqtt_credentials():
+    """Auto-repair MQTT credentials by regenerating the password file from the JSON.
+    If the JSON itself is missing, regenerate everything from scratch.
+    Returns True if repair was performed."""
+    global _mqtt_auth_fail_count, _mqtt_auth_repaired
+    log_entry("LAUNCHER", "MQTT AUTH REPAIR: Regenerating credentials...", "warn")
+    try:
+        if CRED_FILE.exists():
+            # JSON exists — re-hash password file from it (preserves passwords)
+            with open(CRED_FILE) as f:
+                creds = json.load(f)
+            _write_passwd_from_creds(creds)
+            log_entry("LAUNCHER", "MQTT AUTH REPAIR: Password file re-synced from credentials JSON", "ok")
+        else:
+            # Both missing — generate fresh
+            setup_mqtt_credentials()
+            log_entry("LAUNCHER", "MQTT AUTH REPAIR: Fresh credentials generated", "ok")
+        _mqtt_auth_fail_count = 0
+        _mqtt_auth_repaired = True
+        return True
+    except Exception as e:
+        log_entry("LAUNCHER", f"MQTT AUTH REPAIR FAILED: {e}", "error")
+        return False
+
+
 def monitor_loop(managed_services, stop_event):
+    global _mqtt_auth_fail_count
     health_counter = 0
     while not stop_event.is_set():
         health_counter += 1
+
+        # Auto-repair MQTT auth failures:
+        # After 3+ auth failures, regenerate the password file and restart
+        # affected services. The launcher owns the credentials and has full
+        # authority to fix them (user is authenticated on the machine).
+        if _mqtt_auth_fail_count >= 3 and not _mqtt_auth_repaired:
+            log_entry("LAUNCHER",
+                      f"MQTT AUTH FAILURE detected ({_mqtt_auth_fail_count} failures) — attempting auto-repair",
+                      "warn")
+            if _repair_mqtt_credentials():
+                # Restart DAQ and any other MQTT-dependent services with fresh creds
+                for svc in managed_services:
+                    if svc.tag in ("DAQ", "AZURE") and svc.alive:
+                        log_entry("LAUNCHER", f"Restarting {svc.name} with repaired credentials...", "warn")
+                        svc.stop()
+                        time.sleep(1)
+                        restart_service(svc)
+                        if svc.alive:
+                            log_entry("LAUNCHER", f"{svc.name} restarted with fresh credentials", "ok")
+
+        # Prune dead processes from global list (prevent unbounded growth)
+        if health_counter % 10 == 0:
+            processes[:] = [p for p in processes if p.poll() is None]
+
         for svc in managed_services:
             if svc.alive:
                 svc.update_status_display()
@@ -902,7 +1298,7 @@ def monitor_loop(managed_services, stop_event):
                         break
                     restart_service(svc)
                     if svc.alive:
-                        log_entry(svc.tag, f"Restarted (PID {svc.proc.pid})", "ok")
+                        log_entry(svc.tag, f"Restarted (PID {svc.proc.pid if svc.proc else '?'})", "ok")
                 else:
                     log_entry(svc.tag, "Max restarts exceeded — giving up", "error")
                     svc.status = "failed"
@@ -931,13 +1327,15 @@ class LauncherUI:
             pass
 
         self._last_log_id = 0
-        self._all_entries = []
+        self._all_entries = deque(maxlen=2000)
         self._total_lines = 0
         self._start_time = time.time()
         self._dashboard_opened = False
         self.svc_widgets = {}
+        self._service_mode = services_installed()
 
         self._build_header()
+        self._build_autostart()
         self._build_services()
         self._build_log()
         self._build_statusbar()
@@ -968,6 +1366,107 @@ class LauncherUI:
         self.btn_dashboard.pack(side=tk.LEFT, padx=2)
         ttk.Button(right, text="Restart All",
                    command=self._restart_all).pack(side=tk.LEFT, padx=2)
+
+    def _build_autostart(self):
+        fr = ttk.Frame(self.root)
+        fr.pack(fill=tk.X, padx=10, pady=(4, 0))
+
+        self.autostart_var = tk.BooleanVar(value=self._service_mode)
+        self.autostart_cb = ttk.Checkbutton(
+            fr,
+            text="Start automatically when this computer turns on",
+            variable=self.autostart_var,
+            command=self._toggle_autostart,
+        )
+        self.autostart_cb.pack(anchor=tk.W)
+        self.autostart_hint = ttk.Label(
+            fr,
+            text="Services will run in the background, even after closing this window or logging out"
+            if self._service_mode else
+            "Services only run while this window is open",
+            font=("Segoe UI", 8), foreground="#888",
+        )
+        self.autostart_hint.pack(anchor=tk.W, padx=(20, 0))
+
+    def _toggle_autostart(self):
+        """Handle the auto-start checkbox toggle."""
+        want_enabled = self.autostart_var.get()
+        if want_enabled:
+            # Install services
+            ok = messagebox.askyesno(
+                "Enable Auto-Start",
+                "This will register ICCSFlux as a Windows service so it starts "
+                "automatically when this computer turns on.\n\n"
+                "You will be prompted for administrator permission.\n\n"
+                "Continue?",
+                parent=self.root,
+            )
+            if not ok:
+                self.autostart_var.set(False)
+                return
+            threading.Thread(target=self._do_install_service, daemon=True).start()
+        else:
+            # Uninstall services
+            ok = messagebox.askyesno(
+                "Disable Auto-Start",
+                "This will remove the ICCSFlux Windows services.\n\n"
+                "Services will only run while this window is open.\n\n"
+                "Continue?",
+                parent=self.root,
+            )
+            if not ok:
+                self.autostart_var.set(True)
+                return
+            threading.Thread(target=self._do_uninstall_service, daemon=True).start()
+
+    def _wait_for_service_state(self, want_installed, timeout=30):
+        """Poll services_installed() until it matches want_installed or timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if services_installed() == want_installed:
+                return True
+            time.sleep(1)
+        return services_installed() == want_installed
+
+    def _do_install_service(self):
+        if not is_admin():
+            log_entry("LAUNCHER", "Requesting admin privileges for service install...", "info")
+            success = elevate_and_run(["--install-service"])
+            if success and self._wait_for_service_state(True, timeout=30):
+                self._service_mode = True
+                log_entry("LAUNCHER", "Auto-start enabled", "ok")
+                self.root.after(0, lambda: self.autostart_hint.configure(
+                    text="Services will run in the background, even after closing this window or logging out"))
+                return
+            log_entry("LAUNCHER", "Service install was not completed", "warn")
+            self.root.after(0, lambda: self.autostart_var.set(False))
+        else:
+            if install_services():
+                self._service_mode = True
+                self.root.after(0, lambda: self.autostart_hint.configure(
+                    text="Services will run in the background, even after closing this window or logging out"))
+            else:
+                self.root.after(0, lambda: self.autostart_var.set(False))
+
+    def _do_uninstall_service(self):
+        if not is_admin():
+            log_entry("LAUNCHER", "Requesting admin privileges for service removal...", "info")
+            success = elevate_and_run(["--uninstall-service"])
+            if success and self._wait_for_service_state(False, timeout=30):
+                self._service_mode = False
+                log_entry("LAUNCHER", "Auto-start disabled", "ok")
+                self.root.after(0, lambda: self.autostart_hint.configure(
+                    text="Services only run while this window is open"))
+                return
+            log_entry("LAUNCHER", "Service removal was not completed", "warn")
+            self.root.after(0, lambda: self.autostart_var.set(True))
+        else:
+            if uninstall_services():
+                self._service_mode = False
+                self.root.after(0, lambda: self.autostart_hint.configure(
+                    text="Services only run while this window is open"))
+            else:
+                self.root.after(0, lambda: self.autostart_var.set(True))
 
     def _build_services(self):
         self.svc_frame = ttk.LabelFrame(self.root, text="Services", padding=5)
@@ -1060,8 +1559,6 @@ class LauncherUI:
             if self.auto_scroll.get():
                 self.log_text.see(tk.END)
             self.line_label.configure(text=f"{self._total_lines} lines")
-            while len(self._all_entries) > 2000:
-                self._all_entries.pop(0)
 
         # Services
         with _status_lock:
@@ -1315,7 +1812,7 @@ class LauncherUI:
                 restart_service(svc)
                 svc._restarting = False
                 if svc.alive:
-                    log_entry(svc.tag, f"Restarted (PID {svc.proc.pid})", "ok")
+                    log_entry(svc.tag, f"Restarted (PID {svc.proc.pid if svc.proc else '?'})", "ok")
                 else:
                     log_entry(svc.tag, "Failed to restart", "error")
                     svc.status = "failed"
@@ -1360,7 +1857,7 @@ class LauncherUI:
             restart_service(svc)
             svc._restarting = False
             if svc.alive:
-                log_entry(svc.tag, f"Restarted (PID {svc.proc.pid})", "ok")
+                log_entry(svc.tag, f"Restarted (PID {svc.proc.pid if svc.proc else '?'})", "ok")
             else:
                 log_entry(svc.tag, f"Failed to restart {svc.name}", "error")
                 svc.status = "failed"
@@ -1372,6 +1869,14 @@ class LauncherUI:
     # ── Close Dialog ─────────────────────────────────────────────────────
 
     def _on_close(self):
+        if self._service_mode:
+            # Services are Windows services — they keep running regardless.
+            # Just close the monitoring window.
+            self.stop_event.set()
+            cleanup(kill_services=False)
+            self.root.destroy()
+            return
+
         dlg = tk.Toplevel(self.root)
         dlg.title("Exit ICCSFlux")
         dlg.resizable(False, False)
@@ -1429,7 +1934,11 @@ class LauncherUI:
         if result["action"] == "stop":
             self.stop_event.set()
             cleanup(kill_services=True)
-            self.root.destroy()
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+            os._exit(0)  # Force-release all file handles immediately
         elif result["action"] == "keep":
             self.stop_event.set()
             cleanup(kill_services=False)
@@ -1450,26 +1959,7 @@ def start_services_thread(port_requested, stop_event):
         log_entry("LAUNCHER", f"Project: {_project_name}", "info")
 
     setup_mqtt_credentials()
-
-    tls_dir = ROOT / "config" / "tls"
-    if not (tls_dir / "ca.crt").exists():
-        log_entry("LAUNCHER", "Generating TLS certificates (first-run)...", "start")
-        try:
-            bundle_dir = getattr(sys, '_MEIPASS', None)
-            if bundle_dir:
-                scripts_path = str(Path(bundle_dir) / "scripts")
-            else:
-                scripts_path = str(ROOT / "scripts")
-            sys.path.insert(0, scripts_path)
-            from generate_tls_certs import generate_certificates
-            if generate_certificates(tls_dir):
-                log_entry("LAUNCHER", "TLS certificates generated", "ok")
-            else:
-                log_entry("LAUNCHER", "TLS generation failed", "warn")
-        except Exception as e:
-            log_entry("LAUNCHER", f"TLS generation failed: {e}", "warn")
-        finally:
-            sys.path.pop(0)
+    setup_tls_if_needed()
 
     managed_services = []
 
@@ -1500,13 +1990,64 @@ def start_services_thread(port_requested, stop_event):
 def main():
     parser = argparse.ArgumentParser(description="ICCSFlux Launcher")
     parser.add_argument("--port", type=int, default=5173)
-    parser.add_argument("--setup", action="store_true")
+    parser.add_argument("--setup", action="store_true",
+                        help="Generate MQTT credentials + TLS certs, then exit")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Headless mode for Windows Service (no GUI)")
+    parser.add_argument("--install-service", action="store_true",
+                        help="Register as Windows Services (requires admin)")
+    parser.add_argument("--uninstall-service", action="store_true",
+                        help="Remove Windows Services (requires admin)")
     parser.add_argument("-v", "--version", action="version", version="ICCSFlux Portable 1.0")
     args = parser.parse_args()
 
+    _setup_file_logging()
+
+    # ── Setup-only mode: generate creds + TLS, exit ──
     if args.setup:
         setup_mqtt_credentials()
+        setup_tls_if_needed()
+        print("Setup complete.")
         return 0
+
+    # ── Service install/uninstall (CLI) ──
+    if args.install_service:
+        if not is_admin():
+            print("Requesting admin privileges...")
+            elevate_and_run(["--install-service"])
+            return 0
+        install_services()
+        return 0
+
+    if args.uninstall_service:
+        if not is_admin():
+            print("Requesting admin privileges...")
+            elevate_and_run(["--uninstall-service"])
+            return 0
+        uninstall_services()
+        return 0
+
+    # ── Headless mode: no GUI, for NSSM / Windows Service ──
+    if args.no_browser:
+        log_entry("LAUNCHER", "Starting in headless mode (no GUI)...", "start")
+        log_entry("LAUNCHER", f"ROOT: {ROOT}", "info")
+
+        stop_event = threading.Event()
+
+        def _signal_handler(sig, frame):
+            log_entry("LAUNCHER", f"Received signal {sig} — shutting down", "info")
+            stop_event.set()
+
+        signal.signal(signal.SIGTERM, _signal_handler)
+        signal.signal(signal.SIGINT, _signal_handler)
+
+        # Run services on main thread (blocks until stop_event)
+        start_services_thread(args.port, stop_event)
+        cleanup()
+        return 0
+
+    # ── Desktop mode: tkinter launcher UI ──
+    _import_tkinter()
 
     if not acquire_single_instance():
         try:
@@ -1521,7 +2062,6 @@ def main():
         return 1
 
     atexit.register(cleanup)
-    _setup_file_logging()
     log_entry("LAUNCHER", "ICCSFlux starting...", "start")
     log_entry("LAUNCHER", f"ROOT: {ROOT}", "info")
 

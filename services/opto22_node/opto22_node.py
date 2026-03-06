@@ -1329,18 +1329,27 @@ class Opto22NodeService:
         }, retain=True)
 
     def _publish_channel_values(self):
-        """Publish batched channel values."""
+        """Publish batched channel values in lean format."""
+        now = time.time()
+        ts_us = int(now * 1_000_000)
+        timestamp = datetime.now().isoformat()
+
+        v = {}
+        bad = []
+
         with self.values_lock:
-            batch = {}
             for name, value in self.channel_values.items():
-                ts = self.channel_timestamps.get(name, 0)
-                batch[name] = {
-                    'value': value,
-                    'timestamp': ts,
-                    'acquisition_ts_us': int(ts * 1_000_000),
-                    'quality': get_value_quality(value)
-                }
-        if batch:
+                quality = get_value_quality(value)
+                if quality == 'bad':
+                    v[name] = None
+                    bad.append(name)
+                else:
+                    v[name] = value
+
+        if v:
+            batch = {'t': timestamp, 'ts_us': ts_us, 'v': v}
+            if bad:
+                batch['bad'] = bad
             self._publish(self._topic('channels/batch'), batch)
 
     def _publish_heartbeat(self):

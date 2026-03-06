@@ -1329,6 +1329,10 @@ class ScriptEngine:
         )
         # Per-channel rate limiters for script publish calls (4 Hz cap)
         self._publish_rate_limiters: Dict[str, TokenBucketRateLimiter] = {}
+        # Debounce for publish_status() — prevents self-delivery feedback loop.
+        # Our script/status publish matches our script/# subscription, so the
+        # message arrives back as a command and triggers another publish_status().
+        self._last_status_publish: float = 0.0
 
     # Maximum allowed script code size (256 KB) — must match DAQ service
     MAX_SCRIPT_CODE_BYTES = 256 * 1024
@@ -1666,7 +1670,8 @@ class ScriptEngine:
         def is_output_locked(name: str) -> bool:
             return self._node.state.is_output_locked(name)
 
-        def publish_value(name: str, value: Any):
+        def publish_value(name: str, value: Any, **kwargs):
+            # Accept 'units' and other kwargs for API compat with DAQ service
             # Cap rate limiters to prevent memory leak from dynamic tag names
             if len(self._publish_rate_limiters) > 500:
                 self._publish_rate_limiters.clear()
@@ -1857,7 +1862,20 @@ class ScriptEngine:
     # =========================================================================
 
     def publish_status(self):
-        """Publish status of all scripts."""
+        """Publish status of all scripts.
+
+        Debounced (500ms) to prevent self-delivery feedback loop:
+        our publish to script/status matches our script/# subscription,
+        so the broker re-delivers it as a command, which would trigger
+        another publish_status() call, flooding the command queue.
+        500ms > scan interval (250ms at 4Hz) to ensure self-delivered
+        messages are always debounced.
+        """
+        now = time.time()
+        if now - self._last_status_publish < 0.5:
+            return
+        self._last_status_publish = now
+
         status = {}
         for script_id, script in self.scripts.items():
             status[script_id] = {

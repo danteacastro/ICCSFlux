@@ -68,42 +68,49 @@ const AUTH_STORAGE_KEY = 'nisystem-auth-session'
 // Maximum age for persisted sessions (24 hours)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
-// Idle timeout — log out after 30 minutes of inactivity
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000
-const IDLE_CHECK_INTERVAL_MS = 60 * 1000  // Check every minute
+// Idle timeout DISABLED — users must explicitly log out.
+// Sessions persist across browser reloads (24h expiry).
 
 interface PersistedSession extends AuthUser {
   _persistedAt: number
 }
 
-// Track user activity for idle timeout
-let _lastActivityTime = Date.now()
-let _idleCheckTimer: ReturnType<typeof setInterval> | null = null
+// Local credential cache — enables login when MQTT is unreachable
+const CREDENTIAL_CACHE_KEY = 'nisystem-auth-credentials'
 
-function _resetIdleTimer() {
-  _lastActivityTime = Date.now()
+interface CachedCredential {
+  username: string
+  passwordHash: string  // SHA-256 hex
+  user: AuthUser
+  cachedAt: number
 }
 
-function _startIdleMonitor(logoutFn: () => void) {
-  if (_idleCheckTimer) return
-  // Listen for user interaction events
-  const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
-  events.forEach(evt => document.addEventListener(evt, _resetIdleTimer, { passive: true }))
-  _idleCheckTimer = setInterval(() => {
-    if (Date.now() - _lastActivityTime > IDLE_TIMEOUT_MS) {
-      console.warn('[AUTH] Session idle timeout — logging out')
-      logoutFn()
-    }
-  }, IDLE_CHECK_INTERVAL_MS)
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(password)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-function _stopIdleMonitor() {
-  if (_idleCheckTimer) {
-    clearInterval(_idleCheckTimer)
-    _idleCheckTimer = null
+function saveCachedCredentials(username: string, passwordHash: string, user: AuthUser) {
+  try {
+    const existing = loadAllCachedCredentials()
+    existing[username] = { username, passwordHash, user, cachedAt: Date.now() }
+    localStorage.setItem(CREDENTIAL_CACHE_KEY, JSON.stringify(existing))
+  } catch (e) {
+    console.warn('[AUTH] Failed to cache credentials:', e)
   }
-  const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
-  events.forEach(evt => document.removeEventListener(evt, _resetIdleTimer))
+}
+
+function loadAllCachedCredentials(): Record<string, CachedCredential> {
+  try {
+    const saved = localStorage.getItem(CREDENTIAL_CACHE_KEY)
+    if (saved) return JSON.parse(saved)
+  } catch (e) {
+    console.warn('[AUTH] Failed to load cached credentials:', e)
+  }
+  return {}
 }
 
 // Try to restore persisted session from localStorage
@@ -146,10 +153,19 @@ function saveSession(user: AuthUser | null) {
   }
 }
 
-// Initialize with persisted session or default guest
-const persistedSession = loadPersistedSession()
-const authenticated = ref(persistedSession !== null)
-const currentUser = ref<AuthUser | null>(persistedSession || DEFAULT_GUEST)
+// Demo mode: auto-login as admin, no MQTT required
+const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
+const DEMO_ADMIN: AuthUser = {
+  username: 'demo',
+  role: 'admin',
+  displayName: 'Demo',
+  permissions: [],
+}
+
+// Initialize with persisted session or default guest (or demo admin)
+const persistedSession = DEMO_MODE ? null : loadPersistedSession()
+const authenticated = ref(DEMO_MODE || persistedSession !== null)
+const currentUser = ref<AuthUser | null>(DEMO_MODE ? DEMO_ADMIN : (persistedSession || DEFAULT_GUEST))
 const authError = ref<string | null>(null)
 const isLoggingIn = ref(false)
 
@@ -309,59 +325,76 @@ export function useAuth() {
   // ============================================================================
 
   async function login(username: string, password: string): Promise<boolean> {
-    if (!mqtt.connected.value) {
-      authError.value = 'Not connected to server'
-      return false
-    }
-
     isLoggingIn.value = true
     authError.value = null
 
-    // Auth is always handled by the local DAQ service (node-001), not remote cRIO nodes
-    mqtt.sendLocalCommand('auth/login', {
-      username,
-      password,
-      source_ip: 'dashboard'
-    })
-
-    // Wait for response (with timeout)
-    return new Promise((resolve) => {
-      const unsubscribe = onAuthChange((status) => {
-        clearTimeout(timeout)
-        unsubscribe()
-        isLoggingIn.value = false
-        resolve(status.authenticated)
+    // If MQTT is available, authenticate via backend (primary path)
+    if (mqtt.connected.value) {
+      mqtt.sendLocalCommand('auth/login', {
+        username,
+        password,
+        source_ip: 'dashboard'
       })
 
-      const timeout = setTimeout(() => {
-        unsubscribe()  // Clean up callback to prevent stale resolve
-        isLoggingIn.value = false
-        authError.value = 'Login timed out — server may be unreachable'
-        resolve(false)
-      }, 10000)
-    })
+      // Wait for response (with timeout)
+      const pwHash = await hashPassword(password)
+      return new Promise((resolve) => {
+        const unsubscribe = onAuthChange((status) => {
+          clearTimeout(timeout)
+          unsubscribe()
+          isLoggingIn.value = false
+          if (status.authenticated && currentUser.value) {
+            // Cache credentials for offline login
+            saveCachedCredentials(username, pwHash, currentUser.value)
+          }
+          resolve(status.authenticated)
+        })
+
+        const timeout = setTimeout(() => {
+          unsubscribe()
+          isLoggingIn.value = false
+          authError.value = 'Login timed out — server may be unreachable'
+          resolve(false)
+        }, 10000)
+      })
+    }
+
+    // MQTT unavailable — fall back to cached credentials (offline login)
+    const pwHash = await hashPassword(password)
+    const cached = loadAllCachedCredentials()
+    const entry = cached[username]
+
+    if (entry && entry.passwordHash === pwHash) {
+      console.log('[AUTH] Offline login via cached credentials:', username)
+      authenticated.value = true
+      currentUser.value = entry.user
+      saveSession(entry.user)
+      isLoggingIn.value = false
+      return true
+    }
+
+    isLoggingIn.value = false
+    if (entry) {
+      authError.value = 'Incorrect password (offline mode)'
+    } else {
+      authError.value = 'Server unreachable — no cached credentials for this user. Connect to server for first login.'
+    }
+    return false
   }
 
   function logout() {
-    if (!mqtt.connected.value) return
-
-    mqtt.sendLocalCommand('auth/logout', {})
+    // Notify backend if connected (best-effort)
+    if (mqtt.connected.value) {
+      mqtt.sendLocalCommand('auth/logout', {})
+    }
     authenticated.value = false
     currentUser.value = DEFAULT_GUEST
     saveSession(null)  // Clear persisted session
-    _stopIdleMonitor()
   }
 
-  // Start/stop idle monitor when auth state changes
+  // Sync auth state to useMqtt (gates permission-sensitive commands like safe-state)
   watch(authenticated, (isAuth) => {
-    // Sync auth state to useMqtt (gates permission-sensitive commands like safe-state)
     mqtt.setUserAuthenticated(isAuth)
-    if (isAuth) {
-      _resetIdleTimer()
-      _startIdleMonitor(logout)
-    } else {
-      _stopIdleMonitor()
-    }
   }, { immediate: true })
 
   function requestAuthStatus() {

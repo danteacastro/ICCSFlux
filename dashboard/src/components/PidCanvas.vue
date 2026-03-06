@@ -3677,6 +3677,7 @@ watchEffect(() => {
 
 .pid-canvas.edit-mode {
   pointer-events: auto;
+  z-index: 5;
 }
 
 .pid-canvas.drawing-mode {

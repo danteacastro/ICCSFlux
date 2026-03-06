@@ -1,6 +1,6 @@
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, triggerRef, computed, watch } from 'vue'
 import mqtt, { type MqttClient, type IClientOptions } from 'mqtt'
-import type { ChannelValue, SystemStatus, ChannelConfig, ChannelType, BackendRecordingConfig, RecordedFile, NodeInfo, DiscoveryCallbackPayload, ConfigUpdateCallbackPayload, RecordingCallbackPayload, AlarmCallbackPayload, SystemUpdateCallbackPayload, CrioCallbackPayload } from '../types'
+import type { ChannelValue, SystemStatus, ChannelConfig, ChannelType, BackendRecordingConfig, RecordedFile, NodeInfo, DiscoveryCallbackPayload, ConfigUpdateCallbackPayload, RecordingCallbackPayload, AlarmCallbackPayload, SystemUpdateCallbackPayload, CrioCallbackPayload, AcquisitionPipelineEvent, SystemHealth } from '../types'
 import { usePlayground } from './usePlayground'
 import { usePythonScripts } from './usePythonScripts'
 import { useSOE } from './useSOE'
@@ -36,8 +36,16 @@ interface MqttChannelValuePayload {
   acquisition_ts_us?: number
 }
 
-/** Batch channel values from cRIO nodes */
-type MqttBatchChannelPayload = Record<string, { value: number; timestamp: number }>
+/** Lean batch format — uniform across DAQ service, cRIO, Opto22, and CFP nodes */
+interface MqttBatchChannelPayload {
+  t: string        // ISO timestamp (shared)
+  ts_us: number    // acquisition epoch µs (shared)
+  v: Record<string, number | null>  // channel values (null = bad/disconnected)
+  bad?: string[]   // channels with quality=bad
+  alarm?: string[] // channels over limit (DAQ service only)
+  warn?: string[]  // channels over warning threshold (DAQ service only)
+  stale?: string[] // channels with stale values (cRIO only)
+}
 
 /** System status payload from backend — partial SystemStatus with extra node fields */
 type MqttStatusPayload = Partial<SystemStatus> & {
@@ -173,13 +181,29 @@ const reconnectAttempts = ref(0)
 const lastMessageTime = ref<number>(0)
 
 // Reactive data (shared)
-const channelValues = ref<Record<string, ChannelValue>>({})
+const channelValues = shallowRef<Record<string, ChannelValue>>({})
 const systemStatus = ref<SystemStatus | null>(null)
 const channelConfigs = ref<Record<string, ChannelConfig>>({})
 
 // Channel ownership tracking - prevents value collision between nodes
 // Maps channel name -> nodeId that owns/updates this channel
 const channelOwners = new Map<string, string>()
+
+// Cached reverse lookup: cRIO physical channel name → TAG name
+// Rebuilt only when channelConfigs changes (not on every batch message)
+const physicalToTagCache = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const [tagName, config] of Object.entries(channelConfigs.value)) {
+    if (config.physical_channel) {
+      map[config.physical_channel] = tagName
+      const match = config.physical_channel.match(/(Mod\d+\/.+)$/i)
+      if (match && match[1]) {
+        map[match[1]] = tagName
+      }
+    }
+  }
+  return map
+})
 
 // Discovery state (shared)
 const discoveryResult = ref<any>(null)
@@ -216,6 +240,24 @@ const lastHeartbeatTime = ref<number>(0)
 
 // Pending commands for acknowledgment (shared) - NOT a ref, just a Map
 const pendingCommands = new Map<string, PendingCommand>()
+
+// Acquisition command state (shared)
+const acquireCommandPending = ref(false)
+const lastAcquireError = ref<string | null>(null)
+
+// Recording command state (shared)
+const recordingCommandPending = ref(false)
+const lastRecordingError = ref<string | null>(null)
+
+// Session command state (shared)
+const sessionCommandPending = ref(false)
+const lastSessionError = ref<string | null>(null)
+
+// Acquisition event pipeline (shared)
+const acquisitionEvents = ref<AcquisitionPipelineEvent[]>([])
+
+// System health pipeline (shared)
+const systemHealth = ref<SystemHealth | null>(null)
 
 // Track if MQTT handlers are initialized
 let handlersInitialized = false
@@ -285,7 +327,7 @@ if (!_nodeStalenessInterval) {
 const crioConfigVersions = ref<Map<string, { expected: string; reported: string; local: string }>>(new Map())
 
 // Callbacks (shared)
-const dataCallbacks: ((data: Record<string, number>) => void)[] = []
+const dataCallbacks: ((data: Record<string, ChannelValue>) => void)[] = []
 const statusCallbacks: ((status: SystemStatus) => void)[] = []
 const discoveryCallbacks: ((result: DiscoveryCallbackPayload) => void)[] = []
 const configUpdateCallbacks: ((result: ConfigUpdateCallbackPayload) => void)[] = []
@@ -447,7 +489,19 @@ export function useMqtt(prefix: string = 'nisystem') {
       // Example: nisystem/nodes/node-001/channels/TC001
       const nodeMatch = topic.match(new RegExp(`^${systemPrefix}/nodes/([^/]+)/(.+)$`))
 
+      // DEBUG: count all messages
+      batchDebug.value.msg_total++
+      batchDebug.value.last_topic = topic
+      if (topic.includes('crio')) {
+        batchDebug.value.msg_crio++
+        batchDebug.value.last_crio_topic = topic
+        if (topic.includes('channels/batch')) {
+          batchDebug.value.msg_batch_topic++
+        }
+      }
+
       if (nodeMatch) {
+        batchDebug.value.msg_node_match++
         const [, nodeId, restOfTopic] = nodeMatch as [string, string, string]
 
         // Update node registry when we receive any message from a node
@@ -522,7 +576,7 @@ export function useMqtt(prefix: string = 'nisystem') {
           if (restOfTopic === 'config/channels') {
             handleChannelConfig(payload)
           } else if (restOfTopic === 'config/response') {
-            handleConfigResponse(payload)
+            handleConfigResponse(payload, nodeId)
           } else if (restOfTopic === 'config/current') {
             handleFullConfig(payload)
           } else if (restOfTopic === 'config/channel/deleted') {
@@ -636,6 +690,20 @@ export function useMqtt(prefix: string = 'nisystem') {
           console.error(`[MQTT] Error handling script values on topic ${topic}:`, e)
         }
 
+        // Acquisition events + health pipeline
+        try {
+          if (restOfTopic === 'acquisition/events') {
+            acquisitionEvents.value.unshift(payload as AcquisitionPipelineEvent)
+            if (acquisitionEvents.value.length > 200) {
+              acquisitionEvents.value = acquisitionEvents.value.slice(0, 200)
+            }
+          } else if (restOfTopic === 'status/health') {
+            systemHealth.value = payload as SystemHealth
+          }
+        } catch (e) {
+          console.error(`[MQTT] Error handling acquisition events/health on topic ${topic}:`, e)
+        }
+
         try {
           if (restOfTopic === 'crio/response') {
             // cRIO operation response (push config, etc.)
@@ -702,29 +770,10 @@ export function useMqtt(prefix: string = 'nisystem') {
   function handleChannelValue(channelName: string, payload: MqttChannelValuePayload, nodeId?: string) {
     const effectiveNodeId = nodeId || payload.node_id || 'node-001'
 
-    // Filter by active node — when a specific node is selected, ignore data from other nodes
-    // This prevents cross-node contamination in the dashboard
-    if (activeNodeId.value && effectiveNodeId !== activeNodeId.value) return
-
-    // Check if THIS node is acquiring (per-node check, not global systemStatus)
-    // This allows data from multiple acquiring nodes simultaneously
-    const nodeInfo = knownNodes.value.get(effectiveNodeId)
-    const nodeAcquiring = nodeInfo?.acquiring ?? systemStatus.value?.acquiring
-    if (!nodeAcquiring) return
-
-    // Check channel ownership - prevent value collision between nodes
-    // If a channel is owned by a different node, don't overwrite it
-    // (handles redundancy: same channel name from two PCs reading same hardware)
-    const owner = channelOwners.get(channelName)
-    if (owner && owner !== effectiveNodeId) {
-      // This channel is owned by a different node, skip update
-      return
-    }
-
-    // Set ownership if not already set
-    if (!owner) {
-      channelOwners.set(channelName, effectiveNodeId)
-    }
+    // Accept all incoming data — no node or acquiring filters.
+    // The UI decides what to display; the data layer should never drop values.
+    batchDebug.value.individual_entered++
+    batchDebug.value.individual_last_channel = channelName
 
     const config = channelConfigs.value?.[channelName] ?? undefined
     const timestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now()
@@ -769,101 +818,110 @@ export function useMqtt(prefix: string = 'nisystem') {
       acquisitionTsUs: payload.acquisition_ts_us
     }
 
-    // Call data callbacks with aggregated format for compatibility
-    // Use NaN for disconnected values so charts can handle gaps
-    const data: Record<string, number> = { [channelName]: value }
+    // Call data callbacks with full ChannelValue for store sync
+    const data: Record<string, ChannelValue> = { [channelName]: channelValues.value[channelName]! }
+    batchDebug.value.callbacks_count = dataCallbacks.length
+    batchDebug.value.callbacks_fired++
     dataCallbacks.forEach(cb => cb(data))
+    batchDebug.value.store_values_count = Object.keys(channelValues.value).length
 
     // Notify Python scripts that new scan data is available
     // This triggers any awaiting next_scan() calls
     pythonScripts.onScanData()
   }
 
+  // DEBUG: comprehensive message flow counters (visible via batchDebug export)
+  const batchDebug = ref({
+    // Message handler level
+    msg_total: 0,
+    msg_crio: 0,
+    msg_batch_topic: 0,
+    msg_node_match: 0,
+    msg_no_match: 0,
+    last_topic: '',
+    last_crio_topic: '',
+    // Batch handler
+    batch_entered: 0,
+    batch_processed: 0,
+    batch_last_channels: 0,
+    batch_last_node: '',
+    // Individual channel handler
+    individual_entered: 0,
+    individual_last_channel: '',
+    // Data callbacks
+    callbacks_fired: 0,
+    callbacks_count: 0,
+    // Store values
+    store_values_count: 0,
+  })
+
   function handleBatchChannelValues(payload: MqttBatchChannelPayload, nodeId?: string) {
-    // Handle batched channel values from cRIO nodes
-    // cRIO publishes with physical channel names (e.g., "Mod5/ai0") when no config is pushed
-    // Dashboard needs to map these back to TAG names using channelConfigs
     const effectiveNodeId = nodeId || 'crio-001'
+    batchDebug.value.batch_entered++
 
-    // Filter by active node — when a specific node is selected, ignore data from other nodes
-    if (activeNodeId.value && effectiveNodeId !== activeNodeId.value) return
+    const aggregatedData: Record<string, ChannelValue> = {}
 
-    // Check if THIS node is acquiring (per-node check, not global systemStatus)
-    const nodeInfo = knownNodes.value.get(effectiveNodeId)
-    const nodeAcquiring = nodeInfo?.acquiring ?? systemStatus.value?.acquiring
-    if (!nodeAcquiring) return
+    // Uniform lean format from all sources: { t, ts_us, v: {ch: val}, bad?, alarm?, warn?, stale? }
+    const timestamp = new Date(payload.t).getTime() || Date.now()
+    const badSet = new Set(payload.bad || [])
+    const alarmSet = new Set(payload.alarm || [])
+    const warnSet = new Set(payload.warn || [])
+    const staleSet = new Set(payload.stale || [])
 
-    const aggregatedData: Record<string, number> = {}
+    // Use cached reverse lookup (rebuilt only when channelConfigs changes, not every batch)
+    const physicalToTag = physicalToTagCache.value
 
-    // Build reverse lookup: physical_channel -> TAG name
-    // The cRIO sends "Mod5/ai0" but configs might have "cRIO1Mod5/ai0" or similar
-    const physicalToTag: Record<string, string> = {}
-    for (const [tagName, config] of Object.entries(channelConfigs.value)) {
-      if (config.physical_channel) {
-        // Exact match
-        physicalToTag[config.physical_channel] = tagName
-        // Also try with just the module part (e.g., "Mod5/ai0" from "cRIO1Mod5/ai0")
-        // Extract module path pattern from the physical_channel
-        // Handles: Mod5/ai0 (analog), Mod4/port0/line0 (digital), Mod3/ctr0 (counter)
-        const match = config.physical_channel.match(/(Mod\d+\/.+)$/i)
-        if (match && match[1]) {
-          physicalToTag[match[1]] = tagName
-        }
-      }
-    }
+    // Build all new values first, then assign to shallowRef once (single reactive trigger)
+    const currentValues = channelValues.value
 
-    for (const [physicalChannel, data] of Object.entries(payload)) {
-      const timestamp = data.timestamp ? new Date(data.timestamp * 1000).getTime() : Date.now()
-      let value = data.value
+    for (const [rawName, value] of Object.entries(payload.v)) {
+      // Resolve physical channel name to TAG name if needed
+      const channelName = physicalToTag[rawName] || rawName
+      const config = channelConfigs.value?.[channelName] ?? undefined
 
-      // Look up TAG name from physical channel
-      const tagName = physicalToTag[physicalChannel]
-      if (!tagName) {
-        console.warn(`[MQTT] No TAG mapping found for physical channel "${physicalChannel}" from node ${effectiveNodeId}, using physical name as fallback`)
-      }
-      const effectiveName = tagName || physicalChannel  // Fall back to physical name if no mapping
-      const config = channelConfigs.value?.[effectiveName] ?? undefined
-
-      // Set channel ownership - this cRIO owns these channels
-      // This prevents main DAQ from overwriting values
-      channelOwners.set(effectiveName, effectiveNodeId)
-
-      // Apply scaling if configured
-      if (config) {
-        value = applyScaling(value, config)
+      // Track channel ownership for cRIO nodes
+      if (effectiveNodeId !== 'node-001') {
+        channelOwners.set(channelName, effectiveNodeId)
       }
 
-      // Only check alarms if explicitly enabled and limits are set
-      // Use != null to check both undefined AND null
-      const hasAlarmLimits = config != null && (
-        config.hihi_limit != null ||
-        config.lolo_limit != null ||
-        config.high_limit != null ||
-        config.low_limit != null
-      )
-      const alarmEnabled = config?.alarm_enabled !== false && hasAlarmLimits
+      const isDisconnected = value === null || value === undefined
+      let scaledValue = isDisconnected ? NaN : value as number
 
-      // Detect null/NaN/disconnected values (open TC, broken sensor, etc.)
-      const isDisconnected = value === null || value === undefined ||
-        (typeof value === 'number' && isNaN(value))
-      const safeValue = isDisconnected ? NaN : value
+      if (!isDisconnected && config) {
+        scaledValue = applyScaling(scaledValue, config)
+      }
 
-      channelValues.value[effectiveName] = {
-        name: effectiveName,
-        value: safeValue,
+      const quality: 'good' | 'bad' | 'stale' = badSet.has(rawName)
+        ? 'bad'
+        : staleSet.has(rawName)
+          ? 'stale'
+          : 'good'
+
+      const cv: ChannelValue = {
+        name: channelName,
+        value: scaledValue,
         timestamp,
-        alarm: !isDisconnected && alarmEnabled && config ? isAlarm(safeValue, config) : false,
-        warning: !isDisconnected && alarmEnabled && config ? isWarning(safeValue, config) : false,
-        quality: isDisconnected ? 'bad' as const : 'good' as const,
+        alarm: alarmSet.has(rawName),
+        warning: warnSet.has(rawName),
+        quality,
         disconnected: isDisconnected,
         nodeId: effectiveNodeId
       }
 
-      aggregatedData[effectiveName] = value
+      // Mutate in place (no reactive trigger yet — shallowRef only tracks .value reassignment)
+      currentValues[channelName] = cv
+      aggregatedData[channelName] = cv
     }
 
-    // Call data callbacks with all values at once
+    // Single reactive trigger for all channel updates at once
     if (Object.keys(aggregatedData).length > 0) {
+      triggerRef(channelValues)
+
+      batchDebug.value.batch_processed++
+      batchDebug.value.batch_last_node = effectiveNodeId
+      batchDebug.value.batch_last_channels = Object.keys(aggregatedData).length
+      batchDebug.value.callbacks_count = dataCallbacks.length
+      batchDebug.value.callbacks_fired++
       dataCallbacks.forEach(cb => cb(aggregatedData))
     }
 
@@ -942,21 +1000,17 @@ export function useMqtt(prefix: string = 'nisystem') {
     } as SystemStatus
     nodeStatuses.value.set(effectiveNodeId, normalizedStatus)
 
-    // H4: Track per-node acquiring state to prevent race conditions
+    // Track per-node acquiring state for node-level status display
     nodeAcquiringStates.value.set(effectiveNodeId, normalizedStatus.acquiring ?? false)
 
-    // Update global systemStatus from the active node, or from the default DAQ node
+    // Update global systemStatus from the active node, or from the default DAQ node.
+    // Use the active node's own acquiring state — not isAnyNodeAcquiring — because
+    // edge nodes (cRIO, Opto22) may cycle through acquiring/degraded states
+    // independently, which would cause the main start/stop button to toggle.
     const targetNodeId = activeNodeId.value || 'node-001'
     if (effectiveNodeId === targetNodeId) {
-      // H4: Merge acquiring state — system is acquiring if ANY node is acquiring.
-      // This prevents race conditions where concurrent node status updates
-      // cause isAcquiring to flip-flop in the dashboard store.
-      const mergedStatus: SystemStatus = {
-        ...normalizedStatus,
-        acquiring: isAnyNodeAcquiring.value
-      }
-      systemStatus.value = mergedStatus
-      statusCallbacks.forEach(cb => cb(mergedStatus))
+      systemStatus.value = normalizedStatus
+      statusCallbacks.forEach(cb => cb(normalizedStatus))
     }
   }
 
@@ -981,15 +1035,17 @@ export function useMqtt(prefix: string = 'nisystem') {
       }
     })
 
-    // Notify data callbacks
-    const numericValues: Record<string, number> = {}
-    Object.entries(payload).forEach(([name, value]) => {
-      if (name !== '_timestamp' && typeof value === 'number') {
-        numericValues[`py.${name}`] = value
+    // Notify data callbacks with full ChannelValue objects
+    const scriptChannelValues: Record<string, ChannelValue> = {}
+    Object.entries(payload).forEach(([name]) => {
+      if (name === '_timestamp') return
+      const channelName = `py.${name}`
+      if (channelValues.value[channelName]) {
+        scriptChannelValues[channelName] = channelValues.value[channelName]!
       }
     })
-    if (Object.keys(numericValues).length > 0) {
-      dataCallbacks.forEach(cb => cb(numericValues))
+    if (Object.keys(scriptChannelValues).length > 0) {
+      dataCallbacks.forEach(cb => cb(scriptChannelValues))
     }
   }
 
@@ -1198,20 +1254,22 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  function handleConfigResponse(payload: MqttConfigResponsePayload) {
+  function handleConfigResponse(payload: MqttConfigResponsePayload, topicNodeId?: string) {
     console.debug('Config response:', payload)
 
     // Track expected config version when cRIO ACK is received
-    if (payload.node_id && payload.config_version && payload.success) {
-      const nodeId = payload.node_id
+    // Use node_id from payload, or fall back to the node ID extracted from the MQTT topic
+    const nodeId = payload.node_id || topicNodeId
+    const configVersion = payload.config_version
+    if (nodeId && configVersion && (payload.success || payload.status === 'success')) {
       const existing = crioConfigVersions.value.get(nodeId) || { expected: '', reported: '', local: '' }
       crioConfigVersions.value.set(nodeId, {
         ...existing,
-        expected: payload.config_version,
+        expected: configVersion,
         // Sync local to acknowledged version — handles server-initiated pushes
         // (project load, node registration) where the hash was computed server-side.
         // The next local edit will update local via the watcher, triggering out-of-sync.
-        local: payload.config_version
+        local: configVersion
       })
 
       // Update knownNodes sync status
@@ -1219,12 +1277,12 @@ export function useMqtt(prefix: string = 'nisystem') {
       if (nodeInfo) {
         knownNodes.value.set(nodeId, {
           ...nodeInfo,
-          expectedVersion: payload.config_version,
-          configSynced: nodeInfo.configVersion === payload.config_version
+          expectedVersion: configVersion,
+          configSynced: nodeInfo.configVersion === configVersion
         })
       }
 
-      console.debug(`[MQTT] cRIO ${nodeId} config confirmed, version: ${payload.config_version}`)
+      console.debug(`[MQTT] cRIO ${nodeId} config confirmed, version: ${configVersion}`)
     }
 
     configUpdateCallbacks.forEach(cb => cb(payload))
@@ -1529,7 +1587,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     const { command, request_id, success, error: errorMsg } = payload
     console.debug('[MQTT] Command ack received:', { command, success, request_id })
 
-    // Optimistic UI update for acquire commands - faster than waiting for full status
+    // Optimistic UI update for critical commands - faster than waiting for full status
     if (success && command && systemStatus.value) {
       if (command === 'acquire/start') {
         console.debug('[MQTT] Optimistic update: acquiring=true')
@@ -1538,6 +1596,14 @@ export function useMqtt(prefix: string = 'nisystem') {
       } else if (command === 'acquire/stop') {
         console.debug('[MQTT] Optimistic update: acquiring=false')
         systemStatus.value = { ...systemStatus.value, acquiring: false, acquisition_state: 'stopped' }
+        statusCallbacks.forEach(cb => cb(systemStatus.value!))
+      } else if (command === 'recording/start') {
+        console.debug('[MQTT] Optimistic update: recording=true')
+        systemStatus.value = { ...systemStatus.value, recording: true }
+        statusCallbacks.forEach(cb => cb(systemStatus.value!))
+      } else if (command === 'recording/stop') {
+        console.debug('[MQTT] Optimistic update: recording=false')
+        systemStatus.value = { ...systemStatus.value, recording: false }
         statusCallbacks.forEach(cb => cb(systemStatus.value!))
       }
     }
@@ -1738,24 +1804,129 @@ export function useMqtt(prefix: string = 'nisystem') {
     }
   }
 
-  function startAcquisition() {
+  async function startAcquisition(): Promise<{ success: boolean; error?: string }> {
     console.debug('[MQTT] startAcquisition called, connected:', connected.value)
-    sendSystemCommand('acquire/start')
+    acquireCommandPending.value = true
+    lastAcquireError.value = null
+    try {
+      const result = await sendSystemCommandWithAck('acquire/start', undefined, 15000)
+      if (!result.success) {
+        lastAcquireError.value = result.error || 'Start failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Start failed'
+      lastAcquireError.value = error
+      return { success: false, error }
+    } finally {
+      acquireCommandPending.value = false
+    }
   }
 
-  function stopAcquisition() {
+  async function stopAcquisition(): Promise<{ success: boolean; error?: string }> {
     console.debug('[MQTT] stopAcquisition called, connected:', connected.value)
-    sendSystemCommand('acquire/stop')
+    acquireCommandPending.value = true
+    lastAcquireError.value = null
+    try {
+      const result = await sendSystemCommandWithAck('acquire/stop', undefined, 10000)
+      if (!result.success) {
+        lastAcquireError.value = result.error || 'Stop failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Stop failed'
+      lastAcquireError.value = error
+      return { success: false, error }
+    } finally {
+      acquireCommandPending.value = false
+    }
   }
 
-  function startRecording(filename?: string) {
+  async function startRecording(filename?: string): Promise<{ success: boolean; error?: string }> {
     console.debug('[MQTT] startRecording called, connected:', connected.value)
-    sendSystemCommand('recording/start', filename ? { filename } : undefined)
+    recordingCommandPending.value = true
+    lastRecordingError.value = null
+    try {
+      const result = await sendSystemCommandWithAck('recording/start', filename ? { filename } : undefined, 10000)
+      if (!result.success) {
+        lastRecordingError.value = result.error || 'Recording start failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Recording start failed'
+      lastRecordingError.value = error
+      return { success: false, error }
+    } finally {
+      recordingCommandPending.value = false
+    }
   }
 
-  function stopRecording() {
+  async function stopRecording(): Promise<{ success: boolean; error?: string }> {
     console.debug('[MQTT] stopRecording called, connected:', connected.value)
-    sendSystemCommand('recording/stop')
+    recordingCommandPending.value = true
+    lastRecordingError.value = null
+    try {
+      const result = await sendSystemCommandWithAck('recording/stop', undefined, 10000)
+      if (!result.success) {
+        lastRecordingError.value = result.error || 'Recording stop failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Recording stop failed'
+      lastRecordingError.value = error
+      return { success: false, error }
+    } finally {
+      recordingCommandPending.value = false
+    }
+  }
+
+  async function startTestSession(startedBy: string = 'user', metadata?: {
+    testId?: string
+    description?: string
+    operatorNotes?: string
+    timeoutMinutes?: number
+  }): Promise<{ success: boolean; error?: string }> {
+    console.debug('[MQTT] startTestSession called, connected:', connected.value)
+    sessionCommandPending.value = true
+    lastSessionError.value = null
+    try {
+      const result = await sendCommandWithAck('test-session/start', {
+        started_by: startedBy,
+        test_id: metadata?.testId || '',
+        description: metadata?.description || '',
+        operator_notes: metadata?.operatorNotes || '',
+        timeout_minutes: metadata?.timeoutMinutes || 0,
+      }, 15000)
+      if (!result.success) {
+        lastSessionError.value = result.error || 'Session start failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Session start failed'
+      lastSessionError.value = error
+      return { success: false, error }
+    } finally {
+      sessionCommandPending.value = false
+    }
+  }
+
+  async function stopTestSession(): Promise<{ success: boolean; error?: string }> {
+    console.debug('[MQTT] stopTestSession called, connected:', connected.value)
+    sessionCommandPending.value = true
+    lastSessionError.value = null
+    try {
+      const result = await sendCommandWithAck('test-session/stop', undefined, 10000)
+      if (!result.success) {
+        lastSessionError.value = result.error || 'Session stop failed'
+      }
+      return result
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Session stop failed'
+      lastSessionError.value = error
+      return { success: false, error }
+    } finally {
+      sessionCommandPending.value = false
+    }
   }
 
   function enableScheduler() {
@@ -2251,6 +2422,16 @@ export function useMqtt(prefix: string = 'nisystem') {
    * Called from message handler when crio/response topic is received.
    */
   function handleCrioResponse(payload: CrioCallbackPayload) {
+    // Update sync state when a config push is confirmed with version info
+    if (payload.success && payload.node_id && payload.config_version) {
+      const nodeId = payload.node_id
+      const existing = crioConfigVersions.value.get(nodeId) || { expected: '', reported: '', local: '' }
+      crioConfigVersions.value.set(nodeId, {
+        ...existing,
+        expected: payload.config_version,
+        local: payload.config_version
+      })
+    }
     crioCallbacks.forEach(cb => cb(payload))
   }
 
@@ -2263,7 +2444,7 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   // Event subscription - all functions return unsubscribe function to prevent memory leaks
-  function onData(callback: (data: Record<string, number>) => void): () => void {
+  function onData(callback: (data: Record<string, ChannelValue>) => void): () => void {
     dataCallbacks.push(callback)
     return () => {
       const idx = dataCallbacks.indexOf(callback)
@@ -2404,6 +2585,8 @@ export function useMqtt(prefix: string = 'nisystem') {
     stopAcquisition,
     startRecording,
     stopRecording,
+    startTestSession,
+    stopTestSession,
     enableScheduler,
     disableScheduler,
     loadConfig,
@@ -2501,6 +2684,24 @@ export function useMqtt(prefix: string = 'nisystem') {
     lastHeartbeat,
     lastHeartbeatTime,
 
+    // Acquisition command state
+    acquireCommandPending,
+    lastAcquireError,
+
+    // Recording command state
+    recordingCommandPending,
+    lastRecordingError,
+
+    // Session command state
+    sessionCommandPending,
+    lastSessionError,
+
+    // Acquisition event pipeline
+    acquisitionEvents,
+
+    // System health pipeline
+    systemHealth,
+
     // Command acknowledgment
     sendCommandWithAck,
     sendSystemCommandWithAck,
@@ -2508,6 +2709,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Multi-node support
     knownNodes,
     activeNodeId,
+    batchDebug,
     nodeStatuses,
     setActiveNode: (nodeId: string | null) => {
       const previousNodeId = activeNodeId.value

@@ -14,23 +14,19 @@ import ConfigurationTab from './components/ConfigurationTab.vue'
 import ScriptsTab from './components/ScriptsTab.vue'
 import DataTab from './components/DataTab.vue'
 import SafetyTab from './components/SafetyTab.vue'
-import NotebookTab from './components/NotebookTab.vue'
 import AdminTab from './components/AdminTab.vue'
 import PageSelector from './components/PageSelector.vue'
 import NotificationToast from './components/NotificationToast.vue'
 import StatusMessages from './widgets/StatusMessages.vue'
 import ConnectionOverlay from './components/ConnectionOverlay.vue'
+import DiagnosticOverlay from './components/DiagnosticOverlay.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import GcAnalysisTab from './components/GcAnalysisTab.vue'
-import DataViewerTab from './components/DataViewerTab.vue'
-import LogViewerTab from './components/LogViewerTab.vue'
-import OperationalReportTab from './components/OperationalReportTab.vue'
+import ReportsHub from './components/ReportsHub.vue'
 import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
 import { useBrokerConfig } from './composables/useBrokerConfig'
-import BrokerConnectionDialog from './components/BrokerConnectionDialog.vue'
-import NodeStatusBar from './components/NodeStatusBar.vue'
 
 const store = useDashboardStore()
 const { theme, toggleTheme } = useTheme()
@@ -50,9 +46,6 @@ let windowPositionCleanup: (() => void) | null = null
 // Login dialog state
 const showLoginDialog = ref(false)
 
-// Broker connection dialog
-const showBrokerDialog = ref(false)
-
 // GC tab visibility — hidden by default, toggle with Ctrl+F
 const showGcTab = ref(false)
 
@@ -65,11 +58,8 @@ const tabComponents: Record<string, Component> = {
   configuration: markRaw(ConfigurationTab),
   scripts: markRaw(ScriptsTab),
   data: markRaw(DataTab),
-  data_viewer: markRaw(DataViewerTab),
-  log_viewer: markRaw(LogViewerTab),
-  reports: markRaw(OperationalReportTab),
   safety: markRaw(SafetyTab),
-  notebook: markRaw(NotebookTab),
+  reports: markRaw(ReportsHub),
   gc_analysis: markRaw(GcAnalysisTab),
   admin: markRaw(AdminTab),
 }
@@ -96,11 +86,8 @@ const tabAccess = {
   configuration: computed(() => true),
   scripts: computed(() => true),
   data: computed(() => true),
-  data_viewer: computed(() => true),
-  log_viewer: computed(() => true),
-  reports: computed(() => true),
   safety: computed(() => true),
-  notebook: computed(() => true),
+  reports: computed(() => true),
   gc_analysis: computed(() => true),
   admin: computed(() => auth.isSupervisor.value),   // Supervisor+ only
 }
@@ -150,7 +137,7 @@ function updateUrlNavigation(view: string, pageId: string) {
 
 // Restore activeTab from URL on startup (before any watches fire)
 const urlView = getViewFromUrl()
-if (urlView && ['overview', 'configuration', 'scripts', 'data', 'data_viewer', 'log_viewer', 'reports', 'safety', 'notebook', 'gc_analysis', 'admin'].includes(urlView)) {
+if (urlView && ['overview', 'configuration', 'scripts', 'data', 'safety', 'reports', 'gc_analysis', 'admin'].includes(urlView)) {
   activeTab.value = urlView
 }
 
@@ -250,6 +237,8 @@ const filteredChannels = computed(() => {
   })
 })
 const mqtt = useMqtt('nisystem')
+
+const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
 
 // Startup dialog state
 const showStartupDialog = ref(false)
@@ -456,7 +445,7 @@ onMounted(() => {
 
         // Only show recovery dialog if autosave exists but backend is in fresh state
         // (no project loaded and no channels configured)
-        if (hasAutosave && !backendHasProject && !backendHasChannels) {
+        if (hasAutosave && !backendHasProject && !backendHasChannels && !DEMO_MODE) {
           console.log('[APP] Autosave recovery available (backend is fresh) - showing dialog')
           hasLastProject.value = false
           showStartupDialog.value = true
@@ -480,16 +469,18 @@ onMounted(() => {
   })
 
   // Keep store in sync with MQTT channel configs
-  // This ensures newly created/deleted channels are reflected in the UI
-  watch(() => mqtt.channelConfigs.value, (newConfigs) => {
+  // Watch the ref directly (not a getter) so Vue tracks ref replacement reliably.
+  // immediate: true ensures any configs that arrived before this watch is set up are synced.
+  watch(mqtt.channelConfigs, (newConfigs) => {
     store.setChannels(newConfigs)
     console.log('[APP] Channel configs updated:', Object.keys(newConfigs).length)
-  }, { deep: true })
+  }, { immediate: true })
 
   // Listen for backend startup cleared event
   // This is the ONLY time we show the startup dialog - when the DAQ service starts fresh
   // Page refreshes just reconnect and use current state (no dialog)
   mqtt.subscribe('nisystem/nodes/+/system/startup-cleared', (payload: any) => {
+    if (DEMO_MODE) return
     console.log('[APP] Backend service started fresh - showing startup dialog...')
 
     // Request current project info to show in dialog
@@ -564,35 +555,54 @@ onMounted(() => {
 })
 
 // Control handlers
-function handleStart() {
+async function handleStart() {
   console.log('[APP] handleStart called, isAcquiring:', store.isAcquiring)
-  mqtt.startAcquisition()
+  const result = await mqtt.startAcquisition()
+  if (!result.success) {
+    console.error('[APP] Start acquisition failed:', result.error)
+  }
 }
 
-function handleStop() {
+async function handleStop() {
   console.log('[APP] handleStop called, isAcquiring:', store.isAcquiring)
-  mqtt.stopAcquisition()
-  // Clear all values to reset widgets to boot state (showing "--")
-  store.clearValues()
+  const result = await mqtt.stopAcquisition()
+  if (result.success) {
+    // Only clear values after backend confirms stop succeeded
+    store.clearValues()
+  } else {
+    console.error('[APP] Stop acquisition failed:', result.error)
+  }
 }
 
-function handleRecordStart() {
+async function handleRecordStart() {
   console.log('[APP] handleRecordStart called, isAcquiring:', store.isAcquiring, 'isRecording:', store.isRecording)
-  mqtt.startRecording()
+  const result = await mqtt.startRecording()
+  if (!result.success) {
+    console.error('[APP] Recording start failed:', result.error)
+  }
 }
 
-function handleRecordStop() {
+async function handleRecordStop() {
   console.log('[APP] handleRecordStop called, isRecording:', store.isRecording)
-  mqtt.stopRecording()
+  const result = await mqtt.stopRecording()
+  if (!result.success) {
+    console.error('[APP] Recording stop failed:', result.error)
+  }
 }
 
-function handleSessionStart() {
+async function handleSessionStart() {
   const username = auth.currentUser.value?.username || 'user'
-  playground.startTestSession(username)
+  const result = await playground.startTestSession(username)
+  if (!result.success) {
+    console.error('[APP] Session start failed:', result.error)
+  }
 }
 
-function handleSessionStop() {
-  playground.stopTestSession()
+async function handleSessionStop() {
+  const result = await playground.stopTestSession()
+  if (!result.success) {
+    console.error('[APP] Session stop failed:', result.error)
+  }
 }
 
 function handleRetryConnection() {
@@ -685,43 +695,6 @@ async function handleManualSave() {
           </button>
           <button
             class="tab-btn"
-            :class="{ active: activeTab === 'data_viewer' }"
-            @click="switchTab('data_viewer')"
-            title="Data Viewer"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
-            </svg>
-            Viewer
-          </button>
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'log_viewer' }"
-            @click="switchTab('log_viewer')"
-            title="Service Logs"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/>
-              <line x1="7" y1="16" x2="13" y2="16"/>
-            </svg>
-            Logs
-          </button>
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'reports' }"
-            @click="switchTab('reports')"
-            title="Operational Reports"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
-              <rect x="9" y="3" width="6" height="4" rx="1"/>
-              <line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/>
-            </svg>
-            Reports
-          </button>
-          <button
-            class="tab-btn"
             :class="{ active: activeTab === 'safety' }"
             @click="switchTab('safety')"
             title="Safety System"
@@ -734,17 +707,16 @@ async function handleManualSave() {
           </button>
           <button
             class="tab-btn"
-            :class="{ active: activeTab === 'notebook' }"
-            @click="switchTab('notebook')"
-            title="Notes"
+            :class="{ active: activeTab === 'reports' }"
+            @click="switchTab('reports')"
+            title="Logs, Reports & Notes"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
-              <line x1="8" y1="7" x2="16" y2="7"/>
-              <line x1="8" y1="11" x2="14" y2="11"/>
+              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+              <rect x="9" y="3" width="6" height="4" rx="1"/>
+              <line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/>
             </svg>
-            Notes
+            Reports
           </button>
           <button
             v-if="showGcTab"
@@ -776,9 +748,6 @@ async function handleManualSave() {
           </button>
         </nav>
       </div>
-
-      <!-- Node status pills (between tabs and controls) -->
-      <NodeStatusBar />
 
       <div class="header-right">
         <!-- Control Bar integrated into header -->
@@ -820,19 +789,6 @@ async function handleManualSave() {
             </svg>
           </button>
         </div>
-
-        <!-- Broker Settings -->
-        <button
-          class="broker-toggle"
-          @click="showBrokerDialog = true"
-          :title="'Broker: ' + brokerConfig.brokerUrl.value"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
-          </svg>
-          <span v-if="brokerConfig.isRemoteBroker.value" class="remote-dot"></span>
-        </button>
 
         <!-- Theme Toggle -->
         <button
@@ -906,6 +862,16 @@ async function handleManualSave() {
       @retry-now="handleRetryConnection"
     />
 
+    <!-- Diagnostic Overlay -->
+    <DiagnosticOverlay
+      :health="mqtt.systemHealth.value"
+      :events="mqtt.acquisitionEvents.value"
+      :status="store.status"
+      :connected="mqtt.connected.value"
+      :acquire-command-pending="mqtt.acquireCommandPending.value"
+      :last-acquire-error="mqtt.lastAcquireError.value"
+    />
+
     <!-- Add Widget Modal -->
     <Teleport to="body">
       <div v-if="showAddPanel" class="modal-overlay" @click.self="closeAddPanel">
@@ -947,12 +913,6 @@ async function handleManualSave() {
         </div>
       </div>
     </Teleport>
-
-    <!-- Broker Connection Dialog -->
-    <BrokerConnectionDialog
-      v-model="showBrokerDialog"
-      @reconnect="handleRetryConnection"
-    />
 
     <!-- Login Dialog -->
     <LoginDialog
@@ -1448,38 +1408,6 @@ async function handleManualSave() {
   40% { transform: translateX(3px); }
   60% { transform: translateX(-2px); }
   80% { transform: translateX(2px); }
-}
-
-/* Theme Toggle */
-.broker-toggle {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.broker-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--border-light);
-}
-
-.broker-toggle .remote-dot {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #3b82f6;
 }
 
 .theme-toggle {

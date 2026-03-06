@@ -15,8 +15,10 @@ Features:
 The frontend becomes display-only - all safety logic runs here.
 """
 
+import gzip
 import json
 import math
+import os
 import time
 import logging
 import threading
@@ -443,6 +445,13 @@ class SafetyManager:
         # Interlock history (audit trail)
         self.history: List[InterlockHistoryEntry] = []
         self.max_history = 1000
+
+        # Append-only JSONL event log (survives restarts, no truncation)
+        self._log_dir = self.data_dir / 'logs' / 'interlocks'
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_file: Optional[Path] = None
+        self._max_log_size_mb = 50.0
+        self._init_log_file()
 
         # Node ID for multi-node systems
         self.node_id = "local"
@@ -1339,6 +1348,7 @@ class SafetyManager:
         )
 
         self.history.append(entry)
+        self._append_to_log(entry)
         if len(self.history) > self.max_history:
             self.history = self.history[-self.max_history:]
 
@@ -1630,6 +1640,72 @@ class SafetyManager:
         except Exception as e:
             logger.error(f"Error saving interlock history: {e}")
 
+    # ========================================================================
+    # Append-Only JSONL Event Log
+    # ========================================================================
+
+    def _init_log_file(self):
+        """Find newest .jsonl file under max size, or create a new one."""
+        existing = sorted(self._log_dir.glob('interlock_events_*.jsonl'), reverse=True)
+        for f in existing:
+            try:
+                if f.stat().st_size / (1024 * 1024) < self._max_log_size_mb:
+                    self._log_file = f
+                    return
+            except OSError:
+                continue
+        self._create_new_log_file()
+
+    def _create_new_log_file(self):
+        """Create a new timestamped JSONL log file."""
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._log_file = self._log_dir / f'interlock_events_{ts}.jsonl'
+
+    def _append_to_log(self, entry: InterlockHistoryEntry):
+        """Append a single event to the JSONL log file, rotate if needed."""
+        try:
+            line = json.dumps(entry.to_dict(), default=str) + '\n'
+            with open(self._log_file, 'a', encoding='utf-8') as f:
+                f.write(line)
+                f.flush()
+            try:
+                if self._log_file.stat().st_size / (1024 * 1024) >= self._max_log_size_mb:
+                    self._create_new_log_file()
+            except OSError:
+                pass
+        except Exception as e:
+            logger.error(f"Error appending to interlock event log: {e}")
+
+    def _cleanup_old_logs(self):
+        """Gzip files > 7 days old, delete files > 365 days old."""
+        try:
+            now = datetime.now()
+            for f in self._log_dir.iterdir():
+                if not f.is_file():
+                    continue
+                try:
+                    age = now - datetime.fromtimestamp(f.stat().st_mtime)
+                except OSError:
+                    continue
+                if age > timedelta(days=365):
+                    f.unlink()
+                    logger.info(f"Deleted old interlock log: {f.name}")
+                elif age > timedelta(days=7) and f.suffix == '.jsonl' and f != self._log_file:
+                    gz_path = f.with_suffix('.jsonl.gz')
+                    try:
+                        with open(f, 'rb') as src, gzip.open(gz_path, 'wb') as dst:
+                            while True:
+                                chunk = src.read(65536)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                        f.unlink()
+                        logger.info(f"Compressed interlock log: {f.name}")
+                    except Exception as e:
+                        logger.error(f"Error compressing {f.name}: {e}")
+        except Exception as e:
+            logger.error(f"Error cleaning up interlock logs: {e}")
+
     def _load_history(self):
         """Load interlock history from disk"""
         try:
@@ -1659,6 +1735,7 @@ class SafetyManager:
             self._save_interlocks()
             self._save_safe_state_config()
             self._save_history()
+            self._cleanup_old_logs()
 
     def clear_all(self):
         """Clear all safety state"""

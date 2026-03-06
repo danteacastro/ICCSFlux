@@ -769,9 +769,12 @@ function updateData() {
     }
   }
 
-  // Limit max points
-  while (buffer[0] && buffer[0].length > maxPoints.value) {
-    buffer.forEach(arr => arr?.shift())
+  // Limit max points — slice instead of O(n) shift() calls
+  if (buffer[0] && buffer[0].length > maxPoints.value) {
+    const excess = buffer[0].length - maxPoints.value
+    for (let i = 0; i < buffer.length; i++) {
+      if (buffer[i]) buffer[i] = buffer[i]!.slice(excess)
+    }
   }
 
   // Update chart (guard against destroyed instance)
@@ -1268,12 +1271,26 @@ function onScroll(e: Event) {
 let updateInterval: number | null = null
 let resizeObserver: ResizeObserver | null = null
 
+// Derive chart update interval from the actual publish rate (default 4 Hz = 250ms)
+const chartUpdateMs = computed(() => {
+  const hz = store.status?.publish_rate_hz || store.status?.scan_rate_hz || 4
+  return Math.round(1000 / hz)
+})
+
+function restartUpdateInterval() {
+  if (updateInterval) clearInterval(updateInterval)
+  updateInterval = window.setInterval(updateData, chartUpdateMs.value)
+}
+
+// Re-sync interval when scan/publish rate changes
+watch(chartUpdateMs, () => restartUpdateInterval())
+
 onMounted(() => {
   nextTick(() => {
     initChart()
   })
 
-  updateInterval = window.setInterval(updateData, 100)
+  restartUpdateInterval()
 
   if (chartContainer.value) {
     resizeObserver = new ResizeObserver(handleResize)

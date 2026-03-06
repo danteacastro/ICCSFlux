@@ -29,10 +29,9 @@ let prevRecording = false
 let prevConnected = false
 let prevSchedulerEnabled = false
 
-// Track previous alarm/warning state per channel to only log TRANSITIONS
-// Key: channel name, Value: { alarm: boolean, warning: boolean, seen: boolean }
-// 'seen' flag prevents logging on first observation (initial state after page load)
-const prevAlarmState = new Map<string, { alarm: boolean; warning: boolean; seen: boolean }>()
+// Track alarm IDs we've already logged — maps id to channel name for clear messages
+const loggedAlarmIds = new Map<string, string>()
+let prevTripped = false
 
 function addMessage(type: StatusMessage['type'], source: string, message: string) {
   const newMessage: StatusMessage = {
@@ -91,10 +90,11 @@ watch(() => store.status, (status) => {
       addMessage('info', 'DAQ', 'Initializing acquisition...')
     } else if (acquisitionState === 'running') {
       addMessage('success', 'DAQ', 'Acquisition running')
-    } else if (acquisitionState === 'stopped') {
-      // Only show stopped message if we were previously running or initializing
+    } else if (acquisitionState === 'stopped' || acquisitionState === 'stopping') {
       if (prevAcquisitionState === 'running' || prevAcquisitionState === 'initializing') {
         addMessage('info', 'DAQ', 'Acquisition stopped')
+      } else {
+        addMessage('info', 'DAQ', 'Acquisition not active')
       }
     }
     prevAcquisitionState = acquisitionState
@@ -120,82 +120,43 @@ watch(() => store.status, (status) => {
   }
 }, { deep: true })
 
-// Watch for channel alarms - only log TRANSITIONS (not initial state on page load)
-// IMPORTANT: We must wait for channel config to be loaded before tracking alarm state.
-// Otherwise, the first values arrive with alarm=false (no config), then when config loads,
-// the next update shows alarm=true, which appears as a false "transition".
-watch(() => store.values, (values) => {
-  Object.entries(values).forEach(([name, value]) => {
-    const prev = prevAlarmState.get(name)
-    const currentAlarm = !!value.alarm
-    const currentWarning = !!value.warning
+// Watch backend alarm state (from useSafety) — log new alarms and clears
+watch(() => safety.activeAlarms.value, (alarms) => {
+  // Don't show stale/retained alarms when acquisition is not running
+  if (!store.status?.acquiring) return
 
-    // Check if this channel has alarm config (limits defined)
-    // Use != null to check both undefined AND null
-    const config = store.channels[name]
-    const hasAlarmConfig = config && (
-      config.low_limit != null ||
-      config.high_limit != null ||
-      config.low_warning != null ||
-      config.high_warning != null ||
-      config.hihi_limit != null ||
-      config.lolo_limit != null ||
-      config.hi_limit != null ||
-      config.lo_limit != null
-    )
+  // Log newly appeared alarms
+  for (const alarm of alarms) {
+    if (!loggedAlarmIds.has(alarm.id)) {
+      const source = alarm.channel || alarm.name || 'Alarm'
+      loggedAlarmIds.set(alarm.id, source)
+      const severity = alarm.severity || 'alarm'
+      const msgType = severity === 'warning' ? 'warning' as const : 'error' as const
+      const value = alarm.value != null ? ` (${typeof alarm.value === 'number' ? alarm.value.toFixed(2) : alarm.value})` : ''
+      addMessage(msgType, source, `${alarm.state || 'ACTIVE'}${value}`)
+    }
+  }
 
-    if (!prev) {
-      // First observation of this channel
-      if (!hasAlarmConfig) {
-        // Channel has no alarm config yet - don't record state
-        // This prevents false transitions when config loads later
-        return
-      }
-      // Channel has config - record initial state without logging
-      prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
-      return
+  // Log cleared alarms (were logged before, no longer in active list)
+  const currentIds = new Set(alarms.map(a => a.id))
+  for (const [id, source] of loggedAlarmIds) {
+    if (!currentIds.has(id)) {
+      addMessage('success', source, 'Alarm cleared')
+      loggedAlarmIds.delete(id)
     }
-
-    // If we previously recorded state without config, but now have config,
-    // update our baseline without logging (avoid false transition)
-    if (!prev.seen && hasAlarmConfig) {
-      prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
-      return
-    }
-
-    // Skip all alarm notifications if no limits are configured
-    // This is a safeguard in case value.alarm is incorrectly set
-    if (!hasAlarmConfig) {
-      prevAlarmState.set(name, { alarm: false, warning: false, seen: true })
-      return
-    }
-
-    // Only log when transitioning TO alarm (was false, now true)
-    if (currentAlarm && !prev.alarm) {
-      addMessage('error', name, `Alarm: ${value.value.toFixed(2)} ${config?.unit || ''}`)
-    }
-    // Only log when transitioning TO warning (was false, now true, and not in alarm)
-    else if (currentWarning && !prev.warning && !currentAlarm) {
-      addMessage('warning', name, `Warning: ${value.value.toFixed(2)} ${config?.unit || ''}`)
-    }
-    // Log when alarm clears (was in alarm, now not)
-    else if (!currentAlarm && prev.alarm) {
-      addMessage('success', name, 'Alarm cleared')
-    }
-
-    // Update previous state
-    prevAlarmState.set(name, { alarm: currentAlarm, warning: currentWarning, seen: true })
-  })
+  }
 }, { deep: true })
 
-// Watch for channel config changes (new project loaded)
-// When channels change, reset our alarm tracking to avoid false transitions
-watch(() => Object.keys(store.channels).length, (newCount, oldCount) => {
-  if (newCount !== oldCount) {
-    // Channel set has changed - reset alarm state
-    // This handles project load/close without relying solely on MQTT messages
-    prevAlarmState.clear()
+// Watch interlock trip state from backend
+watch(() => safety.isTripped?.value, (tripped) => {
+  if (tripped === undefined) return
+  if (tripped && !prevTripped) {
+    const reason = safety.lastTripReason?.value || 'Interlock condition failed'
+    addMessage('error', 'Safety', `INTERLOCK TRIP: ${reason}`)
+  } else if (!tripped && prevTripped) {
+    addMessage('success', 'Safety', 'Interlock trip reset')
   }
+  prevTripped = !!tripped
 })
 
 onMounted(() => {
@@ -208,21 +169,23 @@ onMounted(() => {
     prevConnected = store.status.status === 'online'
     prevSchedulerEnabled = store.status.scheduler_enabled
   }
+  prevTripped = !!safety.isTripped?.value
 
-  // Subscribe to alarms/cleared to clear stale alarm messages
-  unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/alarms/cleared', () => {
-    // Clear all error and warning messages (alarms) from the log
-    messages.value = messages.value.filter(m => m.type !== 'error' && m.type !== 'warning')
-    // Reset alarm state tracking so new alarms can be logged
-    prevAlarmState.clear()
-    addMessage('info', 'System', 'Alarms cleared')
+  // Subscribe to backend trip events for immediate notification
+  unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/safety/trip', (payload: { reason?: string }) => {
+    addMessage('error', 'Safety', `INTERLOCK TRIP: ${payload?.reason || 'Condition failed'}`)
   }))
 
-  // Also subscribe to project/loaded to clear the log when a new project loads
+  // Subscribe to alarms/cleared signal from backend
+  unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/alarms/cleared', () => {
+    loggedAlarmIds.clear()
+    addMessage('info', 'Safety', 'Alarms cleared')
+  }))
+
+  // Clear log when a new project loads
   unsubscribeFns.push(mqtt.subscribe('nisystem/nodes/+/project/loaded', () => {
     messages.value = []
-    // Reset alarm state tracking for the new project
-    prevAlarmState.clear()
+    loggedAlarmIds.clear()
     addMessage('info', 'System', 'Project loaded')
   }))
 })
