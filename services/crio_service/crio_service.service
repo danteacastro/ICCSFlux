@@ -1,0 +1,38 @@
+[Unit]
+Description=NISystem cRIO Service
+Documentation=https://github.com/your-org/nisystem
+After=network.target mosquitto.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/nisystem
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Main service command
+ExecStart=/usr/bin/python3 /home/admin/nisystem/services/crio_service/crio_service.py -c /home/admin/nisystem/config/crio_service.ini
+
+# Restart policy - always restart on failure
+Restart=always
+RestartSec=5
+
+# Watchdog - systemd will restart if no heartbeat in 30s
+WatchdogSec=30
+
+# Graceful shutdown timeout
+TimeoutStopSec=10
+
+# Resource limits
+MemoryMax=256M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crio_service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+{
+  "last_project_path": "C:\\Users\\User\\Documents\\Projects\\NISystem\\config\\projects\\23832_Battery_Backup.json",
+  "system_mode": "standalone",
+  "security_settings": {
+    "session_lock_enabled": false,
+    "session_lock_timeout_minutes": 30,
+    "session_lock_warning_minutes": 25,
+    "max_concurrent_sessions": 0,
+    "guest_access_enabled": false,
+    "failed_login_lockout_attempts": 5,
+    "failed_login_lockout_minutes": 15,
+    "audit_integrity_check_enabled": false,
+    "audit_integrity_check_interval_hours": 24,
+    "ntp_sync_required": false,
+    "anomaly_detection_enabled": false,
+    "anomaly_command_rate_limit": 200,
+    "anomaly_failed_login_rate_limit": 10,
+    "security_summary_interval_minutes": 5,
+    "resource_limits": {
+      "max_watchdog_conditions": 100,
+      "max_sequences": 50,
+      "max_steps_per_sequence": 500,
+      "max_circular_buffer_mb": 512
+    }
+  }
+}

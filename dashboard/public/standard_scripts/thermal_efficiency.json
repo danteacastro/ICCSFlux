@@ -1,0 +1,53 @@
+{
+  "name": "Thermal Efficiency",
+  "description": "Calculates thermal efficiency from inlet/outlet temperatures and flow",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Calculations",
+  "config": {
+    "inlet_temp_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Inlet temperature"
+    },
+    "outlet_temp_tag": {
+      "type": "tag",
+      "default": "Temperature_2",
+      "description": "Outlet temperature"
+    },
+    "flow_tag": {
+      "type": "tag",
+      "default": "Flow_Rate",
+      "description": "Mass or volumetric flow rate"
+    },
+    "specific_heat": {
+      "type": "number",
+      "default": 4.186,
+      "description": "Specific heat capacity (kJ/kg-K for water)"
+    },
+    "rated_power": {
+      "type": "number",
+      "default": 10.0,
+      "description": "Rated/input power (kW) for efficiency calculation"
+    }
+  },
+  "subscribed_tags": ["${config.inlet_temp_tag}", "${config.outlet_temp_tag}", "${config.flow_tag}"],
+  "published_tags": [
+    {
+      "name": "py.Delta_T",
+      "unit": "deg",
+      "description": "Temperature difference"
+    },
+    {
+      "name": "py.Heat_Transfer",
+      "unit": "kW",
+      "description": "Q = m_dot * Cp * Delta_T"
+    },
+    {
+      "name": "py.Thermal_Efficiency",
+      "unit": "%",
+      "description": "Heat transfer / rated power * 100"
+    }
+  ],
+  "code": "# Thermal Efficiency Calculator\n# Q = m_dot * Cp * (T_out - T_in)\n# Efficiency = Q / P_rated * 100\n\nT_in = tags.get(config['inlet_temp_tag'], 20)\nT_out = tags.get(config['outlet_temp_tag'], 25)\nflow = tags.get(config['flow_tag'], 1.0)\nCp = config.get('specific_heat', 4.186)\nP_rated = config.get('rated_power', 10.0)\n\n# Temperature difference\ndelta_T = T_out - T_in\n\n# Heat transfer rate (kW)\n# Assuming flow is in kg/s, Cp in kJ/kg-K\nQ = flow * Cp * delta_T\n\n# Efficiency (%)\nif P_rated > 0:\n    efficiency = (Q / P_rated) * 100\nelse:\n    efficiency = 0\n\n# Clamp efficiency to reasonable range\nefficiency = max(0, min(100, efficiency))\n\npublish('py.Delta_T', delta_T)\npublish('py.Heat_Transfer', Q)\npublish('py.Thermal_Efficiency', efficiency)"
+}

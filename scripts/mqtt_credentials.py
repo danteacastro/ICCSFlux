@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+Auto-generate MQTT credentials for NISystem zero-config deployment.
+
+This script is called by start.bat on first run (or whenever credentials
+are missing). It generates random passwords for the 'backend' and 'dashboard'
+MQTT users, writes:
+  - config/mqtt_credentials.json  (shared credential store)
+  - config/mosquitto_passwd       (mosquitto password file, PBKDF2-SHA512)
+  - dashboard/.env.local          (Vite env vars for dashboard)
+
+Idempotent: skips if all credential files exist and are in sync.
+If the JSON exists but mosquitto_passwd is missing or stale, re-hashes
+from the JSON without generating new passwords.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import sys
+
+# Resolve paths relative to the project root (parent of scripts/)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CRED_FILE = os.path.join(PROJECT_ROOT, 'config', 'mqtt_credentials.json')
+PASSWD_FILE = os.path.join(PROJECT_ROOT, 'config', 'mosquitto_passwd')
+ENV_FILE = os.path.join(PROJECT_ROOT, 'dashboard', '.env.local')
+
+def _restrict_file_permissions(filepath: str) -> None:
+    """Restrict file to owner-only access.
+
+    On Unix: chmod 600.
+    On Windows: icacls to remove inheritance and grant only current user.
+    """
+    if os.name != 'nt':
+        os.chmod(filepath, 0o600)
+    else:
+        try:
+            import subprocess
+            username = os.environ.get('USERNAME', '')
+            if username:
+                subprocess.run(
+                    ['icacls', filepath, '/inheritance:r',
+                     '/grant:r', f'{username}:(R,W)'],
+                    capture_output=True, timeout=10
+                )
+        except Exception as e:
+            print(f"[MQTT] WARNING: Could not restrict permissions on {filepath}: {e}")
+
+def generate_password(length: int = 24) -> str:
+    """Generate a cryptographically secure random password."""
+    return secrets.token_urlsafe(length)
+
+def hash_mosquitto_password(password: str, iterations: int = 100000) -> str:
+    """
+    Generate a mosquitto-compatible PBKDF2-SHA512 password hash.
+
+    Format: $7$<iterations>$<base64(salt)>$<base64(hash)>
+
+    This matches the output of `mosquitto_passwd -b` (mosquitto 2.0+).
+    """
+    salt = os.urandom(12)
+    dk = hashlib.pbkdf2_hmac(
+        'sha512',
+        password.encode('utf-8'),
+        salt,
+        iterations,
+        dklen=64
+    )
+    salt_b64 = base64.b64encode(salt).decode('ascii')
+    hash_b64 = base64.b64encode(dk).decode('ascii')
+    return f"$7${iterations}${salt_b64}${hash_b64}"
+
+def verify_mosquitto_password(password: str, stored_hash: str) -> bool:
+    """
+    Verify a plaintext password against a stored mosquitto PBKDF2-SHA512 hash.
+
+    Parses the salt and iterations from the stored hash, re-derives the key,
+    and compares. Returns True if the password matches.
+    """
+    try:
+        # Format: $7$<iterations>$<base64(salt)>$<base64(hash)>
+        parts = stored_hash.split('$')
+        if len(parts) != 5 or parts[1] != '7':
+            return False
+        iterations = int(parts[2])
+        salt = base64.b64decode(parts[3])
+        expected_dk = base64.b64decode(parts[4])
+        actual_dk = hashlib.pbkdf2_hmac(
+            'sha512',
+            password.encode('utf-8'),
+            salt,
+            iterations,
+            dklen=64
+        )
+        return actual_dk == expected_dk
+    except Exception:
+        return False
+
+def passwd_file_matches(creds: dict, passwd_file: str = None) -> bool:
+    """
+    Check whether every user in mqtt_credentials.json has a matching hash
+    in mosquitto_passwd. Returns False if any user is missing or mismatched.
+
+    Args:
+        creds: Credentials dict (same format as mqtt_credentials.json)
+        passwd_file: Path to mosquitto_passwd (defaults to module-level PASSWD_FILE)
+    """
+    pf = passwd_file or PASSWD_FILE
+    if not os.path.exists(pf):
+        return False
+    try:
+        # Parse passwd file into {username: hash}
+        stored = {}
+        with open(pf) as f:
+            for line in f:
+                line = line.strip()
+                if ':' in line:
+                    user, hsh = line.split(':', 1)
+                    stored[user] = hsh
+
+        for user_key, user_data in creds.items():
+            username = user_data['username']
+            password = user_data['password']
+            if username not in stored:
+                return False
+            if not verify_mosquitto_password(password, stored[username]):
+                return False
+        return True
+    except Exception:
+        return False
+
+def write_mosquitto_passwd(users: dict, passwd_file: str = None) -> None:
+    """Write mosquitto password file with hashed credentials.
+
+    Args:
+        users: Dict of {username: plaintext_password}
+        passwd_file: Path to write (defaults to module-level PASSWD_FILE)
+    """
+    pf = passwd_file or PASSWD_FILE
+    lines = []
+    for username, password in users.items():
+        hashed = hash_mosquitto_password(password)
+        lines.append(f"{username}:{hashed}")
+
+    with open(pf, 'w', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    _restrict_file_permissions(pf)
+
+def write_dashboard_env(username: str, password: str) -> None:
+    """Write dashboard .env.local with MQTT credentials."""
+    content = (
+        "# Auto-generated by scripts/mqtt_credentials.py\n"
+        "# Do not edit — regenerate by deleting config/mqtt_credentials.json and restarting\n"
+        f"VITE_MQTT_USERNAME={username}\n"
+        f"VITE_MQTT_PASSWORD={password}\n"
+    )
+    with open(ENV_FILE, 'w') as f:
+        f.write(content)
+
+def ensure_passwd_file(creds: dict) -> None:
+    """Regenerate mosquitto_passwd and dashboard .env.local from existing credentials JSON."""
+    backend_pass = creds['backend']['password']
+    dashboard_pass = creds['dashboard']['password']
+
+    write_mosquitto_passwd({
+        'backend': backend_pass,
+        'dashboard': dashboard_pass,
+    })
+    print(f"[MQTT]   Password file synced: {PASSWD_FILE}")
+
+    write_dashboard_env('dashboard', dashboard_pass)
+    print(f"[MQTT]   Dashboard env synced: {ENV_FILE}")
+
+def main() -> int:
+    # If credentials JSON exists, verify passwd file actually matches.
+    # This catches: passwd deleted, passwd corrupted, passwd from old passwords,
+    # or any other desync between the plaintext JSON and the hashed passwd file.
+    if os.path.exists(CRED_FILE):
+        with open(CRED_FILE) as f:
+            creds = json.load(f)
+
+        if passwd_file_matches(creds):
+            print(f"[MQTT] Credentials verified OK: {CRED_FILE}")
+            return 0
+
+        # Determine reason for re-sync (for logging)
+        if not os.path.exists(PASSWD_FILE):
+            reason = "password file missing"
+        else:
+            reason = "password hashes do not match credentials"
+
+        print(f"[MQTT] Credentials exist but {reason} — syncing...")
+        ensure_passwd_file(creds)
+        print("[MQTT] Credentials synced successfully.")
+        return 0
+
+    # First run: generate everything from scratch
+    print("[MQTT] Generating MQTT credentials (first-run setup)...")
+
+    backend_pass = generate_password()
+    dashboard_pass = generate_password()
+
+    creds = {
+        'backend': {'username': 'backend', 'password': backend_pass},
+        'dashboard': {'username': 'dashboard', 'password': dashboard_pass},
+    }
+
+    # 1. Write credential store (JSON) — source of truth
+    os.makedirs(os.path.dirname(CRED_FILE), exist_ok=True)
+    with open(CRED_FILE, 'w') as f:
+        json.dump(creds, f, indent=2)
+    _restrict_file_permissions(CRED_FILE)
+    print(f"[MQTT]   Credentials saved: {CRED_FILE}")
+
+    # 2. Write derived files (passwd + dashboard env)
+    ensure_passwd_file(creds)
+
+    print("[MQTT] Credentials generated successfully.")
+    print("[MQTT] To regenerate: delete config/mqtt_credentials.json and restart.")
+    return 0
+
+def export_peer_bridge_config(peer_ip: str) -> str:
+    """
+    Generate a Mosquitto bridge config snippet for dual-PC redundancy.
+
+    Reads the 'backend' password from mqtt_credentials.json and returns
+    a ready-to-paste bridge config block pointing at this PC's broker.
+    """
+    if not os.path.exists(CRED_FILE):
+        return "ERROR: No credentials found. Run the system once to generate them."
+
+    with open(CRED_FILE) as f:
+        creds = json.load(f)
+
+    backend_pass = creds['backend']['password']
+
+    return (
+        f"# Peer bridge config — paste into the OTHER PC's mosquitto.conf\n"
+        f"# Generated by scripts/mqtt_credentials.py\n"
+        f"connection peer-bridge\n"
+        f"address {peer_ip}:8883\n"
+        f"topic # both 2\n"
+        f"bridge_cafile config/tls/ca.crt\n"
+        f"bridge_certfile config/tls/server.crt\n"
+        f"bridge_keyfile config/tls/server.key\n"
+        f"remote_username backend\n"
+        f"remote_password {backend_pass}\n"
+        f"cleansession true\n"
+        f"start_type automatic\n"
+        f"restart_timeout 5\n"
+        f"notifications true\n"
+        f"notification_topic nisystem/bridge/status\n"
+    )
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,96 @@
+{
+  "name": "Batch Recipe",
+  "description": "Run a batch recipe with steps that wait for conditions before advancing",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Control Sequences",
+  "config": {
+    "recipe": {
+      "type": "array",
+      "default": [
+        {
+          "step": 1,
+          "name": "Fill Tank",
+          "actions": [{"output": "Valve_Inlet", "value": true}],
+          "wait_for": {"tag": "Level_Sensor", "operator": ">=", "value": 80},
+          "timeout": 300
+        },
+        {
+          "step": 2,
+          "name": "Heat to Temperature",
+          "actions": [{"output": "Valve_Inlet", "value": false}, {"output": "Heater_Enable", "value": true}],
+          "wait_for": {"tag": "Temperature_1", "operator": ">=", "value": 65},
+          "timeout": 600
+        },
+        {
+          "step": 3,
+          "name": "Hold Temperature",
+          "actions": [],
+          "wait_for": {"type": "timer", "duration": 120},
+          "timeout": 0
+        },
+        {
+          "step": 4,
+          "name": "Cool Down",
+          "actions": [{"output": "Heater_Enable", "value": false}, {"output": "Cooling_Enable", "value": true}],
+          "wait_for": {"tag": "Temperature_1", "operator": "<=", "value": 30},
+          "timeout": 900
+        },
+        {
+          "step": 5,
+          "name": "Drain",
+          "actions": [{"output": "Cooling_Enable", "value": false}, {"output": "Valve_Outlet", "value": true}],
+          "wait_for": {"tag": "Level_Sensor", "operator": "<=", "value": 5},
+          "timeout": 300
+        },
+        {
+          "step": 6,
+          "name": "Complete",
+          "actions": [{"output": "Valve_Outlet", "value": false}],
+          "wait_for": {"type": "timer", "duration": 5},
+          "timeout": 0
+        }
+      ],
+      "description": "Recipe steps with actions and wait conditions"
+    },
+    "auto_start": {
+      "type": "boolean",
+      "default": false,
+      "description": "Start recipe automatically"
+    }
+  },
+  "subscribed_tags": [],
+  "published_tags": [
+    {
+      "name": "py.Recipe_Running",
+      "unit": "",
+      "description": "1 if recipe is running"
+    },
+    {
+      "name": "py.Recipe_Step",
+      "unit": "",
+      "description": "Current step number"
+    },
+    {
+      "name": "py.Recipe_StepName",
+      "unit": "",
+      "description": "Current step name"
+    },
+    {
+      "name": "py.Recipe_Progress",
+      "unit": "%",
+      "description": "Overall progress percentage"
+    },
+    {
+      "name": "py.Recipe_StepTime",
+      "unit": "sec",
+      "description": "Time in current step"
+    },
+    {
+      "name": "py.Recipe_Status",
+      "unit": "",
+      "description": "0=Idle, 1=Running, 2=Complete, 3=Timeout, 4=Aborted"
+    }
+  ],
+  "code": "# Batch Recipe Controller\n# Runs through recipe steps, waiting for conditions before advancing\n# Control: publish to py.Recipe_Command (start/stop/pause/resume/abort)\n\nimport time\n\nrecipe = config.get('recipe', [])\nauto_start = config.get('auto_start', False)\n\n# Status codes\nSTATUS_IDLE = 0\nSTATUS_RUNNING = 1\nSTATUS_COMPLETE = 2\nSTATUS_TIMEOUT = 3\nSTATUS_ABORTED = 4\n\n# Initialize state\nif 'initialized' not in state:\n    state['initialized'] = True\n    state['running'] = auto_start\n    state['paused'] = False\n    state['current_step'] = 0\n    state['step_start_time'] = time.time()\n    state['actions_executed'] = False\n    state['status'] = STATUS_RUNNING if auto_start else STATUS_IDLE\n\n# Check for commands\ncmd = tags.get('py.Recipe_Command', '')\nif cmd == 'start' and state['status'] in [STATUS_IDLE, STATUS_COMPLETE, STATUS_TIMEOUT, STATUS_ABORTED]:\n    state['running'] = True\n    state['paused'] = False\n    state['current_step'] = 0\n    state['step_start_time'] = time.time()\n    state['actions_executed'] = False\n    state['status'] = STATUS_RUNNING\nelif cmd == 'stop' or cmd == 'abort':\n    state['running'] = False\n    state['status'] = STATUS_ABORTED\nelif cmd == 'pause':\n    state['paused'] = True\nelif cmd == 'resume':\n    state['paused'] = False\n\nif not state['running'] or state['paused']:\n    publish('py.Recipe_Running', 0)\n    publish('py.Recipe_Step', state['current_step'])\n    publish('py.Recipe_StepName', 'Paused' if state['paused'] else 'Stopped')\n    publish('py.Recipe_Progress', (state['current_step'] / len(recipe)) * 100 if recipe else 0)\n    publish('py.Recipe_StepTime', 0)\n    publish('py.Recipe_Status', state['status'])\nelse:\n    if state['current_step'] >= len(recipe):\n        # Recipe complete\n        state['running'] = False\n        state['status'] = STATUS_COMPLETE\n        publish('py.Recipe_Running', 0)\n        publish('py.Recipe_Step', len(recipe))\n        publish('py.Recipe_StepName', 'Complete')\n        publish('py.Recipe_Progress', 100)\n        publish('py.Recipe_StepTime', 0)\n        publish('py.Recipe_Status', STATUS_COMPLETE)\n    else:\n        current = recipe[state['current_step']]\n        step_time = time.time() - state['step_start_time']\n        \n        # Execute step actions (on entry)\n        if not state['actions_executed']:\n            for action in current.get('actions', []):\n                output_tag = action.get('output', '')\n                output_value = action.get('value', False)\n                if output_tag:\n                    output(output_tag, output_value)\n            state['actions_executed'] = True\n        \n        # Check wait condition\n        wait_for = current.get('wait_for', {})\n        condition_met = False\n        \n        if wait_for.get('type') == 'timer':\n            # Timer-based wait\n            duration = wait_for.get('duration', 10)\n            condition_met = step_time >= duration\n        else:\n            # Tag condition wait\n            cond_tag = wait_for.get('tag', '')\n            operator = wait_for.get('operator', '>=')\n            cond_value = wait_for.get('value', 0)\n            \n            if cond_tag:\n                current_value = tags.get(cond_tag, 0)\n                operators = {\n                    '<': lambda a, b: a < b,\n                    '<=': lambda a, b: a <= b,\n                    '>': lambda a, b: a > b,\n                    '>=': lambda a, b: a >= b,\n                    '==': lambda a, b: a == b,\n                    '!=': lambda a, b: a != b\n                }\n                op_func = operators.get(operator, operators['>='])\n                condition_met = op_func(current_value, cond_value)\n        \n        # Check timeout\n        timeout = current.get('timeout', 0)\n        if timeout > 0 and step_time >= timeout and not condition_met:\n            state['running'] = False\n            state['status'] = STATUS_TIMEOUT\n        elif condition_met:\n            # Advance to next step\n            state['current_step'] += 1\n            state['step_start_time'] = time.time()\n            state['actions_executed'] = False\n        \n        progress = (state['current_step'] / len(recipe)) * 100\n        \n        publish('py.Recipe_Running', 1)\n        publish('py.Recipe_Step', current.get('step', state['current_step'] + 1))\n        publish('py.Recipe_StepName', current.get('name', f'Step {state[\"current_step\"] + 1}'))\n        publish('py.Recipe_Progress', progress)\n        publish('py.Recipe_StepTime', step_time)\n        publish('py.Recipe_Status', state['status'])"
+}

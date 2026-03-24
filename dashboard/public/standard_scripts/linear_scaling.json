@@ -1,0 +1,53 @@
+{
+  "name": "Linear Scaling",
+  "description": "Scales raw values to engineering units using linear interpolation",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "AI_0",
+      "description": "Raw input tag"
+    },
+    "raw_min": {
+      "type": "number",
+      "default": 0,
+      "description": "Raw value at minimum (e.g., 4mA = 0)"
+    },
+    "raw_max": {
+      "type": "number",
+      "default": 10,
+      "description": "Raw value at maximum (e.g., 20mA = 10)"
+    },
+    "eng_min": {
+      "type": "number",
+      "default": 0,
+      "description": "Engineering value at minimum"
+    },
+    "eng_max": {
+      "type": "number",
+      "default": 100,
+      "description": "Engineering value at maximum"
+    },
+    "clamp_output": {
+      "type": "boolean",
+      "default": true,
+      "description": "Clamp output to eng_min/eng_max range"
+    },
+    "output_name": {
+      "type": "string",
+      "default": "",
+      "description": "Custom output tag name"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Scaled",
+      "unit": "engineering units",
+      "description": "Scaled value in engineering units"
+    }
+  ],
+  "code": "# Linear Scaling\n# Converts raw values to engineering units\n# Formula: eng = eng_min + (raw - raw_min) * (eng_max - eng_min) / (raw_max - raw_min)\n\ninput_tag = config.get('input_tag', 'AI_0')\nraw_min = config.get('raw_min', 0)\nraw_max = config.get('raw_max', 10)\neng_min = config.get('eng_min', 0)\neng_max = config.get('eng_max', 100)\nclamp = config.get('clamp_output', True)\noutput_name = config.get('output_name', '')\n\nraw = tags.get(input_tag, 0)\n\n# Avoid division by zero\nraw_range = raw_max - raw_min\nif raw_range == 0:\n    scaled = eng_min\nelse:\n    # Linear interpolation\n    scaled = eng_min + (raw - raw_min) * (eng_max - eng_min) / raw_range\n\n# Clamp if requested\nif clamp:\n    scaled = max(eng_min, min(eng_max, scaled))\n\n# Determine output name\nif output_name:\n    tag_name = f'py.{output_name}'\nelse:\n    tag_name = f'py.{input_tag}_Scaled'\n\npublish(tag_name, scaled)"
+}

@@ -1,0 +1,30 @@
+{
+  "name": "Moving Average Filter",
+  "description": "Smooths noisy sensor data using a configurable window moving average",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "window_size": {
+      "type": "number",
+      "default": 10,
+      "min": 2,
+      "max": 100,
+      "description": "Number of samples to average"
+    },
+    "input_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Tag to filter"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_Filtered",
+      "unit": "same as input",
+      "description": "Moving average of input"
+    }
+  ],
+  "code": "# Moving Average Filter\n# Smooths noisy sensor data\n\nwindow_size = config.get('window_size', 10)\ninput_tag = config.get('input_tag', 'Temperature_1')\n\n# Get current value\ncurrent = tags.get(input_tag, 0)\n\n# Initialize history buffer if needed\nif 'buffer' not in state:\n    state['buffer'] = []\n\n# Add to buffer\nstate['buffer'].append(current)\n\n# Keep only window_size samples\nif len(state['buffer']) > window_size:\n    state['buffer'] = state['buffer'][-window_size:]\n\n# Calculate average\nfiltered = sum(state['buffer']) / len(state['buffer'])\n\n# Publish result\npublish(f'py.{input_tag}_Filtered', filtered)"
+}

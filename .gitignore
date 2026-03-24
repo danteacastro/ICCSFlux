@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node/Dashboard
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+*.env
+
+# Data files (keep structure but not data)
+data/*.csv
+data/*.csv.sha256
+data/*.json
+data/*.jsonl
+data/*.parquet
+data/*.tdms
+data/*.txt
+data/audit/*.jsonl
+!data/.gitkeep
+
+# Logs
+logs/*.log
+logs/*.txt
+logs/*.csv
+logs/*.tdms
+logs/*.sha256
+logs/historian/
+!logs/.gitkeep
+
+# Service logs and recordings
+services/daq_service/logs/*.csv
+services/daq_service/logs/*.log
+services/daq_service/logs/*.tdms
+services/daq_service/logs/*.sha256
+!services/daq_service/logs/.gitkeep
+services/daq_service/data/audit/*.jsonl
+
+# Pytest cache
+.pytest_cache/
+
+# Config backups (auto-generated)
+config/projects/backups/
+config/projects/backups/*.json
+config/projects/backups/backup.log
+!config/projects/backups/manifest.json
+
+# Windows artifacts
+nul
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Syncthing
+.stignore
+*.sync-conflict-*
+.syncthing.*
+
+# Credentials and secrets
+*credentials*.json
+*_secret*
+*.pem
+*.key
+mosquitto_passwd
+**/users.json
+.env.production
+
+# TLS certificates (auto-generated per machine)
+config/tls/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# Build audit reports (auto-generated per build)
+audit_reports/
+
+# Open-source exclusions
+.claude/
+audit_reports/

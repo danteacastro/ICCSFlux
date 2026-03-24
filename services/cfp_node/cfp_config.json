@@ -1,0 +1,120 @@
+{
+  "config_version": "2.0",
+  "node_id": "cfp-001",
+  "device_name": "cFP1",
+  "cfp_host": "192.168.1.30",
+  "cfp_port": 502,
+  "slave_id": 1,
+  "mqtt_broker": "192.168.1.100",
+  "mqtt_port": 8883,
+  "mqtt_username": null,
+  "mqtt_password": null,
+  "mqtt_base_topic": "nisystem",
+  "tls_enabled": true,
+  "tls_ca_cert": null,
+  "scan_rate_hz": 1.0,
+  "publish_rate_hz": 1.0,
+  "heartbeat_interval_s": 5.0,
+  "modules": [
+    {
+      "slot": 1,
+      "module_type": "cFP-AI-110",
+      "base_address": 0,
+      "channels": [
+        {
+          "name": "AI01",
+          "address": 0,
+          "register_type": "input",
+          "data_type": "int16",
+          "slave_id": 1,
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": false,
+          "alarm_enabled": false
+        },
+        {
+          "name": "AI02",
+          "address": 1,
+          "register_type": "input",
+          "data_type": "int16",
+          "slave_id": 1,
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": false,
+          "alarm_enabled": false
+        }
+      ]
+    },
+    {
+      "slot": 2,
+      "module_type": "cFP-AO-210",
+      "base_address": 100,
+      "channels": [
+        {
+          "name": "AO01",
+          "address": 100,
+          "register_type": "holding",
+          "data_type": "int16",
+          "slave_id": 1,
+          "scale": 0.00305,
+          "offset": 0,
+          "unit": "V",
+          "writable": true,
+          "alarm_enabled": false
+        }
+      ]
+    },
+    {
+      "slot": 3,
+      "module_type": "cFP-DI-330",
+      "base_address": 200,
+      "channels": [
+        {
+          "name": "DI01",
+          "address": 200,
+          "register_type": "discrete",
+          "data_type": "bool",
+          "slave_id": 1,
+          "writable": false,
+          "alarm_enabled": false
+        },
+        {
+          "name": "DI02",
+          "address": 201,
+          "register_type": "discrete",
+          "data_type": "bool",
+          "slave_id": 1,
+          "writable": false,
+          "alarm_enabled": false
+        }
+      ]
+    },
+    {
+      "slot": 4,
+      "module_type": "cFP-DO-403",
+      "base_address": 300,
+      "channels": [
+        {
+          "name": "DO01",
+          "address": 300,
+          "register_type": "coil",
+          "data_type": "bool",
+          "slave_id": 1,
+          "writable": true,
+          "alarm_enabled": false
+        },
+        {
+          "name": "DO02",
+          "address": 301,
+          "register_type": "coil",
+          "data_type": "bool",
+          "slave_id": 1,
+          "writable": true,
+          "alarm_enabled": false
+        }
+      ]
+    }
+  ]
+}

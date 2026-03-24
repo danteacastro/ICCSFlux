@@ -1,0 +1,579 @@
+{
+  "name": "GTI H2-Ready Boiler Demo",
+  "version": "1.0",
+  "pages": [
+    {
+      "id": "overview",
+      "name": "Overview",
+      "widgets": [
+        {
+          "id": "title-main",
+          "type": "title",
+          "x": 0, "y": 0, "w": 8, "h": 1,
+          "config": {
+            "label": "GTI Energy - H2-Ready Boiler Combustion Research",
+            "fontSize": "large",
+            "align": "left"
+          }
+        },
+        {
+          "id": "clock-1",
+          "type": "clock",
+          "x": 8, "y": 0, "w": 2, "h": 1,
+          "config": { "showDate": true, "showElapsed": true }
+        },
+        {
+          "id": "sys-status",
+          "type": "system_status",
+          "x": 10, "y": 0, "w": 2, "h": 2,
+          "config": {}
+        },
+        {
+          "id": "title-combustion",
+          "type": "title",
+          "x": 0, "y": 1, "w": 3, "h": 1,
+          "config": { "label": "COMBUSTION ZONE", "fontSize": "medium" }
+        },
+        {
+          "id": "gauge-comb1",
+          "type": "gauge",
+          "x": 0, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "TC_Combustion_1",
+            "label": "Zone 1",
+            "min": 0, "max": 2000,
+            "unit": "°F",
+            "thresholds": [
+              { "value": 1600, "color": "#fbbf24" },
+              { "value": 1800, "color": "#ef4444" }
+            ]
+          }
+        },
+        {
+          "id": "gauge-comb2",
+          "type": "gauge",
+          "x": 2, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "TC_Combustion_2",
+            "label": "Zone 2",
+            "min": 0, "max": 2000,
+            "unit": "°F"
+          }
+        },
+        {
+          "id": "gauge-comb3",
+          "type": "gauge",
+          "x": 4, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "TC_Combustion_3",
+            "label": "Zone 3",
+            "min": 0, "max": 2000,
+            "unit": "°F"
+          }
+        },
+        {
+          "id": "title-firing",
+          "type": "title",
+          "x": 6, "y": 1, "w": 2, "h": 1,
+          "config": { "label": "FIRING", "fontSize": "medium" }
+        },
+        {
+          "id": "gauge-firing",
+          "type": "gauge",
+          "x": 6, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "Burner_Firing_Rate",
+            "label": "Firing Rate",
+            "min": 0, "max": 100,
+            "unit": "%"
+          }
+        },
+        {
+          "id": "gauge-h2blend",
+          "type": "gauge",
+          "x": 8, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "H2_Blend_Setpoint",
+            "label": "H2 Blend",
+            "min": 0, "max": 30,
+            "unit": "%",
+            "color": "#22d3ee"
+          }
+        },
+        {
+          "id": "title-emissions",
+          "type": "title",
+          "x": 0, "y": 4, "w": 3, "h": 1,
+          "config": { "label": "EMISSIONS", "fontSize": "medium" }
+        },
+        {
+          "id": "num-o2",
+          "type": "numeric",
+          "x": 0, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "O2_Flue", "label": "O2", "precision": 1 }
+        },
+        {
+          "id": "num-co",
+          "type": "numeric",
+          "x": 1, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "CO_Flue", "label": "CO", "precision": 0 }
+        },
+        {
+          "id": "num-co2",
+          "type": "numeric",
+          "x": 2, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "CO2_Flue", "label": "CO2", "precision": 1 }
+        },
+        {
+          "id": "num-nox",
+          "type": "numeric",
+          "x": 3, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "NOx_Flue", "label": "NOx", "precision": 0 }
+        },
+        {
+          "id": "chart-emissions",
+          "type": "chart",
+          "x": 0, "y": 6, "w": 6, "h": 3,
+          "config": {
+            "channels": ["O2_Flue", "CO_Flue", "NOx_Flue"],
+            "title": "Emissions Trend",
+            "timeRange": 300
+          }
+        },
+        {
+          "id": "title-water",
+          "type": "title",
+          "x": 6, "y": 4, "w": 3, "h": 1,
+          "config": { "label": "WATER LOOP", "fontSize": "medium" }
+        },
+        {
+          "id": "num-water-in",
+          "type": "numeric",
+          "x": 6, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "RTD_Water_Supply", "label": "Supply", "precision": 1 }
+        },
+        {
+          "id": "num-water-out",
+          "type": "numeric",
+          "x": 7, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "RTD_Water_Return", "label": "Return", "precision": 1 }
+        },
+        {
+          "id": "num-water-flow",
+          "type": "numeric",
+          "x": 8, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "FT_Water", "label": "Flow", "precision": 1 }
+        },
+        {
+          "id": "chart-temps",
+          "type": "chart",
+          "x": 6, "y": 6, "w": 6, "h": 3,
+          "config": {
+            "channels": ["TC_Combustion_1", "TC_Flue_1", "RTD_Water_Return"],
+            "title": "Temperature Trend",
+            "timeRange": 300
+          }
+        },
+        {
+          "id": "title-safety",
+          "type": "title",
+          "x": 10, "y": 2, "w": 2, "h": 1,
+          "config": { "label": "SAFETY", "fontSize": "medium" }
+        },
+        {
+          "id": "led-flame",
+          "type": "led",
+          "x": 10, "y": 3, "w": 1, "h": 1,
+          "config": { "channel": "Flame_Detected", "label": "Flame", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-hilim",
+          "type": "led",
+          "x": 11, "y": 3, "w": 1, "h": 1,
+          "config": { "channel": "High_Limit_OK", "label": "Hi Limit", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-lowater",
+          "type": "led",
+          "x": 10, "y": 4, "w": 1, "h": 1,
+          "config": { "channel": "Low_Water_OK", "label": "Water", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-estop",
+          "type": "led",
+          "x": 11, "y": 4, "w": 1, "h": 1,
+          "config": { "channel": "E_Stop_OK", "label": "E-Stop", "onColor": "#22c55e" }
+        },
+        {
+          "id": "num-h2det1",
+          "type": "numeric",
+          "x": 10, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "H2_Ambient_1", "label": "H2 Det 1", "precision": 0 }
+        },
+        {
+          "id": "num-h2det2",
+          "type": "numeric",
+          "x": 11, "y": 5, "w": 1, "h": 1,
+          "config": { "channel": "H2_Ambient_2", "label": "H2 Det 2", "precision": 0 }
+        },
+        {
+          "id": "alarm-summary",
+          "type": "alarm_summary",
+          "x": 10, "y": 6, "w": 2, "h": 3,
+          "config": { "maxItems": 5 }
+        }
+      ]
+    },
+    {
+      "id": "combustion",
+      "name": "Combustion",
+      "widgets": [
+        {
+          "id": "title-comb",
+          "type": "title",
+          "x": 0, "y": 0, "w": 6, "h": 1,
+          "config": { "label": "Combustion Analysis", "fontSize": "large" }
+        },
+        {
+          "id": "value-table-temps",
+          "type": "value_table",
+          "x": 0, "y": 1, "w": 4, "h": 5,
+          "config": {
+            "title": "Temperature Measurements",
+            "channels": [
+              "TC_Combustion_1", "TC_Combustion_2", "TC_Combustion_3",
+              "TC_Flue_1", "TC_Flue_2", "TC_HX_In", "TC_HX_Out",
+              "TC_Burner_Tip", "RTD_Combustion_Air"
+            ]
+          }
+        },
+        {
+          "id": "chart-combustion",
+          "type": "chart",
+          "x": 4, "y": 1, "w": 8, "h": 4,
+          "config": {
+            "channels": ["TC_Combustion_1", "TC_Combustion_2", "TC_Combustion_3"],
+            "title": "Combustion Zone Temperatures",
+            "timeRange": 600
+          }
+        },
+        {
+          "id": "title-fuel",
+          "type": "title",
+          "x": 0, "y": 6, "w": 3, "h": 1,
+          "config": { "label": "FUEL SYSTEM", "fontSize": "medium" }
+        },
+        {
+          "id": "bar-ng-flow",
+          "type": "bar_graph",
+          "x": 0, "y": 7, "w": 3, "h": 1,
+          "config": { "channel": "FT_NG", "label": "NG Flow", "max": 2000 }
+        },
+        {
+          "id": "bar-h2-flow",
+          "type": "bar_graph",
+          "x": 0, "y": 8, "w": 3, "h": 1,
+          "config": { "channel": "FT_H2", "label": "H2 Flow", "max": 1000, "color": "#22d3ee" }
+        },
+        {
+          "id": "bar-air-flow",
+          "type": "bar_graph",
+          "x": 3, "y": 7, "w": 3, "h": 1,
+          "config": { "channel": "FT_Air", "label": "Air Flow", "max": 500 }
+        },
+        {
+          "id": "chart-fuel",
+          "type": "chart",
+          "x": 6, "y": 5, "w": 6, "h": 4,
+          "config": {
+            "channels": ["FT_NG", "FT_H2", "FT_Air"],
+            "title": "Fuel & Air Flow",
+            "timeRange": 600
+          }
+        }
+      ]
+    },
+    {
+      "id": "emissions",
+      "name": "Emissions",
+      "widgets": [
+        {
+          "id": "title-em",
+          "type": "title",
+          "x": 0, "y": 0, "w": 6, "h": 1,
+          "config": { "label": "Emissions Monitoring - EPA Compliance", "fontSize": "large" }
+        },
+        {
+          "id": "gauge-o2",
+          "type": "gauge",
+          "x": 0, "y": 1, "w": 2, "h": 2,
+          "config": {
+            "channel": "O2_Flue",
+            "label": "O2",
+            "min": 0, "max": 21,
+            "unit": "%",
+            "thresholds": [
+              { "value": 2, "color": "#ef4444" },
+              { "value": 10, "color": "#fbbf24" }
+            ]
+          }
+        },
+        {
+          "id": "gauge-co",
+          "type": "gauge",
+          "x": 2, "y": 1, "w": 2, "h": 2,
+          "config": {
+            "channel": "CO_Flue",
+            "label": "CO",
+            "min": 0, "max": 1000,
+            "unit": "ppm",
+            "thresholds": [
+              { "value": 400, "color": "#fbbf24" },
+              { "value": 800, "color": "#ef4444" }
+            ]
+          }
+        },
+        {
+          "id": "gauge-nox",
+          "type": "gauge",
+          "x": 4, "y": 1, "w": 2, "h": 2,
+          "config": {
+            "channel": "NOx_Flue",
+            "label": "NOx",
+            "min": 0, "max": 200,
+            "unit": "ppm",
+            "thresholds": [
+              { "value": 100, "color": "#fbbf24" },
+              { "value": 200, "color": "#ef4444" }
+            ]
+          }
+        },
+        {
+          "id": "gauge-co2",
+          "type": "gauge",
+          "x": 6, "y": 1, "w": 2, "h": 2,
+          "config": {
+            "channel": "CO2_Flue",
+            "label": "CO2",
+            "min": 0, "max": 15,
+            "unit": "%"
+          }
+        },
+        {
+          "id": "chart-em-main",
+          "type": "chart",
+          "x": 0, "y": 3, "w": 8, "h": 4,
+          "config": {
+            "channels": ["CO_Flue", "NOx_Flue"],
+            "title": "CO & NOx Emissions",
+            "timeRange": 900
+          }
+        },
+        {
+          "id": "chart-o2-co2",
+          "type": "chart",
+          "x": 8, "y": 1, "w": 4, "h": 3,
+          "config": {
+            "channels": ["O2_Flue", "CO2_Flue"],
+            "title": "O2 & CO2",
+            "timeRange": 600
+          }
+        },
+        {
+          "id": "script-monitor",
+          "type": "script_monitor",
+          "x": 8, "y": 4, "w": 4, "h": 5,
+          "config": {
+            "title": "Calculated Values",
+            "filter": "py.*"
+          }
+        },
+        {
+          "id": "title-h2-impact",
+          "type": "title",
+          "x": 0, "y": 7, "w": 4, "h": 1,
+          "config": { "label": "H2 Blending Impact on NOx", "fontSize": "medium" }
+        },
+        {
+          "id": "chart-h2-nox",
+          "type": "chart",
+          "x": 0, "y": 8, "w": 8, "h": 3,
+          "config": {
+            "channels": ["H2_Blend_Setpoint", "NOx_Flue"],
+            "title": "H2 Blend vs NOx Emissions",
+            "timeRange": 1800
+          }
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "name": "Safety",
+      "widgets": [
+        {
+          "id": "title-safety-main",
+          "type": "title",
+          "x": 0, "y": 0, "w": 6, "h": 1,
+          "config": { "label": "Safety Systems & Interlocks", "fontSize": "large" }
+        },
+        {
+          "id": "interlock-status",
+          "type": "interlock_status",
+          "x": 0, "y": 1, "w": 4, "h": 4,
+          "config": {}
+        },
+        {
+          "id": "title-h2-safety",
+          "type": "title",
+          "x": 4, "y": 1, "w": 3, "h": 1,
+          "config": { "label": "H2 LEAK DETECTION", "fontSize": "medium" }
+        },
+        {
+          "id": "gauge-h2-1",
+          "type": "gauge",
+          "x": 4, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "H2_Ambient_1",
+            "label": "Burner Area",
+            "min": 0, "max": 100,
+            "unit": "% LEL",
+            "thresholds": [
+              { "value": 10, "color": "#fbbf24" },
+              { "value": 25, "color": "#ef4444" }
+            ]
+          }
+        },
+        {
+          "id": "gauge-h2-2",
+          "type": "gauge",
+          "x": 6, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "H2_Ambient_2",
+            "label": "Supply Area",
+            "min": 0, "max": 100,
+            "unit": "% LEL",
+            "thresholds": [
+              { "value": 10, "color": "#fbbf24" },
+              { "value": 25, "color": "#ef4444" }
+            ]
+          }
+        },
+        {
+          "id": "title-flame",
+          "type": "title",
+          "x": 8, "y": 1, "w": 2, "h": 1,
+          "config": { "label": "FLAME", "fontSize": "medium" }
+        },
+        {
+          "id": "gauge-flame",
+          "type": "gauge",
+          "x": 8, "y": 2, "w": 2, "h": 2,
+          "config": {
+            "channel": "Flame_Signal",
+            "label": "UV Signal",
+            "min": 0, "max": 100,
+            "unit": "%",
+            "thresholds": [
+              { "value": 20, "color": "#ef4444" },
+              { "value": 50, "color": "#fbbf24" }
+            ]
+          }
+        },
+        {
+          "id": "led-flame-det",
+          "type": "led",
+          "x": 10, "y": 2, "w": 1, "h": 1,
+          "config": { "channel": "Flame_Detected", "label": "Detected", "onColor": "#22c55e" }
+        },
+        {
+          "id": "title-status",
+          "type": "title",
+          "x": 0, "y": 5, "w": 3, "h": 1,
+          "config": { "label": "SAFETY SWITCHES", "fontSize": "medium" }
+        },
+        {
+          "id": "led-hilim",
+          "type": "led",
+          "x": 0, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "High_Limit_OK", "label": "Hi Limit", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-lowater",
+          "type": "led",
+          "x": 1, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Low_Water_OK", "label": "Lo Water", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-gas-ok",
+          "type": "led",
+          "x": 2, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Gas_Pressure_OK", "label": "Gas Press", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-air-ok",
+          "type": "led",
+          "x": 3, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Airflow_OK", "label": "Airflow", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-estop",
+          "type": "led",
+          "x": 4, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "E_Stop_OK", "label": "E-Stop", "onColor": "#22c55e" }
+        },
+        {
+          "id": "led-door",
+          "type": "led",
+          "x": 5, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Door_Interlock_OK", "label": "Door", "onColor": "#22c55e" }
+        },
+        {
+          "id": "title-valves",
+          "type": "title",
+          "x": 6, "y": 5, "w": 3, "h": 1,
+          "config": { "label": "VALVE STATUS", "fontSize": "medium" }
+        },
+        {
+          "id": "led-pilot",
+          "type": "led",
+          "x": 6, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Pilot_Valve", "label": "Pilot", "onColor": "#60a5fa" }
+        },
+        {
+          "id": "led-main",
+          "type": "led",
+          "x": 7, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Main_Gas_Valve", "label": "Main NG", "onColor": "#60a5fa" }
+        },
+        {
+          "id": "led-h2",
+          "type": "led",
+          "x": 8, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "H2_Shutoff_Valve", "label": "H2 Valve", "onColor": "#22d3ee" }
+        },
+        {
+          "id": "led-blower",
+          "type": "led",
+          "x": 9, "y": 6, "w": 1, "h": 1,
+          "config": { "channel": "Blower_Start", "label": "Blower", "onColor": "#60a5fa" }
+        },
+        {
+          "id": "alarm-list",
+          "type": "alarm_summary",
+          "x": 0, "y": 7, "w": 6, "h": 4,
+          "config": { "maxItems": 10, "title": "Active Alarms" }
+        },
+        {
+          "id": "chart-safety",
+          "type": "chart",
+          "x": 6, "y": 7, "w": 6, "h": 4,
+          "config": {
+            "channels": ["Flame_Signal", "H2_Ambient_1", "H2_Ambient_2"],
+            "title": "Safety Sensor Trends",
+            "timeRange": 600
+          }
+        }
+      ]
+    }
+  ]
+}

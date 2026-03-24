@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: Backend Tests (Python)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run unit tests
+        run: |
+          python -m pytest -v --tb=short `
+            tests/test_daq_orchestration.py `
+            tests/test_longevity.py `
+            tests/test_security_and_resilience.py `
+            tests/test_crio_script_engine_unit.py `
+            tests/test_recording_manager.py `
+            tests/test_session_and_recording.py `
+            tests/test_script_helpers.py `
+            tests/test_safety_manager.py `
+            tests/test_safety_interlocks.py `
+            tests/test_hot_unplug_resilience.py `
+            tests/test_discovery_extras.py `
+            tests/test_crio_discovery_e2e.py `
+            tests/test_scaling.py `
+            tests/test_user_session.py `
+            tests/test_user_variables.py `
+            tests/test_pid_engine.py `
+            tests/test_sequence_manager.py `
+            tests/test_trigger_engine.py `
+            tests/test_audit_trail.py `
+            tests/test_scheduler.py `
+            tests/test_project_manager.py `
+            tests/test_archive_manager.py `
+            tests/test_dependency_tracker.py `
+            tests/test_backup_logger.py `
+            tests/test_watchdog_engine.py `
+            tests/test_counter.py `
+            tests/test_helpers.py `
+            tests/test_gc_analysis.py `
+            tests/test_gc_node_orchestration.py `
+            tests/test_gc_scheduler.py `
+            tests/test_gc_qc.py `
+            tests/test_calibration_manager.py
+
+  dashboard-tests:
+    name: Dashboard Tests (Vue/TypeScript)
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test:run
+
+      - name: Build dashboard
+        run: npm run build
+
+  build-portable:
+    name: Build Portable Package
+    runs-on: windows-latest
+    needs: [backend-tests, dashboard-tests]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install dashboard dependencies
+        run: npm ci
+        working-directory: dashboard
+
+      - name: Build dashboard
+        run: npm run build
+        working-directory: dashboard
+
+      - name: Download vendor dependencies
+        run: python scripts/download_dependencies.py
+
+      - name: Build portable package
+        run: python scripts/build_portable.py --offline
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ICCSFlux-Portable
+          path: dist/ICCSFlux-Portable/
+          retention-days: 30

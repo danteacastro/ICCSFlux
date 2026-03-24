@@ -1,0 +1,55 @@
+{
+  "name": "High Temperature Alarm Test",
+  "description": "Verify that injecting a high temperature triggers the alarm and clearing it resolves the alarm.",
+  "project": "config/projects/Boiler_Simulation_Debug.json",
+  "setup": {
+    "simulationMode": true
+  },
+  "steps": [
+    {
+      "action": "start_acquisition",
+      "timeout": 10
+    },
+    {
+      "action": "wait",
+      "seconds": 2
+    },
+    {
+      "action": "inject_value",
+      "channel": "TT_101",
+      "value": 950
+    },
+    {
+      "action": "wait",
+      "seconds": 1
+    },
+    {
+      "action": "assert_value",
+      "channel": "TT_101",
+      "operator": ">",
+      "value": 900,
+      "timeout": 5
+    },
+    {
+      "action": "inject_value",
+      "channel": "TT_101",
+      "value": 400
+    },
+    {
+      "action": "wait",
+      "seconds": 3
+    },
+    {
+      "action": "assert_value",
+      "channel": "TT_101",
+      "operator": "<",
+      "value": 500,
+      "timeout": 5
+    },
+    {
+      "action": "stop_acquisition",
+      "timeout": 10
+    }
+  ],
+  "timeout": 30
+}

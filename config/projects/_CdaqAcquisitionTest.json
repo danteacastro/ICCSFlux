@@ -1,0 +1,47 @@
+{
+  "type": "nisystem-project",
+  "version": "2.0",
+  "name": "cDAQ Acquisition Test",
+  "created": "2026-03-05T00:00:00",
+  "modified": "2026-03-05T00:00:00",
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 4,
+    "publish_rate_hz": 4,
+    "simulation_mode": false,
+    "log_directory": "./logs",
+    "system_name": "cDAQ Acquisition Test",
+    "system_id": "CDAQ-ACQ-TEST-001",
+    "device_name": "cDAQ1"
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "AI_ch00": { "name": "AI_ch00", "physical_channel": "cDAQ1Mod1/ai0", "channel_type": "voltage_input", "unit": "V", "group": "Mod1_AI", "visible": true, "log": true },
+    "AI_ch01": { "name": "AI_ch01", "physical_channel": "cDAQ1Mod1/ai1", "channel_type": "voltage_input", "unit": "V", "group": "Mod1_AI", "visible": true, "log": true },
+    "AI_ch02": { "name": "AI_ch02", "physical_channel": "cDAQ1Mod1/ai2", "channel_type": "voltage_input", "unit": "V", "group": "Mod1_AI", "visible": true, "log": true },
+    "AI_ch03": { "name": "AI_ch03", "physical_channel": "cDAQ1Mod1/ai3", "channel_type": "voltage_input", "unit": "V", "group": "Mod1_AI", "visible": true, "log": true },
+    "DI_ch00": { "name": "DI_ch00", "physical_channel": "cDAQ1Mod3/port0/line0", "channel_type": "digital_input", "unit": "", "group": "Mod3_DI", "visible": true, "log": true },
+    "DI_ch01": { "name": "DI_ch01", "physical_channel": "cDAQ1Mod3/port0/line1", "channel_type": "digital_input", "unit": "", "group": "Mod3_DI", "visible": true, "log": true },
+    "TC_ch00": { "name": "TC_ch00", "physical_channel": "cDAQ1Mod5/ai0", "channel_type": "thermocouple", "thermocouple_type": "K", "unit": "degC", "group": "Mod5_TC", "visible": true, "log": true },
+    "TC_ch01": { "name": "TC_ch01", "physical_channel": "cDAQ1Mod5/ai1", "channel_type": "thermocouple", "thermocouple_type": "K", "unit": "degC", "group": "Mod5_TC", "visible": true, "log": true },
+    "CI_ch00": { "name": "CI_ch00", "physical_channel": "cDAQ1Mod7/ai0", "channel_type": "current_input", "unit": "mA", "group": "Mod7_CI", "visible": true, "log": true },
+    "CI_ch01": { "name": "CI_ch01", "physical_channel": "cDAQ1Mod7/ai1", "channel_type": "current_input", "unit": "mA", "group": "Mod7_CI", "visible": true, "log": true }
+  },
+  "alarms": {},
+  "interlocks": [],
+  "pythonScripts": {},
+  "calculatedParams": [],
+  "sequences": [],
+  "triggers": [],
+  "pidLoops": [],
+  "userVariables": [],
+  "pages": [],
+  "widgets": []
+}

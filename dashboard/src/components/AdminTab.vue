@@ -1,0 +1,2114 @@
+<template>
+  <div class="admin-tab">
+    <!-- Access Denied for guests/operators -->
+    <div v-if="!canAccessAdminTab" class="access-denied">
+      <div class="denied-icon">🔒</div>
+      <h2>Access Restricted</h2>
+      <p>Supervisor or Administrator privileges are required to access this section.</p>
+      <p class="current-role" v-if="currentUser">
+        Your current role: <strong>{{ currentUser.role }}</strong>
+      </p>
+    </div>
+
+    <!-- Admin Panel -->
+    <div v-else class="admin-content">
+      <!-- Section Navigation -->
+      <div class="section-nav">
+        <button
+          v-for="section in sections"
+          :key="section.id"
+          :class="['section-btn', { active: activeSection === section.id }]"
+          @click="activeSection = section.id"
+        >
+          <span class="section-icon">{{ section.icon }}</span>
+          {{ section.label }}
+        </button>
+      </div>
+
+      <!-- Stations Section -->
+      <div v-if="activeSection === 'stations'" class="section-panel">
+        <div class="panel-header">
+          <h3>Station Management</h3>
+          <span class="header-badge">{{ stationList.length }} / 3 stations</span>
+        </div>
+
+        <!-- Running Stations -->
+        <div v-if="stationList.length > 0" class="station-list">
+          <div v-for="station in stationList" :key="station.nodeId" class="station-card">
+            <div class="station-card-header">
+              <div>
+                <span class="station-name">{{ station.nodeName || station.nodeId }}</span>
+                <span class="station-badge" :class="station.status">{{ station.status }}</span>
+              </div>
+              <div class="station-actions">
+                <button class="btn-sm btn-primary" @click="openStationDashboard(station.nodeId)">Open Dashboard</button>
+                <button class="btn-sm btn-danger" @click="stopStation(station.nodeId)">Stop</button>
+              </div>
+            </div>
+            <div class="station-card-details">
+              <span>Project: <strong>{{ station.project }}</strong></span>
+              <span>Node ID: <code>{{ station.nodeId }}</code></span>
+              <span>Channels: {{ station.channels?.length || 0 }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          <p>No stations running. Create one below to run multiple projects on this chassis.</p>
+        </div>
+
+        <!-- Create Station -->
+        <div v-if="stationList.length < 3" class="create-station-form">
+          <h4>New Station</h4>
+          <div class="form-row">
+            <label>Project</label>
+            <select v-model="newStationProject">
+              <option value="">Select a project...</option>
+              <option v-for="p in availableProjects" :key="p" :value="p">{{ p }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Station Name</label>
+            <input v-model="newStationName" placeholder="e.g. Station A" />
+          </div>
+          <button
+            class="btn-primary"
+            :disabled="!newStationProject || stationCreating"
+            @click="createStation"
+          >
+            {{ stationCreating ? 'Creating...' : 'Create Station' }}
+          </button>
+          <p v-if="stationMessage" class="station-message">{{ stationMessage }}</p>
+        </div>
+
+        <div class="station-info-hint">
+          <p>Each station runs its own DAQ service process with isolated recording, alarms, and scripts. Open a station's dashboard in a new window for the full standalone experience.</p>
+        </div>
+      </div>
+
+      <!-- Nodes Section -->
+      <div v-if="activeSection === 'nodes'" class="section-panel">
+        <NodeManagerPanel />
+      </div>
+
+      <!-- User Management Section -->
+      <div v-if="activeSection === 'users'" class="section-panel">
+        <div class="panel-header">
+          <h3>User Management</h3>
+          <button class="btn-primary" @click="showCreateUserDialog = true">
+            + Add User
+          </button>
+        </div>
+
+        <div class="users-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Display Name</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Last Login</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="isLoadingUsers">
+                <td colspan="6" class="loading-row">
+                  <span class="spinner-small"></span> Loading users...
+                </td>
+              </tr>
+              <tr v-else-if="users.length === 0">
+                <td colspan="6" class="empty-row">No users found</td>
+              </tr>
+              <tr v-for="user in users" :key="user.username">
+                <td class="username-cell">
+                  <span class="user-avatar">{{ user.username.charAt(0).toUpperCase() }}</span>
+                  {{ user.username }}
+                </td>
+                <td>{{ user.display_name || '-' }}</td>
+                <td>
+                  <span :class="['role-badge', `role-${user.role}`]">
+                    {{ user.role }}
+                  </span>
+                </td>
+                <td>
+                  <span :class="['status-badge', user.enabled ? 'enabled' : 'disabled']">
+                    {{ user.enabled ? 'Active' : 'Disabled' }}
+                  </span>
+                </td>
+                <td>{{ formatDate(user.last_login) }}</td>
+                <td class="actions-cell">
+                  <button class="btn-icon" @click="editUser(user)" title="Edit">✏️</button>
+                  <button
+                    class="btn-icon btn-danger"
+                    @click="confirmDeleteUser(user)"
+                    title="Delete"
+                    :disabled="user.username === currentUser?.username"
+                  >🗑️</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Audit Trail Section -->
+      <div v-if="activeSection === 'audit'" class="section-panel">
+        <div class="panel-header">
+          <h3>Audit Trail</h3>
+          <div class="header-actions">
+            <button class="btn-secondary" @click="refreshAuditEvents">
+              🔄 Refresh
+            </button>
+            <button class="btn-secondary" @click="exportAudit">
+              📥 Export
+            </button>
+          </div>
+        </div>
+
+        <!-- Audit Filters -->
+        <div class="audit-filters">
+          <div class="filter-group">
+            <label>Event Type</label>
+            <select v-model="auditFilters.eventType">
+              <option value="">All Events</option>
+              <option value="login">Login</option>
+              <option value="logout">Logout</option>
+              <option value="config_change">Config Change</option>
+              <option value="recording_start">Recording Start</option>
+              <option value="recording_stop">Recording Stop</option>
+              <option value="alarm">Alarm</option>
+              <option value="user_create">User Created</option>
+              <option value="user_update">User Updated</option>
+              <option value="user_delete">User Deleted</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Username</label>
+            <input v-model="auditFilters.username" placeholder="Filter by user..." />
+          </div>
+          <div class="filter-group">
+            <label>From</label>
+            <input type="datetime-local" v-model="auditFilters.startTime" />
+          </div>
+          <div class="filter-group">
+            <label>To</label>
+            <input type="datetime-local" v-model="auditFilters.endTime" />
+          </div>
+          <button class="btn-primary" @click="applyAuditFilters">Apply</button>
+        </div>
+
+        <div class="audit-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Event Type</th>
+                <th>User</th>
+                <th>Details</th>
+                <th>Checksum</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="isLoadingAudit">
+                <td colspan="5" class="loading-row">
+                  <span class="spinner-small"></span> Loading audit events...
+                </td>
+              </tr>
+              <tr v-else-if="auditEvents.length === 0">
+                <td colspan="5" class="empty-row">No audit events found</td>
+              </tr>
+              <tr v-for="event in auditEvents" :key="event.event_id">
+                <td class="timestamp-cell">{{ formatTimestamp(event.timestamp) }}</td>
+                <td>
+                  <span :class="['event-badge', `event-${event.event_type}`]">
+                    {{ formatEventType(event.event_type) }}
+                  </span>
+                </td>
+                <td>{{ event.username || 'System' }}</td>
+                <td class="details-cell">
+                  <span class="details-preview" @click="showEventDetails(event)">
+                    {{ formatDetails(event.details) }}
+                  </span>
+                </td>
+                <td class="checksum-cell">
+                  <code>{{ event.checksum.substring(0, 8) }}...</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Archive Management Section -->
+      <div v-if="activeSection === 'archives'" class="section-panel">
+        <div class="panel-header">
+          <h3>Data Archives</h3>
+          <div class="header-actions">
+            <button class="btn-secondary" @click="refreshArchives">
+              🔄 Refresh
+            </button>
+          </div>
+        </div>
+
+        <div class="archive-info">
+          <div class="info-card">
+            <span class="info-icon">📦</span>
+            <div class="info-content">
+              <span class="info-value">{{ archives.length }}</span>
+              <span class="info-label">Total Archives</span>
+            </div>
+          </div>
+          <div class="info-card">
+            <span class="info-icon">💾</span>
+            <div class="info-content">
+              <span class="info-value">{{ formatTotalSize() }}</span>
+              <span class="info-label">Total Size</span>
+            </div>
+          </div>
+          <div class="info-card">
+            <span class="info-icon">📅</span>
+            <div class="info-content">
+              <span class="info-value">10 Years</span>
+              <span class="info-label">Retention Period</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="archives-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Archive ID</th>
+                <th>Original File</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Archived</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="isLoadingArchives">
+                <td colspan="6" class="loading-row">
+                  <span class="spinner-small"></span> Loading archives...
+                </td>
+              </tr>
+              <tr v-else-if="archives.length === 0">
+                <td colspan="6" class="empty-row">No archives found</td>
+              </tr>
+              <tr v-for="archive in archives" :key="archive.archive_id">
+                <td class="id-cell">
+                  <code>{{ archive.archive_id.substring(0, 8) }}...</code>
+                </td>
+                <td>{{ archive.original_filename }}</td>
+                <td>
+                  <span class="type-badge">{{ archive.content_type }}</span>
+                </td>
+                <td>{{ formatBytes(archive.size_bytes) }}</td>
+                <td>{{ formatDate(archive.archived_at) }}</td>
+                <td class="actions-cell">
+                  <button class="btn-icon" @click="verifyArchiveIntegrity(archive)" title="Verify">✅</button>
+                  <button class="btn-icon" @click="downloadArchive(archive)" title="Download">📥</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Settings Section -->
+      <div v-if="activeSection === 'settings'" class="section-panel">
+        <div class="panel-header">
+          <h3>Broker Connection</h3>
+        </div>
+
+        <div class="settings-form">
+          <div class="form-group">
+            <label>Broker URL</label>
+            <input
+              v-model="brokerUrlInput"
+              type="text"
+              placeholder="ws://localhost:9002"
+              spellcheck="false"
+              class="mono-input"
+            />
+            <span class="form-hint">Local: ws://localhost:9002 | Remote: ws://192.168.1.x:9003</span>
+          </div>
+
+          <template v-if="isBrokerRemote">
+            <div class="form-group">
+              <label>Username</label>
+              <input
+                v-model="brokerUsernameInput"
+                type="text"
+                placeholder="dashboard"
+                autocomplete="username"
+              />
+            </div>
+            <div class="form-group">
+              <label>Password</label>
+              <input
+                v-model="brokerPasswordInput"
+                type="password"
+                placeholder="From mqtt_credentials.json on target PC"
+                autocomplete="current-password"
+              />
+            </div>
+            <div class="broker-remote-notice">
+              Remote connections use port 9003 (authenticated WebSocket).
+              Get credentials from the target PC's config/mqtt_credentials.json.
+            </div>
+          </template>
+
+          <div v-if="brokerTestMessage" class="broker-test-result" :class="brokerTestStatus">
+            {{ brokerTestMessage }}
+          </div>
+
+          <div class="broker-actions">
+            <button class="btn-secondary" @click="resetBrokerToLocal">Reset to Local</button>
+            <div class="broker-actions-right">
+              <button
+                class="btn-secondary"
+                @click="testBrokerConnection"
+                :disabled="brokerTestStatus === 'testing'"
+              >
+                {{ brokerTestStatus === 'testing' ? 'Testing...' : 'Test Connection' }}
+              </button>
+              <button class="btn-primary" @click="applyBrokerAndConnect">Connect</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Security Section -->
+      <div v-if="activeSection === 'security'" class="section-panel">
+        <div class="panel-header">
+          <h3>Security Settings</h3>
+          <span class="header-badge">Security Compliance</span>
+        </div>
+        <p class="security-desc">
+          Enable Security Compliance / Security Compliance compliance features. All features are disabled by default.
+          Changes are saved immediately and persist across restarts.
+        </p>
+
+        <!-- Session Lock -->
+        <div class="security-group">
+          <h4>Session Lock</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.session_lock_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Lock session after inactivity
+            </label>
+            <span class="toggle-desc">UI locks after timeout. Backend processes (acquisition, recording, safety) continue uninterrupted.</span>
+          </div>
+          <div v-if="securitySettings.session_lock_enabled" class="security-sub">
+            <div class="form-row-inline">
+              <label>Lock timeout</label>
+              <input type="number" v-model.number="securitySettings.session_lock_timeout_minutes" min="5" max="120" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Warning before lock</label>
+              <input type="number" v-model.number="securitySettings.session_lock_warning_minutes" min="1" :max="securitySettings.session_lock_timeout_minutes - 1" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Guest Access -->
+        <div class="security-group">
+          <h4>Access Control</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.guest_access_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Allow guest access (read-only, no login required)
+            </label>
+            <span class="toggle-desc">When disabled, users must log in to see any data. Required for NIST AC.L2-3.1.22.</span>
+          </div>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" :checked="securitySettings.max_concurrent_sessions > 0" @change="toggleSessionLimit" />
+              <span class="toggle-switch"></span>
+              Limit concurrent sessions
+            </label>
+            <span class="toggle-desc">Prevents unbounded session creation. Required for NIST CM.L2-3.4.7.</span>
+          </div>
+          <div v-if="securitySettings.max_concurrent_sessions > 0" class="security-sub">
+            <div class="form-row-inline">
+              <label>Max sessions</label>
+              <input type="number" v-model.number="securitySettings.max_concurrent_sessions" min="1" max="50" @change="saveSecuritySettings" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Audit & Integrity -->
+        <div class="security-group">
+          <h4>Audit & Integrity</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.audit_integrity_check_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Periodic audit trail integrity verification
+            </label>
+            <span class="toggle-desc">Verifies SHA-256 hash chain daily. Alerts on tampering. Required for NIST AU.L2-3.3.3.</span>
+          </div>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.ntp_sync_required" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Require NTP time synchronization
+            </label>
+            <span class="toggle-desc">Warns if system clock is not NTP-synced. Required for NIST AU.L2-3.3.7.</span>
+          </div>
+        </div>
+
+        <!-- Anomaly Detection -->
+        <div class="security-group">
+          <h4>Anomaly Detection</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.anomaly_detection_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              MQTT anomaly detection and security monitoring
+            </label>
+            <span class="toggle-desc">Detects command floods, brute-force login attempts, and unknown topics. Required for NIST SC.L2-3.13.1 / SI.L2-3.14.6.</span>
+          </div>
+          <div v-if="securitySettings.anomaly_detection_enabled" class="security-sub">
+            <div class="form-row-inline">
+              <label>Command rate limit</label>
+              <input type="number" v-model.number="securitySettings.anomaly_command_rate_limit" min="50" max="1000" @change="saveSecuritySettings" />
+              <span>per minute</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Failed login limit</label>
+              <input type="number" v-model.number="securitySettings.anomaly_failed_login_rate_limit" min="3" max="50" @change="saveSecuritySettings" />
+              <span>per minute</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Security summary interval</label>
+              <input type="number" v-model.number="securitySettings.security_summary_interval_minutes" min="1" max="60" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- NIST Preset -->
+        <div class="security-actions">
+          <button class="btn-secondary" @click="resetSecurityDefaults">Reset to Defaults (all off)</button>
+          <button class="btn-primary" @click="enableNistPreset">Enable All</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create/Edit User Dialog -->
+    <Teleport to="body">
+      <div v-if="showCreateUserDialog || editingUser" class="modal-overlay" @click.self="closeUserDialog">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h3>{{ editingUser ? 'Edit User' : 'Create New User' }}</h3>
+            <button class="btn-close" @click="closeUserDialog">&times;</button>
+          </div>
+          <form @submit.prevent="saveUser" class="modal-body">
+            <div class="form-group">
+              <label>Username *</label>
+              <input
+                v-model="userForm.username"
+                type="text"
+                :disabled="!!editingUser"
+                placeholder="Enter username"
+                required
+              />
+            </div>
+            <div class="form-group">
+              <label>{{ editingUser ? 'New Password (leave blank to keep)' : 'Password *' }}</label>
+              <input
+                v-model="userForm.password"
+                type="password"
+                :placeholder="editingUser ? 'Leave blank to keep current' : 'Enter password'"
+                :required="!editingUser"
+              />
+            </div>
+            <div class="form-group">
+              <label>Display Name</label>
+              <input
+                v-model="userForm.display_name"
+                type="text"
+                placeholder="Enter display name"
+              />
+            </div>
+            <div class="form-group">
+              <label>Email</label>
+              <input
+                v-model="userForm.email"
+                type="email"
+                placeholder="Enter email address"
+              />
+            </div>
+            <div class="form-group">
+              <label>Role *</label>
+              <select v-model="userForm.role" required>
+                <option value="guest">Guest - Read-only monitoring</option>
+                <option value="operator">Operator - Day-to-day operations, alarms</option>
+                <option value="supervisor">Supervisor - Configuration, projects, audit</option>
+                <option value="admin">Admin - Full access, user management</option>
+              </select>
+            </div>
+            <div v-if="editingUser" class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" v-model="userForm.enabled" />
+                Account Enabled
+              </label>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-cancel" @click="closeUserDialog">Cancel</button>
+              <button type="submit" class="btn-primary">
+                {{ editingUser ? 'Update User' : 'Create User' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Event Details Dialog -->
+    <Teleport to="body">
+      <div v-if="selectedEvent" class="modal-overlay" @click.self="selectedEvent = null">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h3>Event Details</h3>
+            <button class="btn-close" @click="selectedEvent = null">&times;</button>
+          </div>
+          <div class="modal-body event-details">
+            <div class="detail-row">
+              <span class="detail-label">Event ID:</span>
+              <code>{{ selectedEvent.event_id }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Timestamp:</span>
+              <span>{{ formatTimestamp(selectedEvent.timestamp) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Event Type:</span>
+              <span :class="['event-badge', `event-${selectedEvent.event_type}`]">
+                {{ formatEventType(selectedEvent.event_type) }}
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">User:</span>
+              <span>{{ selectedEvent.username || 'System' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Checksum:</span>
+              <code class="full-checksum">{{ selectedEvent.checksum }}</code>
+            </div>
+            <div class="detail-section">
+              <span class="detail-label">Details:</span>
+              <pre class="details-json">{{ JSON.stringify(selectedEvent.details, null, 2) }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Delete Confirmation Dialog -->
+    <Teleport to="body">
+      <div v-if="userToDelete" class="modal-overlay" @click.self="userToDelete = null">
+        <div class="modal-dialog modal-confirm">
+          <div class="modal-header">
+            <h3>Confirm Delete</h3>
+          </div>
+          <div class="modal-body">
+            <p class="confirm-message">
+              Are you sure you want to delete user <strong>{{ userToDelete.username }}</strong>?
+            </p>
+            <p class="confirm-warning">This action cannot be undone.</p>
+          </div>
+          <div class="modal-actions">
+            <button class="btn-cancel" @click="userToDelete = null">Cancel</button>
+            <button class="btn-danger" @click="performDeleteUser">Delete User</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../composables/useAuth'
+import { useBrokerConfig } from '../composables/useBrokerConfig'
+import { useMqtt } from '../composables/useMqtt'
+import mqtt from 'mqtt'
+import NodeManagerPanel from './NodeManagerPanel.vue'
+
+const {
+  currentUser,
+  isAdmin,
+  isSupervisor,
+  users,
+  isLoadingUsers,
+  auditEvents,
+  isLoadingAudit,
+  archives,
+  isLoadingArchives,
+  listUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  queryAuditEvents,
+  exportAuditEvents,
+  listArchives,
+  verifyArchive,
+  retrieveArchive,
+  reloadSecuritySettings
+} = useAuth()
+
+// Supervisors can view audit/archives, admins can manage users
+const canAccessAdminTab = computed(() => isSupervisor.value)
+const canManageUsers = computed(() => isAdmin.value)
+
+// Section navigation - filtered by permissions
+const allSections = [
+  { id: 'stations', icon: '🏭', label: 'Stations', requiresAdmin: false },
+  { id: 'nodes', icon: '🖥️', label: 'Nodes', requiresAdmin: false },
+  { id: 'users', icon: '👥', label: 'Users', requiresAdmin: true },
+  { id: 'audit', icon: '📋', label: 'Audit Trail', requiresAdmin: false },
+  { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false },
+  { id: 'settings', icon: '⚙️', label: 'Settings', requiresAdmin: false },
+  { id: 'security', icon: '🛡️', label: 'Security', requiresAdmin: true },
+]
+const sections = computed(() =>
+  allSections.filter(s => !s.requiresAdmin || canManageUsers.value)
+)
+const activeSection = ref('stations')
+
+// User management state
+const showCreateUserDialog = ref(false)
+const editingUser = ref<User | null>(null)
+const userToDelete = ref<User | null>(null)
+const userForm = ref({
+  username: '',
+  password: '',
+  display_name: '',
+  email: '',
+  role: 'operator',
+  enabled: true
+})
+
+// Audit filters
+const auditFilters = ref({
+  eventType: '',
+  username: '',
+  startTime: '',
+  endTime: ''
+})
+
+// Selected event for details view
+const selectedEvent = ref<AuditEvent | null>(null)
+
+// ============================================================================
+// BROKER CONNECTION
+// ============================================================================
+
+const brokerConfig = useBrokerConfig()
+const mqttClient = useMqtt()
+
+const brokerUrlInput = ref(brokerConfig.brokerUrl.value)
+const brokerUsernameInput = ref(brokerConfig.brokerUsername.value)
+const brokerPasswordInput = ref(brokerConfig.brokerPassword.value)
+const brokerTestStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
+const brokerTestMessage = ref('')
+
+const isBrokerRemote = computed(() => {
+  try {
+    const parsed = new URL(brokerUrlInput.value)
+    const host = parsed.hostname
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1'
+  } catch {
+    return false
+  }
+})
+
+async function testBrokerConnection() {
+  brokerTestStatus.value = 'testing'
+  brokerTestMessage.value = 'Connecting...'
+
+  const options: mqtt.IClientOptions = {
+    clientId: `nisystem-test-${Math.random().toString(16).slice(2, 8)}`,
+    clean: true,
+    connectTimeout: 5000,
+    reconnectPeriod: 0,
+  }
+
+  if (brokerUsernameInput.value && brokerPasswordInput.value) {
+    options.username = brokerUsernameInput.value
+    options.password = brokerPasswordInput.value
+  }
+
+  try {
+    const client = mqtt.connect(brokerUrlInput.value, options)
+
+    const result = await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        client.end(true)
+        resolve(false)
+      }, 5000)
+
+      client.on('connect', () => {
+        clearTimeout(timeout)
+        client.end()
+        resolve(true)
+      })
+
+      client.on('error', () => {
+        clearTimeout(timeout)
+        client.end(true)
+        resolve(false)
+      })
+    })
+
+    if (result) {
+      brokerTestStatus.value = 'success'
+      brokerTestMessage.value = 'Connection successful'
+    } else {
+      brokerTestStatus.value = 'error'
+      brokerTestMessage.value = 'Connection failed — check URL and credentials'
+    }
+  } catch {
+    brokerTestStatus.value = 'error'
+    brokerTestMessage.value = 'Connection failed — invalid URL'
+  }
+}
+
+function applyBrokerAndConnect() {
+  brokerConfig.setBrokerUrl(brokerUrlInput.value)
+  if (isBrokerRemote.value) {
+    brokerConfig.setBrokerCredentials(brokerUsernameInput.value, brokerPasswordInput.value)
+  } else {
+    brokerConfig.setBrokerCredentials('', '')
+  }
+  mqttClient.disconnect()
+  setTimeout(() => {
+    mqttClient.connect(
+      brokerConfig.brokerUrl.value,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+    )
+  }, 100)
+}
+
+function resetBrokerToLocal() {
+  brokerConfig.resetToLocal()
+  brokerUrlInput.value = brokerConfig.DEFAULT_URL
+  brokerUsernameInput.value = ''
+  brokerPasswordInput.value = ''
+  mqttClient.disconnect()
+  setTimeout(() => {
+    mqttClient.connect(brokerConfig.DEFAULT_URL)
+  }, 100)
+}
+
+// ============================================================================
+// STATION MANAGEMENT
+// ============================================================================
+
+const stationRegistry = computed(() => mqttClient.stationRegistry?.value || {})
+const stationList = computed(() => Object.values(stationRegistry.value))
+
+// New station form
+const newStationProject = ref('')
+const newStationName = ref('')
+const stationCreating = ref(false)
+const stationMessage = ref('')
+let stationCleanup: (() => void) | null = null
+
+// Available projects (from project list topic)
+const availableProjects = ref<string[]>([])
+let projectListCleanup: (() => void) | null = null
+
+function subscribeStationTopics() {
+  // Listen for station command responses
+  stationCleanup = mqttClient.subscribe('nisystem/station/response', (payload: any) => {
+    stationCreating.value = false
+    stationMessage.value = payload.message || ''
+    setTimeout(() => { stationMessage.value = '' }, 5000)
+  }) as any
+
+  // Listen for project list
+  projectListCleanup = mqttClient.subscribe('nisystem/nodes/+/project/list', (payload: any) => {
+    if (Array.isArray(payload)) {
+      availableProjects.value = payload.map((p: any) => typeof p === 'string' ? p : p.filename || p.name || '')
+        .filter((n: string) => n)
+    } else if (payload?.projects) {
+      availableProjects.value = payload.projects.map((p: any) => typeof p === 'string' ? p : p.filename || p.name || '')
+        .filter((n: string) => n)
+    }
+  }) as any
+
+  // Request project list
+  mqttClient.sendNodeCommand('project/list', {})
+}
+
+function createStation() {
+  if (!newStationProject.value || stationCreating.value) return
+  stationCreating.value = true
+  stationMessage.value = 'Creating station...'
+
+  const payload: Record<string, string> = {
+    project: newStationProject.value,
+    name: newStationName.value || `Station ${stationList.value.length + 1}`,
+  }
+
+  mqttClient.sendNodeCommand('station/create', payload, '__broadcast__')
+  // The station/create topic is not node-scoped, publish directly
+  if (mqttClient.connected?.value) {
+    const client = (mqttClient as any).client?.value
+    if (client) {
+      client.publish('nisystem/station/create', JSON.stringify(payload), { qos: 1 })
+    }
+  }
+
+  setTimeout(() => {
+    if (stationCreating.value) {
+      stationCreating.value = false
+      stationMessage.value = 'Timeout — no response from station manager'
+    }
+  }, 10000)
+}
+
+function stopStation(stationId: string) {
+  if (!confirm(`Stop station '${stationId}'? Its DAQ service will be terminated.`)) return
+  const client = (mqttClient as any).client?.value
+  if (client) {
+    client.publish('nisystem/station/stop', JSON.stringify({ station_id: stationId }), { qos: 1 })
+  }
+}
+
+function openStationDashboard(nodeId: string) {
+  const url = `${window.location.origin}${window.location.pathname}?node=${nodeId}`
+  window.open(url, `station_${nodeId}`)
+}
+
+// ============================================================================
+// LIFECYCLE
+// ============================================================================
+
+onMounted(() => {
+  if (canAccessAdminTab.value) {
+    if (canManageUsers.value) {
+      listUsers()
+    }
+    queryAuditEvents({ limit: 100 })
+    listArchives()
+    subscribeStationTopics()
+  }
+})
+
+onUnmounted(() => {
+  if (stationCleanup) stationCleanup()
+  if (projectListCleanup) projectListCleanup()
+})
+
+// ============================================================================
+// USER MANAGEMENT
+// ============================================================================
+
+function editUser(user: User) {
+  editingUser.value = user
+  userForm.value = {
+    username: user.username,
+    password: '',
+    display_name: user.display_name || '',
+    email: user.email || '',
+    role: user.role,
+    enabled: user.enabled
+  }
+}
+
+const isDeletingUser = ref(false)
+let deleteTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+// Reset delete guard when user list refreshes (backend confirmed the mutation)
+watch(users, () => {
+  if (isDeletingUser.value) {
+    isDeletingUser.value = false
+    if (deleteTimeoutId) { clearTimeout(deleteTimeoutId); deleteTimeoutId = null }
+  }
+})
+
+function confirmDeleteUser(user: User) {
+  if (isDeletingUser.value) return
+  userToDelete.value = user
+}
+
+function performDeleteUser() {
+  if (isDeletingUser.value) return
+  if (userToDelete.value) {
+    isDeletingUser.value = true
+    const username = userToDelete.value.username
+    userToDelete.value = null
+    deleteUser(username)
+    // Fallback timeout in case response never arrives
+    deleteTimeoutId = setTimeout(() => { isDeletingUser.value = false; deleteTimeoutId = null }, 10000)
+  }
+}
+
+function closeUserDialog() {
+  showCreateUserDialog.value = false
+  editingUser.value = null
+  userForm.value = {
+    username: '',
+    password: '',
+    display_name: '',
+    email: '',
+    role: 'operator',
+    enabled: true
+  }
+}
+
+function saveUser() {
+  if (editingUser.value) {
+    // Update existing user
+    const updates: Record<string, any> = {
+      role: userForm.value.role,
+      display_name: userForm.value.display_name || undefined,
+      email: userForm.value.email || undefined,
+      enabled: userForm.value.enabled
+    }
+    if (userForm.value.password) {
+      updates.password = userForm.value.password
+    }
+    updateUser(editingUser.value.username, updates)
+  } else {
+    // Create new user
+    createUser({
+      username: userForm.value.username,
+      password: userForm.value.password,
+      role: userForm.value.role,
+      display_name: userForm.value.display_name || undefined,
+      email: userForm.value.email || undefined
+    })
+  }
+  closeUserDialog()
+}
+
+// ============================================================================
+// AUDIT TRAIL
+// ============================================================================
+
+function refreshAuditEvents() {
+  queryAuditEvents({ limit: 100 })
+}
+
+function applyAuditFilters() {
+  const options: Record<string, any> = { limit: 100 }
+  if (auditFilters.value.eventType) {
+    options.event_types = [auditFilters.value.eventType]
+  }
+  if (auditFilters.value.username) {
+    options.username = auditFilters.value.username
+  }
+  if (auditFilters.value.startTime) {
+    options.start_time = new Date(auditFilters.value.startTime).toISOString()
+  }
+  if (auditFilters.value.endTime) {
+    options.end_time = new Date(auditFilters.value.endTime).toISOString()
+  }
+  queryAuditEvents(options)
+}
+
+function exportAudit() {
+  exportAuditEvents({ format: 'csv' })
+}
+
+function showEventDetails(event: AuditEvent) {
+  selectedEvent.value = event
+}
+
+// ============================================================================
+// ARCHIVES
+// ============================================================================
+
+function refreshArchives() {
+  listArchives()
+}
+
+function verifyArchiveIntegrity(archive: ArchiveEntry) {
+  verifyArchive(archive.archive_id)
+}
+
+function downloadArchive(archive: ArchiveEntry) {
+  retrieveArchive(archive.archive_id)
+}
+
+function formatTotalSize(): string {
+  const total = archives.value.reduce((sum, a) => sum + a.size_bytes, 0)
+  return formatBytes(total)
+}
+
+// ============================================================================
+// FORMATTERS
+// ============================================================================
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return 'Never'
+  const date = new Date(dateStr)
+  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(timestamp)
+  return date.toLocaleString()
+}
+
+function formatEventType(type: string): string {
+  return type.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+function formatDetails(details: Record<string, any>): string {
+  const keys = Object.keys(details)
+  if (keys.length === 0) return '-'
+  if (keys.length <= 2) {
+    return keys.map(k => `${k}: ${details[k]}`).join(', ')
+  }
+  return `${keys.length} fields - click to view`
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+// ============================================================================
+
+// ============================================================================
+
+const SECURITY_SETTINGS_KEY = 'nisystem-security-settings'
+
+interface SecuritySettings {
+  session_lock_enabled: boolean
+  session_lock_timeout_minutes: number
+  session_lock_warning_minutes: number
+  max_concurrent_sessions: number
+  guest_access_enabled: boolean
+  failed_login_lockout_attempts: number
+  failed_login_lockout_minutes: number
+  audit_integrity_check_enabled: boolean
+  audit_integrity_check_interval_hours: number
+  ntp_sync_required: boolean
+  anomaly_detection_enabled: boolean
+  anomaly_command_rate_limit: number
+  anomaly_failed_login_rate_limit: number
+  security_summary_interval_minutes: number
+}
+
+const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
+  session_lock_enabled: false,
+  session_lock_timeout_minutes: 30,
+  session_lock_warning_minutes: 25,
+  max_concurrent_sessions: 0,
+  guest_access_enabled: true,
+  failed_login_lockout_attempts: 5,
+  failed_login_lockout_minutes: 15,
+  audit_integrity_check_enabled: false,
+  audit_integrity_check_interval_hours: 24,
+  ntp_sync_required: false,
+  anomaly_detection_enabled: false,
+  anomaly_command_rate_limit: 200,
+  anomaly_failed_login_rate_limit: 10,
+  security_summary_interval_minutes: 5,
+}
+
+function loadSecuritySettings(): SecuritySettings {
+  try {
+    const saved = localStorage.getItem(SECURITY_SETTINGS_KEY)
+    if (saved) return { ...DEFAULT_SECURITY_SETTINGS, ...JSON.parse(saved) }
+  } catch { /* ignore */ }
+  return { ...DEFAULT_SECURITY_SETTINGS }
+}
+
+const securitySettings = ref<SecuritySettings>(loadSecuritySettings())
+
+function saveSecuritySettings() {
+  localStorage.setItem(SECURITY_SETTINGS_KEY, JSON.stringify(securitySettings.value))
+  // Notify useAuth to pick up changes (guest access, session lock)
+  reloadSecuritySettings()
+  // Publish to backend so DAQ service can apply the settings
+  if (mqttClient.connected?.value) {
+    mqttClient.sendNodeCommand('settings/security', securitySettings.value)
+  }
+}
+
+function toggleSessionLimit(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  securitySettings.value.max_concurrent_sessions = checked ? 10 : 0
+  saveSecuritySettings()
+}
+
+function resetSecurityDefaults() {
+  securitySettings.value = { ...DEFAULT_SECURITY_SETTINGS }
+  saveSecuritySettings()
+}
+
+function enableNistPreset() {
+  securitySettings.value = {
+    session_lock_enabled: true,
+    session_lock_timeout_minutes: 30,
+    session_lock_warning_minutes: 25,
+    max_concurrent_sessions: 10,
+    guest_access_enabled: false,
+    failed_login_lockout_attempts: 5,
+    failed_login_lockout_minutes: 15,
+    audit_integrity_check_enabled: true,
+    audit_integrity_check_interval_hours: 24,
+    ntp_sync_required: true,
+    anomaly_detection_enabled: true,
+    anomaly_command_rate_limit: 200,
+    anomaly_failed_login_rate_limit: 10,
+    security_summary_interval_minutes: 5,
+  }
+  saveSecuritySettings()
+}
+</script>
+
+<style scoped>
+.admin-tab {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Access Denied */
+.access-denied {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.denied-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.access-denied h2 {
+  margin: 0 0 0.5rem;
+  color: var(--text-primary);
+}
+
+.current-role {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-hover);
+  border-radius: 4px;
+}
+
+/* Admin Content */
+.admin-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Section Navigation */
+.section-nav {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border-color);
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+}
+
+.section-btn {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.section-btn:hover {
+  background: var(--bg-widget);
+  color: var(--text-primary);
+}
+
+.section-btn.active {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.section-icon {
+  font-size: 1rem;
+}
+
+/* Section Panel */
+.section-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.panel-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Buttons */
+.btn-primary {
+  padding: 8px 16px;
+  background: var(--color-accent);
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-light);
+}
+
+.btn-secondary {
+  padding: 8px 16px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+  background: var(--bg-active);
+  border-color: var(--text-muted);
+}
+
+.btn-icon {
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.btn-icon:hover {
+  opacity: 1;
+}
+
+.btn-icon:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  background: var(--color-error-dark);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.btn-cancel {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* Data Tables */
+.users-table-wrapper,
+.audit-table-wrapper,
+.archives-table-wrapper {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-hover);
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.data-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tr:hover td {
+  background: var(--bg-hover);
+}
+
+.loading-row,
+.empty-row {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.spinner-small {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* User Table Specific */
+.username-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.role-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.role-admin { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
+.role-supervisor { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.role-operator { background: rgba(0, 122, 204, 0.2); color: #6cb8ff; }
+.role-guest { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.status-badge.enabled { background: rgba(40, 167, 69, 0.2); color: #4cd964; }
+.status-badge.disabled { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
+
+/* Audit Filters */
+.audit-filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-group label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.filter-group input,
+.filter-group select {
+  padding: 8px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.event-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.event-login { background: rgba(40, 167, 69, 0.2); color: #4cd964; }
+.event-logout { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
+.event-config_change { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.event-recording_start { background: rgba(0, 122, 204, 0.2); color: #6cb8ff; }
+.event-recording_stop { background: rgba(0, 122, 204, 0.2); color: #6cb8ff; }
+.event-alarm { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
+.event-user_create,
+.event-user_update,
+.event-user_delete { background: rgba(128, 0, 128, 0.2); color: #da70d6; }
+
+.details-cell {
+  max-width: 200px;
+}
+
+.details-preview {
+  cursor: pointer;
+  color: var(--color-accent);
+}
+
+.details-preview:hover {
+  text-decoration: underline;
+}
+
+.checksum-cell code,
+.id-cell code {
+  font-size: 0.75rem;
+  background: var(--bg-hover);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Archive Info Cards */
+.archive-info {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.info-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  flex: 1;
+}
+
+.info-icon {
+  font-size: 2rem;
+}
+
+.info-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.info-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.info-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.type-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: rgba(0, 122, 204, 0.2);
+  color: #6cb8ff;
+}
+
+/* Modal Dialogs */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+}
+
+.modal-dialog {
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.modal-confirm {
+  max-width: 400px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Form Groups */
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  box-sizing: border-box;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: auto;
+}
+
+/* Event Details */
+.event-details {
+  font-size: 0.875rem;
+}
+
+.detail-row {
+  display: flex;
+  margin-bottom: 12px;
+  align-items: flex-start;
+}
+
+.detail-label {
+  width: 100px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.detail-section {
+  margin-top: 16px;
+}
+
+.detail-section .detail-label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.full-checksum {
+  font-size: 0.7rem;
+  word-break: break-all;
+}
+
+.details-json {
+  background: var(--bg-hover);
+  padding: 12px;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 200px;
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+/* Confirm Dialog */
+.confirm-message {
+  margin: 0 0 8px;
+}
+
+.confirm-warning {
+  margin: 0;
+  color: var(--color-error-light);
+  font-size: 0.875rem;
+}
+
+/* Settings / Broker Connection */
+.settings-form {
+  max-width: 500px;
+}
+
+.settings-form .form-group {
+  margin-bottom: 16px;
+}
+
+.settings-form .form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-form .form-group input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  box-sizing: border-box;
+}
+
+.settings-form .form-group input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.mono-input {
+  font-family: 'SF Mono', 'Cascadia Code', monospace !important;
+}
+
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.broker-remote-notice {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.broker-test-result {
+  font-size: 0.8rem;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.broker-test-result.testing {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.broker-test-result.success {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.broker-test-result.error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.broker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.broker-actions-right {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Station Management */
+.station-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.station-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--bg-hover);
+}
+
+.station-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.station-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  margin-right: 8px;
+}
+
+.station-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.station-badge.running { background: rgba(40, 167, 69, 0.2); color: #4cd964; }
+.station-badge.starting { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.station-badge.stopped { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
+.station-badge.error { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
+
+.station-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-sm.btn-primary {
+  background: var(--color-accent);
+  color: white;
+}
+
+.btn-sm.btn-primary:hover {
+  background: var(--color-accent-light);
+}
+
+.btn-sm.btn-danger {
+  background: var(--color-error-dark);
+  color: white;
+}
+
+.btn-sm.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.station-card-details {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.station-card-details code {
+  font-size: 0.75rem;
+  background: var(--bg-widget);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.empty-state {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.create-station-form {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-widget);
+  margin-bottom: 16px;
+}
+
+.create-station-form h4 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.form-row label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.form-row input,
+.form-row select {
+  padding: 8px 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-row input:focus,
+.form-row select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.station-message {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--color-accent);
+}
+
+.station-info-hint {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.station-info-hint p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.header-badge {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-muted);
+}
+
+/* Security Settings Section */
+.security-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.security-group {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: var(--bg-widget);
+}
+
+.security-group h4 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.security-toggle {
+  margin-bottom: 12px;
+}
+
+.security-toggle:last-child {
+  margin-bottom: 0;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle-desc {
+  display: block;
+  margin-top: 4px;
+  margin-left: 28px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.security-sub {
+  margin-top: 12px;
+  margin-left: 28px;
+  padding: 12px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.form-row-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.form-row-inline:last-child {
+  margin-bottom: 0;
+}
+
+.form-row-inline label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  min-width: 160px;
+}
+
+.form-row-inline input[type="number"] {
+  width: 80px;
+  padding: 6px 8px;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.form-row-inline input[type="number"]:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.form-row-inline span {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.security-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+</style>

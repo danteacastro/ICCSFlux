@@ -1,0 +1,43 @@
+{
+  "name": "Setpoint Deviation",
+  "description": "Monitors how far a process variable is from its setpoint",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Process Control",
+  "config": {
+    "process_tag": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Process variable (PV)"
+    },
+    "setpoint": {
+      "type": "number",
+      "default": 50.0,
+      "description": "Target setpoint value"
+    },
+    "tolerance_band": {
+      "type": "number",
+      "default": 2.0,
+      "description": "Acceptable deviation (+/-)"
+    }
+  },
+  "subscribed_tags": ["${config.process_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.process_tag}_Error",
+      "unit": "same as input",
+      "description": "Deviation from setpoint (PV - SP)"
+    },
+    {
+      "name": "py.${config.process_tag}_ErrorPct",
+      "unit": "%",
+      "description": "Percent error from setpoint"
+    },
+    {
+      "name": "py.${config.process_tag}_InBand",
+      "unit": "",
+      "description": "1 if within tolerance, 0 if outside"
+    }
+  ],
+  "code": "# Setpoint Deviation Monitor\n# Tracks error, percent error, and in-band status\n\nprocess_tag = config.get('process_tag', 'Temperature_1')\nsetpoint = config.get('setpoint', 50.0)\ntolerance = config.get('tolerance_band', 2.0)\n\npv = tags.get(process_tag, 0)\n\n# Calculate error\nerror = pv - setpoint\n\n# Percent error (avoid division by zero)\nif setpoint != 0:\n    error_pct = (error / setpoint) * 100\nelse:\n    error_pct = 0 if error == 0 else 100\n\n# Check if within tolerance band\nin_band = 1 if abs(error) <= tolerance else 0\n\npublish(f'py.{process_tag}_Error', error)\npublish(f'py.{process_tag}_ErrorPct', error_pct)\npublish(f'py.{process_tag}_InBand', in_band)"
+}

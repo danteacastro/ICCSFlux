@@ -1,0 +1,48 @@
+{
+  "name": "Expression Calculator",
+  "description": "Evaluates custom mathematical expressions with multiple inputs",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Calculations",
+  "config": {
+    "expression": {
+      "type": "string",
+      "default": "(A + B) / 2",
+      "description": "Math expression using A, B, C, D as variables"
+    },
+    "tag_a": {
+      "type": "tag",
+      "default": "Temperature_1",
+      "description": "Variable A"
+    },
+    "tag_b": {
+      "type": "tag",
+      "default": "Temperature_2",
+      "description": "Variable B"
+    },
+    "tag_c": {
+      "type": "tag",
+      "default": "",
+      "description": "Variable C (optional)"
+    },
+    "tag_d": {
+      "type": "tag",
+      "default": "",
+      "description": "Variable D (optional)"
+    },
+    "output_name": {
+      "type": "string",
+      "default": "Calculated",
+      "description": "Output tag name"
+    }
+  },
+  "subscribed_tags": ["${config.tag_a}", "${config.tag_b}", "${config.tag_c}", "${config.tag_d}"],
+  "published_tags": [
+    {
+      "name": "py.${config.output_name}",
+      "unit": "",
+      "description": "Result of expression"
+    }
+  ],
+  "code": "# Expression Calculator\n# Evaluates mathematical expressions with tag values\n# Supports: +, -, *, /, **, sqrt, abs, min, max, sin, cos, log, exp\n\nimport math\n\nexpression = config.get('expression', '(A + B) / 2')\noutput_name = config.get('output_name', 'Calculated')\n\n# Get tag values\nA = tags.get(config.get('tag_a', ''), 0)\nB = tags.get(config.get('tag_b', ''), 0)\nC = tags.get(config.get('tag_c', ''), 0) if config.get('tag_c') else 0\nD = tags.get(config.get('tag_d', ''), 0) if config.get('tag_d') else 0\n\n# Safe math functions\nsafe_globals = {\n    'A': A, 'B': B, 'C': C, 'D': D,\n    'sqrt': math.sqrt,\n    'abs': abs,\n    'min': min,\n    'max': max,\n    'sin': math.sin,\n    'cos': math.cos,\n    'tan': math.tan,\n    'log': math.log,\n    'log10': math.log10,\n    'exp': math.exp,\n    'pow': pow,\n    'pi': math.pi,\n    'e': math.e\n}\n\ntry:\n    # Evaluate expression safely\n    result = eval(expression, {'__builtins__': {}}, safe_globals)\nexcept Exception as e:\n    # Return 0 on error, could also publish error status\n    result = 0\n\npublish(f'py.{output_name}', result)"
+}

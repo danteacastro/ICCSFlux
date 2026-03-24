@@ -1,0 +1,31 @@
+# NISystem DAQ Service Requirements
+
+# MQTT client
+paho-mqtt>=1.6.0
+
+# Modbus TCP/RTU support
+pymodbus>=3.0.0    # Modbus protocol (TCP + RTU)
+pyserial>=3.5      # Serial port communication (required for RTU)
+
+# NI DAQmx Python bindings (optional - only needed for real hardware)
+# nidaqmx>=0.9.0
+
+# Scientific computing (same as browser Pyodide environment)
+numpy>=1.21.0
+scipy>=1.7.0
+
+# Utilities
+python-dateutil>=2.8.0
+
+# Authentication
+bcrypt>=4.0.0              # Password hashing for user authentication
+
+# Industrial protocols (optional - for specific integrations)
+opcua>=0.98.0          # OPC-UA server/client communication
+pycomm3>=1.2.0         # Allen Bradley EtherNet/IP (ControlLogix/CompactLogix)
+
+# Cloud integration (optional)
+azure-iot-device>=2.12.0   # Azure IoT Hub telemetry streaming
+
+# Database integration (optional)
+psycopg2-binary>=2.9.0     # PostgreSQL client (self-contained, no PG install needed)

@@ -1,0 +1,1873 @@
+{
+  "system": {
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_base_topic": "nisystem",
+    "scan_rate_hz": 10,
+    "publish_rate_hz": 4,
+    "simulation_mode": true,
+    "log_directory": "./data",
+    "system_name": "AI Datacenter Cooling",
+    "system_id": "AIDC-COOL-001",
+    "datalog_rate_ms": 1000,
+    "datalog_rearm": true,
+    "datalog_rearm_rate_sec": 3600
+  },
+  "service": {
+    "heartbeat_interval_sec": 2,
+    "health_timeout_sec": 10,
+    "shutdown_timeout_sec": 10,
+    "command_ack_timeout_sec": 5
+  },
+  "channels": {
+    "TT-101": {
+      "name": "TT-101",
+      "physical_channel": "cDAQ1Mod1/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod A",
+      "description": "GPU Rack A1 Coolant Supply Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": 15,
+      "high_warning": 35,
+      "high_limit": 45,
+      "safety_action": "gpu-thermal-shutdown"
+    },
+    "TT-102": {
+      "name": "TT-102",
+      "physical_channel": "cDAQ1Mod1/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod A",
+      "description": "GPU Rack A1 Coolant Return Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 55,
+      "high_limit": 65
+    },
+    "TT-103": {
+      "name": "TT-103",
+      "physical_channel": "cDAQ1Mod1/ai2",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod A",
+      "description": "GPU Rack A2 Coolant Supply Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 35,
+      "high_limit": 45,
+      "safety_action": "gpu-thermal-shutdown"
+    },
+    "TT-104": {
+      "name": "TT-104",
+      "physical_channel": "cDAQ1Mod1/ai3",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod A",
+      "description": "GPU Rack A2 Coolant Return Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 55,
+      "high_limit": 65
+    },
+    "TT-201": {
+      "name": "TT-201",
+      "physical_channel": "cDAQ1Mod1/ai4",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod B",
+      "description": "GPU Rack B1 Coolant Supply Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 35,
+      "high_limit": 45,
+      "safety_action": "gpu-thermal-shutdown"
+    },
+    "TT-202": {
+      "name": "TT-202",
+      "physical_channel": "cDAQ1Mod1/ai5",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "GPU Pod B",
+      "description": "GPU Rack B1 Coolant Return Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "high_warning": 55,
+      "high_limit": 65
+    },
+    "TT-301": {
+      "name": "TT-301",
+      "physical_channel": "cDAQ1Mod1/ai6",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Chiller Plant",
+      "description": "Chiller Supply Header Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "low_warning": 10,
+      "high_warning": 20
+    },
+    "TT-302": {
+      "name": "TT-302",
+      "physical_channel": "cDAQ1Mod1/ai7",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Chiller Plant",
+      "description": "Chiller Return Header Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true
+    },
+    "TT-401": {
+      "name": "TT-401",
+      "physical_channel": "cDAQ1Mod2/ai0",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Cooling Tower",
+      "description": "Cooling Tower Basin Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true
+    },
+    "TT-402": {
+      "name": "TT-402",
+      "physical_channel": "cDAQ1Mod2/ai1",
+      "channel_type": "thermocouple",
+      "thermocouple_type": "K",
+      "unit": "degC",
+      "group": "Cooling Tower",
+      "description": "Ambient Wet Bulb Temperature",
+      "visible": true,
+      "chartable": true,
+      "log": true
+    },
+    "FT-101": {
+      "name": "FT-101",
+      "physical_channel": "cDAQ1Mod3/ai0",
+      "channel_type": "current_input",
+      "unit": "LPM",
+      "group": "GPU Pod A",
+      "description": "GPU Pod A Primary Flow Rate",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500,
+      "low_warning": 100,
+      "low_limit": 50,
+      "safety_action": "low-flow-shutdown"
+    },
+    "FT-201": {
+      "name": "FT-201",
+      "physical_channel": "cDAQ1Mod3/ai1",
+      "channel_type": "current_input",
+      "unit": "LPM",
+      "group": "GPU Pod B",
+      "description": "GPU Pod B Primary Flow Rate",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500,
+      "low_warning": 100,
+      "low_limit": 50,
+      "safety_action": "low-flow-shutdown"
+    },
+    "FT-301": {
+      "name": "FT-301",
+      "physical_channel": "cDAQ1Mod3/ai2",
+      "channel_type": "current_input",
+      "unit": "LPM",
+      "group": "Chiller Plant",
+      "description": "Chiller Primary Loop Flow Rate",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 2000
+    },
+    "PT-101": {
+      "name": "PT-101",
+      "physical_channel": "cDAQ1Mod3/ai3",
+      "channel_type": "current_input",
+      "unit": "kPa",
+      "group": "GPU Pod A",
+      "description": "GPU Pod A Supply Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 1000,
+      "low_warning": 200,
+      "high_warning": 800
+    },
+    "PT-102": {
+      "name": "PT-102",
+      "physical_channel": "cDAQ1Mod3/ai4",
+      "channel_type": "current_input",
+      "unit": "kPa",
+      "group": "GPU Pod A",
+      "description": "GPU Pod A Return Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 1000
+    },
+    "PDT-101": {
+      "name": "PDT-101",
+      "physical_channel": "cDAQ1Mod3/ai5",
+      "channel_type": "current_input",
+      "unit": "kPa",
+      "group": "GPU Pod A",
+      "description": "GPU Pod A Filter Differential Pressure",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 100,
+      "high_warning": 50,
+      "high_limit": 75
+    },
+    "WT-101": {
+      "name": "WT-101",
+      "physical_channel": "cDAQ1Mod4/ai0",
+      "channel_type": "current_input",
+      "unit": "kW",
+      "group": "Power Monitoring",
+      "description": "GPU Pod A IT Load Power",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 5000
+    },
+    "WT-201": {
+      "name": "WT-201",
+      "physical_channel": "cDAQ1Mod4/ai1",
+      "channel_type": "current_input",
+      "unit": "kW",
+      "group": "Power Monitoring",
+      "description": "GPU Pod B IT Load Power",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 5000
+    },
+    "WT-301": {
+      "name": "WT-301",
+      "physical_channel": "cDAQ1Mod4/ai2",
+      "channel_type": "current_input",
+      "unit": "kW",
+      "group": "Power Monitoring",
+      "description": "Chiller Plant Power",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 3000
+    },
+    "WT-401": {
+      "name": "WT-401",
+      "physical_channel": "cDAQ1Mod4/ai3",
+      "channel_type": "current_input",
+      "unit": "kW",
+      "group": "Power Monitoring",
+      "description": "Cooling Tower Fans Power",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 500
+    },
+    "WT-501": {
+      "name": "WT-501",
+      "physical_channel": "cDAQ1Mod4/ai4",
+      "channel_type": "current_input",
+      "unit": "kW",
+      "group": "Power Monitoring",
+      "description": "CDU Pumps Power",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "four_twenty_scaling": true,
+      "eng_units_min": 0,
+      "eng_units_max": 200
+    },
+    "VT-101": {
+      "name": "VT-101",
+      "physical_channel": "cDAQ1Mod5/ai0",
+      "channel_type": "voltage_input",
+      "unit": "mm/s",
+      "group": "Predictive Maintenance",
+      "description": "Pump P-101 Vibration RMS",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 25,
+      "high_warning": 7.1,
+      "high_limit": 11.2
+    },
+    "VT-201": {
+      "name": "VT-201",
+      "physical_channel": "cDAQ1Mod5/ai1",
+      "channel_type": "voltage_input",
+      "unit": "mm/s",
+      "group": "Predictive Maintenance",
+      "description": "Pump P-201 Vibration RMS",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 25,
+      "high_warning": 7.1,
+      "high_limit": 11.2
+    },
+    "VT-301": {
+      "name": "VT-301",
+      "physical_channel": "cDAQ1Mod5/ai2",
+      "channel_type": "voltage_input",
+      "unit": "mm/s",
+      "group": "Predictive Maintenance",
+      "description": "Chiller Compressor Vibration RMS",
+      "visible": true,
+      "chartable": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 25,
+      "high_warning": 4.5,
+      "high_limit": 7.1
+    },
+    "LS-101": {
+      "name": "LS-101",
+      "physical_channel": "cDAQ1Mod6/port0/line0",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "CDU Tank Low Level Switch",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "low-coolant-shutdown",
+      "chartable": true
+    },
+    "LS-102": {
+      "name": "LS-102",
+      "physical_channel": "cDAQ1Mod6/port0/line1",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "CDU Tank High Level Switch",
+      "visible": true,
+      "log": true,
+      "chartable": true
+    },
+    "FSL-101": {
+      "name": "FSL-101",
+      "physical_channel": "cDAQ1Mod6/port0/line2",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "GPU Pod A Flow Switch Low",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "low-flow-shutdown",
+      "chartable": true
+    },
+    "TSH-101": {
+      "name": "TSH-101",
+      "physical_channel": "cDAQ1Mod6/port0/line3",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "GPU Pod A Over-Temperature Switch",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "gpu-thermal-shutdown",
+      "chartable": true
+    },
+    "WS-101": {
+      "name": "WS-101",
+      "physical_channel": "cDAQ1Mod6/port0/line4",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Water Leak Detector Zone 1",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "leak-shutdown",
+      "chartable": true
+    },
+    "WS-102": {
+      "name": "WS-102",
+      "physical_channel": "cDAQ1Mod6/port0/line5",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Water Leak Detector Zone 2",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "leak-shutdown",
+      "chartable": true
+    },
+    "EPO-101": {
+      "name": "EPO-101",
+      "physical_channel": "cDAQ1Mod6/port0/line6",
+      "channel_type": "digital_input",
+      "unit": "",
+      "group": "Safety",
+      "description": "Emergency Power Off Button",
+      "visible": true,
+      "log": true,
+      "invert": true,
+      "safety_action": "emergency-shutdown",
+      "chartable": true
+    },
+    "XV-101": {
+      "name": "XV-101",
+      "physical_channel": "cDAQ1Mod7/port0/line0",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "GPU Pod A Isolation Valve",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "XV-201": {
+      "name": "XV-201",
+      "physical_channel": "cDAQ1Mod7/port0/line1",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "GPU Pod B Isolation Valve",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "P-101": {
+      "name": "P-101",
+      "physical_channel": "cDAQ1Mod7/port0/line2",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "CDU Primary Pump 1 Enable",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "P-102": {
+      "name": "P-102",
+      "physical_channel": "cDAQ1Mod7/port0/line3",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "CDU Primary Pump 2 Enable (Standby)",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "CH-101": {
+      "name": "CH-101",
+      "physical_channel": "cDAQ1Mod7/port0/line4",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Chiller 1 Enable",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "CH-102": {
+      "name": "CH-102",
+      "physical_channel": "cDAQ1Mod7/port0/line5",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Chiller 2 Enable (Standby)",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "CT-FAN": {
+      "name": "CT-FAN",
+      "physical_channel": "cDAQ1Mod7/port0/line6",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Cooling Tower Fan Enable",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "ALARM-HORN": {
+      "name": "ALARM-HORN",
+      "physical_channel": "cDAQ1Mod7/port0/line7",
+      "channel_type": "digital_output",
+      "unit": "",
+      "group": "Control Outputs",
+      "description": "Audible Alarm Horn",
+      "visible": true,
+      "log": true,
+      "chartable": false
+    },
+    "AO-VFD-101": {
+      "name": "AO-VFD-101",
+      "physical_channel": "cDAQ1Mod8/ao0",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "CDU Pump VFD Speed Command",
+      "visible": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100,
+      "chartable": true
+    },
+    "AO-VFD-301": {
+      "name": "AO-VFD-301",
+      "physical_channel": "cDAQ1Mod8/ao1",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "Chiller Capacity Command",
+      "visible": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100,
+      "chartable": true
+    },
+    "AO-VFD-401": {
+      "name": "AO-VFD-401",
+      "physical_channel": "cDAQ1Mod8/ao2",
+      "channel_type": "voltage_output",
+      "unit": "%",
+      "group": "Analog Outputs",
+      "description": "Cooling Tower Fan VFD Speed Command",
+      "visible": true,
+      "log": true,
+      "scale_type": "map",
+      "pre_scaled_min": 0,
+      "pre_scaled_max": 10,
+      "scaled_min": 0,
+      "scaled_max": 100,
+      "chartable": true
+    }
+  },
+  "layout": {
+    "widgets": [
+      {
+        "id": "w-safety-title",
+        "type": "title",
+        "title": "Safety System Status",
+        "subtitle": "Interlocks and Emergency Systems",
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      {
+        "id": "w-interlock-status",
+        "type": "interlock_status",
+        "x": 0,
+        "y": 1,
+        "w": 8,
+        "h": 5
+      },
+      {
+        "id": "w-alarm-panel",
+        "type": "alarm_summary",
+        "x": 8,
+        "y": 1,
+        "w": 8,
+        "h": 5
+      },
+      {
+        "id": "w-epo",
+        "type": "led",
+        "channel": "EPO-101",
+        "title": "EPO Status",
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 2,
+        "onColor": "#ef4444",
+        "offColor": "#22c55e",
+        "invert": true
+      },
+      {
+        "id": "w-leak-1",
+        "type": "led",
+        "channel": "WS-101",
+        "title": "Leak Zone 1",
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 2,
+        "onColor": "#ef4444",
+        "offColor": "#22c55e",
+        "invert": true
+      },
+      {
+        "id": "w-leak-2",
+        "type": "led",
+        "channel": "WS-102",
+        "title": "Leak Zone 2",
+        "x": 16,
+        "y": 3,
+        "w": 4,
+        "h": 2,
+        "onColor": "#ef4444",
+        "offColor": "#22c55e",
+        "invert": true
+      },
+      {
+        "id": "w-flow-sw",
+        "type": "led",
+        "channel": "FSL-101",
+        "title": "Flow Switch",
+        "x": 20,
+        "y": 3,
+        "w": 4,
+        "h": 2,
+        "onColor": "#ef4444",
+        "offColor": "#22c55e",
+        "invert": true
+      },
+      {
+        "id": "w-level-low",
+        "type": "led",
+        "channel": "LS-101",
+        "title": "Tank Level Low",
+        "x": 16,
+        "y": 5,
+        "w": 4,
+        "h": 1,
+        "onColor": "#ef4444",
+        "offColor": "#22c55e",
+        "invert": true
+      },
+      {
+        "id": "w-level-high",
+        "type": "led",
+        "channel": "LS-102",
+        "title": "Tank Level High",
+        "x": 20,
+        "y": 5,
+        "w": 4,
+        "h": 1,
+        "onColor": "#eab308",
+        "offColor": "#22c55e"
+      },
+      {
+        "id": "w-alarm-horn",
+        "type": "toggle",
+        "channel": "ALARM-HORN",
+        "title": "Alarm Horn",
+        "x": 0,
+        "y": 6,
+        "w": 4,
+        "h": 1
+      }
+    ],
+    "pages": [
+      {
+        "id": "overview",
+        "name": "Overview",
+        "order": 0,
+        "widgets": [
+          {
+            "id": "w-title",
+            "type": "title",
+            "title": "AI Datacenter Cooling System",
+            "subtitle": "10MW Liquid Cooling \u2014 Simulation Mode",
+            "x": 0,
+            "y": 0,
+            "w": 18,
+            "h": 1,
+            "style": {
+              "fontSize": "large"
+            }
+          },
+          {
+            "id": "w-clock",
+            "type": "clock",
+            "x": 19,
+            "y": 0,
+            "w": 5,
+            "h": 1
+          },
+          {
+            "id": "w-status",
+            "type": "system_status",
+            "x": 0,
+            "y": 1,
+            "w": 6,
+            "h": 2
+          },
+          {
+            "id": "w-alarms",
+            "type": "alarm_summary",
+            "x": 6,
+            "y": 1,
+            "w": 6,
+            "h": 2
+          },
+          {
+            "id": "w-pue-gauge",
+            "type": "gauge",
+            "channel": "WT-101",
+            "title": "PUE",
+            "x": 12,
+            "y": 1,
+            "w": 4,
+            "h": 3,
+            "minValue": 1,
+            "maxValue": 2,
+            "showLimits": false,
+            "colorZones": [
+              {
+                "min": 1,
+                "max": 1.2,
+                "color": "#22c55e"
+              },
+              {
+                "min": 1.2,
+                "max": 1.4,
+                "color": "#eab308"
+              },
+              {
+                "min": 1.4,
+                "max": 2,
+                "color": "#ef4444"
+              }
+            ]
+          },
+          {
+            "id": "w-cop-gauge",
+            "type": "gauge",
+            "channel": "WT-301",
+            "title": "Cooling COP",
+            "x": 16,
+            "y": 1,
+            "w": 4,
+            "h": 3,
+            "minValue": 0,
+            "maxValue": 20,
+            "showLimits": false
+          },
+          {
+            "id": "w-it-power",
+            "type": "numeric",
+            "channel": "WT-101",
+            "title": "Pod A IT Load",
+            "x": 20,
+            "y": 1,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-it-power-b",
+            "type": "numeric",
+            "channel": "WT-201",
+            "title": "Pod B IT Load",
+            "x": 20,
+            "y": 2,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-divider-1",
+            "type": "divider",
+            "title": "GPU Pod A \u2014 Liquid Cooling",
+            "x": 0,
+            "y": 4,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "id": "w-divider-2",
+            "type": "divider",
+            "title": "GPU Pod B \u2014 Liquid Cooling",
+            "x": 12,
+            "y": 4,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "id": "w-pod-a-supply",
+            "type": "gauge",
+            "channel": "TT-101",
+            "title": "Supply Temp",
+            "x": 0,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 10,
+            "maxValue": 50,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-a-return",
+            "type": "gauge",
+            "channel": "TT-102",
+            "title": "Return Temp",
+            "x": 3,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 20,
+            "maxValue": 70,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-a-flow",
+            "type": "gauge",
+            "channel": "FT-101",
+            "title": "Flow Rate",
+            "x": 6,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 0,
+            "maxValue": 500,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-a-heat",
+            "type": "numeric",
+            "channel": "FT-101",
+            "title": "Heat Load",
+            "x": 9,
+            "y": 5,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-pod-a-delta",
+            "type": "numeric",
+            "channel": "TT-102",
+            "title": "Delta T",
+            "x": 9,
+            "y": 6,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-pod-a-valve",
+            "type": "toggle",
+            "channel": "XV-101",
+            "title": "Isolation Valve",
+            "x": 9,
+            "y": 7,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-pod-b-supply",
+            "type": "gauge",
+            "channel": "TT-201",
+            "title": "Supply Temp",
+            "x": 12,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 10,
+            "maxValue": 50,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-b-return",
+            "type": "gauge",
+            "channel": "TT-202",
+            "title": "Return Temp",
+            "x": 15,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 20,
+            "maxValue": 70,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-b-flow",
+            "type": "gauge",
+            "channel": "FT-201",
+            "title": "Flow Rate",
+            "x": 18,
+            "y": 5,
+            "w": 3,
+            "h": 3,
+            "minValue": 0,
+            "maxValue": 500,
+            "showLimits": true
+          },
+          {
+            "id": "w-pod-b-heat",
+            "type": "numeric",
+            "channel": "FT-201",
+            "title": "Heat Load",
+            "x": 21,
+            "y": 5,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-pod-b-delta",
+            "type": "numeric",
+            "channel": "TT-202",
+            "title": "Delta T",
+            "x": 21,
+            "y": 6,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-pod-b-valve",
+            "type": "toggle",
+            "channel": "XV-201",
+            "title": "Isolation Valve",
+            "x": 21,
+            "y": 7,
+            "w": 3,
+            "h": 1
+          },
+          {
+            "id": "w-divider-3",
+            "type": "divider",
+            "title": "Temperature Trends",
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 1
+          },
+          {
+            "id": "w-temp-chart",
+            "type": "chart",
+            "channels": [
+              "TT-101",
+              "TT-102",
+              "TT-201",
+              "TT-202",
+              "TT-301",
+              "TT-302"
+            ],
+            "title": "System Temperatures",
+            "x": 0,
+            "y": 9,
+            "w": 16,
+            "h": 6
+          },
+          {
+            "id": "w-chiller-header",
+            "type": "title",
+            "title": "Chiller Plant",
+            "x": 16,
+            "y": 9,
+            "w": 8,
+            "h": 1
+          },
+          {
+            "id": "w-chiller-supply",
+            "type": "numeric",
+            "channel": "TT-301",
+            "title": "Chiller Supply",
+            "x": 16,
+            "y": 10,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-chiller-return",
+            "type": "numeric",
+            "channel": "TT-302",
+            "title": "Chiller Return",
+            "x": 20,
+            "y": 10,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-chiller-flow",
+            "type": "numeric",
+            "channel": "FT-301",
+            "title": "Primary Flow",
+            "x": 16,
+            "y": 11,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-chiller-power",
+            "type": "numeric",
+            "channel": "WT-301",
+            "title": "Chiller Power",
+            "x": 20,
+            "y": 11,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-ch1-enable",
+            "type": "toggle",
+            "channel": "CH-101",
+            "title": "Chiller 1",
+            "x": 16,
+            "y": 12,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-ch2-enable",
+            "type": "toggle",
+            "channel": "CH-102",
+            "title": "Chiller 2 (Standby)",
+            "x": 20,
+            "y": 12,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-pump-header",
+            "type": "title",
+            "title": "CDU Pumps",
+            "x": 16,
+            "y": 13,
+            "w": 8,
+            "h": 1
+          },
+          {
+            "id": "w-pump1",
+            "type": "toggle",
+            "channel": "P-101",
+            "title": "Pump 1",
+            "x": 16,
+            "y": 14,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-pump2",
+            "type": "toggle",
+            "channel": "P-102",
+            "title": "Pump 2 (Standby)",
+            "x": 20,
+            "y": 14,
+            "w": 4,
+            "h": 1
+          }
+        ]
+      },
+      {
+        "id": "efficiency",
+        "name": "Efficiency",
+        "order": 1,
+        "widgets": [
+          {
+            "id": "w-eff-title",
+            "type": "title",
+            "title": "Energy Efficiency Dashboard",
+            "subtitle": "PUE Monitoring and Optimization",
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1
+          },
+          {
+            "id": "w-pue-big",
+            "type": "gauge",
+            "channel": "WT-101",
+            "title": "Power Usage Effectiveness",
+            "x": 0,
+            "y": 1,
+            "w": 6,
+            "h": 5,
+            "minValue": 1,
+            "maxValue": 2,
+            "colorZones": [
+              {
+                "min": 1,
+                "max": 1.2,
+                "color": "#22c55e"
+              },
+              {
+                "min": 1.2,
+                "max": 1.4,
+                "color": "#eab308"
+              },
+              {
+                "min": 1.4,
+                "max": 2,
+                "color": "#ef4444"
+              }
+            ]
+          },
+          {
+            "id": "w-cop-big",
+            "type": "gauge",
+            "channel": "WT-301",
+            "title": "Cooling COP (kW removed / kW consumed)",
+            "x": 6,
+            "y": 1,
+            "w": 6,
+            "h": 5,
+            "minValue": 0,
+            "maxValue": 25
+          },
+          {
+            "id": "w-power-breakdown",
+            "type": "bar_graph",
+            "channels": [
+              "WT-101",
+              "WT-201",
+              "WT-301",
+              "WT-401",
+              "WT-501"
+            ],
+            "title": "Power Breakdown",
+            "x": 12,
+            "y": 1,
+            "w": 12,
+            "h": 5
+          },
+          {
+            "id": "w-pue-chart",
+            "type": "chart",
+            "channels": [
+              "WT-101",
+              "WT-201",
+              "WT-301"
+            ],
+            "title": "Power Consumption Trend",
+            "x": 0,
+            "y": 6,
+            "w": 12,
+            "h": 6
+          },
+          {
+            "id": "w-power-chart",
+            "type": "chart",
+            "channels": [
+              "WT-101",
+              "WT-201",
+              "WT-301"
+            ],
+            "title": "Power Consumption Trend",
+            "x": 12,
+            "y": 6,
+            "w": 12,
+            "h": 6
+          },
+          {
+            "id": "w-ambient",
+            "type": "numeric",
+            "channel": "TT-402",
+            "title": "Ambient Wet Bulb",
+            "x": 0,
+            "y": 12,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-tower-temp",
+            "type": "numeric",
+            "channel": "TT-401",
+            "title": "Tower Basin Temp",
+            "x": 4,
+            "y": 12,
+            "w": 4,
+            "h": 1
+          },
+          {
+            "id": "w-tower-fan",
+            "type": "setpoint",
+            "channel": "AO-VFD-401",
+            "title": "Tower Fan Speed",
+            "x": 8,
+            "y": 12,
+            "w": 4,
+            "h": 1,
+            "minValue": 0,
+            "maxValue": 100
+          }
+        ]
+      },
+      {
+        "id": "predictive",
+        "name": "Predictive",
+        "order": 2,
+        "widgets": [
+          {
+            "id": "w-pred-title",
+            "type": "title",
+            "title": "Predictive Maintenance",
+            "subtitle": "Vibration Monitoring and Trend Analysis",
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1
+          },
+          {
+            "id": "w-vib-p101",
+            "type": "gauge",
+            "channel": "VT-101",
+            "title": "Pump P-101 Vibration",
+            "x": 0,
+            "y": 1,
+            "w": 4,
+            "h": 4,
+            "minValue": 0,
+            "maxValue": 15,
+            "colorZones": [
+              {
+                "min": 0,
+                "max": 4.5,
+                "color": "#22c55e"
+              },
+              {
+                "min": 4.5,
+                "max": 7.1,
+                "color": "#eab308"
+              },
+              {
+                "min": 7.1,
+                "max": 15,
+                "color": "#ef4444"
+              }
+            ]
+          },
+          {
+            "id": "w-vib-p201",
+            "type": "gauge",
+            "channel": "VT-201",
+            "title": "Pump P-201 Vibration",
+            "x": 4,
+            "y": 1,
+            "w": 4,
+            "h": 4,
+            "minValue": 0,
+            "maxValue": 15,
+            "colorZones": [
+              {
+                "min": 0,
+                "max": 4.5,
+                "color": "#22c55e"
+              },
+              {
+                "min": 4.5,
+                "max": 7.1,
+                "color": "#eab308"
+              },
+              {
+                "min": 7.1,
+                "max": 15,
+                "color": "#ef4444"
+              }
+            ]
+          },
+          {
+            "id": "w-vib-chiller",
+            "type": "gauge",
+            "channel": "VT-301",
+            "title": "Chiller Compressor Vibration",
+            "x": 8,
+            "y": 1,
+            "w": 4,
+            "h": 4,
+            "minValue": 0,
+            "maxValue": 15,
+            "colorZones": [
+              {
+                "min": 0,
+                "max": 4.5,
+                "color": "#22c55e"
+              },
+              {
+                "min": 4.5,
+                "max": 7.1,
+                "color": "#eab308"
+              },
+              {
+                "min": 7.1,
+                "max": 15,
+                "color": "#ef4444"
+              }
+            ]
+          },
+          {
+            "id": "w-filter-life",
+            "type": "gauge",
+            "channel": "PDT-101",
+            "title": "Filter Remaining Life",
+            "x": 12,
+            "y": 1,
+            "w": 4,
+            "h": 4,
+            "minValue": 0,
+            "maxValue": 100,
+            "colorZones": [
+              {
+                "min": 0,
+                "max": 25,
+                "color": "#ef4444"
+              },
+              {
+                "min": 25,
+                "max": 50,
+                "color": "#eab308"
+              },
+              {
+                "min": 50,
+                "max": 100,
+                "color": "#22c55e"
+              }
+            ]
+          },
+          {
+            "id": "w-trend-slope",
+            "type": "numeric",
+            "channel": "TT-101",
+            "title": "Temp Trend (\u00b0C/min)",
+            "x": 16,
+            "y": 1,
+            "w": 4,
+            "h": 2
+          },
+          {
+            "id": "w-filter-dp",
+            "type": "numeric",
+            "channel": "PDT-101",
+            "title": "Filter \u0394P",
+            "x": 20,
+            "y": 1,
+            "w": 4,
+            "h": 2
+          },
+          {
+            "id": "w-vib-chart",
+            "type": "chart",
+            "channels": [
+              "VT-101",
+              "VT-201",
+              "VT-301"
+            ],
+            "title": "Vibration Trends (ISO 10816)",
+            "x": 0,
+            "y": 5,
+            "w": 12,
+            "h": 6
+          },
+          {
+            "id": "w-filter-chart",
+            "type": "chart",
+            "channels": [
+              "PDT-101",
+              "PT-102"
+            ],
+            "title": "Filter and Pressure Trend",
+            "x": 12,
+            "y": 5,
+            "w": 12,
+            "h": 6
+          }
+        ]
+      },
+      {
+        "id": "safety",
+        "name": "Safety",
+        "order": 3,
+        "widgets": [
+          {
+            "id": "w-safety-title",
+            "type": "title",
+            "title": "Safety System Status",
+            "subtitle": "Interlocks and Emergency Systems",
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1
+          },
+          {
+            "id": "w-interlock-status",
+            "type": "interlock_status",
+            "x": 0,
+            "y": 1,
+            "w": 8,
+            "h": 5
+          },
+          {
+            "id": "w-alarm-panel",
+            "type": "alarm_summary",
+            "x": 8,
+            "y": 1,
+            "w": 8,
+            "h": 5
+          },
+          {
+            "id": "w-epo",
+            "type": "led",
+            "channel": "EPO-101",
+            "title": "EPO Status",
+            "x": 16,
+            "y": 1,
+            "w": 4,
+            "h": 2,
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-leak-1",
+            "type": "led",
+            "channel": "WS-101",
+            "title": "Leak Zone 1",
+            "x": 20,
+            "y": 1,
+            "w": 4,
+            "h": 2,
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-leak-2",
+            "type": "led",
+            "channel": "WS-102",
+            "title": "Leak Zone 2",
+            "x": 16,
+            "y": 3,
+            "w": 4,
+            "h": 2,
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-flow-sw",
+            "type": "led",
+            "channel": "FSL-101",
+            "title": "Flow Switch",
+            "x": 20,
+            "y": 3,
+            "w": 4,
+            "h": 2,
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-level-low",
+            "type": "led",
+            "channel": "LS-101",
+            "title": "Tank Level Low",
+            "x": 16,
+            "y": 5,
+            "w": 4,
+            "h": 1,
+            "onColor": "#ef4444",
+            "offColor": "#22c55e",
+            "invert": true
+          },
+          {
+            "id": "w-level-high",
+            "type": "led",
+            "channel": "LS-102",
+            "title": "Tank Level High",
+            "x": 20,
+            "y": 5,
+            "w": 4,
+            "h": 1,
+            "onColor": "#eab308",
+            "offColor": "#22c55e"
+          },
+          {
+            "id": "w-alarm-horn",
+            "type": "toggle",
+            "channel": "ALARM-HORN",
+            "title": "Alarm Horn",
+            "x": 0,
+            "y": 6,
+            "w": 4,
+            "h": 1
+          }
+        ]
+      }
+    ],
+    "currentPageId": "safety",
+    "gridColumns": 24,
+    "rowHeight": 30
+  },
+  "variables": [],
+  "scripts": {
+    "calculatedParams": [],
+    "sequences": [
+      {
+        "id": "seq-startup",
+        "name": "System Startup Sequence",
+        "description": "Controlled startup of cooling system",
+        "enabled": true,
+        "steps": [
+          {
+            "action": "set",
+            "channel": "P-101",
+            "value": true,
+            "description": "Start primary pump"
+          },
+          {
+            "action": "wait",
+            "duration": 5,
+            "description": "Wait for flow to establish"
+          },
+          {
+            "action": "set",
+            "channel": "XV-101",
+            "value": true,
+            "description": "Open Pod A valve"
+          },
+          {
+            "action": "set",
+            "channel": "XV-201",
+            "value": true,
+            "description": "Open Pod B valve"
+          },
+          {
+            "action": "wait",
+            "duration": 3,
+            "description": "Wait for valves"
+          },
+          {
+            "action": "set",
+            "channel": "CH-101",
+            "value": true,
+            "description": "Start chiller"
+          },
+          {
+            "action": "set",
+            "channel": "CT-FAN",
+            "value": true,
+            "description": "Start cooling tower fan"
+          }
+        ]
+      },
+      {
+        "id": "seq-shutdown",
+        "name": "System Shutdown Sequence",
+        "description": "Controlled shutdown of cooling system",
+        "enabled": true,
+        "steps": [
+          {
+            "action": "set",
+            "channel": "CH-101",
+            "value": false,
+            "description": "Stop chiller"
+          },
+          {
+            "action": "wait",
+            "duration": 30,
+            "description": "Coast-down period"
+          },
+          {
+            "action": "set",
+            "channel": "CT-FAN",
+            "value": false,
+            "description": "Stop cooling tower"
+          },
+          {
+            "action": "set",
+            "channel": "XV-101",
+            "value": false,
+            "description": "Close Pod A valve"
+          },
+          {
+            "action": "set",
+            "channel": "XV-201",
+            "value": false,
+            "description": "Close Pod B valve"
+          },
+          {
+            "action": "wait",
+            "duration": 5,
+            "description": "Wait for valves"
+          },
+          {
+            "action": "set",
+            "channel": "P-101",
+            "value": false,
+            "description": "Stop pump"
+          }
+        ]
+      }
+    ],
+    "schedules": [],
+    "alarms": [],
+    "transformations": [],
+    "triggers": [],
+    "pythonScripts": [
+      {
+        "id": "script-trend-analysis",
+        "name": "Temperature Trend Analysis",
+        "code": "# Temperature Trend Analysis Script\n# Demonstrates: TrendLine, SignalFilter, publish()\n\n# Create instances (persisted between calls via vars)\nif 'trend' not in vars:\n    vars['trend'] = TrendLine(window=300)  # 5 min window at 1 Hz\n    vars['filter'] = SignalFilter(tau=10.0, dt=1.0)  # 10 sec time constant\n\ntrend = vars['trend']\nfilt = vars['filter']\n\n# Get smoothed supply temperature\nsmoothed = filt.update(tags['TT-101'])\n\n# Update trend analysis\nresult = trend.update(smoothed)\n\n# Convert slope to deg/min (samples are 1 sec apart)\nslope_per_min = result['slope'] * 60\n\npublish('CALC-TrendSlope', slope_per_min, units='degC/min')\n\n# Predict temperature in 5 minutes\nif result['r_squared'] > 0.7:  # Only trust strong trends\n    predicted = trend.predict(steps_ahead=300)\n    if predicted > 40:  # Will exceed warning in 5 min\n        publish('TempPredictAlarm', 1)\n",
+        "description": "Uses TrendLine helper to predict temperature rise and alert early",
+        "runMode": "manual",
+        "enabled": true
+      },
+      {
+        "id": "script-filter-life",
+        "name": "Filter Life Estimation",
+        "code": "# Filter Life Estimation Script\n# Demonstrates: LookupTable, SignalFilter\n\nif 'dp_filter' not in vars:\n    vars['dp_filter'] = SignalFilter(alpha=0.05)  # Heavy smoothing\n    # Calibration: DP (kPa) -> Remaining Life (%)\n    # New filter = 5 kPa, Replace at 75 kPa\n    vars['life_table'] = LookupTable([\n        (5, 100),    # New filter\n        (20, 80),    # Light loading\n        (40, 50),    # Medium loading  \n        (60, 20),    # Heavy loading\n        (75, 0)      # Replace immediately\n    ])\n\n# Smooth the DP reading\nsmoothed_dp = vars['dp_filter'].update(tags['PDT-101'])\n\n# Look up remaining life\nlife_pct = vars['life_table'](smoothed_dp)\n\npublish('CALC-FilterLife', life_pct, units='%')\n",
+        "description": "",
+        "runMode": "manual",
+        "enabled": true
+      },
+      {
+        "id": "script-vibration-monitor",
+        "name": "Vibration Monitoring with FFT",
+        "code": "# Vibration Analysis Script\n# Demonstrates: SpectralAnalysis, PeakDetector, RingBuffer\n# Note: SpectralAnalysis only available on DAQ, not cRIO\n\nif 'vib_spec' not in vars:\n    vars['vib_spec'] = SpectralAnalysis(window_size=256, sample_rate=50.0)\n    vars['vib_peaks'] = PeakDetector(min_height=0.5, min_distance=10)\n    vars['vib_history'] = RingBuffer(size=600)  # 10 min history\n\nspec = vars['vib_spec']\npeaks = vars['vib_peaks']\nhistory = vars['vib_history']\n\n# Add pump vibration sample\nvib = tags['VT-101']\nspec.update(vib)\nhistory.append(vib)\n\n# Check for peaks (bearing defect detection)\npeak = peaks.update(vib)\nif peak and peak['height'] > 10:\n    publish('VibrationPeakAlarm', peak['height'])\n\n# FFT analysis when buffer is full\nif spec.ready:\n    result = spec.analyze()\n    if result:\n        publish('DominantFreq', result['dominant_freq'], units='Hz')\n        \n        # Check for bearing fault frequencies\n        # BPFO typically at 6-8x shaft speed\n        if 25 < result['dominant_freq'] < 35:  # Assuming ~5 Hz shaft\n            publish('BearingFaultWarning', 1)\n",
+        "description": "",
+        "runMode": "manual",
+        "enabled": true
+      },
+      {
+        "id": "script-spc-monitoring",
+        "name": "SPC Quality Monitoring",
+        "code": "# Statistical Process Control Script\n# Demonstrates: SPCChart with Western Electric rules\n# Note: SPCChart only available on DAQ, not cRIO\n\nif 'spc' not in vars:\n    vars['spc'] = SPCChart(subgroup_size=5, num_subgroups=25)\n    vars['spc'].set_spec_limits(lsl=12.0, usl=38.0)  # Spec limits for supply temp\n    vars['sample_count'] = 0\n\nspc = vars['spc']\n\n# Add supply temp sample\nspc.add_sample(tags['TT-101'])\nvars['sample_count'] += 1\n\n# Publish SPC metrics every 25 samples (5 subgroups)\nif vars['sample_count'] >= 25:\n    vars['sample_count'] = 0\n    \n    publish('SPC_Xbar', spc.x_bar)\n    publish('SPC_UCL', spc.ucl)\n    publish('SPC_LCL', spc.lcl)\n    publish('SPC_Cpk', spc.cpk)\n    \n    # Check control rules\n    violations = spc.check_rules()\n    if violations:\n        publish('SPC_OutOfControl', 1)\n        # Log first violation\n        publish('SPC_Violation', violations[0][:50])  # Truncate for display\n    else:\n        publish('SPC_OutOfControl', 0)\n",
+        "description": "",
+        "runMode": "manual",
+        "enabled": true
+      },
+      {
+        "id": "script-pid-optimizer",
+        "name": "Adaptive Pump Speed Control",
+        "code": "# Adaptive Pump Speed Control\n# Demonstrates: BiquadFilter, RampSoak\n# Note: BiquadFilter only available on DAQ, not cRIO\n\nif 'pump_filter' not in vars:\n    # 2nd order Butterworth low-pass at 0.5 Hz (anti-hunting)\n    vars['pump_filter'] = BiquadFilter.lowpass(cutoff_hz=0.5, sample_rate=10.0, q=0.707)\n    \n    # Setpoint profile for gradual changes\n    vars['sp_profile'] = RampSoak([\n        {'type': 'ramp', 'target': 80, 'rate': 5},  # Ramp to 80% at 5%/min\n        {'type': 'soak', 'duration': 300},           # Hold for 5 min\n    ])\n\nfilt = vars['pump_filter']\nprofile = vars['sp_profile']\n\n# Filter the delta-T signal for smooth control\ndelta_t = tags['TT-102'] - tags['TT-101']\nsmooth_dt = filt.process(delta_t)\n\n# Simple proportional control: target 15\u00b0C delta-T\ntarget_dt = 15.0\nerror = smooth_dt - target_dt\n\n# Adjust pump speed (higher delta-T = increase flow)\ncurrent_speed = tags['AO-VFD-101']\nnew_speed = current_speed - error * 2.0  # P-gain = 2\nnew_speed = max(30, min(100, new_speed))  # Clamp 30-100%\n\noutputs['AO-VFD-101'] = new_speed\npublish('PumpSpeedCmd', new_speed, units='%')\n",
+        "description": "",
+        "runMode": "manual",
+        "enabled": false
+      },
+      {
+        "id": "script-data-logger",
+        "name": "Custom Data Logger",
+        "code": "# Custom Data Logger Script\n# Demonstrates: DataLog, Counter\n\nif 'logger' not in vars:\n    vars['logger'] = DataLog('efficiency')\n    vars['pue_counter'] = Counter()\n    vars['last_log_time'] = 0\n\nlogger = vars['logger']\ncounter = vars['pue_counter']\n\n# Log efficiency metrics every 60 seconds\ncurrent_time = now()\nif current_time - vars['last_log_time'] >= 60:\n    vars['last_log_time'] = current_time\n    \n    # Calculate current PUE\n    it_power = tags['WT-101'] + tags['WT-201']\n    total_power = it_power + tags['WT-301'] + tags['WT-401'] + tags['WT-501']\n    pue = total_power / it_power if it_power > 100 else 1.0\n    \n    # Log multiple values at once\n    logger.log_dict({\n        'pue': pue,\n        'it_load_kw': it_power,\n        'cooling_kw': total_power - it_power,\n        'supply_temp': tags['TT-101'],\n        'return_temp': tags['TT-102']\n    })\n    \n    # Mark significant events\n    if pue > 1.5:\n        logger.mark('high_pue_event')\n        counter.increment()\n    \n    publish('HighPUECount', counter.count)\n",
+        "description": "",
+        "runMode": "manual",
+        "enabled": true
+      }
+    ],
+    "functionBlocks": [],
+    "formulaBlocks": [],
+    "drawPatterns": {
+      "patterns": [],
+      "history": []
+    },
+    "watchdogs": [],
+    "stateMachines": [],
+    "reportTemplates": [],
+    "scheduledReports": []
+  },
+  "recording": {
+    "config": {
+      "basePath": "./data",
+      "filePrefix": "recording",
+      "fileFormat": "csv",
+      "sampleInterval": 1000,
+      "sampleIntervalUnit": "ms",
+      "decimation": 1,
+      "rotationMode": "size",
+      "maxFileSize": 100,
+      "maxFileDuration": 3600,
+      "maxFileSamples": 10000,
+      "namingPattern": "timestamp",
+      "includeDate": true,
+      "includeTime": true,
+      "includeChannelsInName": false,
+      "sequentialStart": 1,
+      "sequentialPadding": 3,
+      "customSuffix": "",
+      "directoryStructure": "daily",
+      "experimentName": "AI Datacenter Cooling Demo",
+      "writeMode": "buffered",
+      "bufferSize": 100,
+      "flushInterval": 5,
+      "onLimitReached": "rotate",
+      "circularMaxFiles": 10,
+      "mode": "manual",
+      "triggerChannel": "",
+      "triggerCondition": "above",
+      "triggerValue": 0,
+      "preTriggerSamples": 100,
+      "postTriggerSamples": 1000,
+      "scheduleEnabled": false,
+      "scheduleStart": "08:00",
+      "scheduleEnd": "17:00",
+      "scheduleDays": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
+      "csvEnabled": true,
+      "appendOnly": false,
+      "verifyOnClose": true,
+      "includeAuditMetadata": true,
+      "dbEnabled": false,
+      "dbHost": "localhost",
+      "dbPort": 5432,
+      "dbName": "iccsflux",
+      "dbUser": "iccsflux",
+      "dbPassword": "",
+      "dbTable": "recording_data",
+      "dbBatchSize": 50,
+      "dbTimescale": false,
+      "filenamePattern": "AIDC_{timestamp}",
+      "maxFileSizeMb": 50
+    },
+    "selectedChannels": [
+      "TT-101",
+      "TT-102",
+      "TT-103",
+      "TT-104",
+      "TT-201",
+      "TT-202",
+      "TT-301",
+      "TT-302",
+      "FT-101",
+      "FT-201",
+      "FT-301",
+      "PT-101",
+      "PT-102",
+      "PDT-101",
+      "WT-101",
+      "WT-201",
+      "WT-301",
+      "WT-401",
+      "WT-501",
+      "VT-101",
+      "VT-201",
+      "VT-301"
+    ]
+  },
+  "safety": {
+    "alarmConfigs": {
+      "TT-101": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 1
+      },
+      "TT-103": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 1
+      },
+      "TT-201": {
+        "enabled": true,
+        "priority": "high",
+        "deadband": 1
+      },
+      "FT-101": {
+        "enabled": true,
+        "priority": "critical",
+        "deadband": 5
+      },
+      "FT-201": {
+        "enabled": true,
+        "priority": "critical",
+        "deadband": 5
+      },
+      "PDT-101": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 2
+      },
+      "VT-101": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "VT-201": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.5
+      },
+      "VT-301": {
+        "enabled": true,
+        "priority": "medium",
+        "deadband": 0.3
+      }
+    },
+    "interlocks": [
+      {
+        "name": "Pump Required for Valves",
+        "condition": "(XV-101 == true OR XV-201 == true) AND P-101 == false AND P-102 == false",
+        "action": "low-flow-shutdown",
+        "delay_ms": 5000
+      },
+      {
+        "name": "Flow Required for Chiller",
+        "condition": "CH-101 == true AND FT-301 < 200",
+        "action": "low-flow-shutdown",
+        "delay_ms": 10000
+      }
+    ],
+    "safetyActions": {},
+    "safeStateConfig": {},
+    "autoExecuteSafetyActions": false
+  },
+  "notebook": {
+    "entries": [],
+    "experiments": []
+  },
+  "name": "AI Datacenter Cooling Demo",
+  "type": "nisystem-project",
+  "version": "2.0",
+  "config": "system.ini",
+  "created": "2026-02-05T10:53:50.646207",
+  "modified": "2026-02-09T15:13:16.846429"
+}

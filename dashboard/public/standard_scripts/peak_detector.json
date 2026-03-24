@@ -1,0 +1,48 @@
+{
+  "name": "Peak Detector",
+  "description": "Tracks and holds peak (max/min) values with optional auto-reset",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Pressure_In",
+      "description": "Tag to monitor for peaks"
+    },
+    "track_max": {
+      "type": "boolean",
+      "default": true,
+      "description": "Track maximum value"
+    },
+    "track_min": {
+      "type": "boolean",
+      "default": true,
+      "description": "Track minimum value"
+    },
+    "auto_reset_seconds": {
+      "type": "number",
+      "default": 0,
+      "description": "Auto-reset period (0 = never)"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_PeakMax",
+      "unit": "same as input",
+      "description": "Maximum value seen"
+    },
+    {
+      "name": "py.${config.input_tag}_PeakMin",
+      "unit": "same as input",
+      "description": "Minimum value seen"
+    },
+    {
+      "name": "py.${config.input_tag}_PeakRange",
+      "unit": "same as input",
+      "description": "Range (max - min)"
+    }
+  ],
+  "code": "# Peak Detector\n# Tracks and holds maximum and minimum values\n\nimport time\n\ninput_tag = config.get('input_tag', 'Pressure_In')\ntrack_max = config.get('track_max', True)\ntrack_min = config.get('track_min', True)\nreset_period = config.get('auto_reset_seconds', 0)\n\nvalue = tags.get(input_tag, 0)\nnow = time.time()\n\n# Initialize or check for auto-reset\nif 'peak_max' not in state or (reset_period > 0 and now - state.get('reset_time', 0) > reset_period):\n    state['peak_max'] = value\n    state['peak_min'] = value\n    state['reset_time'] = now\n\n# Update peaks\nif track_max and value > state['peak_max']:\n    state['peak_max'] = value\n\nif track_min and value < state['peak_min']:\n    state['peak_min'] = value\n\npeak_range = state['peak_max'] - state['peak_min']\n\npublish(f'py.{input_tag}_PeakMax', state['peak_max'])\npublish(f'py.{input_tag}_PeakMin', state['peak_min'])\npublish(f'py.{input_tag}_PeakRange', peak_range)"
+}

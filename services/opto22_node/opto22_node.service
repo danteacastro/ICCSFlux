@@ -1,0 +1,34 @@
+[Unit]
+Description=NISystem Opto22 Node Service
+Documentation=https://github.com/your-repo/nisystem
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+
+# Environment file for MQTT broker configuration
+EnvironmentFile=-/home/dev/nisystem/opto22_node.env
+
+# Working directory
+WorkingDirectory=/home/dev/nisystem
+
+# Start the service
+ExecStart=/usr/bin/python3 /home/dev/nisystem/opto22_node.py --broker ${MQTT_BROKER} --port ${MQTT_PORT} --node-id ${NODE_ID} --api-key ${API_KEY}
+
+# Restart on failure
+Restart=always
+RestartSec=5
+
+# Give it time to cleanup on stop
+TimeoutStopSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opto22-node
+
+[Install]
+WantedBy=multi-user.target

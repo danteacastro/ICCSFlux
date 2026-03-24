@@ -1,0 +1,43 @@
+{
+  "name": "Duty Cycle Monitor",
+  "description": "Calculates ON time percentage for digital signals or threshold crossings",
+  "version": "1.0.0",
+  "author": "NISystem",
+  "category": "Signal Processing",
+  "config": {
+    "input_tag": {
+      "type": "tag",
+      "default": "Heater_Enable",
+      "description": "Digital signal or analog to threshold"
+    },
+    "threshold": {
+      "type": "number",
+      "default": 0.5,
+      "description": "Threshold for ON state (for analog inputs)"
+    },
+    "window_seconds": {
+      "type": "number",
+      "default": 60,
+      "description": "Time window for calculation (seconds)"
+    }
+  },
+  "subscribed_tags": ["${config.input_tag}"],
+  "published_tags": [
+    {
+      "name": "py.${config.input_tag}_DutyCycle",
+      "unit": "%",
+      "description": "Percentage of time signal is ON"
+    },
+    {
+      "name": "py.${config.input_tag}_OnTime",
+      "unit": "sec",
+      "description": "Total ON time in window"
+    },
+    {
+      "name": "py.${config.input_tag}_Cycles",
+      "unit": "",
+      "description": "Number of ON/OFF cycles in window"
+    }
+  ],
+  "code": "# Duty Cycle Monitor\n# Tracks ON time percentage for control signals\n\nimport time\n\ninput_tag = config.get('input_tag', 'Heater_Enable')\nthreshold = config.get('threshold', 0.5)\nwindow = config.get('window_seconds', 60)\n\nvalue = tags.get(input_tag, 0)\nnow = time.time()\n\n# Determine if ON\nis_on = value > threshold\n\n# Initialize state\nif 'history' not in state:\n    state['history'] = []  # List of (timestamp, is_on) tuples\n    state['last_state'] = is_on\n    state['cycles'] = 0\n\n# Record state change or periodic sample\nstate['history'].append((now, is_on))\n\n# Count cycles (OFF->ON transitions)\nif is_on and not state['last_state']:\n    state['cycles'] += 1\nstate['last_state'] = is_on\n\n# Remove old entries outside window\ncutoff = now - window\nstate['history'] = [(t, s) for t, s in state['history'] if t >= cutoff]\n\n# Calculate ON time\non_time = 0\nhist = state['history']\nfor i in range(len(hist) - 1):\n    t1, s1 = hist[i]\n    t2, s2 = hist[i + 1]\n    if s1:  # If ON during this interval\n        on_time += t2 - t1\n\n# Add current interval if ON\nif hist and hist[-1][1]:\n    on_time += now - hist[-1][0]\n\n# Calculate duty cycle\nactual_window = now - hist[0][0] if hist else window\nif actual_window > 0:\n    duty_cycle = (on_time / actual_window) * 100\nelse:\n    duty_cycle = 0\n\npublish(f'py.{input_tag}_DutyCycle', duty_cycle)\npublish(f'py.{input_tag}_OnTime', on_time)\npublish(f'py.{input_tag}_Cycles', state['cycles'])"
+}

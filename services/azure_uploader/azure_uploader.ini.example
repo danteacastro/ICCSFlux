@@ -1,0 +1,23 @@
+# Azure IoT Hub Uploader Configuration
+# Copy this file to azure_uploader.ini and fill in your settings
+
+[mqtt]
+# MQTT broker settings (connects to ICCSFlux Mosquitto broker)
+host = localhost
+port = 1883
+# Topic pattern to subscribe to
+topic = nisystem/nodes/+/channels/values
+
+[azure]
+# Azure IoT Hub device connection string
+# Get this from Azure Portal -> IoT Hub -> Devices -> Your Device -> Primary Connection String
+connection_string = HostName=your-hub.azure-devices.net;DeviceId=your-device;SharedAccessKey=your-key
+
+# Channels to upload (comma-separated, empty = all channels)
+# Example: TC_01, TC_02, Pressure_01
+channels =
+
+# Batching settings
+batch_size = 10
+batch_interval_ms = 1000
+max_queue_size = 10000

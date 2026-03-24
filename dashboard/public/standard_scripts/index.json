@@ -1,0 +1,172 @@
+{
+  "name": "NISystem Standard Scripts",
+  "version": "1.0.0",
+  "description": "Pre-built Python scripts for common lab and industrial applications",
+  "scripts": [
+    {
+      "id": "moving_average",
+      "file": "moving_average.json",
+      "name": "Moving Average Filter",
+      "category": "Signal Processing",
+      "description": "Smooths noisy sensor data using a configurable window"
+    },
+    {
+      "id": "rate_of_change",
+      "file": "rate_of_change.json",
+      "name": "Rate of Change",
+      "category": "Signal Processing",
+      "description": "Calculates derivative (rate per second) of any tag"
+    },
+    {
+      "id": "running_statistics",
+      "file": "running_statistics.json",
+      "name": "Running Statistics",
+      "category": "Signal Processing",
+      "description": "Rolling min, max, mean, and standard deviation"
+    },
+    {
+      "id": "peak_detector",
+      "file": "peak_detector.json",
+      "name": "Peak Detector",
+      "category": "Signal Processing",
+      "description": "Tracks and holds peak max/min values"
+    },
+    {
+      "id": "linear_scaling",
+      "file": "linear_scaling.json",
+      "name": "Linear Scaling",
+      "category": "Signal Processing",
+      "description": "Converts raw values to engineering units"
+    },
+    {
+      "id": "alarm_monitor",
+      "file": "alarm_monitor.json",
+      "name": "Alarm Monitor",
+      "category": "Safety & Monitoring",
+      "description": "High/low limit monitoring with hysteresis"
+    },
+    {
+      "id": "duty_cycle",
+      "file": "duty_cycle.json",
+      "name": "Duty Cycle Monitor",
+      "category": "Safety & Monitoring",
+      "description": "Calculates ON time percentage for control signals"
+    },
+    {
+      "id": "thermal_efficiency",
+      "file": "thermal_efficiency.json",
+      "name": "Thermal Efficiency",
+      "category": "Calculations",
+      "description": "Heat transfer and efficiency from temperatures and flow"
+    },
+    {
+      "id": "delta_calculator",
+      "file": "delta_calculator.json",
+      "name": "Delta Calculator",
+      "category": "Calculations",
+      "description": "Simple difference between two tags (Delta_P, Delta_T)"
+    },
+    {
+      "id": "integrator",
+      "file": "integrator.json",
+      "name": "Integrator / Totalizer",
+      "category": "Calculations",
+      "description": "Accumulates values over time (energy, total flow)"
+    },
+    {
+      "id": "expression_calculator",
+      "file": "expression_calculator.json",
+      "name": "Expression Calculator",
+      "category": "Calculations",
+      "description": "Custom math expressions with multiple inputs"
+    },
+    {
+      "id": "unit_converter",
+      "file": "unit_converter.json",
+      "name": "Unit Converter",
+      "category": "Utilities",
+      "description": "Common engineering unit conversions"
+    },
+    {
+      "id": "pid_controller",
+      "file": "pid_controller.json",
+      "name": "PID Controller",
+      "category": "Process Control",
+      "description": "Standard PID controller with anti-windup"
+    },
+    {
+      "id": "setpoint_deviation",
+      "file": "setpoint_deviation.json",
+      "name": "Setpoint Deviation",
+      "category": "Process Control",
+      "description": "Monitors error from setpoint with tolerance band"
+    },
+    {
+      "id": "timed_sequence",
+      "file": "timed_sequence.json",
+      "name": "Timed Sequence (Draw Schedule)",
+      "category": "Control Sequences",
+      "description": "Run actions at specific times - valve open at 0s, close at 30s"
+    },
+    {
+      "id": "control_loop",
+      "file": "control_loop.json",
+      "name": "Control Loop Schedule",
+      "category": "Control Sequences",
+      "description": "Continuous control loop with multiple on/off and PID controls"
+    },
+    {
+      "id": "conditional_control",
+      "file": "conditional_control.json",
+      "name": "Conditional Control (While Loop)",
+      "category": "Control Sequences",
+      "description": "Execute actions while condition is true (while Temp < 60, heater ON)"
+    },
+    {
+      "id": "state_machine",
+      "file": "state_machine.json",
+      "name": "State Machine",
+      "category": "Control Sequences",
+      "description": "Multi-state process with conditional and timed transitions"
+    },
+    {
+      "id": "batch_recipe",
+      "file": "batch_recipe.json",
+      "name": "Batch Recipe",
+      "category": "Control Sequences",
+      "description": "Run batch recipes with steps that wait for conditions"
+    }
+  ],
+  "categories": [
+    {
+      "id": "signal_processing",
+      "name": "Signal Processing",
+      "description": "Filter, smooth, and analyze signals"
+    },
+    {
+      "id": "safety_monitoring",
+      "name": "Safety & Monitoring",
+      "description": "Alarms, limits, and status monitoring"
+    },
+    {
+      "id": "calculations",
+      "name": "Calculations",
+      "description": "Math operations and derived values"
+    },
+    {
+      "id": "process_control",
+      "name": "Process Control",
+      "description": "PID, setpoint tracking, and control logic"
+    },
+    {
+      "id": "control_sequences",
+      "name": "Control Sequences",
+      "description": "Timed sequences, while loops, state machines, and batch recipes"
+    },
+    {
+      "id": "utilities",
+      "name": "Utilities",
+      "description": "Unit conversion and general tools"
+    }
+  ]
+}
