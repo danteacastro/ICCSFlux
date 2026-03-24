@@ -34,6 +34,16 @@ A Python-based, open-architecture alternative to LabVIEW for National Instrument
 - **Opto22 Node** (`services/opto22_node/`) — groov EPIC/RIO via groov Manage MQTT + REST
 - **CFP Node** (`services/cfp_node/`) — NI Compact FieldPoint via Modbus
 
+### Platform Maturity
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **NI cDAQ** (USB/Ethernet) | **Production** | Most mature. Continuous buffered acquisition, full channel type coverage, 72-hour soak tested. |
+| **NI cRIO** (Real-Time) | **Production** | Most mature remote platform. 81-test HIL suite, loopback-verified I/O, safety interlocks, hot-unplug resilient. |
+| **Opto22 groov EPIC/RIO** | Beta | CODESYS hybrid architecture works, Python fallback tested. Fewer field hours than cDAQ/cRIO. |
+| **NI Compact FieldPoint** | Beta | Modbus bridge functional, safety synced from cRIO. Legacy hardware support. |
+| **Modbus / OPC-UA / EtherNet-IP / REST** | Stable | Protocol readers tested, used as supplementary data sources alongside NI hardware. |
+
 **Dashboard** (`dashboard/`) — Vue 3 + TypeScript SPA: live data, 30+ widget types, trend charts, P&ID editor (50+ SCADA symbols), ISA-101 HMI controls, script editor, safety monitor, recording, and admin panel.
 
 **Portable Build** — PyInstaller compiles everything into `dist/ICCSFlux-Portable/` (~80 MB). Runs on any Windows PC without Python or Node.js.
@@ -217,8 +227,6 @@ python -m pytest tests/test_hardware_hil.py -v         # Hardware-in-the-loop, 4
 - [Remote Nodes Guide](docs/ICCSFlux_Remote_Nodes_Guide.md) — cRIO / Opto22 / CFP deployment
 - [Quick Reference](docs/ICCSFlux_Quick_Reference.md) — One-page cheat sheet
 - [AI Scripting Docs](docs/ai/) — Feed these to any AI to generate ICCSFlux scripts
-- [Safety Certification Roadmap](docs/Safety_Certification_Roadmap.md) — IEC 61511 / ISA-18.2 path
-- [Standards & Compliance](docs/Standards_and_Compliance.md) — Regulatory mapping
 
 ## License
 
