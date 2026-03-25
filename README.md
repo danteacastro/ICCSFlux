@@ -27,6 +27,7 @@ A Python-based, open-architecture alternative to LabVIEW for National Instrument
                             (additional data sources)
 ```
 <img width="1911" height="1016" alt="image" src="https://github.com/user-attachments/assets/e94bb34f-312d-49e3-8421-085e737c4c4d" />
+<img width="1911" height="1037" alt="image" src="https://github.com/user-attachments/assets/bab4d1c8-c227-40fb-83c3-f52af6bcc4b5" />
 
 **DAQ Service** (`services/daq_service/`, ~13k lines) — Reads NI hardware (or simulation), manages alarms (ISA-18.2), interlocks (IEC 61511), recording, scripting, PID loops, notifications, user variables, and publishes over MQTT.
 
