@@ -25,6 +25,67 @@
         </button>
       </div>
 
+
+      <!-- Stations Section -->
+      <div v-if="activeSection === 'stations'" class="section-panel">
+        <div class="panel-header">
+          <h3>Station Management</h3>
+          <span class="header-badge">{{ stationList.length }} / 3 stations</span>
+        </div>
+
+        <!-- Running Stations -->
+        <div v-if="stationList.length > 0" class="station-list">
+          <div v-for="station in stationList" :key="station.nodeId" class="station-card">
+            <div class="station-card-header">
+              <div>
+                <span class="station-name">{{ station.nodeName || station.nodeId }}</span>
+                <span class="station-badge" :class="station.status">{{ station.status }}</span>
+              </div>
+              <div class="station-actions">
+                <button class="btn-sm btn-primary" @click="openStationDashboard(station.nodeId)">Open Dashboard</button>
+                <button class="btn-sm btn-danger" @click="stopStation(station.nodeId)">Stop</button>
+              </div>
+            </div>
+            <div class="station-card-details">
+              <span>Project: <strong>{{ station.project }}</strong></span>
+              <span>Node ID: <code>{{ station.nodeId }}</code></span>
+              <span>Channels: {{ station.channels?.length || 0 }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          <p>No stations running. Create one below to run multiple projects on this chassis.</p>
+        </div>
+
+        <!-- Create Station -->
+        <div v-if="stationList.length < 3" class="create-station-form">
+          <h4>New Station</h4>
+          <div class="form-row">
+            <label>Project</label>
+            <select v-model="newStationProject">
+              <option value="">Select a project...</option>
+              <option v-for="p in availableProjects" :key="p" :value="p">{{ p }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Station Name</label>
+            <input v-model="newStationName" placeholder="e.g. Station A" />
+          </div>
+          <button
+            class="btn-primary"
+            :disabled="!newStationProject || stationCreating"
+            @click="createStation"
+          >
+            {{ stationCreating ? 'Creating...' : 'Create Station' }}
+          </button>
+          <p v-if="stationMessage" class="station-message">{{ stationMessage }}</p>
+        </div>
+
+        <div class="station-info-hint">
+          <p>Each station runs its own DAQ service process with isolated recording, alarms, and scripts. Open a station's dashboard in a new window for the full standalone experience.</p>
+        </div>
+      </div>
+
       <!-- Nodes Section -->
       <div v-if="activeSection === 'nodes'" class="section-panel">
         <NodeManagerPanel />
@@ -319,6 +380,126 @@
           </div>
         </div>
       </div>
+      <!-- Security Section (NIST 800-171 settings) -->
+      <div v-if="activeSection === 'security'" class="section-panel">
+        <div class="panel-header">
+          <h3>Security Settings</h3>
+          <span class="header-badge">NIST 800-171</span>
+        </div>
+        <p class="security-desc">
+          Enable NIST 800-171 / CMMC Level 2 compliance features. All features are disabled by default.
+          Changes are saved immediately and persist across restarts.
+        </p>
+
+        <!-- Session Lock -->
+        <div class="security-group">
+          <h4>Session Lock</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.session_lock_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Lock session after inactivity
+            </label>
+            <span class="toggle-desc">UI locks after timeout. Backend processes (acquisition, recording, safety) continue uninterrupted.</span>
+          </div>
+          <div v-if="securitySettings.session_lock_enabled" class="security-sub">
+            <div class="form-row-inline">
+              <label>Lock timeout</label>
+              <input type="number" v-model.number="securitySettings.session_lock_timeout_minutes" min="5" max="120" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Warning before lock</label>
+              <input type="number" v-model.number="securitySettings.session_lock_warning_minutes" min="1" :max="securitySettings.session_lock_timeout_minutes - 1" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Guest Access -->
+        <div class="security-group">
+          <h4>Access Control</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.guest_access_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Allow guest access (read-only, no login required)
+            </label>
+            <span class="toggle-desc">When disabled, users must log in to see any data. Required for NIST AC.L2-3.1.22.</span>
+          </div>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" :checked="securitySettings.max_concurrent_sessions > 0" @change="toggleSessionLimit" />
+              <span class="toggle-switch"></span>
+              Limit concurrent sessions
+            </label>
+            <span class="toggle-desc">Prevents unbounded session creation. Required for NIST CM.L2-3.4.7.</span>
+          </div>
+          <div v-if="securitySettings.max_concurrent_sessions > 0" class="security-sub">
+            <div class="form-row-inline">
+              <label>Max sessions</label>
+              <input type="number" v-model.number="securitySettings.max_concurrent_sessions" min="1" max="50" @change="saveSecuritySettings" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Audit & Integrity -->
+        <div class="security-group">
+          <h4>Audit & Integrity</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.audit_integrity_check_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Periodic audit trail integrity verification
+            </label>
+            <span class="toggle-desc">Verifies SHA-256 hash chain daily. Alerts on tampering. Required for NIST AU.L2-3.3.3.</span>
+          </div>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.ntp_sync_required" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              Require NTP time synchronization
+            </label>
+            <span class="toggle-desc">Warns if system clock is not NTP-synced. Required for NIST AU.L2-3.3.7.</span>
+          </div>
+        </div>
+
+        <!-- Anomaly Detection -->
+        <div class="security-group">
+          <h4>Anomaly Detection</h4>
+          <div class="security-toggle">
+            <label class="toggle-label">
+              <input type="checkbox" v-model="securitySettings.anomaly_detection_enabled" @change="saveSecuritySettings" />
+              <span class="toggle-switch"></span>
+              MQTT anomaly detection and security monitoring
+            </label>
+            <span class="toggle-desc">Detects command floods, brute-force login attempts, and unknown topics. Required for NIST SC.L2-3.13.1 / SI.L2-3.14.6.</span>
+          </div>
+          <div v-if="securitySettings.anomaly_detection_enabled" class="security-sub">
+            <div class="form-row-inline">
+              <label>Command rate limit</label>
+              <input type="number" v-model.number="securitySettings.anomaly_command_rate_limit" min="50" max="1000" @change="saveSecuritySettings" />
+              <span>per minute</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Failed login limit</label>
+              <input type="number" v-model.number="securitySettings.anomaly_failed_login_rate_limit" min="3" max="50" @change="saveSecuritySettings" />
+              <span>per minute</span>
+            </div>
+            <div class="form-row-inline">
+              <label>Security summary interval</label>
+              <input type="number" v-model.number="securitySettings.security_summary_interval_minutes" min="1" max="60" @change="saveSecuritySettings" />
+              <span>minutes</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- NIST Preset -->
+        <div class="security-actions">
+          <button class="btn-secondary" @click="resetSecurityDefaults">Reset to Defaults (all off)</button>
+          <button class="btn-primary" @click="enableNistPreset">Enable All (NIST 800-171)</button>
+        </div>
+      </div>
     </div>
 
     <!-- Create/Edit User Dialog -->
@@ -455,7 +636,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useAuth, type User, type AuditEvent, type ArchiveEntry } from '../composables/useAuth'
 import { useBrokerConfig } from '../composables/useBrokerConfig'
 import { useMqtt } from '../composables/useMqtt'
@@ -480,7 +661,8 @@ const {
   exportAuditEvents,
   listArchives,
   verifyArchive,
-  retrieveArchive
+  retrieveArchive,
+  reloadSecuritySettings
 } = useAuth()
 
 // Supervisors can view audit/archives, admins can manage users
@@ -489,16 +671,18 @@ const canManageUsers = computed(() => isAdmin.value)
 
 // Section navigation - filtered by permissions
 const allSections = [
+  { id: 'stations', icon: '🏭', label: 'Stations', requiresAdmin: false },
   { id: 'nodes', icon: '🖥️', label: 'Nodes', requiresAdmin: false },
   { id: 'users', icon: '👥', label: 'Users', requiresAdmin: true },
   { id: 'audit', icon: '📋', label: 'Audit Trail', requiresAdmin: false },
   { id: 'archives', icon: '📦', label: 'Archives', requiresAdmin: false },
   { id: 'settings', icon: '⚙️', label: 'Settings', requiresAdmin: false },
+  { id: 'security', icon: '🛡️', label: 'Security', requiresAdmin: true },
 ]
 const sections = computed(() =>
   allSections.filter(s => !s.requiresAdmin || canManageUsers.value)
 )
-const activeSection = ref(canManageUsers.value ? 'users' : 'nodes')
+const activeSection = ref('stations')
 
 // User management state
 const showCreateUserDialog = ref(false)
@@ -627,6 +811,87 @@ function resetBrokerToLocal() {
 }
 
 // ============================================================================
+// STATION MANAGEMENT
+// ============================================================================
+
+const stationRegistry = computed(() => mqttClient.stationRegistry?.value || {})
+const stationList = computed(() => Object.values(stationRegistry.value))
+
+// New station form
+const newStationProject = ref('')
+const newStationName = ref('')
+const stationCreating = ref(false)
+const stationMessage = ref('')
+let stationCleanup: (() => void) | null = null
+
+// Available projects (from project list topic)
+const availableProjects = ref<string[]>([])
+let projectListCleanup: (() => void) | null = null
+
+function subscribeStationTopics() {
+  // Listen for station command responses
+  stationCleanup = mqttClient.subscribe('nisystem/station/response', (payload: any) => {
+    stationCreating.value = false
+    stationMessage.value = payload.message || ''
+    setTimeout(() => { stationMessage.value = '' }, 5000)
+  }) as any
+
+  // Listen for project list
+  projectListCleanup = mqttClient.subscribe('nisystem/nodes/+/project/list', (payload: any) => {
+    if (Array.isArray(payload)) {
+      availableProjects.value = payload.map((p: any) => typeof p === 'string' ? p : p.filename || p.name || '')
+        .filter((n: string) => n)
+    } else if (payload?.projects) {
+      availableProjects.value = payload.projects.map((p: any) => typeof p === 'string' ? p : p.filename || p.name || '')
+        .filter((n: string) => n)
+    }
+  }) as any
+
+  // Request project list
+  mqttClient.sendNodeCommand('project/list', {})
+}
+
+function createStation() {
+  if (!newStationProject.value || stationCreating.value) return
+  stationCreating.value = true
+  stationMessage.value = 'Creating station...'
+
+  const payload: Record<string, string> = {
+    project: newStationProject.value,
+    name: newStationName.value || `Station ${stationList.value.length + 1}`,
+  }
+
+  mqttClient.sendNodeCommand('station/create', payload, '__broadcast__')
+  // The station/create topic is not node-scoped, publish directly
+  if (mqttClient.connected?.value) {
+    const client = (mqttClient as any).client?.value
+    if (client) {
+      client.publish('nisystem/station/create', JSON.stringify(payload), { qos: 1 })
+    }
+  }
+
+  setTimeout(() => {
+    if (stationCreating.value) {
+      stationCreating.value = false
+      stationMessage.value = 'Timeout — no response from station manager'
+    }
+  }, 10000)
+}
+
+function stopStation(stationId: string) {
+  if (!confirm(`Stop station '${stationId}'? Its DAQ service will be terminated.`)) return
+  const client = (mqttClient as any).client?.value
+  if (client) {
+    client.publish('nisystem/station/stop', JSON.stringify({ station_id: stationId }), { qos: 1 })
+  }
+}
+
+function openStationDashboard(nodeId: string) {
+  const url = `${window.location.origin}${window.location.pathname}?node=${nodeId}`
+  window.open(url, `station_${nodeId}`)
+}
+
+// ============================================================================
 // LIFECYCLE
 // ============================================================================
 
@@ -637,7 +902,13 @@ onMounted(() => {
     }
     queryAuditEvents({ limit: 100 })
     listArchives()
+    subscribeStationTopics()
   }
+})
+
+onUnmounted(() => {
+  if (stationCleanup) stationCleanup()
+  if (projectListCleanup) projectListCleanup()
 })
 
 // ============================================================================
@@ -811,6 +1082,97 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+// ============================================================================
+// SECURITY SETTINGS (NIST 800-171)
+// ============================================================================
+
+const SECURITY_SETTINGS_KEY = 'nisystem-security-settings'
+
+interface SecuritySettings {
+  session_lock_enabled: boolean
+  session_lock_timeout_minutes: number
+  session_lock_warning_minutes: number
+  max_concurrent_sessions: number
+  guest_access_enabled: boolean
+  failed_login_lockout_attempts: number
+  failed_login_lockout_minutes: number
+  audit_integrity_check_enabled: boolean
+  audit_integrity_check_interval_hours: number
+  ntp_sync_required: boolean
+  anomaly_detection_enabled: boolean
+  anomaly_command_rate_limit: number
+  anomaly_failed_login_rate_limit: number
+  security_summary_interval_minutes: number
+}
+
+const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
+  session_lock_enabled: false,
+  session_lock_timeout_minutes: 30,
+  session_lock_warning_minutes: 25,
+  max_concurrent_sessions: 0,
+  guest_access_enabled: true,
+  failed_login_lockout_attempts: 5,
+  failed_login_lockout_minutes: 15,
+  audit_integrity_check_enabled: false,
+  audit_integrity_check_interval_hours: 24,
+  ntp_sync_required: false,
+  anomaly_detection_enabled: false,
+  anomaly_command_rate_limit: 200,
+  anomaly_failed_login_rate_limit: 10,
+  security_summary_interval_minutes: 5,
+}
+
+function loadSecuritySettings(): SecuritySettings {
+  try {
+    const saved = localStorage.getItem(SECURITY_SETTINGS_KEY)
+    if (saved) return { ...DEFAULT_SECURITY_SETTINGS, ...JSON.parse(saved) }
+  } catch { /* ignore */ }
+  return { ...DEFAULT_SECURITY_SETTINGS }
+}
+
+const securitySettings = ref<SecuritySettings>(loadSecuritySettings())
+
+function saveSecuritySettings() {
+  localStorage.setItem(SECURITY_SETTINGS_KEY, JSON.stringify(securitySettings.value))
+  // Notify useAuth to pick up changes (guest access, session lock)
+  reloadSecuritySettings()
+  // Publish to backend so DAQ service can apply the settings
+  if (mqttClient.connected?.value) {
+    mqttClient.sendNodeCommand('settings/security', securitySettings.value)
+  }
+}
+
+function toggleSessionLimit(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  securitySettings.value.max_concurrent_sessions = checked ? 10 : 0
+  saveSecuritySettings()
+}
+
+function resetSecurityDefaults() {
+  securitySettings.value = { ...DEFAULT_SECURITY_SETTINGS }
+  saveSecuritySettings()
+}
+
+function enableNistPreset() {
+  securitySettings.value = {
+    session_lock_enabled: true,
+    session_lock_timeout_minutes: 30,
+    session_lock_warning_minutes: 25,
+    max_concurrent_sessions: 10,
+    guest_access_enabled: false,
+    failed_login_lockout_attempts: 5,
+    failed_login_lockout_minutes: 15,
+    audit_integrity_check_enabled: true,
+    audit_integrity_check_interval_hours: 24,
+    ntp_sync_required: true,
+    anomaly_detection_enabled: true,
+    anomaly_command_rate_limit: 200,
+    anomaly_failed_login_rate_limit: 10,
+    security_summary_interval_minutes: 5,
+  }
+  saveSecuritySettings()
 }
 </script>
 
@@ -1468,4 +1830,286 @@ function formatBytes(bytes: number): string {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Station Management */
+.station-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.station-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--bg-hover);
+}
+
+.station-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.station-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  margin-right: 8px;
+}
+
+.station-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.station-badge.running { background: rgba(40, 167, 69, 0.2); color: #4cd964; }
+.station-badge.starting { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.station-badge.stopped { background: rgba(108, 117, 125, 0.2); color: #adb5bd; }
+.station-badge.error { background: rgba(220, 53, 69, 0.2); color: #ff6b6b; }
+
+.station-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-sm.btn-primary {
+  background: var(--color-accent);
+  color: white;
+}
+
+.btn-sm.btn-primary:hover {
+  background: var(--color-accent-light);
+}
+
+.btn-sm.btn-danger {
+  background: var(--color-error-dark);
+  color: white;
+}
+
+.btn-sm.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.station-card-details {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.station-card-details code {
+  font-size: 0.75rem;
+  background: var(--bg-widget);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.empty-state {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.create-station-form {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-widget);
+  margin-bottom: 16px;
+}
+
+.create-station-form h4 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.form-row label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.form-row input,
+.form-row select {
+  padding: 8px 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-row input:focus,
+.form-row select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.station-message {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--color-accent);
+}
+
+.station-info-hint {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.station-info-hint p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.header-badge {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-muted);
+}
+
+/* Security Settings Section */
+.security-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.security-group {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: var(--bg-widget);
+}
+
+.security-group h4 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.security-toggle {
+  margin-bottom: 12px;
+}
+
+.security-toggle:last-child {
+  margin-bottom: 0;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle-desc {
+  display: block;
+  margin-top: 4px;
+  margin-left: 28px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.security-sub {
+  margin-top: 12px;
+  margin-left: 28px;
+  padding: 12px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.form-row-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.form-row-inline:last-child {
+  margin-bottom: 0;
+}
+
+.form-row-inline label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  min-width: 160px;
+}
+
+.form-row-inline input[type="number"] {
+  width: 80px;
+  padding: 6px 8px;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.form-row-inline input[type="number"]:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.form-row-inline span {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.security-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
 </style>

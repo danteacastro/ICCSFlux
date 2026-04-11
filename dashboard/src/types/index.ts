@@ -52,6 +52,20 @@ export type ChannelType =
  */
 export type ProjectMode = 'cdaq' | 'crio' | 'opto22' | 'cfp'
 
+/** Summary of a loaded project in station management. Matches backend ProjectContext.to_summary(). */
+export interface ProjectSummary {
+  projectId: string
+  projectName: string
+  projectPath: string
+  status: string
+  acquiring: boolean
+  recording: boolean
+  channelCount: number
+  channelConflicts: Record<string, string[]>
+  colorIndex: number
+  loadedAt: string
+}
+
 export type WidgetType =
   | 'numeric'
   | 'gauge'
@@ -152,6 +166,7 @@ export interface ChannelConfig {
   gage_factor?: number         // Alias for strain_gage_factor (UI)
   strain_resistance?: number   // Nominal gage resistance in Ohms (default 350)
   nominal_resistance?: number  // Bridge nominal resistance (default 350)
+  poisson_ratio?: number       // Poisson's ratio for quarter-bridge correction
 
   // IEPE-specific
   iepe_coupling?: 'AC' | 'DC'
@@ -162,7 +177,7 @@ export interface ChannelConfig {
   excitation_current?: number  // Alias for iepe_current (UI)
 
   // Counter-specific
-  counter_mode?: 'count_edges' | 'count' | 'frequency' | 'period' | 'pulse_width'
+  counter_mode?: 'count' | 'frequency' | 'period'
   edge?: 'rising' | 'falling'
   counter_edge?: 'rising' | 'falling'  // Backend uses this name
   initial_count?: number       // Initial counter value (default 0)
@@ -226,6 +241,10 @@ export interface ChannelConfig {
   invert?: boolean
   default_value?: number
   default_state?: boolean
+  digital_alarm_enabled?: boolean    // Enable DI state alarm
+  digital_expected_state?: 'HIGH' | 'LOW'  // Expected normal state
+  digital_debounce_ms?: number       // Debounce time in ms
+  digital_invert?: boolean           // Invert DI for alarm (NC sensors)
 
   // Safety
   safety_action?: string
@@ -508,7 +527,7 @@ export interface BackendRecordingConfig {
   schedule_days: string[]
   // File reuse
   reuse_file: boolean
-  // ALCOA+ (FDA 21 CFR Part 11)
+  // Data Integrity (NIST 800-171)
   append_only: boolean
   verify_on_close: boolean
   include_audit_metadata: boolean

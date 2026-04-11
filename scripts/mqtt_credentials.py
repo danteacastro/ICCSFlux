@@ -28,12 +28,34 @@ PASSWD_FILE = os.path.join(PROJECT_ROOT, 'config', 'mosquitto_passwd')
 ENV_FILE = os.path.join(PROJECT_ROOT, 'dashboard', '.env.local')
 
 
+def _restrict_file_permissions(filepath: str) -> None:
+    """Restrict file to owner-only access (NIST 800-171 SC.L2-3.13.16).
+
+    On Unix: chmod 600.
+    On Windows: icacls to remove inheritance and grant only current user.
+    """
+    if os.name != 'nt':
+        os.chmod(filepath, 0o600)
+    else:
+        try:
+            import subprocess
+            username = os.environ.get('USERNAME', '')
+            if username:
+                subprocess.run(
+                    ['icacls', filepath, '/inheritance:r',
+                     '/grant:r', f'{username}:(R,W)'],
+                    capture_output=True, timeout=10
+                )
+        except Exception as e:
+            print(f"[MQTT] WARNING: Could not restrict permissions on {filepath}: {e}")
+
+
 def generate_password(length: int = 24) -> str:
     """Generate a cryptographically secure random password."""
     return secrets.token_urlsafe(length)
 
 
-def hash_mosquitto_password(password: str, iterations: int = 101) -> str:
+def hash_mosquitto_password(password: str, iterations: int = 100000) -> str:
     """
     Generate a mosquitto-compatible PBKDF2-SHA512 password hash.
 
@@ -131,9 +153,7 @@ def write_mosquitto_passwd(users: dict, passwd_file: str = None) -> None:
     with open(pf, 'w', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
 
-    # Restrict file permissions on non-Windows
-    if os.name != 'nt':
-        os.chmod(pf, 0o600)
+    _restrict_file_permissions(pf)
 
 
 def write_dashboard_env(username: str, password: str) -> None:
@@ -201,8 +221,7 @@ def main() -> int:
     os.makedirs(os.path.dirname(CRED_FILE), exist_ok=True)
     with open(CRED_FILE, 'w') as f:
         json.dump(creds, f, indent=2)
-    if os.name != 'nt':
-        os.chmod(CRED_FILE, 0o600)
+    _restrict_file_permissions(CRED_FILE)
     print(f"[MQTT]   Credentials saved: {CRED_FILE}")
 
     # 2. Write derived files (passwd + dashboard env)

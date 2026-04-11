@@ -67,6 +67,12 @@ MAX_PRE_TRIGGER_SAMPLES = 10000
 # Minimum free disk space required to start recording (100 MB)
 MIN_FREE_DISK_BYTES = 100 * 1024 * 1024
 
+# Critical free disk space — stop recording immediately (50 MB)
+CRITICAL_FREE_DISK_BYTES = 50 * 1024 * 1024
+
+# Check disk space every N samples (avoid calling shutil.disk_usage() on every write)
+DISK_CHECK_INTERVAL_SAMPLES = 100
+
 
 def _get_default_data_path() -> str:
     """Get platform-appropriate default data path relative to project root"""
@@ -116,7 +122,7 @@ class RecordingConfig:
     # File Reuse
     reuse_file: bool = False  # If True, stop/start appends to the same file instead of creating new
 
-    # ALCOA+ Data Integrity Settings
+    # Data Integrity Settings (NIST 800-171 Audit & Accountability)
     append_only: bool = False  # If True, files become read-only once recording stops
     verify_on_close: bool = True  # Compute and store checksum when file closes
     include_audit_metadata: bool = True  # Include operator, timestamps, session info
@@ -664,6 +670,29 @@ class RecordingManager:
 
             # Write the sample
             self._write_row(filtered_values, channel_configs)
+
+            # Periodic disk space check
+            if self.samples_written % DISK_CHECK_INTERVAL_SAMPLES == 0:
+                try:
+                    usage = shutil.disk_usage(self._get_output_directory())
+                    if usage.free < CRITICAL_FREE_DISK_BYTES:
+                        logger.critical(
+                            f"Disk space critically low ({usage.free / (1024*1024):.1f} MB free) "
+                            f"— stopping recording to prevent data loss"
+                        )
+                        self.lock.release()
+                        try:
+                            self.stop()
+                        finally:
+                            self.lock.acquire()
+                        return
+                    elif usage.free < MIN_FREE_DISK_BYTES:
+                        logger.warning(
+                            f"Disk space low ({usage.free / (1024*1024):.1f} MB free) "
+                            f"— approaching minimum threshold"
+                        )
+                except OSError as e:
+                    logger.warning(f"Disk space check failed: {e}")
 
             # Check file limits (may signal need to notify)
             should_notify = self._check_file_limits()

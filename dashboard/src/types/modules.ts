@@ -188,7 +188,7 @@ export interface AnalogOutputConfig {
 // =============================================================================
 // COUNTER/TIMER MODULES (NI-9361)
 // =============================================================================
-export type CounterMode = 'count_edges' | 'pulse_width' | 'frequency' | 'period' | 'position'
+export type CounterMode = 'count' | 'frequency' | 'period'
 
 export type CounterEdge = 'rising' | 'falling' | 'both'
 

@@ -94,6 +94,7 @@ vi.mock('../stores/dashboard', () => {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } },
       get isAcquiring() { return mockIsAcquiring.value }
     })
   }

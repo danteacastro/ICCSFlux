@@ -2,7 +2,7 @@
 """
 Configuration Audit Trail for NISystem
 
-Provides 21 CFR Part 11 / ALCOA+ compliant audit trail for:
+Provides NIST 800-171 compliant audit trail for:
 - Configuration changes (channels, safety, system settings)
 - Project load/save operations
 - Critical operator actions (alarm ack, safety changes, recording)
@@ -15,8 +15,8 @@ Features:
 - Automatic log rotation with retention
 
 References:
-- FDA 21 CFR Part 11 (Electronic Records)
-- ALCOA+ Data Integrity Principles
+- NIST 800-171 Section 3.3 (Audit and Accountability)
+- CMMC Level 2 (AU.L2-3.3.1, AU.L2-3.3.2)
 - ISA-18.2 Alarm Management (audit requirements)
 """
 
@@ -32,6 +32,8 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import shutil
 import gzip
+import subprocess
+import platform
 
 logger = logging.getLogger('AuditTrail')
 
@@ -96,6 +98,12 @@ class AuditEventType(Enum):
     SYSTEM_SHUTDOWN = "system.shutdown"
     SYSTEM_ERROR = "system.error"
 
+    # Security events (NIST 800-171 AU.L2-3.3.3, SC.L2-3.13.1, SI.L2-3.14.6)
+    SECURITY_ANOMALY = "security.anomaly"
+    SECURITY_INTEGRITY_FAILURE = "security.integrity.failure"
+    SECURITY_BRUTE_FORCE = "security.brute_force"
+    SECURITY_COMMAND_FLOOD = "security.command_flood"
+
 
 @dataclass
 class AuditEntry:
@@ -137,13 +145,17 @@ class AuditTrail:
                  audit_dir: Path,
                  node_id: str = "default",
                  retention_days: int = 365,
-                 max_file_size_mb: float = 50.0):
+                 max_file_size_mb: float = 50.0,
+                 witness_callback=None,
+                 on_integrity_failure=None):
         self.audit_dir = Path(audit_dir)
         self.audit_dir.mkdir(parents=True, exist_ok=True)
 
         self.node_id = node_id
         self.retention_days = retention_days
         self.max_file_size_mb = max_file_size_mb
+        self._witness_callback = witness_callback
+        self._on_integrity_failure = on_integrity_failure
 
         self.lock = threading.RLock()
         self.sequence = 0
@@ -153,6 +165,13 @@ class AuditTrail:
         # Load state from existing log
         self._initialize_from_existing()
 
+        # NIST 800-171 Phase 2.3: Verify NTP time source
+        self.ntp_status = self.check_ntp_status()
+        if self.ntp_status.get('synced'):
+            logger.info(f"NTP synced, offset: {self.ntp_status.get('offset_ms', '?')}ms")
+        else:
+            logger.warning("NTP not synchronized — audit timestamps may be inaccurate")
+
         # Log startup
         self.log_event(
             event_type=AuditEventType.SYSTEM_STARTUP,
@@ -160,6 +179,98 @@ class AuditTrail:
             description="Audit trail initialized",
             details={"node_id": node_id, "retention_days": retention_days}
         )
+
+    def check_ntp_status(self) -> Dict[str, Any]:
+        """
+        Check NTP synchronization status (NIST 800-171 Phase 2.3).
+
+        On Windows: runs 'w32tm /query /status' and parses clock offset.
+        On Linux: runs 'ntpq -p' and checks for a synced peer (line starting with '*').
+
+        Returns:
+            dict with keys: synced (bool), offset_ms (float|None),
+            source (str|None), error (str|None)
+        """
+        result: Dict[str, Any] = {
+            "synced": False,
+            "offset_ms": None,
+            "source": None,
+            "error": None,
+        }
+        try:
+            if platform.system() == "Windows":
+                proc = subprocess.run(
+                    ["w32tm", "/query", "/status"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if proc.returncode != 0:
+                    result["error"] = proc.stderr.strip() or f"w32tm exited with code {proc.returncode}"
+                    return result
+
+                output = proc.stdout
+                for line in output.splitlines():
+                    line_stripped = line.strip()
+                    # Parse source
+                    if line_stripped.lower().startswith("source:"):
+                        result["source"] = line_stripped.split(":", 1)[1].strip()
+                    # Parse phase offset (reported in seconds by some locales, or as 'Phase Offset')
+                    if "phase offset" in line_stripped.lower():
+                        # e.g. "Phase Offset: 0.0012345s" or "Phase Offset: 1.23e-003s"
+                        parts = line_stripped.split(":", 1)
+                        if len(parts) == 2:
+                            val_str = parts[1].strip().rstrip("s").strip()
+                            try:
+                                offset_s = float(val_str)
+                                result["offset_ms"] = round(offset_s * 1000.0, 3)
+                            except ValueError:
+                                pass
+
+                # Consider synced if we have a source that isn't 'Free Running' or 'Local CMOS Clock'
+                source = (result["source"] or "").lower()
+                if result["source"] and "free running" not in source and "local cmos" not in source:
+                    result["synced"] = True
+
+            else:
+                # Linux / other POSIX
+                proc = subprocess.run(
+                    ["ntpq", "-p"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if proc.returncode != 0:
+                    result["error"] = proc.stderr.strip() or f"ntpq exited with code {proc.returncode}"
+                    return result
+
+                for line in proc.stdout.splitlines():
+                    if line.startswith("*"):
+                        # Synced peer line: *source  refid  st  t  when  poll  reach  delay  offset  jitter
+                        result["synced"] = True
+                        fields = line[1:].split()
+                        if fields:
+                            result["source"] = fields[0]
+                        # offset is typically the 9th field (index 8)
+                        if len(fields) >= 9:
+                            try:
+                                result["offset_ms"] = round(float(fields[8]), 3)
+                            except ValueError:
+                                pass
+                        break
+
+                if not result["synced"]:
+                    result["error"] = "No synced NTP peer found"
+
+        except FileNotFoundError:
+            result["error"] = "NTP query tool not found (w32tm or ntpq)"
+        except subprocess.TimeoutExpired:
+            result["error"] = "NTP status query timed out"
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
+
+    @property
+    def ntp_synced(self) -> bool:
+        """Return whether NTP was synchronized at startup."""
+        return self.ntp_status.get('synced', False)
 
     def _initialize_from_existing(self):
         """Load sequence and hash chain from existing log file"""
@@ -287,6 +398,20 @@ class AuditTrail:
 
             entry = AuditEntry.from_dict(entry_dict)
 
+            # External witness — publish hash digest for independent verification
+            if self._witness_callback:
+                try:
+                    self._witness_callback({
+                        'sequence': entry.sequence,
+                        'timestamp': entry.timestamp,
+                        'event_type': entry.event_type,
+                        'entry_hash': entry_hash,
+                        'previous_hash': entry.previous_hash,
+                        'node_id': self.node_id,
+                    })
+                except Exception:
+                    pass  # Witness failure must never block audit logging
+
             logger.debug(f"Audit [{self.sequence}] {event_type.value if isinstance(event_type, AuditEventType) else event_type}: {description}")
 
             return entry
@@ -391,6 +516,19 @@ class AuditTrail:
             logger.error(f"Audit trail integrity check FAILED: {len(errors)} errors")
             for error in errors[:10]:  # Log first 10 errors
                 logger.error(f"  - {error}")
+
+            # NIST 800-171 AU.L2-3.3.3: Alert on integrity failure
+            self.log_event(
+                event_type=AuditEventType.SECURITY_INTEGRITY_FAILURE,
+                user="SYSTEM",
+                description=f"Audit trail integrity check FAILED: {len(errors)} errors in {entries_checked} entries",
+                details={"errors": errors[:20], "entries_checked": entries_checked}
+            )
+            if self._on_integrity_failure:
+                try:
+                    self._on_integrity_failure(errors, entries_checked)
+                except Exception:
+                    pass  # Callback failure must never block verification
 
         return is_valid, errors, entries_checked
 

@@ -51,14 +51,12 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Initial State', () => {
-    it('should not be authenticated initially', () => {
+    it('should not be authenticated initially (login required)', () => {
       expect(auth.authenticated.value).toBe(false)
     })
 
-    it('should have default guest user initially', () => {
-      // useAuth provides a default guest user when not authenticated
-      expect(auth.currentUser.value).toBeTruthy()
-      expect(auth.currentUser.value?.role).toBe('guest')
+    it('should have no user initially (guest access disabled by default)', () => {
+      expect(auth.currentUser.value).toBeNull()
     })
 
     it('should have no auth error initially', () => {
@@ -91,19 +89,23 @@ describe('useAuth', () => {
   // ===========================================================================
 
   describe('Permission Helpers', () => {
-    it('isAdmin should return false when not authenticated', () => {
+    it('isAdmin should return false when not logged in', () => {
       expect(auth.isAdmin.value).toBe(false)
     })
 
-    it('isSupervisor should return false when not authenticated', () => {
+    it('isSupervisor should return false when not logged in', () => {
       expect(auth.isSupervisor.value).toBe(false)
     })
 
-    it('isOperator should return false when not authenticated', () => {
+    it('isOperator should return false when not logged in', () => {
       expect(auth.isOperator.value).toBe(false)
     })
 
-    it('hasPermission should return false when not authenticated', () => {
+    it('isGuest should return false when not logged in (no guest role)', () => {
+      expect(auth.isGuest.value).toBe(false)
+    })
+
+    it('hasPermission should return false when not logged in', () => {
       expect(auth.hasPermission('VIEW_DATA')).toBe(false)
     })
   })
@@ -156,12 +158,12 @@ describe('useAuth', () => {
       )
     })
 
-    it('should clear authentication state on logout', () => {
+    it('should be unauthenticated after logout (no guest fallback)', () => {
       auth.logout()
 
-      // Logout returns to guest user (not null)
+      // Guest access is OFF by default — logout means no access
       expect(auth.authenticated.value).toBe(false)
-      expect(auth.currentUser.value?.role).toBe('guest')
+      expect(auth.currentUser.value).toBeNull()
     })
   })
 
@@ -396,6 +398,153 @@ describe('useAuth', () => {
       expect(Array.isArray(auth.archives.value)).toBe(true)
     })
   })
+
+  // ===========================================================================
+  // SECURITY SETTINGS TESTS
+  // ===========================================================================
+
+  describe('Security Settings', () => {
+    it('should expose guestAccessEnabled as readonly ref', () => {
+      expect(auth.guestAccessEnabled).toBeDefined()
+      expect(typeof auth.guestAccessEnabled.value).toBe('boolean')
+    })
+
+    it('should expose sessionLockEnabled as readonly ref', () => {
+      expect(auth.sessionLockEnabled).toBeDefined()
+      expect(typeof auth.sessionLockEnabled.value).toBe('boolean')
+    })
+
+    it('should have guest access disabled by default', () => {
+      expect(auth.guestAccessEnabled.value).toBe(false)
+    })
+
+    it('should have session lock disabled by default', () => {
+      expect(auth.sessionLockEnabled.value).toBe(false)
+    })
+
+    it('should expose reloadSecuritySettings function', () => {
+      expect(typeof auth.reloadSecuritySettings).toBe('function')
+    })
+
+    it('should expose session lock state', () => {
+      expect(auth.sessionState).toBeDefined()
+      expect(auth.sessionState.value).toBe('active')
+    })
+
+    it('should expose isSessionLocked computed', () => {
+      expect(auth.isSessionLocked).toBeDefined()
+      expect(auth.isSessionLocked.value).toBe(false)
+    })
+
+    it('should expose sessionLockWarning ref', () => {
+      expect(auth.sessionLockWarning).toBeDefined()
+      expect(auth.sessionLockWarning.value).toBe(false)
+    })
+
+    it('reloadSecuritySettings should read from localStorage', () => {
+      // Save guest_access_enabled=false to localStorage
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: false,
+        session_lock_enabled: true,
+        session_lock_timeout_minutes: 15,
+        session_lock_warning_minutes: 10
+      }))
+
+      auth.reloadSecuritySettings()
+
+      expect(auth.guestAccessEnabled.value).toBe(false)
+      expect(auth.sessionLockEnabled.value).toBe(true)
+
+      // Cleanup
+      localStorage.removeItem('nisystem-security-settings')
+    })
+
+    it('reloadSecuritySettings should force login when guest access disabled and user is guest', () => {
+      // Ensure we start as guest by re-enabling guest access first
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: true
+      }))
+      auth.reloadSecuritySettings()
+      expect(auth.currentUser.value?.role).toBe('guest')
+
+      // Now disable guest access
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: false
+      }))
+
+      auth.reloadSecuritySettings()
+
+      // Should no longer be authenticated
+      expect(auth.authenticated.value).toBe(false)
+      expect(auth.currentUser.value).toBeNull()
+
+      // Cleanup — re-enable guest
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: true
+      }))
+      auth.reloadSecuritySettings()
+      localStorage.removeItem('nisystem-security-settings')
+    })
+
+    it('reloadSecuritySettings should restore guest when guest access re-enabled', () => {
+      // Disable guest access first
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: false
+      }))
+      auth.reloadSecuritySettings()
+      expect(auth.currentUser.value).toBeNull()
+
+      // Re-enable guest access
+      localStorage.setItem('nisystem-security-settings', JSON.stringify({
+        guest_access_enabled: true
+      }))
+      auth.reloadSecuritySettings()
+
+      expect(auth.authenticated.value).toBe(true)
+      expect(auth.currentUser.value?.role).toBe('guest')
+
+      // Cleanup
+      localStorage.removeItem('nisystem-security-settings')
+    })
+
+    it('should gracefully handle missing localStorage data', () => {
+      localStorage.removeItem('nisystem-security-settings')
+      auth.reloadSecuritySettings()
+
+      // Defaults should apply (guest OFF)
+      expect(auth.guestAccessEnabled.value).toBe(false)
+      expect(auth.sessionLockEnabled.value).toBe(false)
+    })
+
+    it('should gracefully handle corrupted localStorage data', () => {
+      localStorage.setItem('nisystem-security-settings', '{invalid json')
+      auth.reloadSecuritySettings()
+
+      // Should fall back to defaults (guest OFF)
+      expect(auth.guestAccessEnabled.value).toBe(false)
+      expect(auth.sessionLockEnabled.value).toBe(false)
+
+      // Cleanup
+      localStorage.removeItem('nisystem-security-settings')
+    })
+  })
+
+  // ===========================================================================
+  // UNLOCK SESSION TESTS
+  // ===========================================================================
+
+  describe('Session Unlock', () => {
+    it('should expose unlockSession function', () => {
+      expect(typeof auth.unlockSession).toBe('function')
+    })
+
+    it('should fail unlock when MQTT not connected', async () => {
+      mockMqtt.connected.value = false
+      const result = await auth.unlockSession('password')
+      expect(result).toBe(false)
+      mockMqtt.connected.value = true  // Restore
+    })
+  })
 })
 
 // ===========================================================================
@@ -410,8 +559,10 @@ describe('Auth Flow Integration', () => {
       // Auth actions
       expect(typeof auth.login).toBe('function')
       expect(typeof auth.logout).toBe('function')
+      expect(typeof auth.unlockSession).toBe('function')
       expect(typeof auth.requestAuthStatus).toBe('function')
       expect(typeof auth.onAuthChange).toBe('function')
+      expect(typeof auth.reloadSecuritySettings).toBe('function')
 
       // User management actions
       expect(typeof auth.listUsers).toBe('function')
@@ -435,6 +586,8 @@ describe('Auth Flow Integration', () => {
       expect(auth.isAdmin).toBeDefined()
       expect(auth.isSupervisor).toBeDefined()
       expect(auth.isOperator).toBeDefined()
+      expect(auth.isGuest).toBeDefined()
+      expect(auth.isSessionLocked).toBeDefined()
       expect(typeof auth.hasPermission).toBe('function')
     })
 
@@ -446,6 +599,14 @@ describe('Auth Flow Integration', () => {
       expect(auth.currentUser).toBeDefined()
       expect(auth.authError).toBeDefined()
       expect(auth.isLoggingIn).toBeDefined()
+
+      // Session lock state
+      expect(auth.sessionState).toBeDefined()
+      expect(auth.sessionLockWarning).toBeDefined()
+
+      // Security settings state
+      expect(auth.guestAccessEnabled).toBeDefined()
+      expect(auth.sessionLockEnabled).toBeDefined()
 
       // User management state
       expect(auth.users).toBeDefined()

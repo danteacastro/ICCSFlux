@@ -1,4 +1,4 @@
-# GTI Energy - H2-Ready Boiler Combustion Research
+# ICCSFlux - H2-Ready Boiler Combustion Research
 # Realistic Data Simulator
 #
 # Generates plausible operating data for demo/screenshots.
@@ -54,7 +54,7 @@ outputs.Burner_Firing_Rate = firing_rate
 outputs.H2_Blend_Setpoint = h2_blend
 outputs.Air_Damper_Pos = 60
 
-print("=== GTI Boiler Simulator Starting ===")
+print("=== ICCSFlux Boiler Simulator Starting ===")
 print(f"Initial firing rate: {firing_rate}%")
 print(f"Initial H2 blend: {h2_blend}%")
 

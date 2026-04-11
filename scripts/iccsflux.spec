@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(SPECPATH).parent
 
 a = Analysis(
     [str(PROJECT_ROOT / 'scripts' / 'ICCSFlux_exe.py')],
-    pathex=[],
+    pathex=[str(PROJECT_ROOT / 'scripts')],
     binaries=[],
     datas=[
         (str(PROJECT_ROOT / 'scripts' / 'generate_tls_certs.py'), 'scripts'),
@@ -18,6 +18,7 @@ a = Analysis(
         (str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'), '.'),
     ],
     hiddenimports=[
+        'station_manager',
         'os',
         'sys',
         'subprocess',

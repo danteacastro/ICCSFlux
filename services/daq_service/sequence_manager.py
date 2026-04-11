@@ -153,6 +153,9 @@ class SequenceManager:
     - on_sequence_event(event_type, sequence): Called on sequence state changes
     """
 
+    MAX_SEQUENCES = 50              # NIST 800-171 resource limit
+    MAX_STEPS_PER_SEQUENCE = 500    # NIST 800-171 resource limit
+
     def __init__(self, sequences_file: Optional[str] = None):
         self.sequences: Dict[str, Sequence] = {}
         self.sequences_file = sequences_file or self._get_default_sequences_file()
@@ -224,6 +227,18 @@ class SequenceManager:
     def add_sequence(self, sequence: Sequence) -> bool:
         """Add or update a sequence"""
         with self._lock:
+            # Enforce step limit per sequence
+            if len(sequence.steps) > self.MAX_STEPS_PER_SEQUENCE:
+                logger.warning(f"Sequence '{sequence.name}' has {len(sequence.steps)} steps, "
+                               f"exceeds limit of {self.MAX_STEPS_PER_SEQUENCE}")
+                return False
+
+            # Enforce total sequence count (allow updates to existing)
+            if sequence.id not in self.sequences and len(self.sequences) >= self.MAX_SEQUENCES:
+                logger.warning(f"Sequence limit reached ({self.MAX_SEQUENCES}), "
+                               f"cannot add '{sequence.name}'")
+                return False
+
             self.sequences[sequence.id] = sequence
             self._save_sequences()
             logger.info(f"Added sequence: {sequence.name} ({sequence.id})")

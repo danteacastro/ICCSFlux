@@ -129,6 +129,16 @@ def main():
         sys.exit(1)
     print("  Connected.")
 
+    # NIST 800-171 Phase 2.7: Check for SSH key-based authentication
+    key_check = subprocess.run(
+        ['ssh', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no',
+         '-o', 'BatchMode=yes', f'{DEPLOY_USER}@{host}', 'echo OK'],
+        capture_output=True, text=True, timeout=10
+    )
+    if key_check.returncode != 0 or 'OK' not in key_check.stdout:
+        print("  \u26a0 SSH password authentication detected. For NIST 800-171 compliance,")
+        print("    configure SSH key-based authentication and disable password auth on the groov EPIC.")
+
     # ── [2/10] SAFETY: Stop ALL Opto22 processes ─────────────────────────
     print("\n[2/10] Stopping ALL Opto22 node processes...")
     run_ssh(host, "sudo systemctl stop opto22_node 2>/dev/null; true", check=False)

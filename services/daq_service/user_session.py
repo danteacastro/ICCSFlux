@@ -39,6 +39,17 @@ except ImportError:
 logger = logging.getLogger('UserSession')
 
 
+class SessionState(Enum):
+    """Session state for inactivity lock (NIST 800-171 AC.L2-3.1.10).
+
+    ACTIVE: Full access per role permissions.
+    LOCKED: UI locked due to inactivity. Read-only data still flows.
+            User must re-authenticate to unlock. No backend processes affected.
+    """
+    ACTIVE = "active"
+    LOCKED = "locked"
+
+
 class UserRole(Enum):
     """User roles with hierarchical permissions"""
     GUEST = "guest"             # Read-only access, monitoring only
@@ -80,6 +91,14 @@ class Permission(Enum):
     BYPASS_SAFETY_LOCK = "safety.bypass"
     TRIGGER_SAFE_STATE = "system.safe_state"
 
+
+# Permissions allowed even when session is LOCKED (read-only monitoring).
+# Session lock must NEVER interrupt acquisition, recording, scripts, or safety.
+LOCKED_SESSION_PERMISSIONS: Set[Permission] = {
+    Permission.VIEW_DATA,
+    Permission.VIEW_ALARMS,
+    Permission.VIEW_CONFIG,
+}
 
 # Role to permissions mapping (hierarchical)
 ROLE_PERMISSIONS: Dict[UserRole, Set[Permission]] = {
@@ -175,8 +194,20 @@ class Session:
     last_activity: datetime
     source_ip: str
     user_agent: str = ""
+    state: SessionState = SessionState.ACTIVE
 
-    def is_expired(self, timeout_minutes: int = 30) -> bool:
+    def is_expired(self, timeout_minutes: int = 0) -> bool:
+        """Check if session has expired. timeout_minutes=0 means never expires."""
+        if timeout_minutes <= 0:
+            return False
+        return datetime.now() - self.last_activity > timedelta(minutes=timeout_minutes)
+
+    def should_lock(self, timeout_minutes: int = 0) -> bool:
+        """Check if session should be locked due to inactivity."""
+        if timeout_minutes <= 0:
+            return False
+        if self.state != SessionState.ACTIVE:
+            return False
         return datetime.now() - self.last_activity > timedelta(minutes=timeout_minutes)
 
 
@@ -210,9 +241,10 @@ class UserSessionManager:
 
     def __init__(self,
                  data_dir: Path,
-                 session_timeout_minutes: int = 30,
+                 session_timeout_minutes: int = 0,
                  max_failed_attempts: int = 5,
                  lockout_duration_minutes: int = 15,
+                 max_concurrent_sessions: int = 10,
                  audit_trail=None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +252,7 @@ class UserSessionManager:
         self.session_timeout = session_timeout_minutes
         self.max_failed_attempts = max_failed_attempts
         self.lockout_duration = lockout_duration_minutes
+        self.max_concurrent_sessions = max_concurrent_sessions
         self._audit_trail = audit_trail
 
         self.lock = threading.RLock()
@@ -429,6 +462,12 @@ class UserSessionManager:
             user.last_login = datetime.now().isoformat()
             self._save_users()
 
+            # Enforce concurrent session limit (NIST 800-171 resource limit)
+            if len(self.sessions) >= self.max_concurrent_sessions:
+                logger.warning(f"Concurrent session limit reached ({self.max_concurrent_sessions}), "
+                               f"rejecting login for {username}")
+                return None
+
             # Create session
             session = Session(
                 session_id=secrets.token_urlsafe(32),
@@ -456,19 +495,29 @@ class UserSessionManager:
             return session
 
     def validate_session(self, session_id: str) -> Optional[Session]:
-        """Validate session and update activity timestamp"""
+        """Validate session and update activity timestamp.
+
+        Locked sessions are still valid (for read-only access) but
+        do not update last_activity. This preserves the session for
+        re-authentication without affecting backend processes.
+        """
         with self.lock:
             session = self.sessions.get(session_id)
 
             if not session:
                 return None
 
-            if session.is_expired(self.session_timeout):
-                del self.sessions[session_id]
-                logger.info(f"Session expired for user {session.username}")
-                return None
+            # Locked sessions remain valid but don't update activity
+            if session.state == SessionState.LOCKED:
+                return session
 
-            # Update activity
+            if session.is_expired(self.session_timeout):
+                # Lock instead of delete — backend processes continue
+                session.state = SessionState.LOCKED
+                logger.info(f"Session locked for user {session.username} (inactivity timeout)")
+                return session
+
+            # Update activity (only for ACTIVE sessions)
             session.last_activity = datetime.now()
             return session
 
@@ -492,10 +541,18 @@ class UserSessionManager:
             return False
 
     def has_permission(self, session_id: str, permission: Permission) -> bool:
-        """Check if session has a specific permission"""
+        """Check if session has a specific permission.
+
+        Locked sessions only allow LOCKED_SESSION_PERMISSIONS (view-only).
+        This ensures session lock never interrupts backend processes.
+        """
         session = self.validate_session(session_id)
         if not session:
             return False
+
+        # Locked sessions: only read-only permissions allowed
+        if session.state == SessionState.LOCKED:
+            return permission in LOCKED_SESSION_PERMISSIONS
 
         role_permissions = ROLE_PERMISSIONS.get(session.role, set())
         return permission in role_permissions
@@ -586,33 +643,114 @@ class UserSessionManager:
         return signature
 
     def get_active_sessions(self) -> List[dict]:
-        """Get list of active sessions (for admin)"""
+        """Get list of all sessions (active and locked) for admin"""
         with self.lock:
-            active = []
+            result = []
             for session in self.sessions.values():
-                if not session.is_expired(self.session_timeout):
-                    active.append({
-                        'session_id': session.session_id[:8] + '...',  # Partial ID for security
-                        'username': session.username,
-                        'role': session.role.value,
-                        'created_at': session.created_at.isoformat(),
-                        'last_activity': session.last_activity.isoformat(),
-                        'source_ip': session.source_ip
-                    })
-            return active
+                result.append({
+                    'session_id': session.session_id[:8] + '...',  # Partial ID for security
+                    'username': session.username,
+                    'role': session.role.value,
+                    'state': session.state.value,
+                    'created_at': session.created_at.isoformat(),
+                    'last_activity': session.last_activity.isoformat(),
+                    'source_ip': session.source_ip
+                })
+            return result
+
+    def lock_expired_sessions(self) -> List[str]:
+        """Lock sessions that have exceeded the inactivity timeout.
+
+        Returns list of session_ids that were locked (for MQTT notification).
+        Does NOT delete sessions or affect any backend processes.
+        """
+        locked_ids = []
+        with self.lock:
+            for sid, session in self.sessions.items():
+                if session.should_lock(self.session_timeout):
+                    session.state = SessionState.LOCKED
+                    locked_ids.append(sid)
+                    logger.info(f"Session locked for user {session.username} (inactivity)")
+                    if self._audit_trail:
+                        self._audit_trail.log_event(
+                            event_type=AuditEventType.USER_LOGOUT,
+                            user=session.username,
+                            description=f"Session locked for {session.username} (inactivity timeout)",
+                            details={'reason': 'inactivity_timeout', 'session_state': 'locked'},
+                            user_role=session.role.value,
+                            source_ip=session.source_ip,
+                            session_id=sid,
+                        )
+        return locked_ids
+
+    def unlock_session(self, session_id: str, password: str) -> Optional[Session]:
+        """Re-authenticate a locked session without creating a new one.
+
+        Same session_id preserved — audit trail continuity maintained.
+        Returns the unlocked session, or None if auth fails.
+        """
+        with self.lock:
+            session = self.sessions.get(session_id)
+            if not session:
+                return None
+
+            if session.state != SessionState.LOCKED:
+                # Already active, just return it
+                session.last_activity = datetime.now()
+                return session
+
+            user = self.users.get(session.username)
+            if not user:
+                return None
+
+            if not self._verify_password(password, user.password_hash):
+                logger.warning(f"Unlock failed: incorrect password for {session.username}")
+                if self._audit_trail:
+                    self._audit_trail.log_event(
+                        event_type=AuditEventType.USER_LOGIN_FAILED,
+                        user=session.username,
+                        description=f"Session unlock failed for {session.username}: incorrect password",
+                        details={'reason': 'unlock_failed'},
+                        source_ip=session.source_ip,
+                        session_id=session_id,
+                    )
+                return None
+
+            # Unlock: restore to ACTIVE, reset activity timer
+            session.state = SessionState.ACTIVE
+            session.last_activity = datetime.now()
+            logger.info(f"Session unlocked for user {session.username}")
+
+            if self._audit_trail:
+                self._audit_trail.log_event(
+                    event_type=AuditEventType.USER_LOGIN,
+                    user=session.username,
+                    description=f"Session unlocked for {session.username}",
+                    details={'reason': 'session_unlock', 'session_state': 'active'},
+                    user_role=session.role.value,
+                    source_ip=session.source_ip,
+                    session_id=session_id,
+                )
+
+            return session
 
     def cleanup_expired_sessions(self):
-        """Remove expired sessions"""
+        """Remove long-expired sessions (locked for >24h).
+
+        Normal inactivity uses lock_expired_sessions() instead.
+        This only removes sessions abandoned for a full day.
+        """
         with self.lock:
-            expired = [
+            stale = [
                 sid for sid, session in self.sessions.items()
-                if session.is_expired(self.session_timeout)
+                if session.state == SessionState.LOCKED and
+                datetime.now() - session.last_activity > timedelta(hours=24)
             ]
-            for sid in expired:
+            for sid in stale:
                 del self.sessions[sid]
 
-            if expired:
-                logger.info(f"Cleaned up {len(expired)} expired sessions")
+            if stale:
+                logger.info(f"Cleaned up {len(stale)} abandoned sessions")
 
     def get_user_info(self, username: str) -> Optional[dict]:
         """Get user info (without password hash)"""

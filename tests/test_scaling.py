@@ -406,5 +406,138 @@ class TestEdgeCases:
         assert apply_scaling(ch, 50.0) == pytest.approx(50.0)
 
 
+class TestScalingGuards:
+    """Test that scaling is blocked on channel types that should never be scaled."""
+
+    @pytest.mark.parametrize("channel_type", [
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE,
+        ChannelType.RTD,
+    ])
+    def test_no_scaling_applied(self, channel_type):
+        """Scaling must pass through raw value for DI/DO/TC/RTD."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=channel_type,
+            scale_type="linear",
+            scale_slope=2.0,
+            scale_offset=10.0
+        )
+        # Even with linear scaling configured, raw value should pass through
+        assert apply_scaling(ch, 5.0) == 5.0
+        assert apply_scaling(ch, 0.0) == 0.0
+        assert apply_scaling(ch, 1.0) == 1.0
+
+    @pytest.mark.parametrize("channel_type", [
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE,
+        ChannelType.RTD,
+    ])
+    def test_map_scaling_blocked(self, channel_type):
+        """Map scaling must not apply to DI/DO/TC/RTD."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=channel_type,
+            scale_type="map",
+            pre_scaled_min=0.0,
+            pre_scaled_max=10.0,
+            scaled_min=0.0,
+            scaled_max=100.0
+        )
+        assert apply_scaling(ch, 5.0) == 5.0
+
+    @pytest.mark.parametrize("channel_type", [
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.DIGITAL_OUTPUT,
+    ])
+    def test_four_twenty_blocked_on_digital(self, channel_type):
+        """4-20mA scaling must not apply to digital channels."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=channel_type,
+            scale_type="none",
+            four_twenty_scaling=True,
+            eng_units_min=0.0,
+            eng_units_max=100.0
+        )
+        assert apply_scaling(ch, 12.0) == 12.0
+
+    @pytest.mark.parametrize("channel_type", [
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE,
+        ChannelType.RTD,
+    ])
+    def test_validation_rejects_scaling(self, channel_type):
+        """validate_scaling_config must reject scaling on guarded types."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=channel_type,
+            scale_type="linear",
+            scale_slope=2.0,
+            scale_offset=10.0
+        )
+        is_valid, error = validate_scaling_config(ch)
+        assert is_valid == False
+        assert "not supported" in error.lower()
+
+    @pytest.mark.parametrize("channel_type", [
+        ChannelType.DIGITAL_INPUT,
+        ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE,
+        ChannelType.RTD,
+    ])
+    def test_validation_accepts_no_scaling(self, channel_type):
+        """validate_scaling_config must accept guarded types with no scaling."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=channel_type,
+            scale_type="none",
+            scale_slope=1.0,
+            scale_offset=0.0
+        )
+        is_valid, error = validate_scaling_config(ch)
+        assert is_valid == True
+
+    def test_voltage_input_still_scales(self):
+        """Voltage input should still accept scaling (not guarded)."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=ChannelType.VOLTAGE_INPUT,
+            scale_type="linear",
+            scale_slope=2.0,
+            scale_offset=5.0
+        )
+        assert apply_scaling(ch, 10.0) == 25.0
+
+    def test_current_input_still_scales(self):
+        """Current input should still accept 4-20mA scaling (not guarded)."""
+        ch = ChannelConfig(
+            name="test",
+            module="mod1",
+            physical_channel="ai0",
+            channel_type=ChannelType.CURRENT_INPUT,
+            scale_type="four_twenty",
+            four_twenty_scaling=True,
+            eng_units_min=0.0,
+            eng_units_max=100.0
+        )
+        assert apply_scaling(ch, 12.0) == pytest.approx(50.0, abs=0.1)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

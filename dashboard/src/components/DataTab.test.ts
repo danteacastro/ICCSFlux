@@ -814,7 +814,7 @@ describe('toBackendRecordingConfig', () => {
     expect(config.directory_structure).toBe('daily')
   })
 
-  it('should map all ALCOA+ fields', () => {
+  it('should map all data integrity fields', () => {
     const config = toBackendRecordingConfig(frontendConfig, [], true)
     expect(config.append_only).toBe(true)
     expect(config.verify_on_close).toBe(true)

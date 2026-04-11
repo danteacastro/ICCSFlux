@@ -15,6 +15,7 @@ Output: dist/ICCSFlux-Portable/
 Build artifacts include:
 - VERSION.txt               Git commit hash, branch, build timestamp
 - SHA256SUMS.txt            SHA-256 hashes of all executables
+- SOURCE_MANIFEST.json      SHA-256 hashes of all source files (for build diffs)
 - sbom.json                 CycloneDX Software Bill of Materials
 - vulnerability-audit.json  pip-audit vulnerability scan results
 - requirements-lock.txt     Pinned dependency versions
@@ -1157,9 +1158,9 @@ def generate_audit_report(version: dict):
         "COMPLIANCE ARTIFACTS INCLUDED",
         "-" * 40,
     ]
-    for artifact in ["VERSION.txt", "SHA256SUMS.txt", "sbom.json",
-                     "vulnerability-audit.json", "requirements-lock.txt",
-                     "BUILD_AUDIT_REPORT.txt"]:
+    for artifact in ["VERSION.txt", "SHA256SUMS.txt", "SOURCE_MANIFEST.json",
+                     "sbom.json", "vulnerability-audit.json",
+                     "requirements-lock.txt", "BUILD_AUDIT_REPORT.txt"]:
         exists = (BUILD_DIR / artifact).exists() or artifact == "BUILD_AUDIT_REPORT.txt"
         status = "[x]" if exists else "[ ]"
         lines.append(f"  {status} {artifact}")
@@ -1209,6 +1210,59 @@ def generate_audit_report(version: dict):
     archive_path.write_text(report_text)
 
     log(f"Audit report: {report_path.name} (archived to audit_reports/{archive_name})", "OK")
+    return True
+
+
+def generate_source_manifest():
+    """Capture SHA256 hashes of all source files for build-to-build diff comparison.
+
+    Saves SOURCE_MANIFEST.json to the build directory. Use scripts/build_diff.py
+    to compare the current working tree against a previous build's manifest.
+    """
+    import json as _json
+
+    log("Generating source manifest...")
+
+    source_patterns = [
+        "services/**/*.py",
+        "scripts/*.py",
+        "dashboard/src/**/*.vue",
+        "dashboard/src/**/*.ts",
+        "dashboard/src/**/*.tsx",
+        "config/*.json",
+        "config/*.conf",
+        "config/*.ini",
+        "*.md",
+        "*.bat",
+    ]
+    # Directories to exclude
+    exclude_dirs = {"node_modules", "__pycache__", ".git", "dist", "build",
+                    "venv", "azure-venv", ".venv", "vendor", "data"}
+
+    manifest = {}
+    for pattern in source_patterns:
+        for filepath in PROJECT_ROOT.glob(pattern):
+            if not filepath.is_file():
+                continue
+            # Skip excluded directories
+            rel = filepath.relative_to(PROJECT_ROOT)
+            if any(part in exclude_dirs for part in rel.parts):
+                continue
+            try:
+                h = hashlib.sha256(filepath.read_bytes()).hexdigest()
+                manifest[str(rel.as_posix())] = h
+            except (OSError, PermissionError):
+                continue
+
+    output = {
+        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "file_count": len(manifest),
+        "files": dict(sorted(manifest.items())),
+    }
+
+    manifest_path = BUILD_DIR / "SOURCE_MANIFEST.json"
+    manifest_path.write_text(_json.dumps(output, indent=2))
+    log(f"Source manifest: {len(manifest)} source files captured", "OK")
     return True
 
 
@@ -1313,6 +1367,9 @@ def main():
     # reflect the signed binaries, not the unsigned ones)
     generate_hash_manifest()
 
+    # Source manifest (captures SHA256 of every source file for build-to-build diffs)
+    generate_source_manifest()
+
     # Audit report (human-readable summary + permanent archive)
     generate_audit_report(version)
 
@@ -1338,6 +1395,8 @@ def main():
         artifacts.append("vulnerability-audit.json")
     if (BUILD_DIR / "requirements-lock.txt").exists():
         artifacts.append("requirements-lock.txt")
+    if (BUILD_DIR / "SOURCE_MANIFEST.json").exists():
+        artifacts.append("SOURCE_MANIFEST.json")
     if (BUILD_DIR / "BUILD_AUDIT_REPORT.txt").exists():
         artifacts.append("BUILD_AUDIT_REPORT.txt")
     if artifacts:

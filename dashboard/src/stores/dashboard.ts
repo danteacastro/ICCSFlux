@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef, triggerRef, computed, watch } from 'vue'
+import { ref, shallowRef, triggerRef, computed, watch, type ShallowRef } from 'vue'
 import { useWindowSync } from '../composables/useWindowSync'
 import type {
   ChannelConfig,
@@ -70,7 +70,7 @@ export interface RecordingConfig {
   // File Reuse
   reuseFile: boolean            // Stop/start appends to same file instead of creating new
 
-  // ALCOA+ Data Integrity Settings
+  // Data Integrity Settings (NIST 800-171 Audit & Accountability)
   appendOnly: boolean           // Make files read-only after recording stops
   verifyOnClose: boolean        // Create SHA-256 integrity files
   includeAuditMetadata: boolean // Include operator, timestamps, session info
@@ -130,7 +130,7 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   // File Reuse
   reuseFile: false,            // Off by default — each start creates a new file
 
-  // ALCOA+ Data Integrity Settings (FDA 21 CFR Part 11 compliance)
+  // Data Integrity Settings (NIST 800-171 audit accountability)
   appendOnly: false,           // Off by default for development flexibility
   verifyOnClose: true,         // On by default - creates integrity checksums
   includeAuditMetadata: true,  // On by default - includes operator attribution
@@ -219,6 +219,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Channel data
   const channels = ref<Record<string, ChannelConfig>>({})
   const values = shallowRef<Record<string, ChannelValue>>({})
+  // Per-channel reactive refs for granular widget reactivity
+  // Widgets use getChannelRef() to only re-render when their specific channel updates
+  const channelValueRefs = new Map<string, ShallowRef<ChannelValue | undefined>>()
   const status = ref<SystemStatus | null>(null)
 
   // Multi-page dashboard state
@@ -598,10 +601,21 @@ export const useDashboardStore = defineStore('dashboard', () => {
     channels.value = channelConfigs
   }
 
+  function getChannelRef(name: string): ShallowRef<ChannelValue | undefined> {
+    let r = channelValueRefs.get(name)
+    if (!r) {
+      r = shallowRef(values.value[name])
+      channelValueRefs.set(name, r)
+    }
+    return r
+  }
+
   function updateValues(newValues: Record<string, ChannelValue>) {
     const current = values.value
     Object.entries(newValues).forEach(([name, cv]) => {
       current[name] = cv
+      const r = channelValueRefs.get(name)
+      if (r) r.value = cv
     })
     triggerRef(values)
   }
@@ -613,13 +627,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     Object.entries(scriptValues).forEach(([name, data]) => {
       // Add to values so widgets can bind to them
-      current[name] = {
+      const cv: ChannelValue = {
         name,
         value: data.value,
         timestamp,
         alarm: false,
         warning: false
       }
+      current[name] = cv
+
+      const r = channelValueRefs.get(name)
+      if (r) r.value = cv
 
       // Add virtual channel config if not exists
       if (!channels.value[name]) {
@@ -3875,6 +3893,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // Also remove from channel values
     if (values.value[channelName]) {
       delete values.value[channelName]
+      const r = channelValueRefs.get(channelName)
+      if (r) r.value = undefined
+      channelValueRefs.delete(channelName)
     }
 
     return toRemove.length
@@ -3892,6 +3913,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Clear all values (reset to boot state with "--" displays)
   function clearValues() {
     values.value = {}
+    channelValueRefs.forEach(r => r.value = undefined)
+    channelValueRefs.clear()
   }
 
   // ========================================================================
@@ -3994,6 +4017,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     // Actions
     setChannels,
+    getChannelRef,
     updateValues,
     updateScriptValues,
     clearValues,

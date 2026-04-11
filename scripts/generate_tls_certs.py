@@ -14,7 +14,7 @@ Output (in config/tls/):
     server.crt   - Server certificate
     server.key   - Server private key
 
-Certificate validity: 10 years (suitable for embedded/industrial use).
+Certificate validity: 1 year (NIST 800-171 compliance).
 """
 
 import argparse
@@ -30,8 +30,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger('TLSSetup')
 
-# Certificate validity period
-CERT_VALIDITY_DAYS = 3650  # ~10 years
+# Certificate validity period (NIST 800-171: annual renewal recommended)
+CERT_VALIDITY_DAYS = 365  # 1 year
+
+
+def _restrict_key_permissions(key_path: Path) -> None:
+    """Restrict private key file to owner-only access (NIST 800-171 SC.L2-3.13.16)."""
+    import os
+    if os.name != 'nt':
+        key_path.chmod(0o600)
+    else:
+        try:
+            import subprocess
+            username = os.environ.get('USERNAME', '')
+            if username:
+                subprocess.run(
+                    ['icacls', str(key_path), '/inheritance:r',
+                     '/grant:r', f'{username}:(R,W)'],
+                    capture_output=True, timeout=10
+                )
+        except Exception as e:
+            logger.warning(f"Could not restrict permissions on {key_path}: {e}")
 
 
 def generate_certificates(output_dir: Path, force: bool = False) -> bool:
@@ -104,6 +123,8 @@ def generate_certificates(output_dir: Path, force: bool = False) -> bool:
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption(),
         ))
+
+    _restrict_key_permissions(ca_key_path)
 
     logger.info(f"  CA certificate: {ca_cert_path}")
     logger.info(f"  CA key:         {ca_key_path}")
@@ -185,6 +206,8 @@ def generate_certificates(output_dir: Path, force: bool = False) -> bool:
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption(),
         ))
+
+    _restrict_key_permissions(server_key_path)
 
     logger.info(f"  Server cert:    {server_cert_path}")
     logger.info(f"  Server key:     {server_key_path}")

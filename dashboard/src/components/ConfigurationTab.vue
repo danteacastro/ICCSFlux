@@ -326,9 +326,9 @@ const crioStatus = computed(() => {
   const discoveredIds = new Set(crioNodes.map(n => n.nodeId))
   const missingNodes = [...referenced].filter(id => !discoveredIds.has(id))
 
-  // Check for offline nodes (no heartbeat in last 10 seconds)
+  // Check for offline nodes (no heartbeat in last 15 seconds — matches useMqtt NODE_OFFLINE_THRESHOLD_MS)
   const now = Date.now()
-  const offlineDiscovered = crioNodes.filter(n => !n.lastSeen || (now - n.lastSeen) > 10000)
+  const offlineDiscovered = crioNodes.filter(n => !n.lastSeen || (now - n.lastSeen) > 15000)
   const totalOffline = offlineDiscovered.length + missingNodes.length
 
   if (totalOffline > 0) {
@@ -673,10 +673,12 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
   const compatibleTypes: string[] = []
 
   // Map channel type to compatible discovery types
+  // Form values may use short names (voltage, current) or full names (voltage_input, current_input)
   switch (channelType) {
     case 'voltage_input':
+    case 'voltage':
     case 'analog_input':
-      compatibleTypes.push('analog_input', 'voltage_input', 'AI')
+      compatibleTypes.push('analog_input', 'voltage_input', 'voltage', 'AI')
       break
     case 'thermocouple':
       compatibleTypes.push('thermocouple', 'TC', 'analog_input')
@@ -685,7 +687,8 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       compatibleTypes.push('rtd', 'RTD', 'analog_input')
       break
     case 'current_input':
-      compatibleTypes.push('current_input', 'AI')
+    case 'current':
+      compatibleTypes.push('current_input', 'current', 'AI')
       break
     case 'digital_input':
       compatibleTypes.push('digital_input', 'DI')
@@ -701,8 +704,33 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       compatibleTypes.push('digital_output', 'DO')
       break
     case 'counter':
-      compatibleTypes.push('counter', 'CTR')
+    case 'counter_input':
+      compatibleTypes.push('counter', 'counter_input', 'CTR')
       break
+    case 'pulse_output':
+    case 'counter_output':
+      compatibleTypes.push('pulse_output', 'counter_output', 'CO', 'CTR')
+      break
+    case 'frequency_input':
+      compatibleTypes.push('frequency_input', 'counter', 'CTR')
+      break
+    case 'strain':
+    case 'strain_input':
+    case 'bridge_input':
+      compatibleTypes.push('strain', 'strain_input', 'bridge_input', 'analog_input', 'AI')
+      break
+    case 'iepe':
+    case 'iepe_input':
+      compatibleTypes.push('iepe', 'iepe_input', 'analog_input', 'AI')
+      break
+    case 'resistance':
+    case 'resistance_input':
+      compatibleTypes.push('resistance', 'resistance_input', 'analog_input', 'AI')
+      break
+    case 'modbus_register':
+    case 'modbus_coil':
+      // Modbus channels don't come from hardware discovery
+      return []
     default:
       // Unknown type - show all channels
       return allChannels
@@ -1181,6 +1209,15 @@ function toggleChannelEnabled(channelName: string) {
   }
 }
 
+// Numeric channel fields that must be sent as numbers (not strings from HTML inputs)
+const NUMERIC_CHANNEL_FIELDS = new Set([
+  'counter_min_freq', 'counter_max_freq', 'pulses_per_unit', 'initial_count',
+  'modbus_address', 'modbus_slave_id', 'scale_slope', 'scale_offset',
+  'voltage_range', 'current_range_ma', 'pulse_frequency', 'pulse_duty_cycle',
+  'eng_units_min', 'eng_units_max', 'pre_scaled_min', 'pre_scaled_max',
+  'scaled_min', 'scaled_max',
+])
+
 // Update a single channel field inline (for editable table cells)
 function updateChannelField(channelName: string, field: string, value: any) {
   if (!canEdit.value) return
@@ -1188,7 +1225,13 @@ function updateChannelField(channelName: string, field: string, value: any) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
-  mqtt.updateChannelConfig(channelName, { [field]: value })
+  // Coerce numeric fields from string (HTML inputs) to number
+  let coerced = value
+  if (NUMERIC_CHANNEL_FIELDS.has(field) && typeof value === 'string') {
+    coerced = parseFloat(value)
+    if (isNaN(coerced)) coerced = 0
+  }
+  mqtt.updateChannelConfig(channelName, { [field]: coerced })
   markDirty()
 }
 
@@ -1254,7 +1297,7 @@ function openAddChannelModal() {
 
   showAddChannelModal.value = true
 
-  // Always scan for hardware so the physical channel dropdown is populated
+  // Scan for hardware matching the project mode so the physical channel dropdown is populated
   if (!isScanning.value) {
     const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
     mqtt.scanDevices(mode)
@@ -1291,10 +1334,14 @@ function addNewChannel() {
     ? manualPhysicalChannel.value
     : newChannelForm.value.physical_channel
 
-  // Check for duplicate physical channel
+  // Check for duplicate physical channel on the same source/node
   const resolvedPhysical = physicalChannel || tagName
+  const newSourceType = newChannelForm.value.source_type || 'cdaq'
+  const newNodeId = newChannelForm.value.node_id || ''
   for (const [existingTag, existingConfig] of Object.entries(store.channels)) {
-    if (existingConfig.physical_channel === resolvedPhysical) {
+    if (existingConfig.physical_channel === resolvedPhysical &&
+        (existingConfig.source_type || 'cdaq') === newSourceType &&
+        (existingConfig.node_id || '') === newNodeId) {
       showFeedback('error', `Physical channel "${resolvedPhysical}" is already used by tag "${existingTag}"`)
       return
     }
@@ -2020,7 +2067,7 @@ function scanDevices() {
   expandedModules.value = new Set()
   expandedCrioNodes.value = new Set()
 
-  // Get current project mode from system settings or store status
+  // Scan based on project mode
   const mode = systemSettingsForm.value.project_mode || store.status?.project_mode || 'cdaq'
   const modeLabel = mode === 'cdaq' ? 'cDAQ' : mode === 'crio' ? 'cRIO' : mode === 'cfp' ? 'CFP' : 'Opto22'
   showFeedback('info', `Discovering ${modeLabel} devices...`)
@@ -2272,13 +2319,15 @@ function getNextTagNumber(): number {
 
 // Add discovered channels to config with simple tag_N naming
 function addSelectedChannels() {
-  // Collect all selected channels from hierarchical data
+  // Collect all selected channels from hierarchical data, skipping already-used physical channels
+  const used = usedPhysicalChannels.value
   const selectedChannels: any[] = []
 
   if (discoveryResult.value?.chassis) {
     for (const chassis of discoveryResult.value.chassis) {
       for (const module of chassis.modules || []) {
         for (const channel of module.channels || []) {
+          if (used[channel.name]) continue
           if (selectedDiscoveryChannels.value.includes(channel.name)) {
             selectedChannels.push({
               ...channel,
@@ -2296,6 +2345,7 @@ function addSelectedChannels() {
   if (discoveryResult.value?.standalone_devices) {
     for (const device of discoveryResult.value.standalone_devices) {
       for (const channel of device.channels || []) {
+        if (used[channel.name]) continue
         if (selectedDiscoveryChannels.value.includes(channel.name)) {
           selectedChannels.push({
             ...channel,
@@ -2313,6 +2363,7 @@ function addSelectedChannels() {
     for (const node of discoveryResult.value.crio_nodes) {
       for (const module of node.modules || []) {
         for (const channel of module.channels || []) {
+          if (used[channel.name]) continue
           if (selectedDiscoveryChannels.value.includes(channel.name)) {
             selectedChannels.push({
               ...channel,
@@ -2334,6 +2385,7 @@ function addSelectedChannels() {
     for (const node of discoveryResult.value.opto22_nodes) {
       for (const module of node.modules || []) {
         for (const channel of module.channels || []) {
+          if (used[channel.name]) continue
           if (selectedDiscoveryChannels.value.includes(channel.name)) {
             selectedChannels.push({
               ...channel,
@@ -2459,6 +2511,17 @@ const usedPhysicalChannels = computed(() => {
       map[config.physical_channel] = tagName
     }
   }
+  // Include channels claimed by other stations (cross-instance awareness)
+  const myNode = mqtt.activeNodeId.value || 'node-001'
+  const registry = mqtt.stationRegistry?.value || {}
+  for (const [stationId, station] of Object.entries(registry)) {
+    if (stationId === myNode) continue
+    for (const ch of station.channels || []) {
+      if (!map[ch]) {
+        map[ch] = `[${station.nodeName || stationId}]`
+      }
+    }
+  }
   return map
 })
 
@@ -2557,11 +2620,49 @@ function getTotalDiscoveryChannels(): number {
   return count
 }
 
+// Count channels that are available (not yet used by existing tags)
+function getAvailableDiscoveryChannels(): number {
+  const used = usedPhysicalChannels.value
+  let count = 0
+  const countIfAvailable = (channels: any[]) => {
+    for (const ch of channels) {
+      if (!used[ch.name]) count++
+    }
+  }
+  if (discoveryResult.value?.chassis) {
+    for (const chassis of discoveryResult.value.chassis) {
+      for (const module of chassis.modules || []) {
+        countIfAvailable(module.channels || [])
+      }
+    }
+  }
+  if (discoveryResult.value?.standalone_devices) {
+    for (const device of discoveryResult.value.standalone_devices) {
+      countIfAvailable(device.channels || [])
+    }
+  }
+  if (discoveryResult.value?.crio_nodes) {
+    for (const node of discoveryResult.value.crio_nodes) {
+      for (const module of node.modules || []) {
+        countIfAvailable(module.channels || [])
+      }
+    }
+  }
+  if (discoveryResult.value?.opto22_nodes) {
+    for (const node of discoveryResult.value.opto22_nodes) {
+      for (const module of node.modules || []) {
+        countIfAvailable(module.channels || [])
+      }
+    }
+  }
+  return count
+}
+
 // Quick populate ALL discovered channels with tag_N naming (one-click setup)
 function quickPopulateAllChannels() {
-  const totalChannels = getTotalDiscoveryChannels()
-  if (totalChannels === 0) {
-    showFeedback('error', 'No channels to add')
+  const availableChannels = getAvailableDiscoveryChannels()
+  if (availableChannels === 0) {
+    showFeedback('warning', 'All discovered channels are already in use')
     return
   }
 
@@ -3010,10 +3111,13 @@ function getChannelErrors(tagName: string, config: ChannelConfig): string[] {
     errors.push('RTD type is required')
   }
 
-  // Physical channel conflict (same physical channel used by another tag)
+  // Physical channel conflict (same physical channel used by another tag on the same node)
   if (config.physical_channel) {
     for (const [otherTag, otherConfig] of Object.entries(store.channels)) {
-      if (otherTag !== tagName && otherConfig.physical_channel === config.physical_channel) {
+      if (otherTag !== tagName &&
+          otherConfig.physical_channel === config.physical_channel &&
+          (otherConfig.source_type || 'cdaq') === (config.source_type || 'cdaq') &&
+          (otherConfig.node_id || '') === (config.node_id || '')) {
         errors.push(`Physical channel "${config.physical_channel}" also used by "${otherTag}"`)
         break
       }
@@ -3174,8 +3278,8 @@ function openChannelConfig(channelName: string) {
       moduleConfig = {
         ...DEFAULT_THERMOCOUPLE_CONFIG,
         // Load existing thermocouple config from backend
-        tc_type: config.thermocouple_type || '',
-        cjc_source: config.cjc_source || '',
+        tc_type: config.thermocouple_type ?? '',
+        cjc_source: config.cjc_source ?? '',
         cjc_value: config.cjc_value ?? 25.0,
         units: config.unit || 'degC',
       }
@@ -3221,29 +3325,34 @@ function openChannelConfig(channelName: string) {
     case 'strain':
     case 'strain_input':
       moduleConfig = {
-        bridge_config: config.bridge_config || 'full',
-        nominal_resistance: config.nominal_resistance ?? 350,
-        gage_factor: config.gage_factor ?? 2.0,
-        excitation_voltage: config.excitation_voltage ?? 2.5,
+        bridge_config: config.strain_config || config.bridge_config || 'full-bridge',
+        nominal_resistance: config.strain_resistance ?? config.nominal_resistance ?? 350,
+        gage_factor: config.strain_gage_factor ?? config.gage_factor ?? 2.0,
+        excitation_voltage: config.strain_excitation_voltage ?? config.excitation_voltage ?? 2.5,
+        poisson_ratio: config.poisson_ratio,
         units: config.unit || 'strain',
       }
       break
     case 'iepe':
     case 'iepe_input':
       moduleConfig = {
-        coupling: config.coupling || 'AC',
-        excitation_current: config.excitation_current ?? 4,
-        sensitivity: config.sensitivity ?? 100,
+        coupling: config.iepe_coupling || config.coupling || 'AC',
+        excitation_current: config.iepe_current ? config.iepe_current * 1000 : (config.excitation_current ?? 4),
+        sensitivity: config.iepe_sensitivity ?? config.sensitivity ?? 100,
         units: config.unit || 'g',
       }
       break
     case 'counter':
     case 'counter_input':
       moduleConfig = {
-        mode: config.counter_mode || 'count_edges',
+        mode: config.counter_mode || 'count',
         edge: config.counter_edge || 'rising',
         initial_count: config.initial_count ?? 0,
         count_direction: config.direction || 'up',
+        min_freq: config.counter_min_freq ?? 0.1,
+        max_freq: config.counter_max_freq ?? 1000,
+        pulses_per_unit: config.pulses_per_unit ?? 1.0,
+        reset_on_read: config.counter_reset_on_read ?? false,
       }
       break
     case 'resistance':
@@ -3311,6 +3420,9 @@ function openChannelConfig(channelName: string) {
         ...DEFAULT_DIGITAL_INPUT_CONFIG,
         // Load existing digital input config from backend
         invert: config.invert ?? false,
+        di_alarm_expected_state: config.digital_expected_state === 'HIGH',
+        di_alarm_debounce_ms: config.digital_debounce_ms ?? 100,
+        di_alarm_invert: config.digital_invert ?? false,
       }
       break
     case 'digital_output':
@@ -3422,16 +3534,14 @@ function saveChannelConfig() {
   if (channelType === 'rtd') {
     config.rtd_type = mc.rtd_type
     config.rtd_wiring = mc.wiring
-    config.rtd_current = (mc.excitation_current || 1000) / 1e6  // µA to A
+    config.rtd_current = (parseFloat(mc.excitation_current) || 1000) / 1e6  // µA to A
   }
 
   // Add voltage input settings
   if (channelType === 'voltage' || channelType === 'voltage_input') {
     // Parse voltage range from string like "10V" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
-    if (rangeMatch) {
-      config.voltage_range = parseFloat(rangeMatch[1])
-    }
+    config.voltage_range = rangeMatch ? parseFloat(rangeMatch[1]) : 10
     config.terminal_config = mc.terminal_config ?? 'DEFAULT'
     config.scale_type = mc.scale_type
     config.scale_slope = mc.scale_slope
@@ -3446,9 +3556,7 @@ function saveChannelConfig() {
   if (channelType === 'current' || channelType === 'current_input') {
     // Parse current range from string like "20mA" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
-    if (rangeMatch) {
-      config.current_range_ma = parseFloat(rangeMatch[1])
-    }
+    config.current_range_ma = rangeMatch ? parseFloat(rangeMatch[1]) : 20
     config.terminal_config = mc.terminal_config ?? 'DEFAULT'
     config.shunt_resistor_loc = mc.shunt_location ?? 'internal'  // internal or external
     config.four_twenty_scaling = mc.four_twenty_scaling
@@ -3486,8 +3594,8 @@ function saveChannelConfig() {
   if (['iepe', 'iepe_input'].includes(channelType)) {
     config.terminal_config = mc.terminal_config ?? 'DEFAULT'
     config.iepe_coupling = mc.coupling  // UI: coupling → backend: iepe_coupling
-    config.iepe_sensitivity = mc.sensitivity  // UI: sensitivity → backend: iepe_sensitivity
-    config.iepe_current = (mc.excitation_current || 4) / 1000  // UI: mA → backend: Amps
+    config.iepe_sensitivity = parseFloat(mc.sensitivity) || 100  // UI: sensitivity → backend: iepe_sensitivity
+    config.iepe_current = (parseFloat(mc.excitation_current) || 4) / 1000  // UI: mA → backend: Amps
   }
 
   // Counter types
@@ -3496,12 +3604,10 @@ function saveChannelConfig() {
     config.counter_edge = mc.edge
     config.initial_count = mc.initial_count
     config.direction = mc.count_direction
-    // Encoder-specific fields (position mode)
-    if (mc.mode === 'position') {
-      config.decoding_type = mc.decoding_type ?? 'X4'
-      config.pulses_per_revolution = mc.pulses_per_revolution ?? 1024
-      config.z_index_enable = mc.z_index_enable ?? false
-    }
+    config.counter_min_freq = mc.min_freq ?? 0.1
+    config.counter_max_freq = mc.max_freq ?? 1000
+    config.pulses_per_unit = mc.pulses_per_unit ?? 1.0
+    config.counter_reset_on_read = mc.reset_on_read ?? false
   }
 
   // Resistance types
@@ -4016,6 +4122,7 @@ const tableColumns = computed(() => {
         ...baseColumns,
         { key: 'mode', label: 'MODE', width: '100px' },
         { key: 'edge', label: 'EDGE', width: '70px' },
+        { key: 'pulses_per_unit', label: 'PULSES/UNIT', width: '90px' },
         { key: 'min_freq', label: 'MIN FREQ', width: '80px' },
         { key: 'max_freq', label: 'MAX FREQ', width: '80px' },
         { key: 'value', label: 'COUNT', width: '100px' },
@@ -4184,7 +4291,44 @@ watch(
   }
 )
 
-// Watch for physical channel selection to auto-set channel type from discovery
+// Generate a suggested channel name from a physical channel path
+// e.g. "cDAQ1Mod1/ai0" → "AI_Mod1_ch00", "Mod5/ai3" → "AI_Mod5_ch03"
+function suggestChannelName(physicalChannel: string, channelType: string): string {
+  // Type prefix map
+  const prefixMap: Record<string, string> = {
+    'thermocouple': 'TC', 'rtd': 'RTD',
+    'voltage': 'AI', 'voltage_input': 'AI', 'analog_input': 'AI',
+    'current': 'CI', 'current_input': 'CI',
+    'digital_input': 'DI', 'digital_output': 'DO',
+    'voltage_output': 'AO', 'current_output': 'CO',
+    'counter': 'CTR', 'counter_input': 'CTR',
+    'pulse_output': 'PO', 'counter_output': 'PO',
+    'strain': 'SG', 'strain_input': 'SG', 'bridge_input': 'SG',
+    'iepe': 'IEPE', 'iepe_input': 'IEPE',
+    'resistance': 'RES', 'resistance_input': 'RES',
+    'frequency_input': 'FREQ',
+  }
+  const prefix = prefixMap[channelType] || 'CH'
+
+  // Extract module and channel index from physical path
+  // Patterns: "cDAQ1Mod1/ai0", "Mod5/ai3", "cDAQ1Mod2/port0/line0"
+  const modMatch = physicalChannel.match(/Mod(\d+)/i)
+  const chMatch = physicalChannel.match(/(?:ai|ao|port\d+\/line|ctr|ci|co|fi)(\d+)$/i)
+  const mod = modMatch ? `Mod${modMatch[1]}` : ''
+  const ch = chMatch?.[1] ? `ch${chMatch[1].padStart(2, '0')}` : ''
+
+  const name = [prefix, mod, ch].filter(Boolean).join('_')
+
+  // Ensure uniqueness by appending a number if needed
+  if (!store.channels[name]) return name
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${name}_${i}`
+    if (!store.channels[candidate]) return candidate
+  }
+  return name
+}
+
+// Watch for physical channel selection to auto-set channel type and suggest name
 watch(
   () => newChannelForm.value.physical_channel,
   (physicalChannel) => {
@@ -4208,13 +4352,25 @@ watch(
         'digital_input': 'digital_input',
         'digital_output': 'digital_output',
         'counter': 'counter',
-        'strain': 'strain'
+        'strain': 'strain',
+        'iepe': 'iepe',
+        'resistance': 'resistance',
       }
       const mappedType = typeMapping[selectedChannel.type] || selectedChannel.type
       if (mappedType && mappedType !== newChannelForm.value.channel_type) {
-        console.log(`[ConfigurationTab] Auto-setting channel type: ${selectedChannel.type} -> ${mappedType}`)
         newChannelForm.value.channel_type = mappedType as ChannelType
       }
+    }
+
+    // Auto-suggest a name if the name field is empty or still has a previous auto-suggestion
+    const currentName = newChannelForm.value.name
+    const looksAutoGenerated = !currentName || /^(TC|RTD|AI|CI|DI|DO|AO|CO|CTR|PO|SG|IEPE|RES|FREQ|CH)_Mod\d/.test(currentName)
+    if (looksAutoGenerated) {
+      const resolvedType = selectedChannel?.type
+        ? (({ 'analog_input': 'voltage', 'voltage_input': 'voltage', 'current_input': 'current',
+              'analog_output': 'voltage_output', 'voltage_output': 'voltage_output' } as Record<string, string>)[selectedChannel.type] || selectedChannel.type)
+        : newChannelForm.value.channel_type
+      newChannelForm.value.name = suggestChannelName(physicalChannel, resolvedType)
     }
   }
 )
@@ -4894,19 +5050,19 @@ watch(
               <template v-else-if="activeTypeTab === 'counter'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.counter_mode || 'count_edges'"
+                    :value="config.counter_mode || 'count'"
                     @change="updateChannelField(name, 'counter_mode', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option value="count_edges">Count</option>
+                    <option value="count">Count (Edges)</option>
                     <option value="frequency">Frequency</option>
                     <option value="period">Period</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.edge || 'rising'"
-                    @change="updateChannelField(name, 'edge', ($event.target as HTMLSelectElement).value)"
+                    :value="config.counter_edge || config.edge || 'rising'"
+                    @change="updateChannelField(name, 'counter_edge', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
                     <option value="rising">Rising</option>
@@ -4916,25 +5072,40 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    :value="config.counter_min_freq"
-                    @change="updateChannelField(name, 'counter_min_freq', parseFloat(($event.target as HTMLInputElement).value) || undefined)"
+                    :value="config.pulses_per_unit ?? 1.0"
+                    @change="updateChannelField(name, 'pulses_per_unit', parseFloat(($event.target as HTMLInputElement).value) || 1.0)"
                     class="inline-input"
-                    placeholder="0.1"
+                    placeholder="1.0"
                     step="0.1"
-                    min="0"
+                    min="0.001"
                     :disabled="!canEdit"
+                    title="Pulses per engineering unit (e.g. 100 pulses = 1 gallon)"
                   />
                 </td>
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    :value="config.counter_max_freq"
-                    @change="updateChannelField(name, 'counter_max_freq', parseFloat(($event.target as HTMLInputElement).value) || undefined)"
+                    :value="config.counter_min_freq ?? 0.1"
+                    @change="updateChannelField(name, 'counter_min_freq', parseFloat(($event.target as HTMLInputElement).value) || 0.1)"
+                    class="inline-input"
+                    placeholder="0.1"
+                    step="0.1"
+                    min="0"
+                    :disabled="!canEdit || (config.counter_mode || 'count') === 'count'"
+                    :title="(config.counter_mode || 'count') === 'count' ? 'Not used in count mode' : 'Minimum expected frequency (Hz)'"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="config.counter_max_freq ?? 1000"
+                    @change="updateChannelField(name, 'counter_max_freq', parseFloat(($event.target as HTMLInputElement).value) || 1000)"
                     class="inline-input"
                     placeholder="1000"
                     step="1"
                     min="0"
-                    :disabled="!canEdit"
+                    :disabled="!canEdit || (config.counter_mode || 'count') === 'count'"
+                    :title="(config.counter_mode || 'count') === 'count' ? 'Not used in count mode' : 'Maximum expected frequency (Hz)'"
                   />
                 </td>
               </template>
@@ -5921,17 +6092,15 @@ watch(
             </template>
 
             <!-- Counter settings -->
-            <template v-if="editingConfig.config.channel_type === 'counter'">
+            <template v-if="editingConfig.config.channel_type === 'counter' || editingConfig.config.channel_type === 'counter_input'">
               <div class="config-section">
                 <h4>Counter/Timer Settings</h4>
                 <div class="form-row">
                   <label>Measurement Mode</label>
                   <select v-model="editingConfig.moduleConfig.mode">
-                    <option value="count_edges">Count Edges</option>
-                    <option value="pulse_width">Pulse Width</option>
+                    <option value="count">Count (Edges)</option>
                     <option value="frequency">Frequency</option>
                     <option value="period">Period</option>
-                    <option value="position">Position (Encoder)</option>
                   </select>
                 </div>
                 <div class="form-row">
@@ -5939,7 +6108,6 @@ watch(
                   <select v-model="editingConfig.moduleConfig.edge">
                     <option value="rising">Rising Edge</option>
                     <option value="falling">Falling Edge</option>
-                    <option value="both">Both Edges</option>
                   </select>
                 </div>
                 <div class="form-row">
@@ -5947,34 +6115,33 @@ watch(
                   <select v-model="editingConfig.moduleConfig.count_direction">
                     <option value="up">Count Up</option>
                     <option value="down">Count Down</option>
-                    <option value="external">External (A/B signal)</option>
                   </select>
                 </div>
                 <div class="form-row">
                   <label>Initial Count</label>
-                  <input type="number" v-model="editingConfig.moduleConfig.initial_count" />
+                  <input type="number" v-model.number="editingConfig.moduleConfig.initial_count" />
                 </div>
-                <template v-if="editingConfig.moduleConfig.mode === 'position'">
+                <template v-if="editingConfig.moduleConfig.mode === 'frequency' || editingConfig.moduleConfig.mode === 'period'">
                   <div class="form-row">
-                    <label>Decoding Type</label>
-                    <select v-model="editingConfig.moduleConfig.decoding_type">
-                      <option value="X1">X1</option>
-                      <option value="X2">X2</option>
-                      <option value="X4">X4</option>
-                      <option value="two_pulse">Two Pulse</option>
-                    </select>
+                    <label>Min Frequency (Hz)</label>
+                    <input type="number" v-model.number="editingConfig.moduleConfig.min_freq" step="0.1" min="0" placeholder="0.1" />
                   </div>
                   <div class="form-row">
-                    <label>Pulses Per Revolution</label>
-                    <input type="number" v-model="editingConfig.moduleConfig.pulses_per_revolution" />
-                  </div>
-                  <div class="form-row checkbox-row">
-                    <label>
-                      <input type="checkbox" v-model="editingConfig.moduleConfig.z_index_enable" />
-                      Enable Z Index
-                    </label>
+                    <label>Max Frequency (Hz)</label>
+                    <input type="number" v-model.number="editingConfig.moduleConfig.max_freq" step="1" min="0" placeholder="1000" />
                   </div>
                 </template>
+                <div class="form-row">
+                  <label>Pulses Per Unit</label>
+                  <input type="number" v-model.number="editingConfig.moduleConfig.pulses_per_unit" step="0.1" min="0.001" placeholder="1.0" />
+                  <span class="form-hint">e.g. 100 pulses = 1 gallon</span>
+                </div>
+                <div class="form-row checkbox-row">
+                  <label>
+                    <input type="checkbox" v-model="editingConfig.moduleConfig.reset_on_read" />
+                    Reset on Read (totalizer mode)
+                  </label>
+                </div>
               </div>
             </template>
 
@@ -6280,7 +6447,7 @@ watch(
 
             <template v-else-if="discoveryResult?.chassis?.length > 0 || discoveryResult?.standalone_devices?.length > 0 || discoveryResult?.crio_nodes?.length > 0 || discoveryResult?.opto22_nodes?.length > 0">
               <div class="discovery-toolbar">
-                <span class="discovery-count">{{ getTotalDiscoveryChannels() }} channels found</span>
+                <span class="discovery-count">{{ getAvailableDiscoveryChannels() }} of {{ getTotalDiscoveryChannels() }} channels available</span>
                 <div class="discovery-actions">
                   <button class="btn-link" @click="expandAllDiscovery">Expand All</button>
                   <button class="btn-link" @click="collapseAllDiscovery">Collapse All</button>
@@ -6295,12 +6462,13 @@ watch(
                 <div class="banner-text">
                   <strong>Quick Setup:</strong> Add all channels as tag_0, tag_1, tag_2, etc.
                 </div>
-                <button class="btn btn-success" @click="quickPopulateAllChannels">
+                <button class="btn btn-success" @click="quickPopulateAllChannels"
+                        :disabled="getAvailableDiscoveryChannels() === 0">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
                     <polyline points="22 4 12 14.01 9 11.01"/>
                   </svg>
-                  Populate All ({{ getTotalDiscoveryChannels() }})
+                  Populate All ({{ getAvailableDiscoveryChannels() }})
                 </button>
               </div>
 
@@ -6760,8 +6928,11 @@ watch(
                 <option v-if="isScanning && getAvailablePhysicalChannelsForType().length === 0" value="" disabled>
                   Scanning for hardware...
                 </option>
+                <option v-else-if="getAvailablePhysicalChannelsForType().length === 0 && getAvailablePhysicalChannels().length > 0" value="" disabled>
+                  No {{ newChannelForm.channel_type }} channels ({{ getAvailablePhysicalChannels().length }} other type available)
+                </option>
                 <option v-else-if="getAvailablePhysicalChannelsForType().length === 0" value="" disabled>
-                  No compatible channels found
+                  No channels found — run discovery or enter manually
                 </option>
                 <option v-else value="">-- Select channel --</option>
                 <option
@@ -6791,12 +6962,13 @@ watch(
                 {{ getAvailablePhysicalChannelsForType().length }} compatible {{ newChannelForm.channel_type }} channels found
               </span>
               <span class="form-hint" v-else-if="getAvailablePhysicalChannels().length > 0">
-                No compatible {{ newChannelForm.channel_type }} channels.
-                <button class="btn-link" @click="scanDevices">Re-scan</button>
+                No {{ newChannelForm.channel_type }} channels found ({{ getAvailablePhysicalChannels().length }} other channels available). Try changing Channel Type above, or
+                <button class="btn-link" @click="scanDevices">re-scan</button>.
               </span>
               <span class="form-hint" v-else>
                 No hardware found.
                 <button class="btn-link" @click="scanDevices">Re-scan</button>
+                or select "Enter manually" above.
               </span>
             </div>
 

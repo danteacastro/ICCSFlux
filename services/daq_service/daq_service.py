@@ -16,7 +16,7 @@ import queue
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import asdict
 
 import paho.mqtt.client as mqtt
@@ -83,6 +83,7 @@ from archive_manager import ArchiveManager
 from pid_engine import PIDEngine, PIDLoop, PIDMode
 from state_machine import DAQStateMachine, DAQState
 from acquisition_events import AcquisitionEventPipeline, AcquisitionEvent
+from project_context import ProjectContext
 # Note: Azure IoT Hub streaming is handled by external azure_uploader_service.py
 # which runs in a separate Python environment (paho-mqtt 1.x for Azure SDK compatibility)
 
@@ -235,6 +236,106 @@ class MqttLogHandler(logging.Handler):
         return entries[-count:]
 
 
+class SecurityMonitor:
+    """NIST 800-171 SC.L2-3.13.1 / SI.L2-3.14.6: MQTT anomaly detection and security monitoring."""
+
+    def __init__(self, max_command_rate: int = 200, max_failed_logins: int = 10):
+        self.enabled = False  # Off by default; AdminTab Security toggles this
+        self.max_command_rate = max_command_rate  # per minute per session
+        self.max_failed_logins = max_failed_logins  # per minute total
+        self._command_counts: Dict[str, List[float]] = {}  # session_id -> [timestamps]
+        self._failed_logins: List[float] = []
+        self._permission_denied_count = 0
+        self._unknown_topic_count = 0
+        self._anomalies: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def record_command(self, session_id: str, topic: str) -> bool:
+        """Record a command and check for flood. Returns True if anomaly detected."""
+        if not self.enabled:
+            return False
+        now = time.time()
+        with self._lock:
+            if session_id not in self._command_counts:
+                self._command_counts[session_id] = []
+            timestamps = self._command_counts[session_id]
+            timestamps.append(now)
+            # Prune older than 60s
+            cutoff = now - 60
+            self._command_counts[session_id] = [t for t in timestamps if t > cutoff]
+
+            if len(self._command_counts[session_id]) > self.max_command_rate:
+                self._record_anomaly('command_flood',
+                    f'Session {session_id}: {len(self._command_counts[session_id])} commands/min '
+                    f'(limit: {self.max_command_rate})')
+                return True  # is anomaly
+        return False
+
+    def record_failed_login(self) -> bool:
+        """Record a failed login attempt. Returns True if brute-force threshold exceeded."""
+        if not self.enabled:
+            return False
+        now = time.time()
+        with self._lock:
+            self._failed_logins.append(now)
+            cutoff = now - 60
+            self._failed_logins = [t for t in self._failed_logins if t > cutoff]
+
+            if len(self._failed_logins) > self.max_failed_logins:
+                self._record_anomaly('brute_force',
+                    f'{len(self._failed_logins)} failed logins/min (limit: {self.max_failed_logins})')
+                return True
+        return False
+
+    def record_permission_denied(self):
+        with self._lock:
+            self._permission_denied_count += 1
+
+    def record_unknown_topic(self, topic: str):
+        with self._lock:
+            self._unknown_topic_count += 1
+            if self._unknown_topic_count <= 5:  # Only log first few
+                self._record_anomaly('unknown_topic', f'Command to unrecognized topic: {topic}')
+
+    def _record_anomaly(self, anomaly_type: str, description: str):
+        self._anomalies.append({
+            'type': anomaly_type,
+            'description': description,
+            'timestamp': datetime.now().isoformat()
+        })
+        logger.warning(f"[SECURITY] Anomaly detected: {description}")
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get security summary for publishing."""
+        with self._lock:
+            now = time.time()
+            cutoff = now - 60
+            total_commands = sum(
+                len([t for t in ts if t > cutoff])
+                for ts in self._command_counts.values()
+            )
+            recent_failed = len([t for t in self._failed_logins if t > cutoff])
+
+            summary = {
+                'timestamp': datetime.now().isoformat(),
+                'commands_per_minute': total_commands,
+                'active_sessions': len(self._command_counts),
+                'failed_logins_per_minute': recent_failed,
+                'permission_denied_total': self._permission_denied_count,
+                'unknown_topic_total': self._unknown_topic_count,
+                'recent_anomalies': self._anomalies[-10:],  # Last 10
+                'anomaly_count': len(self._anomalies),
+            }
+            return summary
+
+    def get_and_clear_anomalies(self) -> List[Dict[str, Any]]:
+        """Get new anomalies and clear them."""
+        with self._lock:
+            anomalies = self._anomalies[:]
+            self._anomalies.clear()
+            return anomalies
+
+
 class DAQService:
     """Main DAQ Service class"""
 
@@ -268,8 +369,18 @@ class DAQService:
             'output': TokenBucketRateLimiter(rate=50.0, capacity=100.0),
             'script': TokenBucketRateLimiter(rate=5.0, capacity=10.0),
             'config': TokenBucketRateLimiter(rate=2.0, capacity=5.0),
+            'alarm': TokenBucketRateLimiter(rate=10.0, capacity=20.0),
+            'interlock': TokenBucketRateLimiter(rate=10.0, capacity=20.0),
+            'auth': TokenBucketRateLimiter(rate=5.0, capacity=10.0),
+            'discovery': TokenBucketRateLimiter(rate=1.0, capacity=3.0),
+            'sequence': TokenBucketRateLimiter(rate=5.0, capacity=10.0),
+            'schedule': TokenBucketRateLimiter(rate=2.0, capacity=5.0),
+            'pid': TokenBucketRateLimiter(rate=10.0, capacity=20.0),
+            'station': TokenBucketRateLimiter(rate=2.0, capacity=5.0),
         }
         self._rate_limit_warn_times: Dict[str, float] = {}
+        # Global fallback limiter for any topic not matching a specific prefix
+        self._global_rate_limiter = TokenBucketRateLimiter(rate=20.0, capacity=40.0)
 
         # Service start time for uptime tracking
         self._start_time: Optional[datetime] = None
@@ -298,6 +409,9 @@ class DAQService:
         self.channel_timestamps: Dict[str, float] = {}
         # SOE (Sequence of Events) support - microsecond precision acquisition timestamps
         self.channel_acquisition_ts_us: Dict[str, int] = {}  # Microseconds since epoch
+        # Rate-limited warning/log flags (bounded dicts, not dynamic setattr)
+        self._logged_open_tc: set = set()           # Channels with open TC already logged
+        self._stale_warn_times: Dict[str, float] = {}  # Channel -> last stale warning time
 
         # Threads
         self.scan_thread: Optional[threading.Thread] = None
@@ -325,6 +439,13 @@ class DAQService:
         self.current_project_data: Dict[str, Any] = {}  # Current project data
         self.projects_dir: Optional[Path] = None  # Default projects directory (for listing)
 
+        # Multi-project station management
+        self.active_projects: Dict[str, ProjectContext] = {}
+        self._next_color_index = 0
+        self._station_state_path = Path('config/station_state.json')
+        self._station_configs_dir = Path('config/stations')
+        self._system_mode = 'standalone'  # 'standalone' or 'station'
+
         # Loop timing for status display
         self.last_scan_dt_ms = 0.0
         self.last_publish_dt_ms = 0.0
@@ -340,10 +461,13 @@ class DAQService:
         self._pending_crio_pushes: Dict[str, Dict[str, Any]] = {}  # node_id -> {config, attempts, timestamp}
         self._crio_push_lock = threading.Lock()
         self._crio_config_versions: Dict[str, str] = {}  # node_id -> expected config hash
+        self._previous_project_node_ids: set = set()  # node IDs from last loaded project
         self._CRIO_CONFIG_TIMEOUT = 15.0  # seconds — 96ch over TLS needs ~5-6s
         self._CRIO_CONFIG_MAX_RETRIES = 3
         # Synchronous config push waiting (for START command - must wait for ACK)
         self._crio_config_ack_events: Dict[str, threading.Event] = {}  # node_id -> Event
+        # Synchronous stop waiting (for STOP command - wait for cRIO to confirm)
+        self._crio_stop_ack_events: Dict[str, threading.Event] = {}  # node_id -> Event
         # Debounced config push (for bulk create/update/delete - coalesces rapid calls)
         self._crio_push_debounce_timer: Optional[threading.Timer] = None
         self._crio_push_debounce_delay = 0.5  # 500ms debounce
@@ -397,6 +521,9 @@ class DAQService:
 
         # User session manager (role-based access control)
         self.user_session_manager: Optional[UserSessionManager] = None
+
+        # NIST 800-171 SC.L2-3.13.1 / SI.L2-3.14.6: Security monitoring
+        self.security_monitor = SecurityMonitor()
 
         # Project manager (backup, validation, safety locking)
         self.project_manager: Optional[ProjectManager] = None
@@ -788,6 +915,11 @@ class DAQService:
             # Reinitialize Modbus reader for new project's devices
             self._init_modbus_reader()
 
+            # Clear retained MQTT messages for nodes no longer in this project
+            new_node_ids = {ch.source_node_id for ch in self.config.channels.values()
+                           if ch.source_node_id}
+            self._clear_stale_node_retained_messages(new_node_ids)
+
             # Reinitialize alarm manager with new channel configs
             # This clears old alarms and creates new alarm configs from the new channels
             # IMPORTANT: Clear MQTT retained messages BEFORE clearing alarm manager
@@ -1114,8 +1246,8 @@ class DAQService:
 
         # Wire up callbacks
         self.trigger_engine.set_output = self._set_output_value
-        self.trigger_engine.start_recording = lambda: self.recording_manager.start_recording() if self.recording_manager else None
-        self.trigger_engine.stop_recording = lambda: self.recording_manager.stop_recording() if self.recording_manager else None
+        self.trigger_engine.start_recording = lambda: self.recording_manager.start() if self.recording_manager else None
+        self.trigger_engine.stop_recording = lambda: self.recording_manager.stop() if self.recording_manager else None
         self.trigger_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id) if self.sequence_manager else None
         self.trigger_engine.stop_sequence = lambda seq_id: self.sequence_manager.stop_sequence(seq_id) if self.sequence_manager else None
         self.trigger_engine.publish_notification = self._publish_trigger_notification
@@ -1128,8 +1260,8 @@ class DAQService:
 
         # Wire up callbacks
         self.watchdog_engine.set_output = self._set_output_value
-        self.watchdog_engine.start_recording = lambda: self.recording_manager.start_recording() if self.recording_manager else None
-        self.watchdog_engine.stop_recording = lambda: self.recording_manager.stop_recording() if self.recording_manager else None
+        self.watchdog_engine.start_recording = lambda: self.recording_manager.start() if self.recording_manager else None
+        self.watchdog_engine.stop_recording = lambda: self.recording_manager.stop() if self.recording_manager else None
         self.watchdog_engine.run_sequence = lambda seq_id: self.sequence_manager.start_sequence(seq_id) if self.sequence_manager else None
         self.watchdog_engine.stop_sequence = lambda seq_id: self.sequence_manager.stop_sequence(seq_id) if self.sequence_manager else None
         self.watchdog_engine.publish_notification = self._publish_watchdog_notification
@@ -1259,12 +1391,12 @@ class DAQService:
     def _script_start_recording(self, filename: str = None) -> None:
         """Start recording from script"""
         if self.recording_manager and not self.recording_manager.recording:
-            self.recording_manager.start_recording(filename)
+            self.recording_manager.start(filename)
 
     def _script_stop_recording(self) -> None:
         """Stop recording from script"""
         if self.recording_manager and self.recording_manager.recording:
-            self.recording_manager.stop_recording()
+            self.recording_manager.stop()
 
     def _script_is_session_active(self) -> bool:
         """Check if session is active for script"""
@@ -2737,10 +2869,9 @@ Unit conversions:
                         age = time.time() - ts if ts > 0 else 0
                         if ts > 0 and age > STALE_REMOTE_VALUE_SECONDS:
                             # Rate-limit the warning to once per 30s per channel
-                            warn_key = f"_stale_warn_{channel}"
-                            last_warn = getattr(self, warn_key, 0)
+                            last_warn = self._stale_warn_times.get(channel, 0)
                             if (time.time() - last_warn) > 30:
-                                setattr(self, warn_key, time.time())
+                                self._stale_warn_times[channel] = time.time()
                                 logger.warning(f"[SAFETY] Stale remote value for {channel} "
                                                f"(age={age:.0f}s > {STALE_REMOTE_VALUE_SECONDS}s) "
                                                f"— interlock will fail safe")
@@ -2936,11 +3067,18 @@ Unit conversions:
         try:
             data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
             audit_dir = data_dir / "audit"
+            def _audit_witness(payload):
+                """Publish audit witness digest to MQTT for external verification"""
+                if self.mqtt_client and self.mqtt_client.is_connected():
+                    topic = f"{self.get_topic_base()}/audit/witness"
+                    self.mqtt_client.publish(topic, json.dumps(payload), qos=1, retain=False)
+
             self.audit_trail = AuditTrail(
                 audit_dir=audit_dir,
                 node_id=getattr(self.config.system, 'node_id', 'node-001'),
                 retention_days=365,
-                max_file_size_mb=50.0
+                max_file_size_mb=50.0,
+                witness_callback=_audit_witness
             )
             # Verify integrity of existing audit trail on startup
             is_valid, errors, entries_checked = self.audit_trail.verify_integrity()
@@ -2952,6 +3090,13 @@ Unit conversions:
                               f"{len(errors)} error(s) in {entries_checked} entries")
                 for err in errors[:5]:  # Log first 5 errors
                     logger.warning(f"  Audit integrity: {err}")
+                # NIST 800-171 AU.L2-3.3.3: Publish integrity failure to MQTT
+                if self.mqtt_client and self.mqtt_client.is_connected():
+                    self.mqtt_client.publish(
+                        f"{self.get_topic_base()}/audit/integrity_failure",
+                        json.dumps({'errors': errors[:10], 'entries_checked': entries_checked}),
+                        qos=1
+                    )
         except Exception as e:
             logger.error(f"Failed to initialize audit trail: {e}")
             self.audit_trail = None
@@ -2966,7 +3111,7 @@ Unit conversions:
             data_dir = Path(getattr(self.config.system, 'data_directory', 'data'))
             self.user_session_manager = UserSessionManager(
                 data_dir=data_dir,
-                session_timeout_minutes=30,
+                session_timeout_minutes=30,  # NIST 800-171 AC.L2-3.1.10: lock after 30 min inactivity
                 max_failed_attempts=5,
                 lockout_duration_minutes=15
             )
@@ -3294,11 +3439,13 @@ Unit conversions:
 
     def _sequence_start_recording(self, filename: Optional[str] = None):
         """Callback for sequence to start recording"""
-        self._start_recording(filename)
+        if self.recording_manager and not self.recording_manager.recording:
+            self.recording_manager.start(filename)
 
     def _sequence_stop_recording(self):
         """Callback for sequence to stop recording"""
-        self._stop_recording()
+        if self.recording_manager and self.recording_manager.recording:
+            self.recording_manager.stop()
 
     def _sequence_start_acquisition(self):
         """Callback for sequence to start acquisition"""
@@ -3454,6 +3601,19 @@ Unit conversions:
         self.mqtt_client.message_callback_add(
             f"{base}/system/safe-state", self._on_critical_safe_state)
 
+        # Per-project critical commands (station management)
+        mqtt_base = self.config.system.mqtt_base_topic if self.config else 'nisystem'
+        node_id = self.config.system.node_id if self.config else 'node-001'
+        station_base = f"{mqtt_base}/nodes/{node_id}"
+        self.mqtt_client.message_callback_add(
+            f"{station_base}/projects/+/acquire/start", self._on_project_acquire_start)
+        self.mqtt_client.message_callback_add(
+            f"{station_base}/projects/+/acquire/stop", self._on_project_acquire_stop)
+        self.mqtt_client.message_callback_add(
+            f"{station_base}/projects/+/recording/start", self._on_project_recording_start)
+        self.mqtt_client.message_callback_add(
+            f"{station_base}/projects/+/recording/stop", self._on_project_recording_stop)
+
         # MQTT Authentication — check env vars, config, then auto-generated credential file
         mqtt_user = os.environ.get('MQTT_USERNAME', getattr(self.config.system, 'mqtt_username', None))
         mqtt_pass = os.environ.get('MQTT_PASSWORD', getattr(self.config.system, 'mqtt_password', None))
@@ -3534,6 +3694,7 @@ Unit conversions:
             auth_topics = [
                 f"{base}/auth/login",
                 f"{base}/auth/logout",
+                f"{base}/auth/unlock",
                 f"{base}/auth/status/request"
             ]
             for topic in auth_topics:
@@ -3629,6 +3790,23 @@ Unit conversions:
 
             # Multi-instance management
             client.subscribe(f"{base}/system/create-instance")
+
+            # Station management (multi-project concurrent support)
+            client.subscribe(f"{base}/station/load")       # Load project into station
+            client.subscribe(f"{base}/station/unload")     # Unload project from station
+            client.subscribe(f"{base}/station/list")       # List loaded projects
+            client.subscribe(f"{base}/station/status")     # Get station status
+            client.subscribe(f"{base}/station/config/save")    # Save current station as config
+            client.subscribe(f"{base}/station/config/load")    # Load a station config
+            client.subscribe(f"{base}/station/config/list")    # List saved station configs
+            client.subscribe(f"{base}/station/config/delete")  # Delete a station config
+            client.subscribe(f"{base}/system/mode")      # Switch system mode
+            # Per-project commands via wildcard
+            client.subscribe(f"{base}/projects/+/acquire/start")
+            client.subscribe(f"{base}/projects/+/acquire/stop")
+            client.subscribe(f"{base}/projects/+/recording/start")
+            client.subscribe(f"{base}/projects/+/recording/stop")
+            client.subscribe(f"{base}/projects/+/commands/#")
 
             # Subscribe to user variable/playground topics
             client.subscribe(f"{base}/variables/create")
@@ -3851,8 +4029,9 @@ Unit conversions:
             payload, request_id = self._parse_critical_payload(msg)
             if payload is None:
                 return
-            logger.info(f"[CRITICAL] acquire/stop received (request_id={request_id})")
-            self._handle_acquire_stop(request_id)
+            force = payload.get('force', False) if isinstance(payload, dict) else False
+            logger.info(f"[CRITICAL] acquire/stop received (request_id={request_id}, force={force})")
+            self._handle_acquire_stop(request_id, force=force)
         except Exception as e:
             logger.error(f"[CRITICAL] acquire/stop handler failed: {e}", exc_info=True)
 
@@ -3932,9 +4111,11 @@ Unit conversions:
             logger.warning(f"[MQTT] Oversized payload on {msg.topic}: {len(msg.payload)} bytes, dropping")
             return
 
-        # Rate limit check for command topics
+        # Rate limit check for command topics (per-prefix, then global fallback)
+        matched = False
         for prefix, limiter in self._rate_limiters.items():
             if f'/{prefix}/' in msg.topic or msg.topic.endswith(f'/{prefix}'):
+                matched = True
                 if not limiter.allow():
                     now = time.time()
                     last_warn = self._rate_limit_warn_times.get(prefix, 0)
@@ -3943,6 +4124,13 @@ Unit conversions:
                         self._rate_limit_warn_times[prefix] = now
                     return
                 break
+        if not matched and not self._global_rate_limiter.allow():
+            now = time.time()
+            last_warn = self._rate_limit_warn_times.get('_global', 0)
+            if now - last_warn > 5.0:
+                logger.warning(f"[RATE LIMIT] Global command rate limit reached (>{self._global_rate_limiter.rate}/s)")
+                self._rate_limit_warn_times['_global'] = now
+            return
 
         try:
             self._command_queue.put_nowait((msg.topic, msg.payload))
@@ -4109,6 +4297,11 @@ Unit conversions:
         before routing to handler. This provides defense-in-depth even if
         individual handlers forget to check permissions.
         """
+        # === SECURITY MONITORING (NIST 800-171 SC.L2-3.13.1) ===
+        if self.security_monitor:
+            session_id = self.current_session_id or 'anonymous'
+            self.security_monitor.record_command(session_id, topic)
+
         # === CENTRALIZED PERMISSION CHECK ===
         # Strip base prefix to get the topic suffix for permission lookup
         topic_suffix = topic[len(base) + 1:] if topic.startswith(base + '/') else topic.rsplit('/', 1)[-1] if '/' in topic else topic
@@ -4124,6 +4317,8 @@ Unit conversions:
         if required_perm is not None:
             if not self._has_permission(required_perm):
                 logger.warning(f"[SECURITY] Permission denied for {topic_suffix} (requires {required_perm.value})")
+                if self.security_monitor:
+                    self.security_monitor.record_permission_denied()
                 return
 
         # === CRITICAL COMMAND FALLBACK ===
@@ -4182,6 +4377,36 @@ Unit conversions:
             self._handle_safe_state(payload, fallback_request_id)
             return
 
+        # === STATION MANAGEMENT (Multi-Project) ===
+        if topic == f"{base}/station/load":
+            self._handle_station_load(payload)
+            return
+        elif topic == f"{base}/station/unload":
+            self._handle_station_unload(payload)
+            return
+        elif topic == f"{base}/station/list" or topic == f"{base}/station/status":
+            self._handle_station_list(payload)
+            return
+        elif topic == f"{base}/station/config/save":
+            self._handle_station_config_save(payload)
+            return
+        elif topic == f"{base}/station/config/load":
+            self._handle_station_config_load(payload)
+            return
+        elif topic == f"{base}/station/config/list":
+            self._handle_station_config_list(payload)
+            return
+        elif topic == f"{base}/station/config/delete":
+            self._handle_station_config_delete(payload)
+            return
+        elif topic == f"{base}/system/mode":
+            self._handle_mode_switch(payload)
+            return
+        # Per-project commands routed via wildcard (projects/+/commands/...)
+        elif '/projects/' in topic and '/commands/' in topic:
+            self._route_project_command(topic, payload, request_id)
+            return
+
         # === AUTHENTICATION (accepts from any node via wildcard subscription) ===
         if topic.endswith('/auth/login'):
             logger.info(f"[AUTH] Received auth/login message on {topic}")
@@ -4189,6 +4414,9 @@ Unit conversions:
         elif topic.endswith('/auth/logout'):
             logger.info(f"[AUTH] Received auth/logout message on {topic}")
             self._handle_auth_logout(payload)
+        elif topic.endswith('/auth/unlock'):
+            logger.info(f"[AUTH] Received auth/unlock message on {topic}")
+            self._handle_auth_unlock(payload)
         elif topic.endswith('/auth/status/request'):
             logger.info(f"[AUTH] Received auth/status/request message on {topic}")
             self._publish_auth_status()
@@ -4218,6 +4446,10 @@ Unit conversions:
             self._handle_archive_retrieve(payload)
         elif topic.endswith('/archive/verify'):
             self._handle_archive_verify(payload)
+
+        # === SECURITY SETTINGS (NIST 800-171) ===
+        elif topic.endswith('/settings/security'):
+            self._handle_security_settings(payload)
 
         # === SAFETY / INTERLOCK MANAGEMENT ===
         elif topic == f"{base}/safety/latch/arm":
@@ -5014,8 +5246,7 @@ Unit conversions:
                 self._acq_events.emit(AcquisitionEvent.START_STATE_TRANSITION, {'new_state': 'INITIALIZING'})
             # (Legacy _stop_command_time removed — state sync uses /state topic)
             logger.info(f"[TIMING] State update: {(time.time()-_start_time)*1000:.1f}ms")
-            self._publish_system_status(skip_resource_monitoring=True)  # Fast path for immediate UI feedback
-            logger.info(f"[TIMING] Status publish (fast): {(time.time()-_start_time)*1000:.1f}ms")
+            self._publish_system_status(skip_resource_monitoring=True)  # Fast UI feedback: show INITIALIZING
 
             # Only reload from system.ini if no project is loaded
             # If a project is loaded (from file OR imported from JSON), its config is already applied
@@ -5035,6 +5266,7 @@ Unit conversions:
                 self._load_config()
             logger.info(f"[TIMING] Config check: {(time.time()-_start_time)*1000:.1f}ms")
             self._publish_channel_config()
+            self._publish_channel_claims()
             logger.info(f"[TIMING] Channel config publish: {(time.time()-_start_time)*1000:.1f}ms")
 
             # Reset scan timing stats for fresh metrics
@@ -5098,8 +5330,11 @@ Unit conversions:
             logger.info(f"[TIMING] Auto-record check: {(time.time()-_start_time)*1000:.1f}ms")
 
             self._publish_system_status()  # Full status with resource monitoring
+
+            # ACK — confirmed: acquisition is fully running
+            elapsed_ms = int((time.time() - _start_time) * 1000)
             self._publish_command_ack("acquire/start", request_id, True)
-            logger.info(f"[TIMING] Final status + ack: {(time.time()-_start_time)*1000:.1f}ms")
+            logger.info(f"[TIMING] START complete + ACK: {elapsed_ms}ms")
             if self._acq_events:
                 self._acq_events.emit(AcquisitionEvent.ACQUIRE_RUNNING, {
                     'channels': len(self.config.channels) if self.config else 0,
@@ -5144,75 +5379,123 @@ Unit conversions:
             if self._acq_events:
                 self._acq_events.end_flow()
 
-    def _handle_acquire_stop(self, request_id: Optional[str] = None):
-        """Stop data acquisition with command acknowledgment and state validation"""
+    def _handle_acquire_stop(self, request_id: Optional[str] = None, force: bool = False):
+        """Coordinated acquisition stop — cascades session, recording, cRIO.
+
+        Sequence:
+            1. Permission check
+            2. Safety gate: reject if alarms/interlocks active (unless force=True)
+            3. State → STOPPING (immediate status push for UI feedback)
+            4. Cascade: stop session → stop recording
+            5. Forward stop to cRIO nodes and wait for ACK (up to 5 s)
+            6. Stop local engines (scripts, triggers, watchdog)
+            7. State → STOPPED
+            8. Audit + cleanup
+            9. ACK to dashboard (confirmed complete)
+        """
         _start_time = time.time()
-        logger.info(f"[TIMING] _handle_acquire_stop called at {_start_time}")
+        logger.info(f"[TIMING] _handle_acquire_stop called (force={force})")
         flow_id = request_id or str(uuid.uuid4())[:8]
         if self._acq_events:
             self._acq_events.start_flow(flow_id)
             self._acq_events.emit(AcquisitionEvent.STOP_REQUESTED, {'request_id': request_id})
         try:
-            # PERMISSION CHECK
+            # 1. PERMISSION CHECK
             if not self._has_permission(Permission.STOP_ACQUISITION):
                 logger.warning("[SECURITY] Acquisition stop denied - insufficient permissions")
                 self._publish_command_ack("acquire/stop", request_id, False, "Permission denied")
                 return
             logger.info(f"[TIMING] STOP Permission check: {(time.time()-_start_time)*1000:.1f}ms")
 
-            # STATE TRANSITION: running → stopping (atomic via state machine)
+            # 2. SAFETY GATE: Block stop if alarms or interlocks are active
+            #    Stopping acquisition while a safety condition is active means
+            #    losing monitoring — outputs stay in their current state with no
+            #    feedback loop.  Require force=True to override.
+            if not force:
+                safety_issues = []
+                if self.alarm_manager:
+                    active_alarms = self.alarm_manager.get_active_alarms()
+                    if active_alarms:
+                        alarm_names = [f"{a.channel}:{a.severity.name}" for a in active_alarms[:5]]
+                        safety_issues.append(f"{len(active_alarms)} active alarm(s): {', '.join(alarm_names)}")
+                if self.safety_manager and self.safety_manager.latch_state.name == 'TRIPPED':
+                    tripped = [iid for iid, il in self.safety_manager.interlocks.items()
+                               if hasattr(il, 'tripped') and il.tripped]
+                    safety_issues.append(f"Safety latch TRIPPED ({len(tripped)} interlock(s))")
+                if safety_issues:
+                    msg = "Cannot stop with active safety conditions: " + "; ".join(safety_issues) + \
+                          ". Send with force=true to override."
+                    logger.warning(f"[SAFETY] Acquisition stop blocked: {msg}")
+                    self._publish_command_ack("acquire/stop", request_id, False, msg)
+                    return
+            logger.info(f"[TIMING] STOP Safety gate: {(time.time()-_start_time)*1000:.1f}ms")
+
+            # 3. STATE TRANSITION: running → stopping
             logger.info(f"[STATE] Acquisition stop requested (current: {self._state_machine.state.name})")
             if not self._state_machine.to(DAQState.STOPPING):
                 logger.warning(f"[STATE] Acquisition stop rejected (state={self._state_machine.state.name})")
                 self._publish_command_ack("acquire/stop", request_id, False, "Not acquiring")
                 return
-            # (Legacy _stop_command_time removed — state sync uses /state topic)
             logger.info(f"[TIMING] STOP State update: {(time.time()-_start_time)*1000:.1f}ms")
-            self._publish_system_status(skip_resource_monitoring=True)  # Fast path for immediate UI feedback
-            logger.info(f"[TIMING] STOP Status publish (fast): {(time.time()-_start_time)*1000:.1f}ms")
+            self._publish_system_status(skip_resource_monitoring=True)  # Fast UI feedback: show STOPPING
 
-            # First stop recording if active (cascade stop)
+            # 4. CASCADE: Stop session and recording BEFORE stopping acquisition
+            #    Session must stop first (it depends on recording and acquisition)
+            session_active = (self.user_variables and self.user_variables.session.active)
+            if session_active:
+                logger.info("[STATE] Cascading stop to active session")
+                self._handle_test_session_stop()
             if self.recording:
                 logger.info("[STATE] Cascading stop to recording")
                 self._handle_recording_stop()
+            logger.info(f"[TIMING] STOP Session+recording cascade: {(time.time()-_start_time)*1000:.1f}ms")
 
-            # STATE TRANSITION: stopping → stopped
-            self._state_machine.to(DAQState.STOPPED)
-            logger.info(f"[STATE] Acquisition stopped successfully (state={self._state_machine.state.name})")
+            # 5. FORWARD to cRIO nodes and wait for ACK confirmation
+            crio_ack_ok = self._stop_crio_nodes_and_wait(request_id, timeout_s=5.0)
+            logger.info(f"[TIMING] STOP cRIO forward+wait: {(time.time()-_start_time)*1000:.1f}ms (ack={crio_ack_ok})")
 
-            # Notify automation engines
+            # 6. STOP local engines
             if self.script_manager:
                 self.script_manager.on_acquisition_stop()
-                self._publish_script_status()  # Update UI with stopped scripts
+                self._publish_script_status()
             if self.trigger_engine:
                 self.trigger_engine.on_acquisition_stop()
             if self.watchdog_engine:
                 self.watchdog_engine.on_acquisition_stop()
             logger.info(f"[TIMING] STOP Engines notified: {(time.time()-_start_time)*1000:.1f}ms")
 
-            # IEC 61511: Unlock safety configuration after acquisition stops
+            # 7. STATE TRANSITION: stopping → stopped
+            self._state_machine.to(DAQState.STOPPED)
+            logger.info(f"[STATE] Acquisition stopped successfully (state={self._state_machine.state.name})")
+
+            # 8. CLEANUP & AUDIT
             if self.project_manager:
                 self.project_manager.unlock_safety_config()
-
-            # Audit trail: Log acquisition stop
             if self.audit_trail:
                 self.audit_trail.log_event(
                     event_type=AuditEventType.ACQUISITION_STOPPED,
                     user=self.auth_username or "system",
-                    description="Data acquisition stopped"
+                    description="Data acquisition stopped",
+                    details={
+                        'session_was_active': session_active,
+                        'recording_was_active': self.recording,
+                        'crio_ack': crio_ack_ok,
+                        'forced': force,
+                        'elapsed_ms': int((time.time() - _start_time) * 1000),
+                    }
                 )
-
+            self._clear_channel_claims()
             self._publish_system_status()  # Full status with resource monitoring
+
+            # 9. ACK — confirmed: everything is stopped
+            elapsed_ms = int((time.time() - _start_time) * 1000)
             self._publish_command_ack("acquire/stop", request_id, True)
-            logger.info(f"[TIMING] STOP Final status + ack: {(time.time()-_start_time)*1000:.1f}ms")
+            logger.info(f"[TIMING] STOP complete + ACK: {elapsed_ms}ms")
             if self._acq_events:
                 self._acq_events.emit(AcquisitionEvent.ACQUIRE_STOPPED, {
-                    'elapsed_ms': int((time.time() - _start_time) * 1000),
+                    'elapsed_ms': elapsed_ms,
+                    'crio_ack': crio_ack_ok,
                 })
-
-            # Forward acquisition stop to all connected cRIO nodes
-            self._forward_acquisition_command_to_crio('stop', request_id)
-            logger.info(f"[TIMING] STOP cRIO forward complete: {(time.time()-_start_time)*1000:.1f}ms")
 
         except Exception as e:
             logger.error(f"[STATE MACHINE] Error stopping acquisition: {e}", exc_info=True)
@@ -5890,13 +6173,21 @@ Unit conversions:
         crio_ping_counter = 0
         crio_ping_interval = 5  # heartbeats between pings
 
-        # Session cleanup interval (every ~5 min = every 150 heartbeats at 2s interval)
-        session_cleanup_counter = 0
-        session_cleanup_interval = 150
-
         # Credential health check interval (every ~60s = every 30 heartbeats at 2s interval)
         credential_health_counter = 0
         credential_health_interval = 30
+
+        # Session lock check interval (every ~30s = every 15 heartbeats at 2s interval)
+        session_lock_counter = 0
+        session_lock_interval = 15
+
+        # NIST 800-171 SC.L2-3.13.1: Security summary (every ~5 min = 150 heartbeats at 2s)
+        security_summary_counter = 0
+        security_summary_interval = 150
+
+        # NIST 800-171 AU.L2-3.3.3: Daily audit integrity re-verification (~24h = 43200 heartbeats at 2s)
+        audit_integrity_counter = 0
+        audit_integrity_interval = 43200
 
         while not self._shutdown_requested.wait(timeout=self._heartbeat_interval):
             if not self._running.is_set():
@@ -5942,11 +6233,16 @@ Unit conversions:
                     crio_ping_counter = 0
                     self._send_crio_discovery_ping()
 
-                # Periodic session cleanup — remove expired sessions to prevent memory growth
-                session_cleanup_counter += 1
-                if session_cleanup_counter >= session_cleanup_interval:
-                    session_cleanup_counter = 0
+                # Session lock check — lock idle sessions (NIST 800-171 AC.L2-3.1.10)
+                # Does NOT stop acquisition, recording, or any backend processes.
+                session_lock_counter += 1
+                if session_lock_counter >= session_lock_interval:
+                    session_lock_counter = 0
                     if self.user_session_manager:
+                        locked_ids = self.user_session_manager.lock_expired_sessions()
+                        for sid in locked_ids:
+                            if sid == self.current_session_id:
+                                self._publish_auth_status()  # Notify dashboard of lock
                         self.user_session_manager.cleanup_expired_sessions()
 
                 # Periodic credential health check — detect offline nodes that are reachable
@@ -5954,6 +6250,43 @@ Unit conversions:
                 if credential_health_counter >= credential_health_interval:
                     credential_health_counter = 0
                     self._check_node_credential_health()
+
+                # NIST 800-171 SC.L2-3.13.1: Security summary publishing
+                security_summary_counter += 1
+                if security_summary_counter >= security_summary_interval:
+                    security_summary_counter = 0
+                    if self.security_monitor:
+                        summary = self.security_monitor.get_summary()
+                        self.mqtt_client.publish(
+                            f'{base}/security/summary',
+                            json.dumps(summary), retain=True)
+                        # Check for new anomalies and log to audit
+                        anomalies = self.security_monitor.get_and_clear_anomalies()
+                        for anomaly in anomalies:
+                            if self.audit_trail:
+                                self.audit_trail.log_event(
+                                    event_type=AuditEventType.SECURITY_ANOMALY,
+                                    user="SYSTEM",
+                                    description=anomaly['description'],
+                                    details=anomaly
+                                )
+                            self.mqtt_client.publish(
+                                f'{base}/security/anomaly',
+                                json.dumps(anomaly))
+
+                # NIST 800-171 AU.L2-3.3.3: Daily audit integrity re-verification
+                audit_integrity_counter += 1
+                if audit_integrity_counter >= audit_integrity_interval:
+                    audit_integrity_counter = 0
+                    if self.audit_trail:
+                        is_valid, errors, count = self.audit_trail.verify_integrity()
+                        if not is_valid:
+                            logger.warning(f"[AUDIT] Daily integrity check FAILED: "
+                                          f"{len(errors)} error(s) in {count} entries")
+                            self.mqtt_client.publish(
+                                f'{base}/audit/integrity_failure',
+                                json.dumps({'errors': errors[:10], 'entries_checked': count}),
+                                qos=1)
 
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
@@ -6082,6 +6415,7 @@ Unit conversions:
             "simulation_mode": self.config.system.simulation_mode or not NIDAQMX_AVAILABLE,
             "acquiring": self.acquiring,
             "acquisition_state": self.acquisition_state,  # stopped, initializing, running
+            "system_mode": self._system_mode,
             "recording": rec_status.get('recording', self.recording),
             "recording_filename": rec_status.get('recording_filename', self.recording_filename),
             "recording_duration": recording_duration_str,
@@ -6254,6 +6588,44 @@ Unit conversions:
         )
         logger.debug(f"Published alarms/cleared message, reason: {reason}")
 
+    def _clear_stale_node_retained_messages(self, new_node_ids: set):
+        """Clear retained MQTT messages for nodes no longer in the current project.
+
+        When a new project is loaded, any remote nodes (cRIO, Opto22, cFP) that were
+        in the previous project but are NOT in the new project have stale retained
+        messages on the broker. These cause phantom alarms/status on dashboard connect.
+
+        Args:
+            new_node_ids: Set of source_node_id values from the newly loaded project.
+        """
+        stale_nodes = self._previous_project_node_ids - new_node_ids
+        if not stale_nodes:
+            self._previous_project_node_ids = new_node_ids
+            return
+
+        base = self.get_topic_base()
+
+        # Retained topic patterns that remote nodes publish
+        retained_patterns = [
+            "status/system",
+            "alarms/status",
+            "interlock/status",
+            "state",
+        ]
+
+        cleared = 0
+        for node_id in stale_nodes:
+            for pattern in retained_patterns:
+                topic = f"{base}/nodes/{node_id}/{pattern}"
+                self.mqtt_client.publish(topic, b"", retain=True, qos=1)
+                cleared += 1
+
+        if cleared:
+            logger.info(f"Cleared {cleared} retained messages for {len(stale_nodes)} "
+                        f"stale node(s): {', '.join(sorted(stale_nodes))}")
+
+        self._previous_project_node_ids = new_node_ids
+
     # =========================================================================
     # AUTHENTICATION HANDLERS (Session-based with UserSessionManager)
     # =========================================================================
@@ -6327,6 +6699,10 @@ Unit conversions:
             self.current_session_id = None
             self.current_user_role = None
 
+            # NIST 800-171 SI.L2-3.14.6: Track failed logins for brute-force detection
+            if self.security_monitor:
+                self.security_monitor.record_failed_login()
+
             # Log failed attempt to audit trail
             if self.audit_trail:
                 self.audit_trail.log_event(
@@ -6358,28 +6734,64 @@ Unit conversions:
         self._publish_auth_status()
         self._publish_system_status()
 
+    def _handle_auth_unlock(self, payload: Any):
+        """Handle session unlock request — re-authenticate locked session.
+
+        Does NOT create a new session. Same session_id, same audit trail.
+        Backend processes (acquisition, recording, scripts, safety) are unaffected.
+        """
+        if not isinstance(payload, dict):
+            self._publish_auth_status(error="Invalid unlock payload")
+            return
+
+        if not self.user_session_manager or not self.current_session_id:
+            self._publish_auth_status(error="No session to unlock")
+            return
+
+        password = payload.get('password', '')
+        if not password:
+            self._publish_auth_status(error="Password required to unlock")
+            return
+
+        session = self.user_session_manager.unlock_session(
+            self.current_session_id, password
+        )
+
+        if session:
+            logger.info(f"[AUTH] Session unlocked for {session.username}")
+            self._publish_auth_status()
+        else:
+            logger.warning("[AUTH] Session unlock failed: incorrect password")
+            self._publish_auth_status(error="Incorrect password")
+
     def _publish_auth_status(self, error: Optional[str] = None):
-        """Publish authentication status with role information"""
+        """Publish authentication status with role and session state information"""
         logger.info(f"[AUTH] Publishing auth status (error={error})")
         base = self.get_topic_base()
 
         # Get user info if authenticated
         user_info = None
         permissions = []
+        session_state = "active"
         if self.current_session_id and self.user_session_manager:
             session = self.user_session_manager.validate_session(self.current_session_id)
             if session:
                 user_info = self.user_session_manager.get_user_info(session.username)
+                session_state = session.state.value
                 # Get permissions for this role
-                from user_session import ROLE_PERMISSIONS, UserRole
+                from user_session import ROLE_PERMISSIONS, LOCKED_SESSION_PERMISSIONS, SessionState, UserRole
                 role = UserRole(session.role.value) if isinstance(session.role, UserRole) else session.role
-                role_perms = ROLE_PERMISSIONS.get(role, set())
-                permissions = [p.value for p in role_perms]
+                if session.state == SessionState.LOCKED:
+                    permissions = [p.value for p in LOCKED_SESSION_PERMISSIONS]
+                else:
+                    role_perms = ROLE_PERMISSIONS.get(role, set())
+                    permissions = [p.value for p in role_perms]
 
         status = {
             "authenticated": self.authenticated,
             "username": self.auth_username,
             "role": self.current_user_role,
+            "session_state": session_state,
             "permissions": permissions,
             "display_name": user_info.get('display_name') if user_info else None,
             "timestamp": datetime.now().isoformat()
@@ -7295,6 +7707,7 @@ Unit conversions:
 
             # Always store absolute path to avoid working directory issues
             settings["last_project_path"] = str(project_path.resolve()) if project_path else None
+            settings["system_mode"] = self._system_mode
 
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -7315,6 +7728,78 @@ Unit conversions:
         except Exception as e:
             logger.warning(f"Could not load settings: {e}")
         return None
+
+    def _load_system_mode(self) -> str:
+        """Load system mode from settings."""
+        settings_path = self._get_settings_path()
+        try:
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                mode = settings.get("system_mode", "standalone")
+                if mode in ("standalone", "station"):
+                    return mode
+        except Exception as e:
+            logger.warning(f"Could not load system mode: {e}")
+        return "standalone"
+
+    def _save_system_mode(self, mode: str):
+        """Save system mode to settings."""
+        settings_path = self._get_settings_path()
+        try:
+            settings = {}
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+            settings["system_mode"] = mode
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save system mode: {e}")
+
+    def _apply_saved_security_settings(self):
+        """Load security settings from disk on startup and apply to runtime."""
+        try:
+            settings_path = self._get_settings_path()
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                sec = settings.get("security_settings", {})
+                if sec and self.security_monitor:
+                    self.security_monitor.enabled = sec.get('anomaly_detection_enabled', False)
+                    self.security_monitor.max_command_rate = sec.get('anomaly_command_rate_limit', 200)
+                    self.security_monitor.max_failed_logins = sec.get('anomaly_failed_login_rate_limit', 10)
+                    logger.info(f"[SECURITY] Loaded settings: anomaly_detection={self.security_monitor.enabled}")
+        except Exception as e:
+            logger.warning(f"Could not load security settings: {e}")
+
+    def _handle_security_settings(self, payload):
+        """Handle security settings update from dashboard AdminTab."""
+        if not isinstance(payload, dict):
+            return
+        settings_path = self._get_settings_path()
+        try:
+            settings = {}
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+            settings["security_settings"] = payload
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            logger.info(f"[SECURITY] Updated security settings: "
+                        f"session_lock={payload.get('session_lock_enabled')}, "
+                        f"guest_access={payload.get('guest_access_enabled')}, "
+                        f"anomaly_detection={payload.get('anomaly_detection_enabled')}")
+            # Apply to security monitor if present
+            if self.security_monitor and payload.get('anomaly_detection_enabled') is not None:
+                self.security_monitor.enabled = payload.get('anomaly_detection_enabled', False)
+            # Apply to user session manager if present
+            if hasattr(self, 'user_session') and self.user_session:
+                max_sessions = payload.get('max_concurrent_sessions', 0)
+                if max_sessions > 0:
+                    self.user_session.max_concurrent_sessions = max_sessions
+        except Exception as e:
+            logger.warning(f"Could not save security settings: {e}")
 
     def _try_load_last_project(self):
         """Try to load the last project on startup, fail gracefully to empty state
@@ -7374,6 +7859,15 @@ Unit conversions:
 
         # Clear current project reference
         self.current_project_path = None
+
+        # Capture remote node IDs before clearing channels, then clear their
+        # retained MQTT messages (no project loaded = all remote nodes are stale)
+        if self.config and self.config.channels:
+            self._previous_project_node_ids = {
+                ch.source_node_id for ch in self.config.channels.values()
+                if ch.source_node_id
+            }
+            self._clear_stale_node_retained_messages(set())
 
         # Clear all channels from config
         # Keep hardware settings (MQTT broker, device name, scan rate) but remove channels
@@ -7656,6 +8150,1582 @@ Unit conversions:
             if publish:
                 self._publish_project_response(False, str(e))
             return False
+
+    # =========================================================================
+    # STATION MANAGEMENT — Multi-Project Concurrent Support
+    # =========================================================================
+
+    def _create_project_context(self, project_id: str, project_data: Dict[str, Any],
+                                 project_path: Path) -> ProjectContext:
+        """Create a ProjectContext with isolated manager instances for a project.
+
+        This is the factory method that initializes all per-project managers
+        (recording, alarms, safety, scripts, sequences, triggers, watchdog,
+        variables, PID) with proper callback wiring.
+        """
+        # Parse config from project data
+        sys_data = project_data.get("system", {})
+        cur = self.config.system if self.config else SystemConfig()
+
+        mode_str = sys_data.get("project_mode", "cdaq").lower()
+        try:
+            project_mode = ProjectMode(mode_str)
+        except ValueError:
+            project_mode = ProjectMode.CDAQ
+
+        system = SystemConfig(
+            mqtt_broker=sys_data.get("mqtt_broker", "localhost"),
+            mqtt_port=int(sys_data.get("mqtt_port", 1883)),
+            mqtt_base_topic=sys_data.get("mqtt_base_topic", "nisystem"),
+            scan_rate_hz=min(float(sys_data.get("scan_rate_hz", 4)), 100.0),
+            publish_rate_hz=min(float(sys_data.get("publish_rate_hz", 4)), 10.0),
+            simulation_mode=sys_data.get("simulation_mode", False),
+            log_directory=sys_data.get("log_directory", "./logs"),
+            config_reload_topic=sys_data.get("config_reload_topic", "nisystem/config/reload"),
+            project_mode=project_mode,
+            node_id=cur.node_id,
+            node_name=cur.node_name,
+            default_project=cur.default_project,
+            log_level=sys_data.get("log_level", cur.log_level),
+            log_max_file_size_mb=int(sys_data.get("log_max_file_size_mb", cur.log_max_file_size_mb)),
+            log_backup_count=int(sys_data.get("log_backup_count", cur.log_backup_count)),
+            service_heartbeat_interval_sec=float(sys_data.get("service_heartbeat_interval_sec", cur.service_heartbeat_interval_sec)),
+            service_health_timeout_sec=float(sys_data.get("service_health_timeout_sec", cur.service_health_timeout_sec)),
+            service_shutdown_timeout_sec=float(sys_data.get("service_shutdown_timeout_sec", cur.service_shutdown_timeout_sec)),
+            service_command_ack_timeout_sec=float(sys_data.get("service_command_ack_timeout_sec", cur.service_command_ack_timeout_sec)),
+            dataviewer_retention_days=int(sys_data.get("dataviewer_retention_days", cur.dataviewer_retention_days)),
+        )
+
+        # Parse channels
+        channels_data = project_data.get("channels", {})
+        channels: Dict[str, ChannelConfig] = {}
+        for name, ch_data in channels_data.items():
+            ch_type_str = ch_data.get("channel_type", "voltage")
+            channel_type = ChannelType(ch_type_str)
+            tc_type = None
+            if ch_data.get("thermocouple_type"):
+                tc_type = ThermocoupleType(ch_data["thermocouple_type"])
+
+            channels[name] = ChannelConfig(
+                name=name,
+                module=ch_data.get("module", ""),
+                physical_channel=ch_data.get("physical_channel", ""),
+                channel_type=channel_type,
+                description=ch_data.get("description", ""),
+                units=ch_data.get("units", ""),
+                visible=ch_data.get("visible", True),
+                group=ch_data.get("group", ""),
+                scale_slope=float(ch_data.get("scale_slope", 1.0)),
+                scale_offset=float(ch_data.get("scale_offset", 0.0)),
+                scale_type=ch_data.get("scale_type", "none"),
+                four_twenty_scaling=ch_data.get("four_twenty_scaling", False),
+                eng_units_min=float(ch_data["eng_units_min"]) if ch_data.get("eng_units_min") is not None else None,
+                eng_units_max=float(ch_data["eng_units_max"]) if ch_data.get("eng_units_max") is not None else None,
+                pre_scaled_min=float(ch_data["pre_scaled_min"]) if ch_data.get("pre_scaled_min") is not None else None,
+                pre_scaled_max=float(ch_data["pre_scaled_max"]) if ch_data.get("pre_scaled_max") is not None else None,
+                scaled_min=float(ch_data["scaled_min"]) if ch_data.get("scaled_min") is not None else None,
+                scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
+                voltage_range=float(ch_data.get("voltage_range", 10.0)),
+                current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
+                terminal_config=ch_data.get("terminal_config", "DEFAULT"),
+                thermocouple_type=tc_type,
+                cjc_source=ch_data.get("cjc_source", "internal"),
+                cjc_value=float(ch_data.get("cjc_value", 25.0)),
+                rtd_type=ch_data.get("rtd_type", "Pt100"),
+                rtd_resistance=float(ch_data.get("rtd_resistance", 100.0)),
+                rtd_wiring=ch_data.get("rtd_wiring", ch_data.get("resistance_config", "4-wire")),
+                rtd_current=float(ch_data.get("rtd_current", ch_data.get("excitation_current", 0.001))),
+                invert=ch_data.get("invert", False),
+                default_state=ch_data.get("default_state", False),
+                default_value=float(ch_data.get("default_value", 0.0)),
+                low_limit=float(ch_data["low_limit"]) if ch_data.get("low_limit") is not None else None,
+                high_limit=float(ch_data["high_limit"]) if ch_data.get("high_limit") is not None else None,
+                low_warning=float(ch_data["low_warning"]) if ch_data.get("low_warning") is not None else None,
+                high_warning=float(ch_data["high_warning"]) if ch_data.get("high_warning") is not None else None,
+                alarm_enabled=ch_data.get("alarm_enabled", False),
+                hihi_limit=float(ch_data["hihi_limit"]) if ch_data.get("hihi_limit") is not None else None,
+                hi_limit=float(ch_data["hi_limit"]) if ch_data.get("hi_limit") is not None else None,
+                lo_limit=float(ch_data["lo_limit"]) if ch_data.get("lo_limit") is not None else None,
+                lolo_limit=float(ch_data["lolo_limit"]) if ch_data.get("lolo_limit") is not None else None,
+                alarm_priority=ch_data.get("alarm_priority", "medium"),
+                alarm_deadband=float(ch_data.get("alarm_deadband", 1.0)),
+                alarm_delay_sec=float(ch_data.get("alarm_delay_sec", 0.0)),
+                digital_alarm_enabled=ch_data.get("digital_alarm_enabled", False),
+                digital_expected_state=ch_data.get("digital_expected_state", "HIGH"),
+                digital_debounce_ms=int(ch_data.get("digital_debounce_ms", 100)),
+                digital_invert=ch_data.get("digital_invert", False),
+                safety_action=ch_data.get("safety_action"),
+                safety_interlock=ch_data.get("safety_interlock"),
+                log=ch_data.get("log", True),
+                log_interval_ms=int(ch_data.get("log_interval_ms", 1000)),
+                source_type=ch_data.get("source_type", "local"),
+                source_node_id=ch_data.get("source_node_id") or ch_data.get("node_id", "")
+            )
+
+        config = NISystemConfig(
+            system=system,
+            dataviewer=self.config.dataviewer if self.config else DataViewerConfig(),
+            chassis=self.config.chassis if self.config else {},
+            modules=self.config.modules if self.config else {},
+            channels=channels,
+            safety_actions=self.config.safety_actions if self.config else {}
+        )
+
+        # Assign color
+        color_index = self._next_color_index % 8
+        self._next_color_index += 1
+
+        # Create the context
+        ctx = ProjectContext(
+            project_id=project_id,
+            project_path=project_path,
+            project_data=project_data,
+            project_name=project_data.get('name', project_id),
+            color_index=color_index,
+            config=config,
+        )
+
+        # Data directory for this project
+        data_dir = Path(getattr(config.system, 'data_directory', 'data')) / project_id
+
+        # Initialize per-project managers with callback closures
+        # Each closure captures ctx to scope data access to this project
+
+        # Recording manager — separate directory per project
+        recording_dir = Path(config.system.log_directory) / project_id
+        recording_dir.mkdir(parents=True, exist_ok=True)
+        ctx.recording_manager = RecordingManager(default_path=str(recording_dir))
+        ctx.recording_manager.on_status_change = lambda: self._publish_project_status(project_id)
+
+        # Alarm manager
+        project_data_dir = data_dir / 'alarms'
+        project_data_dir.mkdir(parents=True, exist_ok=True)
+        ctx.alarm_manager = AlarmManager(
+            data_dir=project_data_dir,
+            publish_callback=lambda topic, payload, **kw: self._publish_project_mqtt(project_id, f"alarms/{topic}", payload, **kw)
+        )
+        # Auto-create alarm configs from channel limits
+        for ch_name, ch_config in channels.items():
+            alarm_configs = self._build_alarm_configs_for_channel(ch_config)
+            for ac in alarm_configs:
+                ctx.alarm_manager.add_alarm_config(ac)
+
+        # Sequence manager
+        ctx.sequence_manager = SequenceManager()
+        ctx.sequence_manager.on_set_output = lambda ch, val: self._project_set_output(project_id, ch, val)
+        ctx.sequence_manager.on_start_recording = lambda: ctx.recording_manager.start() if ctx.recording_manager else None
+        ctx.sequence_manager.on_stop_recording = lambda: ctx.recording_manager.stop() if ctx.recording_manager else None
+        ctx.sequence_manager.on_publish = lambda topic, payload: self._publish_project_mqtt(project_id, topic, payload)
+
+        # Script manager
+        script_data_dir = data_dir / 'scripts'
+        script_data_dir.mkdir(parents=True, exist_ok=True)
+        ctx.script_manager = ScriptManager(data_dir=script_data_dir)
+        ctx.script_manager.on_get_channel_value = lambda ch: ctx.channel_values.get(ch)
+        ctx.script_manager.on_get_channel_timestamp = lambda ch: ctx.channel_timestamps.get(ch, 0.0)
+        ctx.script_manager.on_get_channel_names = lambda: list(ctx.channel_names)
+        ctx.script_manager.on_set_output = lambda ch, val: self._project_set_output(project_id, ch, val)
+
+        # Trigger engine
+        ctx.trigger_engine = TriggerEngine()
+        ctx.trigger_engine.set_output = lambda ch, val: self._project_set_output(project_id, ch, val)
+
+        # Watchdog engine
+        ctx.watchdog_engine = WatchdogEngine()
+        ctx.watchdog_engine.set_output = lambda ch, val: self._project_set_output(project_id, ch, val)
+
+        # User variable manager
+        var_data_dir = data_dir / 'variables'
+        var_data_dir.mkdir(parents=True, exist_ok=True)
+        ctx.user_variables = UserVariableManager(data_dir=str(var_data_dir))
+
+        # Safety manager
+        safety_data_dir = data_dir / 'safety'
+        safety_data_dir.mkdir(parents=True, exist_ok=True)
+
+        def ctx_get_channel_value(channel: str) -> Optional[float]:
+            val = ctx.channel_values.get(channel)
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        ctx.safety_manager = SafetyManager(
+            data_dir=safety_data_dir,
+            get_channel_value=ctx_get_channel_value,
+            get_channel_type=lambda ch: str(channels[ch].channel_type.value) if ch in channels else None,
+            get_all_channels=lambda: {n: {'name': n, 'channel_type': c.channel_type.value} for n, c in channels.items()},
+            publish_callback=lambda topic, payload, **kw: self._publish_project_mqtt(project_id, f"safety/{topic}", payload, **kw),
+            set_output_callback=lambda ch, val: self._project_set_output(project_id, ch, val),
+            stop_session_callback=lambda: self._project_stop_acquisition(project_id),
+            get_system_state=lambda: {'status': 'online' if self.running else 'offline', 'acquiring': ctx.acquiring, 'recording': ctx.recording},
+            get_alarm_state=lambda: {'active_count': len(ctx.alarms_active), 'alarms': dict(ctx.alarms_active)},
+            trigger_safe_state_callback=lambda reason: self._forward_safe_state_to_crio(reason)
+        )
+        ctx.safety_manager.node_id = getattr(config.system, 'node_id', 'node-001')
+
+        # PID engine
+        try:
+            ctx.pid_engine = PIDEngine(
+                on_set_output=lambda ch, val: self._project_set_output(project_id, ch, val)
+            )
+            ctx.pid_engine.set_status_callback(
+                lambda loop_id, status: self._publish_project_mqtt(project_id, f"pid/loop/{loop_id}/status", json.dumps(status))
+            )
+        except Exception as e:
+            logger.error(f"Failed to init PID engine for {project_id}: {e}")
+            ctx.pid_engine = None
+
+        # Load project-specific data into managers
+        self._load_project_data_into_context(ctx, project_data)
+
+        # Initialize channel values
+        for name, channel in channels.items():
+            if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                ctx.channel_values[name] = channel.default_state
+            elif channel.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT):
+                ctx.channel_values[name] = channel.default_value
+            else:
+                ctx.channel_values[name] = 0.0
+
+        logger.info(f"Created project context '{project_id}': {len(channels)} channels, color={color_index}")
+        return ctx
+
+    def _load_project_data_into_context(self, ctx: ProjectContext, project_data: Dict[str, Any]):
+        """Load scripts, alarms, interlocks, triggers, etc. from project JSON into context managers."""
+        # Safety interlocks
+        if ctx.safety_manager:
+            interlocks_data = project_data.get('interlocks', [])
+            for interlock_data in interlocks_data:
+                interlock = Interlock.from_dict(interlock_data)
+                ctx.safety_manager.add_interlock(interlock, 'project_load')
+            safe_state_data = project_data.get('safeStateConfig')
+            if safe_state_data:
+                ctx.safety_manager.update_safe_state_config(safe_state_data)
+
+        # Scripts
+        if ctx.script_manager:
+            ctx.script_manager.load_scripts_from_project(project_data)
+
+        # User variables
+        if ctx.user_variables:
+            ctx.user_variables.load_variables_from_project(project_data)
+            channel_names = list(ctx.channel_names)
+            ctx.user_variables.load_formulas_from_project(project_data, channel_names)
+
+        # Triggers
+        if ctx.trigger_engine:
+            ctx.trigger_engine.load_from_project(project_data)
+
+        # Watchdogs
+        if ctx.watchdog_engine:
+            ctx.watchdog_engine.load_from_project(project_data)
+
+        # PID loops
+        if ctx.pid_engine:
+            pid_data = project_data.get('pidLoops', {})
+            if pid_data:
+                ctx.pid_engine.load_config(pid_data)
+
+        # Alarm flood detection
+        safety_data = project_data.get('safety', {})
+        flood_cfg = safety_data.get('alarmFlood')
+        if flood_cfg and isinstance(flood_cfg, dict) and ctx.alarm_manager:
+            ctx.alarm_manager.configure_flood(
+                threshold=flood_cfg.get('threshold', 10),
+                window_s=flood_cfg.get('window_s', 60.0)
+            )
+
+    def _build_alarm_configs_for_channel(self, ch: ChannelConfig) -> list:
+        """Build alarm configs from a channel's ISA-18.2 limits. Returns list of AlarmConfig."""
+        configs = []
+        if not ch.alarm_enabled:
+            return configs
+
+        name = ch.name
+        # Check ISA-18.2 limits
+        if ch.hihi_limit is not None:
+            configs.append(AlarmConfig(
+                id=f"alarm-{name}-hihi", channel=name, severity=AlarmSeverity.CRITICAL,
+                setpoint=ch.hihi_limit, comparison='>', deadband=ch.alarm_deadband,
+                delay_sec=ch.alarm_delay_sec, priority=ch.alarm_priority,
+                description=f"HiHi alarm on {name}"
+            ))
+        if ch.hi_limit is not None:
+            configs.append(AlarmConfig(
+                id=f"alarm-{name}-hi", channel=name, severity=AlarmSeverity.HIGH,
+                setpoint=ch.hi_limit, comparison='>', deadband=ch.alarm_deadband,
+                delay_sec=ch.alarm_delay_sec, priority=ch.alarm_priority,
+                description=f"Hi alarm on {name}"
+            ))
+        if ch.lo_limit is not None:
+            configs.append(AlarmConfig(
+                id=f"alarm-{name}-lo", channel=name, severity=AlarmSeverity.LOW,
+                setpoint=ch.lo_limit, comparison='<', deadband=ch.alarm_deadband,
+                delay_sec=ch.alarm_delay_sec, priority=ch.alarm_priority,
+                description=f"Lo alarm on {name}"
+            ))
+        if ch.lolo_limit is not None:
+            configs.append(AlarmConfig(
+                id=f"alarm-{name}-lolo", channel=name, severity=AlarmSeverity.CRITICAL,
+                setpoint=ch.lolo_limit, comparison='<', deadband=ch.alarm_deadband,
+                delay_sec=ch.alarm_delay_sec, priority=ch.alarm_priority,
+                description=f"LoLo alarm on {name}"
+            ))
+        return configs
+
+    def _detect_channel_conflicts(self) -> Dict[str, list]:
+        """Detect physical channel conflicts across all loaded projects.
+
+        Returns:
+            Dict mapping physical_channel -> list of project_ids that claim it
+        """
+        physical_map: Dict[str, list] = {}  # physical_channel -> [project_ids]
+        for pid, ctx in self.active_projects.items():
+            if not ctx.config or not ctx.config.channels:
+                continue
+            for ch_name, ch in ctx.config.channels.items():
+                phys = getattr(ch, 'physical_channel', None)
+                if phys:
+                    if phys not in physical_map:
+                        physical_map[phys] = []
+                    physical_map[phys].append(pid)
+
+        # Filter to only conflicts (2+ projects on same channel)
+        return {phys: pids for phys, pids in physical_map.items() if len(pids) > 1}
+
+    def _estimate_station_scan_budget(self, channels: Dict[str, 'ChannelConfig']) -> Dict[str, Any]:
+        """Estimate whether a channel set can be read within the 500ms scan budget.
+
+        Returns a dict with:
+          - feasible: bool — whether the channel set fits within budget
+          - channel_count: int — total channels
+          - module_count: int — distinct NI modules involved
+          - estimated_ms: float — estimated per-scan read time
+          - budget_ms: float — maximum allowed (500ms)
+          - details: str — human-readable summary
+        """
+        BUDGET_MS = 500.0
+
+        # Group channels by module (physical_channel prefix before '/')
+        modules: Dict[str, int] = {}
+        remote_count = 0
+        sim_count = 0
+        for name, ch in channels.items():
+            source = getattr(ch, 'hardware_source', None)
+            if source and str(source).lower() in ('crio', 'opto22', 'cfp', 'modbus', 'opcua', 'rest', 'ethernetip'):
+                remote_count += 1
+                continue
+            phys = getattr(ch, 'physical_channel', None) or ''
+            if not phys:
+                sim_count += 1
+                continue
+            # Module = everything before the last '/' (e.g., "cDAQ1Mod1/ai0" → "cDAQ1Mod1")
+            module = phys.rsplit('/', 1)[0] if '/' in phys else phys
+            modules[module] = modules.get(module, 0) + 1
+
+        total_hw = sum(modules.values())
+        module_count = len(modules)
+
+        # Timing estimates (conservative, based on NI-DAQmx characteristics):
+        # - Each module's continuous task has ~2ms overhead per read_all call
+        # - Each analog channel adds ~0.1ms of conversion/scaling
+        # - DI tasks are fast (~0.5ms each)
+        # - Counter tasks add ~1ms each
+        # - Safety/alarm/PID processing adds ~1ms per project
+        # Remote and simulated channels are essentially free (no hardware read)
+        estimated_ms = (
+            module_count * 2.0 +      # Per-module task read overhead
+            total_hw * 0.1 +           # Per-channel conversion
+            len(self.active_projects) * 1.0  # Per-project engine processing
+        )
+
+        feasible = estimated_ms < BUDGET_MS
+        details = (
+            f"{total_hw} hardware channels across {module_count} modules, "
+            f"{remote_count} remote, {sim_count} simulated — "
+            f"estimated {estimated_ms:.1f}ms per scan (budget: {BUDGET_MS:.0f}ms)"
+        )
+
+        return {
+            'feasible': feasible,
+            'channel_count': len(channels),
+            'hw_channel_count': total_hw,
+            'module_count': module_count,
+            'remote_count': remote_count,
+            'simulated_count': sim_count,
+            'estimated_ms': round(estimated_ms, 1),
+            'budget_ms': BUDGET_MS,
+            'details': details,
+        }
+
+    def _get_station_union_channels(self) -> Dict[str, 'ChannelConfig']:
+        """Get the union of ALL loaded project channels (not just acquiring ones).
+
+        In station mode, the hardware reader is created once with all channels
+        from all loaded projects, so any project can start acquisition
+        without rebuilding the reader.
+        """
+        all_channels: Dict[str, 'ChannelConfig'] = {}
+        for ctx in self.active_projects.values():
+            if ctx.config and ctx.config.channels:
+                all_channels.update(ctx.config.channels)
+        return all_channels
+
+    MAX_STATION_PROJECTS = 3
+
+    def _handle_station_load(self, payload: Any):
+        """Load a project into the station for concurrent multi-project operation."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            # Guard: must be in station mode
+            if self._system_mode != 'station':
+                self._publish_station_response(
+                    False,
+                    "Cannot load projects in standalone mode. "
+                    "Switch to station mode first (system/mode → station)."
+                )
+                return
+
+            # Guard: hard limit of 3 station projects
+            if len(self.active_projects) >= self.MAX_STATION_PROJECTS:
+                self._publish_station_response(
+                    False,
+                    f"Station limit reached ({self.MAX_STATION_PROJECTS} projects maximum). "
+                    f"Unload a project before loading another."
+                )
+                return
+
+            # Guard: no loading while any project is acquiring
+            acquiring_projects = [pid for pid, ctx in self.active_projects.items() if ctx.acquiring]
+            if acquiring_projects:
+                self._publish_station_response(
+                    False,
+                    f"Cannot load projects while acquisition is running. "
+                    f"Stop acquisition on {', '.join(acquiring_projects)} first."
+                )
+                return
+
+            filename = payload.get('filename', '')
+            abs_path = payload.get('path', '')
+            project_id = payload.get('projectId', '')
+
+            if abs_path:
+                project_path = Path(abs_path)
+            elif filename:
+                if self.projects_dir:
+                    project_path = self.projects_dir / filename
+                else:
+                    project_path = Path('config/projects') / filename
+            else:
+                self._publish_station_response(False, "Missing 'filename' or 'path' in payload")
+                return
+
+            if not project_path.exists():
+                self._publish_station_response(False, f"Project not found: {project_path}")
+                return
+
+            # Read project JSON
+            with open(project_path, 'r', encoding='utf-8') as f:
+                project_data = json.load(f)
+
+            if project_data.get("type") != "nisystem-project":
+                self._publish_station_response(False, "Invalid project format")
+                return
+
+            # Auto-generate project_id from filename if not provided
+            if not project_id:
+                project_id = project_path.stem.lower().replace(' ', '_').replace('-', '_')
+
+            # Check if already loaded
+            if project_id in self.active_projects:
+                self._publish_station_response(False, f"Project '{project_id}' is already loaded")
+                return
+
+            # Create project context
+            ctx = self._create_project_context(project_id, project_data, project_path)
+            self.active_projects[project_id] = ctx
+
+            # Detect and log channel conflicts
+            conflicts = self._detect_channel_conflicts()
+            if conflicts:
+                conflict_msg = "; ".join(f"{phys}: {pids}" for phys, pids in conflicts.items())
+                logger.warning(f"Channel conflicts detected: {conflict_msg}")
+
+            # Check scan budget for the full union of loaded project channels
+            union_channels = self._get_station_union_channels()
+            budget = self._estimate_station_scan_budget(union_channels)
+            if not budget['feasible']:
+                logger.warning(f"[STATION] Scan budget exceeded: {budget['details']}")
+
+            # Publish success
+            self.mqtt_client.publish(
+                f"{base}/station/loaded",
+                json.dumps({
+                    "success": True,
+                    "projectId": project_id,
+                    "projectName": ctx.project_name,
+                    "channelCount": len(ctx.channel_names),
+                    "conflicts": {phys: pids for phys, pids in conflicts.items()},
+                    "colorIndex": ctx.color_index,
+                    "scanBudget": budget,
+                })
+            )
+
+            # Publish updated station status
+            self._publish_station_status()
+
+            # Save station state for persistence
+            self._save_station_state()
+
+            logger.info(f"Loaded project '{project_id}' into station ({len(ctx.channel_names)} channels)")
+
+        except Exception as e:
+            logger.error(f"Error loading project into station: {e}")
+            import traceback
+            traceback.print_exc()
+            self._publish_station_response(False, str(e))
+
+    def _handle_station_unload(self, payload: Any):
+        """Unload a project from the station."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            # Guard: must be in station mode
+            if self._system_mode != 'station':
+                self._publish_station_response(
+                    False, "Cannot unload projects in standalone mode."
+                )
+                return
+
+            project_id = payload.get('projectId', '')
+            if not project_id:
+                self._publish_station_response(False, "Missing 'projectId'")
+                return
+
+            if project_id not in self.active_projects:
+                self._publish_station_response(False, f"Project '{project_id}' not loaded")
+                return
+
+            ctx = self.active_projects[project_id]
+
+            # Stop acquisition if running
+            if ctx.acquiring:
+                self._project_stop_acquisition(project_id)
+
+            # Teardown managers
+            ctx.teardown()
+
+            # Remove from active projects
+            del self.active_projects[project_id]
+
+            self.mqtt_client.publish(
+                f"{base}/station/unloaded",
+                json.dumps({"success": True, "projectId": project_id})
+            )
+
+            self._publish_station_status()
+            self._save_station_state()
+
+            logger.info(f"Unloaded project '{project_id}' from station")
+
+        except Exception as e:
+            logger.error(f"Error unloading project from station: {e}")
+            self._publish_station_response(False, str(e))
+
+    def _handle_station_list(self, payload: Any = None):
+        """Publish list of loaded projects in the station."""
+        self._publish_station_status()
+
+    def _publish_station_status(self):
+        """Publish station status with all loaded projects."""
+        base = self.get_topic_base()
+        projects = []
+        conflicts = self._detect_channel_conflicts()
+
+        for pid, ctx in self.active_projects.items():
+            summary = ctx.to_summary()
+            # Enrich with cross-project conflict info
+            project_conflicts = {}
+            for phys, pids in conflicts.items():
+                if pid in pids:
+                    project_conflicts[phys] = [p for p in pids if p != pid]
+            summary['channelConflicts'] = project_conflicts
+            projects.append(summary)
+
+        self.mqtt_client.publish(
+            f"{base}/station/status",
+            json.dumps({
+                "projects": projects,
+                "totalChannels": sum(len(ctx.channel_names) for ctx in self.active_projects.values()),
+                "conflicts": conflicts,
+            }),
+            retain=True
+        )
+
+    def _handle_mode_switch(self, payload: Any):
+        """Switch between standalone and station mode."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            mode = payload.get('mode', '')
+            if mode not in ('standalone', 'station'):
+                self.mqtt_client.publish(
+                    f"{base}/system/mode/response",
+                    json.dumps({"success": False, "message": f"Invalid mode: {mode}"})
+                )
+                return
+
+            old_mode = self._system_mode
+            self._system_mode = mode
+            self._save_system_mode(mode)
+
+            if old_mode == 'station' and mode == 'standalone':
+                # Switching to standalone — unload all station projects
+                for pid in list(self.active_projects.keys()):
+                    ctx = self.active_projects[pid]
+                    if ctx.acquiring:
+                        self._project_stop_acquisition(pid)
+                    ctx.teardown()
+                    del self.active_projects[pid]
+                self._save_station_state()
+                logger.info("Switched to standalone mode — all station projects unloaded")
+
+            elif old_mode == 'standalone' and mode == 'station':
+                # Switching to station mode — restore station state if any
+                self._restore_station_state()
+                logger.info("Switched to station mode")
+
+            self.mqtt_client.publish(
+                f"{base}/system/mode/response",
+                json.dumps({"success": True, "mode": mode, "previousMode": old_mode})
+            )
+
+            # Re-publish system status with updated mode
+            self._publish_system_status()
+
+        except Exception as e:
+            logger.error(f"Error switching system mode: {e}")
+            self.mqtt_client.publish(
+                f"{base}/system/mode/response",
+                json.dumps({"success": False, "message": str(e)})
+            )
+
+    def _publish_station_response(self, success: bool, message: str):
+        """Publish station command response."""
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/station/response",
+            json.dumps({"success": success, "message": message})
+        )
+
+    def _handle_station_config_save(self, payload: Any):
+        """Save current loaded projects as a station configuration preset."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            name = payload.get('name', '').strip()
+            if not name:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/save/response",
+                    json.dumps({"success": False, "message": "Missing 'name'"})
+                )
+                return
+
+            if not self.active_projects:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/save/response",
+                    json.dumps({"success": False, "message": "No projects loaded to save"})
+                )
+                return
+
+            # Build config
+            config = {
+                "name": name,
+                "created": datetime.now().isoformat(),
+                "modified": datetime.now().isoformat(),
+                "projects": [
+                    {
+                        "project_id": pid,
+                        "path": str(ctx.project_path),
+                        "color_index": ctx.color_index,
+                    }
+                    for pid, ctx in self.active_projects.items()
+                ]
+            }
+
+            # Save to config/stations/
+            self._station_configs_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = name.lower().replace(' ', '_').replace('-', '_')
+            safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+            config_path = self._station_configs_dir / f"{safe_name}.json"
+
+            # If file exists, preserve created timestamp
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        existing = json.load(f)
+                    config["created"] = existing.get("created", config["created"])
+                except Exception:
+                    pass
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+
+            self.mqtt_client.publish(
+                f"{base}/station/config/save/response",
+                json.dumps({
+                    "success": True,
+                    "name": name,
+                    "filename": config_path.name,
+                    "projectCount": len(config["projects"]),
+                })
+            )
+            logger.info(f"Saved station config '{name}' with {len(config['projects'])} projects")
+
+        except Exception as e:
+            logger.error(f"Error saving station config: {e}")
+            self.mqtt_client.publish(
+                f"{base}/station/config/save/response",
+                json.dumps({"success": False, "message": str(e)})
+            )
+
+    def _handle_station_config_load(self, payload: Any):
+        """Load a station configuration preset — loads all projects from the config."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            # Guard: must be in station mode
+            if self._system_mode != 'station':
+                self.mqtt_client.publish(
+                    f"{base}/station/config/load/response",
+                    json.dumps({
+                        "success": False,
+                        "message": "Cannot load station config in standalone mode."
+                    })
+                )
+                return
+
+            # Guard: no loading while any project is acquiring
+            acquiring_projects = [pid for pid, ctx in self.active_projects.items() if ctx.acquiring]
+            if acquiring_projects:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/load/response",
+                    json.dumps({
+                        "success": False,
+                        "message": f"Cannot load station config while acquisition is running. "
+                                   f"Stop acquisition on {', '.join(acquiring_projects)} first."
+                    })
+                )
+                return
+
+            config_filename = payload.get('filename', '')
+            if not config_filename:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/load/response",
+                    json.dumps({"success": False, "message": "Missing 'filename'"})
+                )
+                return
+
+            config_path = self._station_configs_dir / config_filename
+            if not config_path.exists():
+                self.mqtt_client.publish(
+                    f"{base}/station/config/load/response",
+                    json.dumps({"success": False, "message": f"Station config not found: {config_filename}"})
+                )
+                return
+
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            # Enforce 3-project limit
+            projects_in_config = config.get('projects', [])
+            already_loaded = sum(1 for p in projects_in_config if p.get('project_id') in self.active_projects)
+            new_to_load = len(projects_in_config) - already_loaded
+            available_slots = self.MAX_STATION_PROJECTS - len(self.active_projects)
+            if new_to_load > available_slots:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/load/response",
+                    json.dumps({
+                        "success": False,
+                        "message": f"Config has {new_to_load} new projects but only {available_slots} "
+                                   f"slot(s) available (max {self.MAX_STATION_PROJECTS})."
+                    })
+                )
+                return
+
+            loaded = []
+            errors = []
+
+            for entry in projects_in_config:
+                project_path = Path(entry['path'])
+                project_id = entry.get('project_id', '')
+
+                if project_id in self.active_projects:
+                    loaded.append(project_id)  # Already loaded, skip
+                    continue
+
+                if not project_path.exists():
+                    errors.append(f"{project_id}: file not found ({project_path})")
+                    continue
+
+                try:
+                    with open(project_path, 'r', encoding='utf-8') as pf:
+                        project_data = json.load(pf)
+
+                    if not project_id:
+                        project_id = project_path.stem.lower().replace(' ', '_').replace('-', '_')
+
+                    ctx = self._create_project_context(project_id, project_data, project_path)
+                    ctx.color_index = entry.get('color_index', ctx.color_index)
+                    self.active_projects[project_id] = ctx
+                    loaded.append(project_id)
+                except Exception as e:
+                    errors.append(f"{project_id}: {e}")
+
+            self._save_station_state()
+            self._publish_station_status()
+
+            self.mqtt_client.publish(
+                f"{base}/station/config/load/response",
+                json.dumps({
+                    "success": True,
+                    "configName": config.get('name', config_filename),
+                    "loaded": loaded,
+                    "errors": errors,
+                })
+            )
+            logger.info(f"Loaded station config '{config.get('name')}': {len(loaded)} projects, {len(errors)} errors")
+
+        except Exception as e:
+            logger.error(f"Error loading station config: {e}")
+            self.mqtt_client.publish(
+                f"{base}/station/config/load/response",
+                json.dumps({"success": False, "message": str(e)})
+            )
+
+    def _handle_station_config_list(self, payload: Any = None):
+        """List all saved station configuration presets."""
+        base = self.get_topic_base()
+        configs = []
+
+        if self._station_configs_dir.exists():
+            for config_path in sorted(self._station_configs_dir.glob('*.json')):
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    configs.append({
+                        "filename": config_path.name,
+                        "name": config.get("name", config_path.stem),
+                        "projectCount": len(config.get("projects", [])),
+                        "projects": [
+                            {"project_id": p.get("project_id", ""), "path": p.get("path", "")}
+                            for p in config.get("projects", [])
+                        ],
+                        "created": config.get("created", ""),
+                        "modified": config.get("modified", ""),
+                    })
+                except Exception as e:
+                    logger.debug(f"Error reading station config {config_path}: {e}")
+
+        self.mqtt_client.publish(
+            f"{base}/station/config/list/response",
+            json.dumps({"configs": configs})
+        )
+
+    def _handle_station_config_delete(self, payload: Any):
+        """Delete a saved station configuration preset."""
+        base = self.get_topic_base()
+        try:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            config_filename = payload.get('filename', '')
+            if not config_filename:
+                self.mqtt_client.publish(
+                    f"{base}/station/config/delete/response",
+                    json.dumps({"success": False, "message": "Missing 'filename'"})
+                )
+                return
+
+            config_path = self._station_configs_dir / config_filename
+            if not config_path.exists():
+                self.mqtt_client.publish(
+                    f"{base}/station/config/delete/response",
+                    json.dumps({"success": False, "message": f"Config not found: {config_filename}"})
+                )
+                return
+
+            config_path.unlink()
+            self.mqtt_client.publish(
+                f"{base}/station/config/delete/response",
+                json.dumps({"success": True, "filename": config_filename})
+            )
+            logger.info(f"Deleted station config: {config_filename}")
+
+        except Exception as e:
+            logger.error(f"Error deleting station config: {e}")
+            self.mqtt_client.publish(
+                f"{base}/station/config/delete/response",
+                json.dumps({"success": False, "message": str(e)})
+            )
+
+    def _publish_project_mqtt(self, project_id: str, subtopic: str, payload: Any, **kwargs):
+        """Publish MQTT message under a project's namespace."""
+        base = self.get_topic_base()
+        topic = f"{base}/projects/{project_id}/{subtopic}"
+        if isinstance(payload, dict):
+            payload = json.dumps(payload)
+        retain = kwargs.get('retain', False)
+        qos = kwargs.get('qos', 0)
+        self.mqtt_client.publish(topic, payload, qos=qos, retain=retain)
+
+    def _publish_project_status(self, project_id: str):
+        """Publish status for a specific project."""
+        if project_id not in self.active_projects:
+            return
+        ctx = self.active_projects[project_id]
+        self._publish_project_mqtt(project_id, "status", ctx.to_summary())
+
+    def _project_set_output(self, project_id: str, channel: str, value: Any):
+        """Set an output value scoped to a project. Validates channel ownership."""
+        if project_id not in self.active_projects:
+            logger.warning(f"Output set for unknown project '{project_id}'")
+            return
+        ctx = self.active_projects[project_id]
+        if channel not in ctx.channel_names:
+            logger.warning(f"Output set denied: channel '{channel}' not in project '{project_id}'")
+            return
+        # Delegate to the existing output handler
+        self._handle_output_set({
+            'channel': channel,
+            'value': value,
+            'source': f'project:{project_id}'
+        })
+
+    def _project_start_acquisition(self, project_id: str):
+        """Start acquisition for a specific project.
+
+        If the global scan loop is not running, it starts with the union of ALL
+        loaded project channels (read-all-upfront). If already running, this
+        project's channels must already be in the reader — no rebuild occurs.
+        """
+        if project_id not in self.active_projects:
+            logger.warning(f"Start acquisition for unknown project '{project_id}'")
+            return
+        ctx = self.active_projects[project_id]
+        if ctx.acquiring:
+            logger.info(f"Project '{project_id}' already acquiring")
+            return
+
+        # If scan loop is already running, check channel coverage
+        uncovered: list = []
+        if self.acquiring and self.hardware_reader and ctx.config:
+            reader_channels = set()
+            if hasattr(self.hardware_reader, 'channel_names'):
+                reader_channels = set(self.hardware_reader.channel_names)
+            elif hasattr(self.hardware_reader, 'latest_values'):
+                reader_channels = set(self.hardware_reader.latest_values.keys())
+            for ch_name in ctx.channel_names:
+                ch_cfg = ctx.config.channels.get(ch_name)
+                if ch_cfg and getattr(ch_cfg, 'physical_channel', None):
+                    if ch_name not in reader_channels:
+                        uncovered.append(ch_name)
+            if uncovered:
+                logger.warning(
+                    f"[STATION] Project '{project_id}' has {len(uncovered)} hardware channels "
+                    f"not in the running reader (loaded after acquisition started). "
+                    f"These channels will read as NaN. Stop all projects and restart "
+                    f"to include them. Uncovered: {uncovered[:5]}"
+                )
+                # Publish warning but still allow start — soft warning, not hard block
+                self._publish_project_mqtt(project_id, "status/warning", json.dumps({
+                    "type": "uncovered_channels",
+                    "message": f"{len(uncovered)} hardware channels not in reader — stop all and restart to include",
+                    "channels": uncovered[:10],
+                }))
+
+        ctx.state_machine.to(DAQState.RUNNING)
+        logger.info(f"Started acquisition for project '{project_id}'"
+                     + (f" ({len(uncovered)} uncovered channels)" if uncovered else ""))
+        self._publish_project_mqtt(project_id, "status/acquisition", json.dumps({
+            "state": "running", "projectId": project_id,
+            "uncoveredChannels": uncovered[:10] if uncovered else [],
+        }))
+
+        # Ensure the global scan loop is running (shared hardware reader)
+        if not self.acquiring:
+            # Start the main scan loop with ALL loaded project channels
+            self._start_scan_loop_for_station()
+
+        self._publish_station_status()
+
+    def _project_stop_acquisition(self, project_id: str):
+        """Stop acquisition for a specific project."""
+        if project_id not in self.active_projects:
+            return
+        ctx = self.active_projects[project_id]
+        if not ctx.acquiring:
+            return
+
+        # Stop recording if active
+        if ctx.recording and ctx.recording_manager:
+            ctx.recording_manager.stop()
+
+        # Stop scripts
+        if ctx.script_manager:
+            ctx.script_manager.stop_all_scripts()
+
+        ctx.state_machine.to(DAQState.STOPPED)
+        logger.info(f"Stopped acquisition for project '{project_id}'")
+        self._publish_project_mqtt(project_id, "status/acquisition", json.dumps({
+            "state": "stopped", "projectId": project_id
+        }))
+
+        # Check if any projects still acquiring
+        any_acquiring = any(c.acquiring for c in self.active_projects.values())
+        if not any_acquiring:
+            # Stop the global scan loop if no projects need it
+            self._stop_scan_loop_for_station()
+
+        self._publish_station_status()
+
+    def _start_scan_loop_for_station(self):
+        """Ensure the global scan loop is running for multi-project station operation.
+
+        Station mode design:
+        - The hardware reader is created ONCE with the union of ALL loaded project
+          channels (not just currently acquiring ones). This means any project can
+          start/stop acquisition without rebuilding the reader or interrupting
+          other projects' scan rates.
+        - The dispatch step filters the shared value pool to each project's channels.
+        - If a new project is loaded while acquisition is running and it has channels
+          not in the reader, those channels won't produce data until all projects
+          stop and the reader is rebuilt on next start.
+        """
+        # Use union of ALL loaded projects' channels (not just acquiring)
+        # so the reader covers everything upfront — no rebuilds needed
+        all_channels = self._get_station_union_channels()
+
+        if not all_channels:
+            return
+
+        # Validate scan budget before starting
+        budget = self._estimate_station_scan_budget(all_channels)
+        logger.info(f"[STATION] Scan budget: {budget['details']}")
+        if not budget['feasible']:
+            logger.warning(
+                f"[STATION] Channel set may exceed 500ms scan budget "
+                f"({budget['estimated_ms']}ms estimated). "
+                f"Consider reducing channel count or splitting across systems."
+            )
+
+        # Update the shared config with ALL loaded channels for hardware reader
+        if self.config:
+            self.config.channels = all_channels
+
+        # Determine simulation mode from station projects (any project with
+        # simulation_mode=True forces simulator for the whole station)
+        station_sim_mode = any(
+            ctx.project_data.get('system', {}).get('simulation_mode', False)
+            for ctx in self.active_projects.values()
+        )
+        # Also respect global config
+        use_simulation = station_sim_mode or self.config.system.simulation_mode
+
+        # Create or rebuild hardware reader for station channel set.
+        # Station mode may load different channels than standalone mode,
+        # so we must rebuild if the existing reader has different channels.
+        needs_rebuild = False
+        if self.hardware_reader and not use_simulation:
+            reader_channels = set()
+            if hasattr(self.hardware_reader, 'channel_names'):
+                reader_channels = set(self.hardware_reader.channel_names)
+            elif hasattr(self.hardware_reader, 'latest_values'):
+                reader_channels = set(self.hardware_reader.latest_values.keys())
+            station_channels = set(all_channels.keys())
+            if not station_channels.issubset(reader_channels):
+                needs_rebuild = True
+                logger.info(f"[STATION] Rebuilding hardware reader: "
+                            f"station needs {len(station_channels)} channels, "
+                            f"reader has {len(reader_channels)}")
+        if self.simulator and not use_simulation:
+            needs_rebuild = True  # Was using simulator but station wants real hardware
+        if not self.simulator and use_simulation:
+            needs_rebuild = True  # Station wants simulator but we have hardware reader
+        # Check if existing simulator has wrong channels (e.g. leftover from standalone mode)
+        if self.simulator and use_simulation and not needs_rebuild:
+            sim_channels = set(self.simulator.channel_simulators.keys())
+            station_channels = set(all_channels.keys())
+            if not station_channels.issubset(sim_channels):
+                needs_rebuild = True
+                logger.info(f"[STATION] Rebuilding simulator: "
+                            f"station needs {len(station_channels)} channels, "
+                            f"simulator has {len(sim_channels)}")
+
+        if use_simulation:
+            if not self.simulator or needs_rebuild:
+                # Update config to simulation mode for simulator creation
+                self.config.system.simulation_mode = True
+                self.simulator = self._create_simulator()
+                if self.hardware_reader:
+                    try:
+                        self.hardware_reader.stop()
+                    except Exception:
+                        pass
+                    self.hardware_reader = None
+                logger.info(f"[STATION] Simulator created with {len(all_channels)} channels")
+        elif HW_READER_AVAILABLE and (not self.hardware_reader or needs_rebuild):
+            try:
+                # Stop existing reader before rebuilding
+                if self.hardware_reader:
+                    try:
+                        self.hardware_reader.stop()
+                    except Exception:
+                        pass
+                self.hardware_reader = HardwareReader(self.config)
+                self.simulator = None
+                logger.info(f"[STATION] Hardware reader created with {len(all_channels)} channels "
+                            f"across {budget['module_count']} modules")
+            except Exception as e:
+                logger.error(f"Failed to init hardware reader for station: {e}")
+                self.simulator = self._create_simulator()
+                self.hardware_reader = None
+        elif not HW_READER_AVAILABLE and not self.simulator:
+            logger.warning("[STATION] nidaqmx not available — falling back to simulator")
+            self.simulator = self._create_simulator()
+
+        # Start scan loop if not running (uses existing infrastructure)
+        if not self.acquiring:
+            self._state_machine.to(DAQState.RUNNING)
+
+    def _stop_scan_loop_for_station(self):
+        """Stop the global scan loop when no projects need acquisition."""
+        if self.acquiring:
+            self._state_machine.to(DAQState.STOPPED)
+
+    def _on_project_acquire_start(self, client, userdata, msg):
+        """Critical callback: Start acquisition for a specific project."""
+        try:
+            # Extract project_id from topic: .../projects/{project_id}/acquire/start
+            parts = msg.topic.split('/')
+            proj_idx = parts.index('projects') + 1
+            project_id = parts[proj_idx]
+            self._project_start_acquisition(project_id)
+        except Exception as e:
+            logger.error(f"Error in project acquire start: {e}")
+
+    def _on_project_acquire_stop(self, client, userdata, msg):
+        """Critical callback: Stop acquisition for a specific project."""
+        try:
+            parts = msg.topic.split('/')
+            proj_idx = parts.index('projects') + 1
+            project_id = parts[proj_idx]
+            self._project_stop_acquisition(project_id)
+        except Exception as e:
+            logger.error(f"Error in project acquire stop: {e}")
+
+    def _on_project_recording_start(self, client, userdata, msg):
+        """Critical callback: Start recording for a specific project."""
+        try:
+            parts = msg.topic.split('/')
+            proj_idx = parts.index('projects') + 1
+            project_id = parts[proj_idx]
+            if project_id in self.active_projects:
+                ctx = self.active_projects[project_id]
+                if ctx.recording_manager:
+                    ctx.recording_manager.start()
+                    self._publish_project_status(project_id)
+                    self._publish_station_status()
+        except Exception as e:
+            logger.error(f"Error in project recording start: {e}")
+
+    def _on_project_recording_stop(self, client, userdata, msg):
+        """Critical callback: Stop recording for a specific project."""
+        try:
+            parts = msg.topic.split('/')
+            proj_idx = parts.index('projects') + 1
+            project_id = parts[proj_idx]
+            if project_id in self.active_projects:
+                ctx = self.active_projects[project_id]
+                if ctx.recording_manager:
+                    ctx.recording_manager.stop()
+                    self._publish_project_status(project_id)
+                    self._publish_station_status()
+        except Exception as e:
+            logger.error(f"Error in project recording stop: {e}")
+
+    def _save_station_state(self):
+        """Persist station state (loaded projects) for restart recovery."""
+        try:
+            state = {
+                "loaded_projects": [
+                    {
+                        "project_id": pid,
+                        "path": str(ctx.project_path),
+                        "color_index": ctx.color_index,
+                    }
+                    for pid, ctx in self.active_projects.items()
+                ]
+            }
+            self._station_state_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._station_state_path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save station state: {e}")
+
+    def _restore_station_state(self):
+        """Restore station state from previous session on startup."""
+        if not self._station_state_path.exists():
+            return
+        try:
+            with open(self._station_state_path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            for entry in state.get('loaded_projects', []):
+                project_path = Path(entry['path'])
+                project_id = entry['project_id']
+                if project_path.exists() and project_id not in self.active_projects:
+                    with open(project_path, 'r', encoding='utf-8') as pf:
+                        project_data = json.load(pf)
+                    ctx = self._create_project_context(project_id, project_data, project_path)
+                    ctx.color_index = entry.get('color_index', ctx.color_index)
+                    self.active_projects[project_id] = ctx
+                    logger.info(f"Restored project '{project_id}' from station state")
+        except Exception as e:
+            logger.warning(f"Failed to restore station state: {e}")
+
+    def _dispatch_values_to_projects(self, valid_channels: set, scan_interval: float):
+        """Dispatch scanned values to each active project's managers.
+
+        Called once per scan cycle. Filters global channel_values to each
+        project's owned channels, then runs that project's alarm, safety,
+        script, PID, trigger, and watchdog evaluations.
+        """
+        if not self.active_projects:
+            return
+
+        for project_id, ctx in self.active_projects.items():
+            if not ctx.acquiring:
+                continue
+
+            try:
+                # Filter global values to this project's channels
+                with self.values_lock:
+                    for ch_name in ctx.channel_names:
+                        if ch_name in self.channel_values:
+                            ctx.channel_values[ch_name] = self.channel_values[ch_name]
+                        if ch_name in self.channel_timestamps:
+                            ctx.channel_timestamps[ch_name] = self.channel_timestamps[ch_name]
+                        if ch_name in self.channel_acquisition_ts_us:
+                            ctx.channel_acquisition_ts_us[ch_name] = self.channel_acquisition_ts_us[ch_name]
+
+                project_valid = valid_channels & ctx.channel_names
+
+                # Process alarms for this project
+                if ctx.alarm_manager:
+                    for ch_name in project_valid:
+                        val = ctx.channel_values.get(ch_name)
+                        if val is not None:
+                            try:
+                                ctx.alarm_manager.process_value(ch_name, val)
+                            except Exception:
+                                pass
+
+                # Process user variables
+                if ctx.user_variables:
+                    try:
+                        ctx.user_variables.process_scan(ctx.channel_values)
+                    except Exception as e:
+                        logger.debug(f"[STATION] User vars error for {project_id}: {e}")
+
+                # Process PID loops
+                if ctx.pid_engine:
+                    try:
+                        ctx.pid_engine.process_scan(ctx.channel_values, scan_interval)
+                    except Exception as e:
+                        logger.debug(f"[STATION] PID error for {project_id}: {e}")
+
+                # Process triggers
+                if ctx.trigger_engine:
+                    try:
+                        ctx.trigger_engine.process_scan(ctx.channel_values)
+                    except Exception as e:
+                        logger.debug(f"[STATION] Trigger error for {project_id}: {e}")
+
+                # Process watchdogs
+                if ctx.watchdog_engine:
+                    try:
+                        ctx.watchdog_engine.process_scan(ctx.channel_values, ctx.channel_timestamps)
+                    except Exception as e:
+                        logger.debug(f"[STATION] Watchdog error for {project_id}: {e}")
+
+                # Evaluate safety interlocks
+                if ctx.safety_manager:
+                    try:
+                        ctx.safety_manager.evaluate_all()
+                    except Exception as e:
+                        logger.error(f"[STATION] Safety eval failed for {project_id}: {e}")
+
+            except Exception as e:
+                logger.error(f"[STATION] Error dispatching to project {project_id}: {e}")
+
+    def _publish_project_channel_batches(self, all_values: Dict[str, Any]):
+        """Publish per-project channel value batches during the publish loop."""
+        if not self.active_projects:
+            return
+
+        for project_id, ctx in self.active_projects.items():
+            if not ctx.acquiring:
+                continue
+
+            try:
+                # Filter values to this project's channels
+                project_values = {}
+                for ch_name in ctx.channel_names:
+                    if ch_name in all_values:
+                        project_values[ch_name] = all_values[ch_name]
+
+                if not project_values:
+                    continue
+
+                # Build batch payload matching the standard batch format
+                batch_payload = {
+                    't': time.time(),
+                    'ts_us': int(time.time_ns() // 1000),
+                    'v': project_values,
+                    'bad': [],
+                    'alarm': [],
+                    'warn': [],
+                    'stale': [],
+                    'projectId': project_id,
+                }
+
+                # Add alarm/warning state from project's alarm manager
+                if ctx.alarm_manager and ctx.alarm_manager.active_alarms:
+                    for alarm_id, active in ctx.alarm_manager.active_alarms.items():
+                        ch = active.channel if hasattr(active, 'channel') else ''
+                        if ch in project_values:
+                            sev = active.severity.value if hasattr(active.severity, 'value') else str(active.severity)
+                            if sev in ('CRITICAL', 'HIGH'):
+                                batch_payload['alarm'].append(ch)
+                            elif sev in ('MEDIUM', 'LOW', 'WARNING'):
+                                batch_payload['warn'].append(ch)
+
+                self._publish_project_mqtt(
+                    project_id, "channels/batch",
+                    json.dumps(batch_payload)
+                )
+
+                # Write to project's recording manager
+                if ctx.recording_manager and ctx.recording_manager.recording:
+                    channel_configs = {
+                        name: {'units': ch.units, 'description': ch.description}
+                        for name, ch in ctx.config.channels.items()
+                    }
+                    ctx.recording_manager.write_sample(project_values, channel_configs)
+
+            except Exception as e:
+                logger.error(f"[STATION] Publish error for project {project_id}: {e}")
+
+    def _route_project_command(self, topic: str, payload: Any, request_id: Optional[str] = None):
+        """Route a per-project command to the correct ProjectContext's managers.
+
+        Topic format: {base}/projects/{project_id}/commands/{command}
+        """
+        try:
+            parts = topic.split('/')
+            proj_idx = parts.index('projects') + 1
+            project_id = parts[proj_idx]
+            # Everything after 'commands/' is the command path
+            cmd_idx = parts.index('commands') + 1
+            command = '/'.join(parts[cmd_idx:]) if cmd_idx < len(parts) else ''
+        except (ValueError, IndexError):
+            logger.warning(f"Malformed project command topic: {topic}")
+            return
+
+        if project_id not in self.active_projects:
+            logger.warning(f"Project command for unknown project '{project_id}': {command}")
+            return
+
+        ctx = self.active_projects[project_id]
+
+        # Route to project-specific handlers
+        if command == 'status/request':
+            self._publish_project_status(project_id)
+        elif command.startswith('script/'):
+            self._route_project_script_command(project_id, ctx, command, payload)
+        elif command.startswith('alarm/'):
+            self._route_project_alarm_command(project_id, ctx, command, payload)
+        elif command.startswith('safety/'):
+            self._route_project_safety_command(project_id, ctx, command, payload)
+        elif command == 'output/set':
+            if isinstance(payload, dict):
+                ch = payload.get('channel', '')
+                val = payload.get('value')
+                self._project_set_output(project_id, ch, val)
+        elif command.startswith('recording/'):
+            self._route_project_recording_command(project_id, ctx, command, payload)
+        elif command.startswith('variables/'):
+            self._route_project_variable_command(project_id, ctx, command, payload)
+        elif command.startswith('sequence/'):
+            self._route_project_sequence_command(project_id, ctx, command, payload)
+        else:
+            logger.debug(f"Unhandled project command: {project_id}/{command}")
+
+    def _route_project_script_command(self, project_id: str, ctx: ProjectContext,
+                                       command: str, payload: Any):
+        """Route script commands for a project."""
+        if not ctx.script_manager:
+            return
+        action = command.split('/')[-1]
+        if action == 'add':
+            ctx.script_manager.add_script_from_payload(payload)
+        elif action == 'update':
+            ctx.script_manager.update_script_from_payload(payload)
+        elif action == 'remove':
+            script_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.script_manager.remove_script(script_id)
+        elif action == 'start':
+            script_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.script_manager.start_script(script_id)
+        elif action == 'stop':
+            script_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.script_manager.stop_script(script_id)
+        elif action == 'clear-all':
+            ctx.script_manager.clear_all()
+        elif action == 'list':
+            scripts = ctx.script_manager.list_scripts()
+            self._publish_project_mqtt(project_id, "script/list/response", scripts)
+
+    def _route_project_alarm_command(self, project_id: str, ctx: ProjectContext,
+                                      command: str, payload: Any):
+        """Route alarm commands for a project."""
+        if not ctx.alarm_manager:
+            return
+        action = command.split('/')[-1]
+        if action == 'configure':
+            # Dynamic alarm config push (same format as standalone)
+            if isinstance(payload, dict):
+                try:
+                    config = AlarmConfig(
+                        id=payload.get('id', ''),
+                        channel=payload.get('channel', ''),
+                        name=payload.get('name', payload.get('channel', '')),
+                        description=payload.get('description', ''),
+                        enabled=payload.get('enabled', True),
+                        severity=AlarmSeverity(payload.get('severity', 'HIGH')),
+                        high_high=payload.get('high_high'),
+                        high=payload.get('high'),
+                        low=payload.get('low'),
+                        low_low=payload.get('low_low'),
+                        deadband=payload.get('deadband', 0),
+                        on_delay_s=payload.get('on_delay_s', 0),
+                        off_delay_s=payload.get('off_delay_s', 0),
+                        latch_behavior=LatchBehavior(payload.get('latch_behavior', 'AUTO_CLEAR')),
+                        group=payload.get('group', ''),
+                        actions=payload.get('actions', []),
+                    )
+                    ctx.alarm_manager.add_alarm_config(config)
+                    self._publish_project_mqtt(project_id, "alarms/configure/response",
+                                               {"success": True, "alarm_id": config.id})
+                except Exception as e:
+                    self._publish_project_mqtt(project_id, "alarms/configure/response",
+                                               {"success": False, "error": str(e)})
+        elif action == 'acknowledge':
+            alarm_id = payload.get('alarm_id', '') if isinstance(payload, dict) else ''
+            ctx.alarm_manager.acknowledge(alarm_id)
+        elif action == 'clear' or action == 'reset':
+            alarm_id = payload.get('alarm_id', '') if isinstance(payload, dict) else ''
+            ctx.alarm_manager.clear(alarm_id)
+        elif action == 'shelve':
+            alarm_id = payload.get('alarm_id', '') if isinstance(payload, dict) else ''
+            duration = payload.get('duration', 3600) if isinstance(payload, dict) else 3600
+            ctx.alarm_manager.shelve(alarm_id, duration)
+        elif action == 'unshelve':
+            alarm_id = payload.get('alarm_id', '') if isinstance(payload, dict) else ''
+            ctx.alarm_manager.unshelve(alarm_id)
+
+    def _route_project_safety_command(self, project_id: str, ctx: ProjectContext,
+                                       command: str, payload: Any):
+        """Route safety/interlock commands for a project."""
+        if not ctx.safety_manager:
+            return
+        action = command.replace('safety/', '')
+        if action == 'latch/arm':
+            ctx.safety_manager.arm_latch()
+        elif action == 'latch/disarm':
+            ctx.safety_manager.disarm_latch()
+        elif action == 'trip/reset':
+            interlock_id = payload.get('interlock_id', '') if isinstance(payload, dict) else ''
+            ctx.safety_manager.reset_trip(interlock_id)
+        elif action == 'status/request':
+            status = ctx.safety_manager.get_status()
+            self._publish_project_mqtt(project_id, "safety/status", status)
+
+    def _route_project_recording_command(self, project_id: str, ctx: ProjectContext,
+                                          command: str, payload: Any):
+        """Route recording commands for a project."""
+        if not ctx.recording_manager:
+            return
+        action = command.split('/')[-1]
+        if action == 'config':
+            if isinstance(payload, dict):
+                ctx.recording_manager.configure(payload)
+        elif action == 'list':
+            recordings = ctx.recording_manager.list_recordings()
+            self._publish_project_mqtt(project_id, "recording/list/response", recordings)
+
+    def _route_project_variable_command(self, project_id: str, ctx: ProjectContext,
+                                         command: str, payload: Any):
+        """Route user variable commands for a project."""
+        if not ctx.user_variables:
+            return
+        action = command.split('/')[-1]
+        if action == 'create':
+            ctx.user_variables.create_from_payload(payload)
+        elif action == 'update':
+            ctx.user_variables.update_from_payload(payload)
+        elif action == 'delete':
+            var_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.user_variables.delete(var_id)
+        elif action == 'set':
+            if isinstance(payload, dict):
+                ctx.user_variables.set_value(payload.get('id', ''), payload.get('value'))
+        elif action == 'list':
+            variables = ctx.user_variables.list_variables()
+            self._publish_project_mqtt(project_id, "variables/list/response", variables)
+
+    def _route_project_sequence_command(self, project_id: str, ctx: ProjectContext,
+                                         command: str, payload: Any):
+        """Route sequence commands for a project."""
+        if not ctx.sequence_manager:
+            return
+        action = command.split('/')[-1]
+        if action == 'start':
+            seq_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.sequence_manager.start(seq_id)
+        elif action == 'pause':
+            seq_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.sequence_manager.pause(seq_id)
+        elif action == 'resume':
+            seq_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.sequence_manager.resume(seq_id)
+        elif action == 'abort':
+            seq_id = payload.get('id', '') if isinstance(payload, dict) else ''
+            ctx.sequence_manager.abort(seq_id)
 
     def _handle_project_load(self, payload: Any):
         """Load a project file - supports both filename (from default dir) and full path"""
@@ -9171,118 +11241,53 @@ Unit conversions:
 
     def _update_crio_channel_value(self, node_id: str, crio_channel: str, value: Any,
                                     acquisition_ts_us: int = 0, quality: str = 'good'):
-        """
-        Update local channel value from cRIO/Opto22.
-
-        Matches by:
-        1. TAG name (if cRIO sends TAG names after config push)
-        2. Physical channel path (fallback for legacy/pre-config mode)
-
-        Args:
-            node_id: Remote node identifier
-            crio_channel: Channel name on remote node
-            value: Channel value
-            acquisition_ts_us: SOE source timestamp in microseconds (from remote node)
-            quality: OPC UA style quality code (good/bad/uncertain)
-        """
-        # Handle sys.* channels from cRIO to sync state (cRIO is source of truth in CRIO mode)
-        # Process these BEFORE the acquiring check since they control the acquiring state itself
+        """Store a remote node channel value. The publish loop batches all values automatically."""
         if crio_channel.startswith('sys.'):
             self._sync_crio_system_state(crio_channel, value)
             return
 
-        # Always store cRIO values for safety evaluation (interlocks need them pre-acquisition),
-        # but only publish to frontend/dashboard when acquisition is active.
-        publish_to_frontend = self.acquiring
+        # Resolve cRIO channel name to local TAG name
+        local_name = self._resolve_remote_channel(node_id, crio_channel)
+        if not local_name:
+            return
 
-        # Debug: log every Nth value to verify flow
-        if not hasattr(self, '_crio_value_count'):
-            self._crio_value_count = 0
-        self._crio_value_count += 1
-        if self._crio_value_count % 100 == 1:  # Log every 100th value
-            logger.info(f"[CRIO_FLOW] Processing cRIO value #{self._crio_value_count}: {crio_channel} = {value} (acquiring={self.acquiring})")
+        # Store value — publish loop batches via _publish_channels_batch()
+        self.channel_values[local_name] = value
+        # Preserve cRIO hardware timestamp when available (don't overwrite with PC time)
+        if acquisition_ts_us > 0:
+            self.channel_timestamps[local_name] = acquisition_ts_us / 1_000_000.0
+            self.channel_acquisition_ts_us[local_name] = acquisition_ts_us
+        else:
+            self.channel_timestamps[local_name] = time.time()
+        if not hasattr(self, 'channel_qualities'):
+            self.channel_qualities = {}
+        self.channel_qualities[local_name] = quality
 
-        # First try direct TAG name match (remote node sends TAG names after config push)
+    def _resolve_remote_channel(self, node_id: str, crio_channel: str) -> Optional[str]:
+        """Map a remote node channel name to the local TAG name, or None if not found."""
+        # Direct TAG name match (remote node sends TAG names after config push)
         if crio_channel in self.config.channels:
-            channel = self.config.channels[crio_channel]
-            if channel.is_remote_node:  # Works for both cRIO and Opto22
-                self.channel_values[crio_channel] = value
-                self.channel_timestamps[crio_channel] = time.time()
-                # SOE: Store source acquisition timestamp from remote node
-                if acquisition_ts_us > 0:
-                    self.channel_acquisition_ts_us[crio_channel] = acquisition_ts_us
-                # Store quality for publishing
-                if not hasattr(self, 'channel_qualities'):
-                    self.channel_qualities = {}
-                self.channel_qualities[crio_channel] = quality
-                logger.debug(f"Remote node value (TAG match): {crio_channel} = {value} (quality={quality})")
-                # Only publish to MQTT for dashboard when acquiring
-                if publish_to_frontend:
-                    self._publish_channel_value(crio_channel, value)
-                    if self._crio_value_count % 100 == 1:
-                        logger.info(f"[REMOTE_FLOW] Published to frontend: {crio_channel} = {value}")
-                return
+            if self.config.channels[crio_channel].is_remote_node:
+                return crio_channel
 
-        # Fallback: Find by physical_channel match (for cRIO/Opto22 nodes)
+        # Fallback: physical_channel match
         for name, channel in self.config.channels.items():
             source_type = getattr(channel, 'source_type', 'local')
             source_node = getattr(channel, 'source_node_id', '')
-
-            # Match both cRIO and Opto22 remote node types
             if source_type in ('crio', 'opto22') and source_node == node_id:
-                # Check if physical_channel matches (remote uses local paths like "Mod1/ai0")
                 if channel.physical_channel == crio_channel:
-                    self.channel_values[name] = value
-                    self.channel_timestamps[name] = time.time()
-                    # SOE: Store source acquisition timestamp from remote node
-                    if acquisition_ts_us > 0:
-                        self.channel_acquisition_ts_us[name] = acquisition_ts_us
-                    # Store quality for publishing
-                    if not hasattr(self, 'channel_qualities'):
-                        self.channel_qualities = {}
-                    self.channel_qualities[name] = quality
-                    logger.debug(f"Remote node value (physical match): {name} ({crio_channel}) = {value} (quality={quality})")
-                    # Only publish to MQTT for dashboard when acquiring
-                    if publish_to_frontend:
-                        self._publish_channel_value(name, value)
-                        if self._crio_value_count % 100 == 1:
-                            logger.info(f"[REMOTE_FLOW] Published (physical match): {name} = {value}")
-                    return
+                    return name
+
+        return None
 
     def _sync_crio_system_state(self, channel: str, value: Any):
+        """Drop sys.* channels from cRIO — state is synced via dedicated MQTT topics.
+
+        Acquiring: _handle_node_state_change (QoS 1 retained /state topic)
+        Session: _handle_crio_session_status (dedicated /session/status topic)
+        Recording: controlled via explicit commands only
         """
-        Sync local state from cRIO system channels.
-
-        In CRIO mode, the cRIO is the source of truth for system state.
-        session_active and recording are synced here; acquiring state is now
-        handled by the dedicated /state topic (see _handle_node_state_change).
-
-        Args:
-            channel: System channel name (e.g., 'sys.session_active')
-            value: Channel value (0.0 or 1.0)
-        """
-        bool_value = bool(value > 0.5) if isinstance(value, (int, float)) else bool(value)
-
-        if channel == 'sys.acquiring':
-            # Acquiring state is now tracked via the dedicated /state topic
-            # (QoS 1 retained). Ignore channel-based sync to avoid race conditions.
-            return
-
-        elif channel == 'sys.session_active':
-            if self.user_variables:
-                prev_active = self.user_variables.session.active
-                if prev_active != bool_value:
-                    logger.info(f"[CRIO_SYNC] Syncing session state from cRIO: {prev_active} -> {bool_value}")
-                    self.user_variables.session.active = bool_value
-                    self._publish_test_session_status()
-
-        elif channel == 'sys.recording':
-            if self.recording_manager:
-                prev_recording = self.recording_manager.recording
-                if prev_recording != bool_value:
-                    logger.info(f"[CRIO_SYNC] Recording state from cRIO: {prev_recording} -> {bool_value}")
-                    # Note: We don't directly control recording from cRIO - just log for awareness
-                    # Recording should be controlled through explicit commands
+        pass
 
     def _handle_node_state_change(self, topic: str, payload: Dict[str, Any]):
         """Handle cRIO/edge node state transition (QoS 1, retained).
@@ -9536,27 +11541,8 @@ Unit conversions:
 
         logger.info(f"[ALARM] cRIO {node_id}: {channel} {prev_state} -> {new_state} (value={value})")
 
-        # Relay alarm event to dashboard via standard alarm topic
-        base = self.get_topic_base()
-        alarm_event = {
-            'channel': channel,
-            'prev_state': prev_state,
-            'new_state': new_state,
-            'value': value,
-            'timestamp': timestamp,
-            'source': f'crio:{node_id}'
-        }
-        self.mqtt_client.publish(
-            f"{base}/alarm/event",
-            json.dumps(alarm_event)
-        )
-
-        # If alarm manager exists, we can also add to alarm history
-        # (even though cRIO evaluated the alarm, PC stores the history)
-        if self.alarm_manager:
-            # Map cRIO alarm state to AlarmSeverity if needed
-            # For now just log - could add to alarm_manager.alarm_history
-            pass
+        # Dashboard receives alarm events directly from cRIO via per-alarm
+        # retained topics (alarms/active/{alarm_id}). No DAQ relay needed.
 
     def _handle_crio_alarm_status(self, topic: str, payload: Dict[str, Any]):
         """
@@ -9594,13 +11580,8 @@ Unit conversions:
         if total > 0:
             logger.debug(f"[ALARM] cRIO {node_id} status: {active} active, {total} total")
 
-        # Relay alarm status to dashboard via standard alarm topic
-        base = self.get_topic_base()
-        self.mqtt_client.publish(
-            f"{base}/alarm/status",
-            json.dumps(payload),
-            retain=True
-        )
+        # Dashboard receives alarm status directly from cRIO via retained
+        # alarms/status topic. No DAQ relay needed.
 
     def _handle_crio_command_ack(self, topic: str, payload: Dict[str, Any]):
         """
@@ -9651,6 +11632,12 @@ Unit conversions:
         logger.info(f"[CRIO_ACK] {node_id} {command}: success={success}, state={crio_state}, "
                    f"acquiring={crio_acquiring}, session={crio_session}"
                    + (f", reason={reason}" if reason else ""))
+
+        # Signal any waiting _stop_crio_nodes_and_wait() callers
+        if command == 'acquire/stop' and hasattr(self, '_crio_stop_ack_events'):
+            event = self._crio_stop_ack_events.get(node_id)
+            if event:
+                event.set()
 
         # Only sync acquisition/session state from acquire/session command ACKs.
         # Output ACKs don't include acquiring/session_active fields (they default to False),
@@ -9987,6 +11974,56 @@ Unit conversions:
                 qos=1
             )
             logger.info(f"Forwarded acquisition {command} to cRIO: {node.node_id} (request_id={request_id[:8]})")
+
+    def _stop_crio_nodes_and_wait(self, request_id: Optional[str] = None, timeout_s: float = 5.0) -> bool:
+        """Forward acquisition stop to all online cRIO nodes and wait for ACK.
+
+        Returns True if all cRIOs acknowledged (or no cRIOs online), False on timeout.
+        """
+        if not self.mqtt_client or not self.device_discovery:
+            return True  # No cRIO infrastructure — nothing to wait for
+
+        crio_nodes = self.device_discovery.get_crio_nodes()
+        online_nodes = [n for n in crio_nodes if n.status == 'online']
+        if not online_nodes:
+            return True  # No online cRIOs
+
+        mqtt_base = self.config.system.mqtt_base_topic
+        stop_request_id = request_id or str(uuid.uuid4())
+
+        # Set up ACK tracking events
+        pending_acks: Dict[str, threading.Event] = {}
+        for node in online_nodes:
+            pending_acks[node.node_id] = threading.Event()
+        self._crio_stop_ack_events = pending_acks
+
+        # Publish stop to all online cRIOs
+        for node in online_nodes:
+            topic = f"{mqtt_base}/nodes/{node.node_id}/system/acquire/stop"
+            self.mqtt_client.publish(
+                topic,
+                json.dumps({
+                    'command': 'stop',
+                    'request_id': stop_request_id,
+                    'timestamp': datetime.now().isoformat()
+                }),
+                qos=1
+            )
+            logger.info(f"[STOP] Sent acquire/stop to cRIO {node.node_id}")
+
+        # Wait for all ACKs (or timeout)
+        all_ok = True
+        deadline = time.time() + timeout_s
+        for node_id, event in pending_acks.items():
+            remaining = max(0.1, deadline - time.time())
+            if not event.wait(timeout=remaining):
+                logger.warning(f"[STOP] cRIO {node_id} did not ACK stop within {timeout_s}s")
+                all_ok = False
+            else:
+                logger.info(f"[STOP] cRIO {node_id} confirmed stop")
+
+        self._crio_stop_ack_events = {}
+        return all_ok
 
     def _forward_safe_state_to_crio(self, reason: str, request_id: Optional[str] = None):
         """
@@ -11981,6 +14018,8 @@ Unit conversions:
                     del self.channel_raw_values[key]
                 if key in self.channel_timestamps:
                     del self.channel_timestamps[key]
+                self._logged_open_tc.discard(key)
+                self._stale_warn_times.pop(key, None)
             logger.info(f"Cleaned up {len(stale_keys)} stale channel values")
 
     def _handle_channel_bulk_create(self, payload: Any):
@@ -13321,6 +15360,43 @@ Unit conversions:
 
         logger.info("Published channel configuration")
 
+    def _publish_channel_claims(self):
+        """Publish claimed physical channels for cross-instance conflict detection.
+
+        Other DAQ instances and the station manager subscribe to these retained
+        messages to prevent channel overlap in station mode.
+        """
+        if not self.mqtt_client or not self.config:
+            return
+        base = self.get_topic_base()
+        channels = [
+            ch.physical_channel for ch in self.config.channels.values()
+            if ch.physical_channel
+        ]
+        project_name = ""
+        if self.current_project_path:
+            project_name = self.current_project_path.name
+        payload = json.dumps({
+            "channels": channels,
+            "project": project_name,
+            "node_id": self.config.system.node_id,
+            "node_name": self.config.system.node_name,
+        })
+        self.mqtt_client.publish(
+            f"{base}/channels/claimed", payload, retain=True, qos=1
+        )
+        logger.info(f"Published channel claims ({len(channels)} channels)")
+
+    def _clear_channel_claims(self):
+        """Clear retained channel claims on acquisition stop or shutdown."""
+        if not self.mqtt_client or not self.config:
+            return
+        base = self.get_topic_base()
+        self.mqtt_client.publish(
+            f"{base}/channels/claimed", "", retain=True, qos=1
+        )
+        logger.debug("Cleared channel claims")
+
     # =========================================================================
     # NON-BLOCKING MQTT PUBLISH QUEUE
     # =========================================================================
@@ -14660,9 +16736,9 @@ Unit conversions:
                                         # Invalid raw value -> NaN
                                         self.channel_values[name] = float('nan')
                                         # Log first occurrence of open thermocouple
-                                        if status == 'open_tc' and not getattr(self, f'_logged_open_tc_{name}', False):
+                                        if status == 'open_tc' and name not in self._logged_open_tc:
                                             logger.warning(f"Open thermocouple detected on {name}")
-                                            setattr(self, f'_logged_open_tc_{name}', True)
+                                            self._logged_open_tc.add(name)
                                     # Store raw value for diagnostics (even if invalid)
                                     self.channel_raw_values[name] = raw_value
                             else:
@@ -14778,6 +16854,9 @@ Unit conversions:
                             self._safety_eval_failures = 0
                         self._last_safety_eval_time = time.time()
 
+                    # === MULTI-PROJECT: Dispatch values to each active project ===
+                    self._dispatch_values_to_projects(valid_channels, scan_interval)
+
                 except Exception as e:
                     self._scan_consecutive_errors += 1
                     self._scan_total_errors += 1
@@ -14876,6 +16955,9 @@ Unit conversions:
                     # and ~13x message overhead). The batch contains all values the
                     # frontend needs in a single message.
                     self._publish_channels_batch(values)
+
+                    # Multi-project: publish per-project channel batches
+                    self._publish_project_channel_batches(values)
 
                     # Publish session status (cRIO/Opto22 pattern)
                     self._publish_session_status()
@@ -15082,6 +17164,17 @@ Unit conversions:
 
         logger.info("DAQ Service started")
 
+        # Load system mode and restore station state if in station mode
+        self._system_mode = self._load_system_mode()
+        if self._system_mode == 'station':
+            self._restore_station_state()
+        if self.active_projects:
+            logger.info(f"Restored {len(self.active_projects)} projects from station state")
+            self._publish_station_status()
+
+        # Load security settings from nisystem_settings.json (NIST 800-171)
+        self._apply_saved_security_settings()
+
         # Clear all state on startup - user will choose to load project or start fresh via UI
         self._clear_startup_state()
 
@@ -15095,6 +17188,16 @@ Unit conversions:
 
         # Stop acquiring first to prevent new data
         self._state_machine.force_state(DAQState.STOPPED)
+
+        # Teardown all station projects
+        for pid, ctx in list(self.active_projects.items()):
+            try:
+                ctx.teardown()
+            except Exception as e:
+                logger.warning(f"Error tearing down project {pid}: {e}")
+
+        # Clear channel claims before shutdown
+        self._clear_channel_claims()
 
         # Publish shutting_down status
         if self.mqtt_client:

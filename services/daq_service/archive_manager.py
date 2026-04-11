@@ -7,11 +7,11 @@ Provides long-term data archival and retention management:
 - Archive format with integrity verification
 - Retention policy enforcement
 - Archive search and retrieval
-- Compliance with FDA 21 CFR Part 11 / ALCOA+ requirements
+- Compliance with DOE Order 414.1D / NIST 800-171 requirements
 
 References:
-- FDA 21 CFR Part 11: Electronic Records (10-year retention typical)
-- ALCOA+ Principles: Enduring, Available
+- NIST 800-171 Section 3.3 (Audit and Accountability)
+- DOE Order 414.1D (Quality Assurance)
 - IEC 62443: Industrial Automation Security
 """
 
@@ -38,11 +38,11 @@ class ArchiveFormat(Enum):
 
 
 class RetentionPeriod(Enum):
-    """Standard retention periods (FDA 21 CFR Part 11 guidance)"""
+    """Standard retention periods (DOE/DOD regulatory guidance)"""
     SHORT = 90              # 90 days - operational data
     MEDIUM = 365            # 1 year - standard records
     LONG = 1825             # 5 years - extended records
-    REGULATORY = 3650       # 10 years - FDA compliance
+    REGULATORY = 3650       # 10 years - regulatory compliance
     PERMANENT = -1          # Never delete
 
 

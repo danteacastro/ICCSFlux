@@ -1,5 +1,5 @@
 {
-  "name": "GTI H2-Ready Boiler Demo",
+  "name": "H2-Ready Boiler Demo",
   "version": "1.0",
   "pages": [
     {
@@ -11,7 +11,7 @@
           "type": "title",
           "x": 0, "y": 0, "w": 8, "h": 1,
           "config": {
-            "label": "GTI Energy - H2-Ready Boiler Combustion Research",
+            "label": "ICCSFlux - H2-Ready Boiler Combustion Research",
             "fontSize": "large",
             "align": "left"
           }

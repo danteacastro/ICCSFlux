@@ -1317,14 +1317,14 @@ const scheduleDayLabels = [
           </div>
         </div>
 
-        <!-- ALCOA+ Data Integrity Section (FDA 21 CFR Part 11 Compliance) -->
+        <!-- Data Integrity Section (NIST 800-171 Audit & Accountability) -->
         <div class="settings-section alcoa-section">
           <h3>
-            <span>Data Integrity (ALCOA+)</span>
-            <span class="compliance-badge">FDA 21 CFR Part 11</span>
+            <span>Data Integrity</span>
+            <span class="compliance-badge">NIST 800-171</span>
           </h3>
           <p class="section-description">
-            Ensures data is Attributable, Legible, Contemporaneous, Original, and Accurate.
+            Audit accountability, tamper detection, and chain of custody for recorded data.
           </p>
 
           <div class="alcoa-options">
@@ -1341,7 +1341,7 @@ const scheduleDayLabels = [
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                   <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                 </svg>
-                <span>Data cannot be modified after recording - enforces "Original" requirement</span>
+                <span>Data cannot be modified after recording - enforces chain of custody</span>
               </div>
             </label>
 
@@ -1384,7 +1384,7 @@ const scheduleDayLabels = [
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
-              <span>ALCOA+ Compliance Features Enabled</span>
+              <span>Data Integrity Features Enabled</span>
             </div>
             <div class="summary-items">
               <span v-if="recordingConfig.appendOnly" class="summary-item">Read-only after close</span>
@@ -1665,7 +1665,7 @@ const scheduleDayLabels = [
           <h3>Data Integrity</h3>
           <div class="alcoa-status" :class="{ enabled: recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata }">
             <div class="alcoa-status-header">
-              <span class="alcoa-label">ALCOA+</span>
+              <span class="alcoa-label">Integrity</span>
               <span class="alcoa-badge" v-if="recordingConfig.appendOnly || recordingConfig.verifyOnClose || recordingConfig.includeAuditMetadata">
                 Enabled
               </span>
@@ -3384,7 +3384,7 @@ const scheduleDayLabels = [
   opacity: 0;
 }
 
-/* ALCOA+ Data Integrity Section */
+/* Data Integrity Section */
 .alcoa-section h3 {
   display: flex;
   align-items: center;
@@ -3522,7 +3522,7 @@ const scheduleDayLabels = [
   color: var(--indicator-success-text);
 }
 
-/* ALCOA Status in Info Panel */
+/* Integrity Status in Info Panel */
 .alcoa-status {
   padding: 10px 12px;
   background: var(--bg-widget);

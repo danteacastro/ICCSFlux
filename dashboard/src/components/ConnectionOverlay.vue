@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
-const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
+// Demo mode: gated behind build-time flag only (NIST 800-171 AC.L2-3.1.22)
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true'
 
 const props = defineProps<{
   connected: boolean

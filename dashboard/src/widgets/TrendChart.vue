@@ -166,7 +166,7 @@ function isChannelVisible(channel: string): boolean {
 // Computed current values for legend
 const currentValues = computed(() => {
   return props.channels.map((ch, idx) => {
-    const data = store.values[ch]
+    const data = store.getChannelRef(ch).value
     const config = store.channels[ch]
     return {
       channel: ch,

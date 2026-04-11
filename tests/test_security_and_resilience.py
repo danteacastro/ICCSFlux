@@ -391,13 +391,19 @@ class TestSandboxListSync:
     """Verify the blocked lists in both script files are identical."""
 
     def test_blocked_lists_match(self):
-        """daq_service/script_manager.py and crio_node_v2/script_engine.py
-        must have identical blocked lists (per CLAUDE.md)."""
-        daq_path = Path(__file__).parent.parent / "services" / "daq_service" / "script_manager.py"
-        crio_path = Path(__file__).parent.parent / "services" / "crio_node_v2" / "script_engine.py"
+        """daq_service/script_manager.py, crio_node_v2/script_engine.py, and
+        opto22_node/script_engine.py must have identical blocked lists (per CLAUDE.md)."""
+        base = Path(__file__).parent.parent / "services"
+        sources = {
+            "DAQ": base / "daq_service" / "script_manager.py",
+            "cRIO": base / "crio_node_v2" / "script_engine.py",
+            "Opto22": base / "opto22_node" / "script_engine.py",
+        }
 
-        daq_src = daq_path.read_text()
-        crio_src = crio_path.read_text()
+        src_texts = {}
+        for label, path in sources.items():
+            assert path.exists(), f"{label} script engine not found: {path}"
+            src_texts[label] = path.read_text()
 
         def extract_frozenset(src: str, var_name: str) -> set:
             """Extract frozenset contents from source code."""
@@ -411,23 +417,20 @@ class TestSandboxListSync:
             items = re.findall(r"'([^']+)'", items_str)
             return set(items)
 
-        # Compare blocked dunder attrs
-        daq_dunders = extract_frozenset(daq_src, '_blocked_dunder_attrs')
-        crio_dunders = extract_frozenset(crio_src, '_blocked_dunder_attrs')
-        assert daq_dunders == crio_dunders, \
-            f"Blocked dunder attrs differ:\n  DAQ only: {daq_dunders - crio_dunders}\n  cRIO only: {crio_dunders - daq_dunders}"
+        list_names = ['_blocked_dunder_attrs', '_blocked_func_names', '_blocked_module_names']
+        labels = list(sources.keys())
 
-        # Compare blocked func names
-        daq_funcs = extract_frozenset(daq_src, '_blocked_func_names')
-        crio_funcs = extract_frozenset(crio_src, '_blocked_func_names')
-        assert daq_funcs == crio_funcs, \
-            f"Blocked func names differ:\n  DAQ only: {daq_funcs - crio_funcs}\n  cRIO only: {crio_funcs - daq_funcs}"
-
-        # Compare blocked module names
-        daq_modules = extract_frozenset(daq_src, '_blocked_module_names')
-        crio_modules = extract_frozenset(crio_src, '_blocked_module_names')
-        assert daq_modules == crio_modules, \
-            f"Blocked module names differ:\n  DAQ only: {daq_modules - crio_modules}\n  cRIO only: {crio_modules - daq_modules}"
+        for var_name in list_names:
+            extracted = {label: extract_frozenset(src_texts[label], var_name) for label in labels}
+            # Compare all pairs
+            for i in range(len(labels)):
+                for j in range(i + 1, len(labels)):
+                    a, b = labels[i], labels[j]
+                    assert extracted[a] == extracted[b], (
+                        f"{var_name} differs between {a} and {b}:\n"
+                        f"  {a} only: {extracted[a] - extracted[b]}\n"
+                        f"  {b} only: {extracted[b] - extracted[a]}"
+                    )
 
     def test_blocked_lists_match_test_replica(self):
         """Verify our test replica matches the production blocked lists."""

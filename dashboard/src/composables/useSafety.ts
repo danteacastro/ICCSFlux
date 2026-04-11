@@ -2150,6 +2150,8 @@ export function useSafety() {
           loadSafetyActions()
           loadAutoExecuteSetting()
           loadHistory()
+          // Clear any stale alarms from retained MQTT messages (previous session/project)
+          clearOrphanedAlarms()
         } else if (oldCount > 0 && newCount > 0) {
           // Both old and new have channels - check for orphaned alarms
           clearOrphanedAlarms()
@@ -2210,6 +2212,12 @@ export function useSafety() {
 
     // Subscribe to backend safety status (backend-authoritative safety logic)
     mqtt.subscribe('nisystem/nodes/+/safety/status', (payload: BackendSafetyStatusPayload) => {
+      handleBackendSafetyStatus(payload)
+    })
+
+    // Subscribe to cRIO/edge node interlock status directly (avoids DAQ relay latency)
+    // cRIO publishes to interlock/status, not safety/status
+    mqtt.subscribe('nisystem/nodes/+/interlock/status', (payload: BackendSafetyStatusPayload) => {
       handleBackendSafetyStatus(payload)
     })
 
@@ -2413,6 +2421,13 @@ export function useSafety() {
 
   function _processBackendAlarm(alarm: BackendAlarmPayload, event: 'triggered' | 'updated' | 'cleared') {
     const alarmId = alarm.alarm_id || alarm.id || `alarm-${Date.now()}`
+
+    // Reject alarms for channels that don't exist in the current config
+    // (prevents ghost alarms from retained MQTT messages of previous sessions)
+    if (alarm.channel && Object.keys(store.channels).length > 0 && !store.channels[alarm.channel]) {
+      console.debug(`[SAFETY] Ignoring alarm ${alarmId} for unknown channel "${alarm.channel}"`)
+      return
+    }
 
     if (event === 'cleared') {
       // Remove from active alarms

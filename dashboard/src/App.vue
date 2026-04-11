@@ -46,6 +46,30 @@ let windowPositionCleanup: (() => void) | null = null
 // Login dialog state
 const showLoginDialog = ref(false)
 
+// Session lock unlock form
+const unlockPassword = ref('')
+const isUnlocking = ref(false)
+const unlockPasswordInput = ref<HTMLInputElement | null>(null)
+
+async function handleUnlock() {
+  if (!unlockPassword.value) return
+  isUnlocking.value = true
+  const success = await auth.unlockSession(unlockPassword.value)
+  isUnlocking.value = false
+  if (success) {
+    unlockPassword.value = ''
+  } else {
+    unlockPassword.value = ''
+    // Focus input for retry
+    unlockPasswordInput.value?.focus()
+  }
+}
+
+function dismissLockWarning() {
+  // Any interaction resets the idle timer in useAuth
+  // This button press counts as activity via the mousedown listener
+}
+
 // GC tab visibility — hidden by default, toggle with Ctrl+F
 const showGcTab = ref(false)
 
@@ -238,7 +262,22 @@ const filteredChannels = computed(() => {
 })
 const mqtt = useMqtt('nisystem')
 
-const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
+// Station info for header indicator (when ?node= URL param is set)
+const currentStationInfo = computed(() => {
+  const nodeId = mqtt.activeNodeId.value
+  if (!nodeId || nodeId === 'node-001') return null
+  const registry = mqtt.stationRegistry?.value || {}
+  return registry[nodeId] || null
+})
+
+function openMainDashboard() {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('node')
+  window.open(url.toString(), '_blank')
+}
+
+// Demo mode: gated behind build-time flag only (NIST 800-171 AC.L2-3.1.22)
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true'
 
 // Startup dialog state
 const showStartupDialog = ref(false)
@@ -569,6 +608,21 @@ async function handleStop() {
   if (result.success) {
     // Only clear values after backend confirms stop succeeded
     store.clearValues()
+  } else if (result.error && result.error.includes('active safety conditions')) {
+    // Safety gate blocked the stop — ask user to confirm force-stop
+    const forceConfirm = window.confirm(
+      'Active alarms or interlocks detected.\n\n' +
+      result.error.replace('Cannot stop with active safety conditions: ', '') + '\n\n' +
+      'Force stop anyway? This will stop monitoring while conditions are active.'
+    )
+    if (forceConfirm) {
+      const forceResult = await mqtt.stopAcquisition(true)
+      if (forceResult.success) {
+        store.clearValues()
+      } else {
+        console.error('[APP] Force stop failed:', forceResult.error)
+      }
+    }
   } else {
     console.error('[APP] Stop acquisition failed:', result.error)
   }
@@ -637,7 +691,7 @@ async function handleManualSave() {
 
 <template>
   <div class="app">
-    <!-- Header (hidden when P&ID edit mode active — PID toolbar replaces it) -->
+    <!-- Header (hidden when P&ID edit mode active, or when on station/project routes) -->
     <header v-if="!store.pidEditMode" class="app-header">
       <div class="header-left">
         <!-- Navigation Tabs -->
@@ -750,6 +804,16 @@ async function handleManualSave() {
       </div>
 
       <div class="header-right">
+        <!-- Station indicator (visible when ?node= URL param is set) -->
+        <div v-if="mqtt.activeNodeId.value && mqtt.activeNodeId.value !== 'node-001'" class="station-indicator" :title="`Station: ${currentStationInfo?.nodeName || mqtt.activeNodeId.value}`">
+          <span class="station-indicator-dot" :class="currentStationInfo?.status || 'unknown'"></span>
+          <span class="station-indicator-name">{{ currentStationInfo?.nodeName || mqtt.activeNodeId.value }}</span>
+          <span v-if="currentStationInfo?.project" class="station-indicator-project">{{ currentStationInfo.project.replace(/\.json$/i, '') }}</span>
+          <button class="station-indicator-home" @click="openMainDashboard" title="Open main dashboard">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
+          </button>
+        </div>
+
         <!-- Control Bar integrated into header -->
         <ControlBar
           :show-edit-controls="activeTab === 'overview'"
@@ -914,13 +978,57 @@ async function handleManualSave() {
       </div>
     </Teleport>
 
-    <!-- Login Dialog -->
+    <!-- Login Dialog (NIST 800-171 AC.L2-3.1.22: blocking when not authenticated) -->
     <LoginDialog
-      :is-open="showLoginDialog"
-      :allow-cancel="true"
+      :is-open="showLoginDialog || (!auth.authenticated.value && !DEMO_MODE && !auth.guestAccessEnabled.value)"
+      :allow-cancel="auth.authenticated.value"
       @close="showLoginDialog = false"
       @success="showLoginDialog = false"
     />
+
+    <!-- Session Lock Overlay (NIST 800-171 AC.L2-3.1.10) -->
+    <!-- Data keeps streaming behind this overlay. Only commands are blocked. -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="auth.isSessionLocked.value" class="session-lock-overlay">
+          <div class="session-lock-dialog">
+            <div class="lock-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <h2>Session Locked</h2>
+            <p>Locked due to inactivity. Enter your password to resume.</p>
+            <p class="lock-note">All processes continue running. Data is still visible.</p>
+            <form @submit.prevent="handleUnlock">
+              <input
+                ref="unlockPasswordInput"
+                v-model="unlockPassword"
+                type="password"
+                placeholder="Password"
+                class="unlock-input"
+                autofocus
+              />
+              <div v-if="auth.authError.value" class="unlock-error">{{ auth.authError.value }}</div>
+              <button type="submit" class="unlock-btn" :disabled="isUnlocking">
+                {{ isUnlocking ? 'Unlocking...' : 'Unlock' }}
+              </button>
+            </form>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- Session Lock Warning Toast -->
+    <Teleport to="body">
+      <Transition name="toast">
+        <div v-if="auth.sessionLockWarning.value && !auth.isSessionLocked.value" class="session-lock-warning">
+          Session locks in 5 minutes due to inactivity
+          <button class="warning-dismiss" @click="dismissLockWarning">Stay Active</button>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Startup Dialog -->
     <Transition name="modal">
@@ -1142,6 +1250,50 @@ async function handleManualSave() {
   gap: 16px;
   flex: 1;
   justify-content: flex-end;
+}
+
+.station-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.station-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex-shrink: 0;
+}
+.station-indicator-dot.running { background: #22c55e; }
+.station-indicator-dot.stopped { background: #ef4444; }
+.station-indicator-dot.starting { background: #f59e0b; }
+.station-indicator-name {
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+}
+.station-indicator-project {
+  color: var(--text-secondary, #94a3b8);
+  font-size: 0.7rem;
+}
+.station-indicator-home {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+}
+.station-indicator-home:hover {
+  color: var(--text-primary, #e2e8f0);
+  background: rgba(255,255,255,0.1);
 }
 
 .system-name {
@@ -1504,6 +1656,144 @@ async function handleManualSave() {
   border-color: var(--color-error);
   color: var(--color-error);
   background: var(--color-error-bg);
+}
+
+/* Session Lock Overlay (NIST 800-171) */
+.session-lock-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+
+.session-lock-dialog {
+  background: var(--bg-widget);
+  border: 2px solid var(--color-warning, #f59e0b);
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 400px;
+  width: 90%;
+  text-align: center;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+}
+
+.session-lock-dialog .lock-icon {
+  color: var(--color-warning, #f59e0b);
+  margin-bottom: 12px;
+}
+
+.session-lock-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 1.3rem;
+  color: var(--text-primary);
+}
+
+.session-lock-dialog p {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.session-lock-dialog .lock-note {
+  color: var(--text-tertiary, #888);
+  font-size: 0.75rem;
+  margin-bottom: 16px;
+}
+
+.unlock-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input, var(--bg-elevated));
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+}
+
+.unlock-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.unlock-error {
+  color: var(--color-error, #ef4444);
+  font-size: 0.8rem;
+  margin-bottom: 8px;
+}
+
+.unlock-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-warning, #f59e0b);
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.unlock-btn:hover {
+  opacity: 0.9;
+}
+
+.unlock-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Session Lock Warning Toast */
+.session-lock-warning {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-warning, #f59e0b);
+  color: #000;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  z-index: 10002;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.warning-dismiss {
+  background: rgba(0,0,0,0.15);
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.warning-dismiss:hover {
+  background: rgba(0,0,0,0.25);
+}
+
+/* Toast transition */
+.toast-enter-active,
+.toast-leave-active {
+  transition: all 0.3s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-20px);
 }
 
 /* Startup Dialog */

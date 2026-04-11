@@ -16,6 +16,7 @@ export interface AuthStatus {
   authenticated: boolean
   username: string | null
   role: string | null
+  session_state?: 'active' | 'locked'
   permissions: string[]
   displayName: string | null
   error?: string
@@ -54,14 +55,6 @@ export interface ArchiveEntry {
 // ============================================================================
 // SINGLETON STATE - Shared across all useAuth() calls
 // ============================================================================
-
-// Default guest user - available without login (read-only)
-const DEFAULT_GUEST: AuthUser = {
-  username: 'guest',
-  role: 'guest',
-  displayName: 'Guest',
-  permissions: ['view.data', 'view.alarms']
-}
 
 const AUTH_STORAGE_KEY = 'nisystem-auth-session'
 
@@ -153,8 +146,9 @@ function saveSession(user: AuthUser | null) {
   }
 }
 
-// Demo mode: auto-login as admin, no MQTT required
-const DEMO_MODE = typeof window !== 'undefined' && (window as any).ICCSFLUX_DEMO_MODE === true
+// Demo mode: gated behind build-time flag (NIST 800-171 AC.L2-3.1.22)
+// Runtime window.ICCSFLUX_DEMO_MODE is NOT checked — prevents console bypass in production.
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true'
 const DEMO_ADMIN: AuthUser = {
   username: 'demo',
   role: 'admin',
@@ -162,10 +156,83 @@ const DEMO_ADMIN: AuthUser = {
   permissions: [],
 }
 
-// Initialize with persisted session or default guest (or demo admin)
-const persistedSession = DEMO_MODE ? null : loadPersistedSession()
-const authenticated = ref(DEMO_MODE || persistedSession !== null)
-const currentUser = ref<AuthUser | null>(DEMO_MODE ? DEMO_ADMIN : (persistedSession || DEFAULT_GUEST))
+// Default guest user — used when guest_access_enabled is true and no one is logged in
+const DEFAULT_GUEST: AuthUser = {
+  username: 'guest',
+  role: 'guest',
+  displayName: 'Guest',
+  permissions: [],
+}
+
+// Security settings — read from localStorage (written by AdminTab Security section)
+const SECURITY_SETTINGS_KEY = 'nisystem-security-settings'
+
+function loadSecuritySetting<T>(key: string, defaultValue: T): T {
+  try {
+    const saved = localStorage.getItem(SECURITY_SETTINGS_KEY)
+    if (saved) {
+      const settings = JSON.parse(saved)
+      if (key in settings) return settings[key] as T
+    }
+  } catch { /* ignore */ }
+  return defaultValue
+}
+
+// Guest access: OFF by default — users must log in (NIST AC.L2-3.1.22)
+const guestAccessEnabled = ref(loadSecuritySetting('guest_access_enabled', false))
+
+// Session lock: OFF by default
+// When ON (NIST AC.L2-3.1.10), UI locks after inactivity timeout
+const sessionLockEnabled = ref(loadSecuritySetting('session_lock_enabled', false))
+
+// Session lock state
+// LOCKED = UI commands disabled, data still streams. User must re-enter password.
+// Backend processes (acquisition, recording, scripts, safety) are NEVER affected.
+const sessionState = ref<'active' | 'locked'>('active')
+const sessionLockWarning = ref(false)  // True when warning threshold reached
+
+// Idle tracking — reset on any user interaction
+let sessionLockTimeoutMs = loadSecuritySetting('session_lock_timeout_minutes', 30) * 60 * 1000
+let sessionLockWarningMs = loadSecuritySetting('session_lock_warning_minutes', 25) * 60 * 1000
+let lastActivityTime = Date.now()
+let idleCheckInterval: ReturnType<typeof setInterval> | null = null
+
+function resetIdleTimer() {
+  lastActivityTime = Date.now()
+  sessionLockWarning.value = false
+}
+
+/** Reload security settings from localStorage (called when AdminTab saves changes) */
+function reloadSecuritySettings() {
+  guestAccessEnabled.value = loadSecuritySetting('guest_access_enabled', false)
+  sessionLockEnabled.value = loadSecuritySetting('session_lock_enabled', false)
+  sessionLockTimeoutMs = loadSecuritySetting('session_lock_timeout_minutes', 30) * 60 * 1000
+  sessionLockWarningMs = loadSecuritySetting('session_lock_warning_minutes', 25) * 60 * 1000
+
+  // If guest access was just enabled and no one is logged in, restore guest
+  if (guestAccessEnabled.value && !currentUser.value) {
+    currentUser.value = DEFAULT_GUEST
+    authenticated.value = true
+  }
+  // If guest access was just disabled and current user is guest, force login
+  if (!guestAccessEnabled.value && currentUser.value?.role === 'guest') {
+    currentUser.value = null
+    authenticated.value = false
+  }
+}
+
+// Initialize: demo mode → admin, persisted session → restored, guest enabled → guest, else null
+function resolveInitialUser(): AuthUser | null {
+  if (DEMO_MODE) return DEMO_ADMIN
+  const persisted = loadPersistedSession()
+  if (persisted) return persisted
+  if (guestAccessEnabled.value) return DEFAULT_GUEST
+  return null
+}
+
+const initialUser = resolveInitialUser()
+const authenticated = ref(initialUser !== null)
+const currentUser = ref<AuthUser | null>(initialUser)
 const authError = ref<string | null>(null)
 const isLoggingIn = ref(false)
 
@@ -267,6 +334,15 @@ export function useAuth() {
     authError.value = data.error || null
     isLoggingIn.value = false
 
+    // Track session lock state from backend
+    if (data.session_state) {
+      sessionState.value = data.session_state
+      if (data.session_state === 'active') {
+        sessionLockWarning.value = false
+        resetIdleTimer()
+      }
+    }
+
     if (data.authenticated && data.username) {
       const user: AuthUser = {
         username: data.username,
@@ -278,8 +354,13 @@ export function useAuth() {
       // Persist authenticated sessions
       saveSession(user)
     } else {
-      // Login failed or logout - reset to guest
-      currentUser.value = DEFAULT_GUEST
+      // Login failed or logout — fall back to guest if enabled, otherwise no access
+      if (guestAccessEnabled.value) {
+        currentUser.value = DEFAULT_GUEST
+        authenticated.value = true
+      } else {
+        currentUser.value = null
+      }
       saveSession(null)
     }
 
@@ -387,9 +468,52 @@ export function useAuth() {
     if (mqtt.connected.value) {
       mqtt.sendLocalCommand('auth/logout', {})
     }
-    authenticated.value = false
-    currentUser.value = DEFAULT_GUEST
+    sessionState.value = 'active'
+    sessionLockWarning.value = false
     saveSession(null)  // Clear persisted session
+
+    // Fall back to guest if enabled, otherwise no access
+    if (guestAccessEnabled.value) {
+      currentUser.value = DEFAULT_GUEST
+      authenticated.value = true
+    } else {
+      currentUser.value = null
+      authenticated.value = false
+    }
+  }
+
+  /**
+   * Unlock a locked session by re-entering password.
+   * Same session preserved — no backend process interruption.
+   */
+  async function unlockSession(password: string): Promise<boolean> {
+    if (!mqtt.connected.value) {
+      authError.value = 'Cannot unlock — server unreachable'
+      return false
+    }
+
+    authError.value = null
+    mqtt.sendLocalCommand('auth/unlock', { password })
+
+    return new Promise((resolve) => {
+      const unsubscribe = onAuthChange((status) => {
+        clearTimeout(timeout)
+        unsubscribe()
+        if (status.session_state === 'active' && status.authenticated) {
+          sessionState.value = 'active'
+          resetIdleTimer()
+          resolve(true)
+        } else {
+          resolve(false)
+        }
+      })
+
+      const timeout = setTimeout(() => {
+        unsubscribe()
+        authError.value = 'Unlock timed out'
+        resolve(false)
+      }, 10000)
+    })
   }
 
   // Sync auth state to useMqtt (gates permission-sensitive commands like safe-state)
@@ -508,12 +632,44 @@ export function useAuth() {
     initializeHandlers()
   }
 
+  // Idle activity tracking — reset timer on user interaction
+  // Only tracks locally for the warning toast; actual lock is server-side.
+  if (typeof window !== 'undefined' && !idleCheckInterval) {
+    const activityEvents = ['mousedown', 'keydown', 'touchstart', 'scroll']
+    for (const evt of activityEvents) {
+      window.addEventListener(evt, resetIdleTimer, { passive: true })
+    }
+
+    // Check idle state every 30 seconds (only when session lock is enabled)
+    idleCheckInterval = setInterval(() => {
+      if (!sessionLockEnabled.value) return
+      if (!authenticated.value || currentUser.value?.role === 'guest') return
+
+      const idle = Date.now() - lastActivityTime
+      if (idle >= sessionLockWarningMs && idle < sessionLockTimeoutMs) {
+        sessionLockWarning.value = true
+      }
+    }, 30000)
+  }
+
+  const isSessionLocked = computed(() => sessionState.value === 'locked')
+
   return {
     // State (readonly)
     authenticated: readonly(authenticated),
     currentUser: readonly(currentUser),
     authError: readonly(authError),
     isLoggingIn: readonly(isLoggingIn),
+
+    // Session lock state (NIST 800-171 AC.L2-3.1.10)
+    sessionState: readonly(sessionState),
+    isSessionLocked,
+    sessionLockWarning: readonly(sessionLockWarning),
+
+    // Security settings
+    guestAccessEnabled: readonly(guestAccessEnabled),
+    sessionLockEnabled: readonly(sessionLockEnabled),
+    reloadSecuritySettings,
 
     // User management
     users: readonly(users),
@@ -538,6 +694,7 @@ export function useAuth() {
     // Auth actions
     login,
     logout,
+    unlockSession,
     requestAuthStatus,
     onAuthChange,
 

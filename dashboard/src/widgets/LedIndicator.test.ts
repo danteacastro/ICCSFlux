@@ -53,6 +53,7 @@ vi.mock('../stores/dashboard', () => {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } },
       get isAcquiring() { return mockIsAcquiring.value },
       get editMode() { return mockEditMode.value },
       widgets: [],
@@ -234,7 +235,7 @@ describe('LedIndicator', () => {
     it('should show LED as off for stale timestamp', () => {
       const state = getLedMockState()
       state.mockValues.value = {
-        'DI_001': { value: 1, timestamp: Date.now() - 10000 } // 10 seconds ago
+        'DI_001': { value: 1, timestamp: Date.now() - 20000 } // 10 seconds ago
       }
 
       const wrapper = mount(LedIndicator, {

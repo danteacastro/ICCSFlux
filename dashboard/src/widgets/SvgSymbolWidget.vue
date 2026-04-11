@@ -25,7 +25,7 @@ const props = withDefaults(defineProps<{
 const store = useDashboardStore()
 
 const channelConfig = computed(() => props.channel ? store.channels[props.channel] : null)
-const channelValue = computed(() => props.channel ? store.values[props.channel] : null)
+const channelValue = computed(() => props.channel ? store.getChannelRef(props.channel).value : null)
 
 // Check if data is stale
 const isStale = computed(() => {

@@ -26,7 +26,7 @@ const inputRef = ref<HTMLInputElement | null>(null)
 
 const channelValue = computed(() => {
   if (!props.symbol.channel) return null
-  return store.values[props.symbol.channel] ?? null
+  return store.getChannelRef(props.symbol.channel).value ?? null
 })
 
 const channelConfig = computed(() => {

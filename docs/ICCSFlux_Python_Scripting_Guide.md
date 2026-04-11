@@ -90,7 +90,7 @@ These are available immediately without imports:
 | **Time Functions** | `now`, `now_ms`, `now_iso`, `time_of_day`, `elapsed_since`, `format_timestamp` |
 | **Conversions** | `F_to_C`, `C_to_F`, `GPM_to_LPM`, `LPM_to_GPM`, `PSI_to_bar`, `bar_to_PSI`, `gal_to_L`, `L_to_gal`, `BTU_to_kJ`, `kJ_to_BTU`, `lb_to_kg`, `kg_to_lb` |
 | **Helpers** | `Counter`, `RateCalculator`, `Accumulator`, `EdgeDetector`, `RollingStats`, `Scheduler`, `StateMachine` |
-| **Libraries** | `time`, `datetime`, `math`, `json`, `re`, `statistics`, `numpy` (also as `np`), `scipy` |
+| **Libraries** | `time`, `datetime`, `math`, `json`, `re`, `statistics`, `numpy` (also as `np`), `scipy`, `pyromat` (thermodynamic properties) |
 | **Built-ins** | `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `filter`, `float`, `int`, `len`, `list`, `map`, `max`, `min`, `pow`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip` |
 
 ### Importing CSV/Excel Data
@@ -175,6 +175,28 @@ freqs = fftfreq(len(data), d=1/sample_rate)
 # Peak detection
 peaks, _ = signal.find_peaks(data, height=threshold)
 ```
+
+### PYroMat (Thermodynamic Properties)
+```python
+import pyromat as pm
+
+# Water/steam properties (pre-loaded as nisystem.water)
+water = pm.get('mp.H2O')
+h = water.h(T=373.15, p=101.325)   # Enthalpy at 100°C, 1 atm [kJ/kg]
+s = water.s(T=373.15, p=101.325)   # Entropy [kJ/kg·K]
+cp = water.cp(T=350, p=200)        # Specific heat [kJ/kg·K]
+
+# Refrigerants
+r134a = pm.get('mp.C2H2F4')        # R-134a
+h_ref = r134a.h(T=300, p=500)      # Enthalpy at 300K, 500kPa
+
+# Default units: temperature=K, pressure=kPa
+# Change units if needed:
+pm.config['unit_temperature'] = 'C'
+pm.config['unit_pressure'] = 'bar'
+```
+
+Nearly 1,000 substances available including refrigerants (R-134a, R-410A, R-22, etc.), water/steam, air, CO2, and industrial gases. See [PYroMat docs](http://pyromat.org/) for the full substance list.
 
 ### Standard Library
 Python's standard library is fully available:

@@ -190,6 +190,8 @@ class WatchdogEngine:
     Monitors channels for abnormal conditions and executes actions.
     """
 
+    MAX_CONDITIONS = 100  # NIST 800-171 resource limit
+
     def __init__(self):
         self.watchdogs: Dict[str, Watchdog] = {}
         self.channel_trackers: Dict[str, ChannelTracker] = {}
@@ -264,6 +266,9 @@ class WatchdogEngine:
                 return 0
 
             for wd_data in watchdogs_data:
+                if len(self.watchdogs) >= self.MAX_CONDITIONS:
+                    logger.warning(f"Watchdog limit reached ({self.MAX_CONDITIONS}), skipping remaining")
+                    break
                 try:
                     wd = Watchdog.from_dict(wd_data)
                     self.watchdogs[wd.id] = wd

@@ -1,4 +1,4 @@
-# GTI Energy - H2-Ready Boiler Combustion Research
+# ICCSFlux - H2-Ready Boiler Combustion Research
 # EPA-Compliant Emissions Data Logger
 #
 # Performs emissions averaging, air-to-fuel ratio calculations,

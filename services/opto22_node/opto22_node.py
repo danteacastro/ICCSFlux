@@ -336,13 +336,25 @@ class Opto22NodeService:
     def _on_alarm_event(self, channel: str, event_type: str, details: Dict):
         """Callback from safety manager when alarm state changes."""
         self.audit.log_event(event_type, channel, details)
-        self._publish(self._topic('alarms/event'), {
+        alarm_payload = {
             'channel': channel,
             'event': event_type,
             'node_id': self.config.node_id if self.config else 'opto22',
             'timestamp': datetime.now(timezone.utc).isoformat(),
             **details
-        })
+        }
+        # Flat event (backward compat — DAQ service listens for history)
+        self._publish(self._topic('alarms/event'), alarm_payload)
+
+        # Per-alarm retained topic (dashboard consumes directly)
+        alarm_type = details.get('alarm_type', details.get('type', 'alarm'))
+        alarm_id = f"{channel}_{alarm_type}"
+        state = details.get('state', event_type)
+        is_cleared = state in ('RETURNED', 'NORMAL', 'cleared', 'clear')
+        alarm_payload['active'] = not is_cleared
+        if not is_cleared:
+            alarm_payload['alarm_id'] = alarm_id
+        self._publish(self._topic(f'alarms/active/{alarm_id}'), alarm_payload, retain=True)
 
     def _on_safety_action(self, action_name: str, channel: str, details: Dict):
         """Callback from safety manager when safety action executes."""

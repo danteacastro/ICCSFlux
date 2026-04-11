@@ -11,6 +11,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -31,6 +32,14 @@ CREATE_NEW_CONSOLE = 0x00000010
 # Track all launched processes for cleanup
 _processes: list[subprocess.Popen] = []
 _shutting_down = False
+_station_manager = None
+
+# Station manager (shared module)
+try:
+    from station_manager import StationManager
+    HAS_STATION_MANAGER = True
+except ImportError:
+    HAS_STATION_MANAGER = False
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
@@ -73,6 +82,18 @@ def load_mqtt_credentials() -> dict:
     except Exception as e:
         log("CREDS", f"Warning: could not read credentials: {e}")
         return {}
+
+
+def load_mqtt_credentials_tuple():
+    """Load MQTT credentials as (user, pass) tuple for station manager."""
+    if not CRED_FILE.exists():
+        return None, None
+    try:
+        with open(CRED_FILE) as f:
+            creds = json.load(f)
+        return creds['backend']['username'], creds['backend']['password']
+    except Exception:
+        return None, None
 
 
 # ── Process Management ─────────────────────────────────────────────────────────
@@ -271,6 +292,10 @@ def shutdown():
     print()
     log("SHUTDOWN", "Stopping all services...")
 
+    # Stop station manager first (stops all station DAQ processes)
+    if _station_manager:
+        _station_manager.stop()
+
     for proc in reversed(_processes):
         try:
             if proc.poll() is None:
@@ -293,9 +318,14 @@ def monitor():
     """Wait for Ctrl+C, then shut down all services."""
     log("MONITOR", "All services running. Press Ctrl+C to stop all.")
     print()
+    counter = 0
     try:
         while not _shutting_down:
-            time.sleep(1)
+            time.sleep(3)
+            counter += 1
+            # Check station health every ~30s
+            if _station_manager and counter % 10 == 0:
+                _station_manager.check_stations()
     except KeyboardInterrupt:
         shutdown()
 
@@ -342,6 +372,23 @@ def main():
     services["azure"] = start_azure_uploader(mqtt_env)
     services["frontend"] = start_frontend()
 
+    # Step 3b: Start station manager (multi-instance support)
+    global _station_manager
+    if HAS_STATION_MANAGER:
+        _station_manager = StationManager(
+            root=ROOT,
+            daq_command_fn=lambda config_path: [
+                PYTHON, "services\\daq_service\\daq_service.py", "-c", config_path
+            ],
+            credential_fn=load_mqtt_credentials_tuple,
+            creation_flags=CREATE_NEW_CONSOLE,
+            process_tracker=_processes,
+        )
+        _station_manager.start()
+        log("STATION", "Station manager ready (multi-instance support)")
+    else:
+        log("STATION", "Station manager not available (missing paho-mqtt)")
+
     print()
     print("=" * 72)
     print("  All services started!")
@@ -353,6 +400,8 @@ def main():
     if services.get("azure"):
         print("  Azure Uploader:  Window titled 'Azure Uploader'")
     print("  Frontend:        Window titled 'Frontend (Vite)'")
+    if _station_manager:
+        print("  Station Manager: Active (create stations via Admin tab)")
     print()
     print("  Dashboard: http://localhost:5173")
     print()

@@ -105,8 +105,17 @@ export async function loadPyodide(onProgress?: ProgressCallback): Promise<any> {
       // Pre-load commonly used packages
       await pyodide.loadPackage(['numpy'])
 
-      onProgress?.('loading', 'Loading SciPy...', 70)
+      onProgress?.('loading', 'Loading SciPy...', 60)
       await pyodide.loadPackage(['scipy'])
+
+      onProgress?.('loading', 'Loading micropip...', 70)
+      await pyodide.loadPackage(['micropip'])
+
+      onProgress?.('loading', 'Loading PYroMat (thermodynamic properties)...', 80)
+      await pyodide.runPythonAsync(`
+import micropip
+await micropip.install('PYroMat')
+`)
 
       onProgress?.('loading', 'Setting up ICCSFlux bridge...', 90)
 
@@ -589,7 +598,21 @@ nisystem.EdgeDetector = EdgeDetector
 nisystem.RollingStats = RollingStats
 nisystem.Scheduler = Scheduler
 
-print("ICCSFlux Python module initialized (NumPy + SciPy + Scheduler loaded)")
+# Thermodynamic properties (PYroMat)
+try:
+    import pyromat as pm
+    pm.config['unit_temperature'] = 'K'
+    pm.config['unit_pressure'] = 'kPa'
+
+    # Convenience: pre-load water/steam
+    water = pm.get('mp.H2O')
+    nisystem.pm = pm
+    nisystem.water = water
+    print("ICCSFlux Python module initialized (NumPy + SciPy + PYroMat + Scheduler loaded)")
+except ImportError:
+    nisystem.pm = None
+    nisystem.water = None
+    print("ICCSFlux Python module initialized (NumPy + SciPy + Scheduler loaded, PYroMat unavailable)")
 `
 
   await pyodide.runPythonAsync(moduleCode)

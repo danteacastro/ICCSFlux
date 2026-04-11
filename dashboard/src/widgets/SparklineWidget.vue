@@ -24,7 +24,7 @@ const containerStyle = computed(() => {
 const store = useDashboardStore()
 
 const channelConfig = computed(() => store.channels[props.channel])
-const channelValue = computed(() => store.values[props.channel])
+const channelValue = computed(() => store.getChannelRef(props.channel).value)
 
 // Check if data is stale — trust server-side quality flag (handles clock skew)
 const isStale = computed(() => {

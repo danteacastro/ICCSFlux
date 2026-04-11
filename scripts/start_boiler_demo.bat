@@ -1,13 +1,13 @@
 @echo off
 setlocal enabledelayedexpansion
 REM ============================================================================
-REM GTI Energy H2-Ready Boiler Combustion Research Demo
+REM ICCSFlux H2-Ready Boiler Combustion Research Demo
 REM Starts NISystem with the boiler demo configuration
 REM ============================================================================
 
 echo.
 echo ================================================================================
-echo   GTI ENERGY - H2-Ready Boiler Combustion Research Platform
+echo   ICCSFlux - H2-Ready Boiler Combustion Research Platform
 echo   Demo Mode - Simulated Data
 echo ================================================================================
 echo.
@@ -100,7 +100,7 @@ echo   Boiler Demo Started!
 echo ================================================================================
 echo.
 echo   Dashboard:  http://localhost:5173
-echo   Project:    GTI H2-Ready Boiler Combustion Research
+echo   Project:    H2-Ready Boiler Combustion Research
 echo   Mode:       Simulation (no hardware required)
 echo.
 echo   Channels:   40+ (temps, pressures, flows, emissions)

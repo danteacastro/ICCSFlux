@@ -2,7 +2,7 @@
   "type": "nisystem-project",
   "version": "2.0",
   "name": "H2-Ready Boiler Combustion Research",
-  "description": "GTI Energy - Advanced Hydrogen-Blend Combustion Test Facility | 500kW Industrial Boiler Research Platform",
+  "description": "ICCSFlux - Advanced Hydrogen-Blend Combustion Test Facility | 500kW Industrial Boiler Research Platform",
   "created": "2026-01-15T00:00:00.000Z",
   "modified": "2026-01-19T00:00:00.000Z",
   "system": {
@@ -13,8 +13,8 @@
     "publish_rate_hz": 10,
     "simulation_mode": true,
     "log_directory": "./logs",
-    "system_name": "GTI H2-Ready Boiler Test Facility",
-    "system_id": "GTI-BOILER-001",
+    "system_name": "H2-Ready Boiler Test Facility",
+    "system_id": "ICCSFLUX-BOILER-001",
     "datalog_rate_ms": 1000,
     "datalog_rearm": true,
     "datalog_rearm_rate_sec": 3600
@@ -841,7 +841,7 @@
           {
             "id": "w-title-header",
             "type": "title",
-            "title": "GTI H2-Ready Boiler Combustion Research",
+            "title": "H2-Ready Boiler Combustion Research",
             "subtitle": "500kW Industrial Test Platform",
             "x": 0, "y": 0, "w": 12, "h": 1,
             "style": { "fontSize": "large", "textAlign": "left" }

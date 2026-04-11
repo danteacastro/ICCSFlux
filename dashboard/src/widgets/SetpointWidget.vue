@@ -36,7 +36,7 @@ const mqtt = useMqtt('nisystem')
 const safety = useSafety()
 
 const channelConfig = computed(() => store.channels[props.channel])
-const channelValue = computed(() => store.values[props.channel])
+const channelValue = computed(() => store.getChannelRef(props.channel).value)
 
 // Local input value
 const inputValue = ref<string>('')

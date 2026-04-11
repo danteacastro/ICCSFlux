@@ -145,6 +145,16 @@ def main():
         sys.exit(1)
     print("  Connected.")
 
+    # NIST 800-171 Phase 2.7: Check for SSH key-based authentication
+    key_check = subprocess.run(
+        ['ssh', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no',
+         '-o', 'BatchMode=yes', f'admin@{host}', 'echo OK'],
+        capture_output=True, text=True, timeout=10
+    )
+    if key_check.returncode != 0 or 'OK' not in key_check.stdout:
+        print("  \u26a0 SSH password authentication detected. For NIST 800-171 compliance,")
+        print("    configure SSH key-based authentication and disable password auth on the cRIO.")
+
     # ── [2/8] SAFETY: Stop ALL cRIO processes ─────────────────────────────
     print("\n[2/8] Stopping ALL cRIO node processes...")
     # Stop init.d services (both old and new)

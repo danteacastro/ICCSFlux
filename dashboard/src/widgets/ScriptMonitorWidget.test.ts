@@ -38,7 +38,8 @@ vi.mock('../stores/dashboard', () => {
 
   return {
     useDashboardStore: () => ({
-      get values() { return mockValues.value }
+      get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } }
     })
   }
 })

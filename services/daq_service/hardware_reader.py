@@ -1257,8 +1257,14 @@ class HardwareReader:
 
                 edge = Edge.RISING if channel.counter_edge == "rising" else Edge.FALLING
 
-                if channel.counter_mode == "frequency":
-                    # Frequency measurement - try default method, fall back to DynAvg
+                # Normalize mode — frontend may send 'count_edges' for 'count'
+                counter_mode = channel.counter_mode
+                if counter_mode in ("count_edges", "edge_count"):
+                    counter_mode = "count"
+                actual_mode = counter_mode
+
+                if counter_mode == "frequency":
+                    # Frequency measurement - try default, then DynAvg, then fall back to count
                     try:
                         task.ci_channels.add_ci_freq_chan(
                             phys_chan,
@@ -1271,17 +1277,32 @@ class HardwareReader:
                     except Exception:
                         task.close()
                         task = nidaqmx.Task(f"CTR_{channel.name}")
-                        task.ci_channels.add_ci_freq_chan(
-                            phys_chan,
-                            name_to_assign_to_channel=channel.name,
-                            min_val=min_freq,
-                            max_val=max_freq,
-                            units=FrequencyUnits.HZ,
-                            edge=edge,
-                            meas_method=CounterFrequencyMethod.DYNAMIC_AVERAGING
-                        )
-                        logger.info(f"Counter {channel.name}: using DynAvg measurement method")
-                elif channel.counter_mode == "count":
+                        try:
+                            task.ci_channels.add_ci_freq_chan(
+                                phys_chan,
+                                name_to_assign_to_channel=channel.name,
+                                min_val=min_freq,
+                                max_val=max_freq,
+                                units=FrequencyUnits.HZ,
+                                edge=edge,
+                                meas_method=CounterFrequencyMethod.DYNAMIC_AVERAGING
+                            )
+                            logger.info(f"Counter {channel.name}: using DynAvg measurement method")
+                        except Exception as freq_err:
+                            # Frequency not supported (common on simulated devices) — fall back to edge counting
+                            logger.warning(f"Counter {channel.name}: frequency mode not supported ({freq_err}), "
+                                         f"falling back to edge count mode")
+                            task.close()
+                            task = nidaqmx.Task(f"CTR_{channel.name}")
+                            task.ci_channels.add_ci_count_edges_chan(
+                                phys_chan,
+                                name_to_assign_to_channel=channel.name,
+                                edge=edge,
+                                initial_count=0,
+                                count_direction=CountDirection.COUNT_UP
+                            )
+                            actual_mode = "count"
+                elif counter_mode == "count":
                     # Edge counting
                     task.ci_channels.add_ci_count_edges_chan(
                         phys_chan,
@@ -1290,19 +1311,51 @@ class HardwareReader:
                         initial_count=0,
                         count_direction=CountDirection.COUNT_UP
                     )
-                elif channel.counter_mode == "period":
-                    # Period measurement
-                    task.ci_channels.add_ci_period_chan(
+                elif counter_mode == "period":
+                    # Period measurement — fall back to count if unsupported
+                    try:
+                        task.ci_channels.add_ci_period_chan(
+                            phys_chan,
+                            name_to_assign_to_channel=channel.name,
+                            min_val=min_period,
+                            max_val=max_period,
+                            edge=edge
+                        )
+                    except Exception as period_err:
+                        logger.warning(f"Counter {channel.name}: period mode not supported ({period_err}), "
+                                     f"falling back to edge count mode")
+                        task.close()
+                        task = nidaqmx.Task(f"CTR_{channel.name}")
+                        task.ci_channels.add_ci_count_edges_chan(
+                            phys_chan,
+                            name_to_assign_to_channel=channel.name,
+                            edge=edge,
+                            initial_count=0,
+                            count_direction=CountDirection.COUNT_UP
+                        )
+                        actual_mode = "count"
+                else:
+                    # Unknown mode — default to edge counting
+                    logger.warning(f"Counter {channel.name}: unknown mode '{counter_mode}', defaulting to edge count")
+                    task.ci_channels.add_ci_count_edges_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
-                        min_val=min_period,
-                        max_val=max_period,
-                        edge=edge
+                        edge=edge,
+                        initial_count=0,
+                        count_direction=CountDirection.COUNT_UP
                     )
+                    actual_mode = "count"
+
+                # Start the task — required before read() will return valid data
+                task.start()
 
                 self.counter_tasks[channel.name] = task
+                # Track actual mode for correct read-time processing (may differ from config after fallback)
+                if not hasattr(self, '_counter_actual_mode'):
+                    self._counter_actual_mode = {}
+                self._counter_actual_mode[channel.name] = actual_mode
                 logger.info(f"Added counter channel: {channel.name} -> {phys_chan} "
-                           f"(mode={channel.counter_mode}, freq={min_freq}-{max_freq}Hz)")
+                           f"(mode={actual_mode}, freq={min_freq}-{max_freq}Hz)")
 
             except Exception as e:
                 logger.error(f"Failed to create counter task for {channel.name}: {e}")
@@ -1588,10 +1641,13 @@ class HardwareReader:
                 for name, task in self.counter_tasks.items():
                     try:
                         value = task.read(timeout=0.1)
+                        # Use actual mode (may differ from config after fallback on simulated devices)
+                        actual_mode = getattr(self, '_counter_actual_mode', {}).get(name)
                         channel = self.config.channels.get(name)
-                        if channel and channel.counter_mode == "period" and value > 0:
+                        mode = actual_mode or (channel.counter_mode if channel else "count")
+                        if mode == "period" and value > 0:
                             value = 1.0 / value
-                        elif channel and channel.counter_mode == "count":
+                        elif mode == "count":
                             # Handle 32-bit rollover for edge counting
                             if name not in self._counter_rollover:
                                 self._counter_rollover[name] = {'prev': 0, 'offset': 0}
@@ -1608,6 +1664,11 @@ class HardwareReader:
                         with self.lock:
                             self.latest_values[name] = value
                     except Exception as e:
+                        if not getattr(self, '_counter_error_logged', {}).get(name):
+                            logger.warning(f"Counter read failed for {name}: {e}")
+                            if not hasattr(self, '_counter_error_logged'):
+                                self._counter_error_logged = {}
+                            self._counter_error_logged[name] = True
                         with self.lock:
                             self.latest_values[name] = float('nan')
 

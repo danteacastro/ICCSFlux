@@ -50,6 +50,7 @@ vi.mock('../stores/dashboard', () => {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } },
       get isAcquiring() { return mockIsAcquiring.value }
     })
   }
@@ -170,7 +171,7 @@ describe('NumericDisplay', () => {
     it('should show -- for stale timestamp', () => {
       const state = getNumericMockState()
       state.mockValues.value = {
-        'TC_001': { value: 25.5, timestamp: Date.now() - 10000 } // 10 seconds ago
+        'TC_001': { value: 25.5, timestamp: Date.now() - 20000 } // 20 seconds ago (>15s stale threshold)
       }
 
       const wrapper = mount(NumericDisplay, {

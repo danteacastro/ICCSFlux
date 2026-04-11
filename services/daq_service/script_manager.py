@@ -2720,6 +2720,14 @@ class ScriptRuntime:
         except ImportError:
             pass
 
+        # Try to add pyromat (thermodynamic properties)
+        try:
+            import pyromat as pm_mod
+            namespace['pyromat'] = pm_mod
+            namespace['pm'] = pm_mod
+        except ImportError:
+            pass
+
         return namespace
 
 

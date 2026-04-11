@@ -71,7 +71,9 @@ interface MqttAlarmPayload {
   severity?: string
   state?: string
   active?: boolean
+  alarm_type?: string     // cRIO format (e.g., 'hi', 'hihi', 'lo', 'lolo')
   threshold_type?: string
+  limit?: number          // cRIO format (threshold value)
   threshold_value?: number
   triggered_value?: number
   current_value?: number
@@ -89,6 +91,7 @@ interface MqttAlarmPayload {
   message?: string
   duration_seconds?: number
   safety_action?: string
+  timestamp?: string        // cRIO format (ISO timestamp)
 }
 
 /** Discovery result payload from backend */
@@ -295,6 +298,9 @@ const watchdogStatus = ref<{
 const knownNodes = ref<Map<string, NodeInfo>>(new Map())
 const activeNodeId = ref<string | null>(null)  // Currently focused node (null = all nodes)
 
+// Station mode registry (published by launcher's StationManager)
+const stationRegistry = ref<Record<string, { nodeId: string; nodeName: string; project: string; status: string; channels: string[] }>>({})
+
 // Per-node status map (full SystemStatus per node, not just NodeInfo)
 const nodeStatuses = ref<Map<string, SystemStatus>>(new Map())
 
@@ -398,6 +404,13 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function connect(brokerUrl: string = 'ws://localhost:9002', username?: string, password?: string) {
+    // Station mode: scope this window to a specific node via URL param
+    const urlParams = new URLSearchParams(window.location.search)
+    const urlNode = urlParams.get('node')
+    if (urlNode) {
+      activeNodeId.value = urlNode
+    }
+
     const mqttUser = username || import.meta.env.VITE_MQTT_USERNAME
     const mqttPass = password || import.meta.env.VITE_MQTT_PASSWORD
 
@@ -456,6 +469,9 @@ export function useMqtt(prefix: string = 'nisystem') {
         `${nodePrefix}/chassis/#`  // Chassis/device management responses
       ]
 
+      // Station registry (published by launcher's StationManager)
+      topics.push(`${systemPrefix}/station/registry`)
+
       topics.forEach(topic => {
         client.value?.subscribe(topic, { qos: 1 }, (err) => {
           if (err) console.error(`Subscribe error for ${topic}:`, err)
@@ -482,6 +498,12 @@ export function useMqtt(prefix: string = 'nisystem') {
         payload = JSON.parse(message.toString())
       } catch (e) {
         console.error(`Error parsing MQTT message on topic ${topic}:`, e)
+        return
+      }
+
+      // Handle station registry (from launcher's StationManager)
+      if (topic === `${systemPrefix}/station/registry`) {
+        stationRegistry.value = payload?.stations || {}
         return
       }
 
@@ -611,7 +633,7 @@ export function useMqtt(prefix: string = 'nisystem') {
         }
 
         try {
-          if (restOfTopic.startsWith('alarms/')) {
+          if (restOfTopic.startsWith('alarms/') && !restOfTopic.endsWith('/status')) {
             handleAlarm(topic, payload)
           }
         } catch (e) {
@@ -1011,6 +1033,12 @@ export function useMqtt(prefix: string = 'nisystem') {
     if (effectiveNodeId === targetNodeId) {
       systemStatus.value = normalizedStatus
       statusCallbacks.forEach(cb => cb(normalizedStatus))
+
+      // Clear error toast when status confirms the operation succeeded
+      // (handles case where ACK timed out but operation completed)
+      if (lastAcquireError.value) {
+        lastAcquireError.value = null
+      }
     }
   }
 
@@ -1130,12 +1158,26 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function handleAlarm(topic: string, payload: MqttAlarmPayload) {
-    // Parse topic: nisystem/alarms/active/{alarm_id}
+    // Two formats:
+    // DAQ per-alarm retained: nisystem/nodes/node-001/alarms/active/{alarm_id}
+    // cRIO flat event:        nisystem/nodes/crio-001/alarms/event
     const topicParts = topic.split('/')
-    const alarmId = topicParts[topicParts.length - 1] ?? ''
+    const lastSegment = topicParts[topicParts.length - 1] ?? ''
 
-    // Check if this is a cleared alarm
-    if (payload.active === false || payload.state === 'cleared') {
+    // cRIO flat event format — alarm_id is in payload, not topic
+    const alarmId = (lastSegment === 'event' || lastSegment === 'status')
+      ? (payload.alarm_id || (payload.channel ? `${payload.channel}_${payload.threshold_type || payload.alarm_type || 'alarm'}` : ''))
+      : lastSegment
+
+    // Drop alarm messages with no identifiable source
+    if (!alarmId) {
+      console.debug('[MQTT] Ignoring alarm with no alarm_id or channel:', topic)
+      return
+    }
+
+    // Check if this is a cleared alarm (DAQ: 'cleared', cRIO: 'RETURNED'/'NORMAL')
+    const clearedStates = ['cleared', 'RETURNED', 'NORMAL']
+    if (payload.active === false || (payload.state && clearedStates.includes(payload.state))) {
       console.debug('ALARM CLEARED:', alarmId)
       const clearedAlarm: AlarmCallbackPayload = {
         id: alarmId,
@@ -1144,8 +1186,8 @@ export function useMqtt(prefix: string = 'nisystem') {
         name: payload.name || payload.channel || alarmId,
         severity: (payload.severity || 'medium').toLowerCase(),
         state: 'cleared',
-        value: payload.triggered_value ?? payload.current_value ?? 0,
-        triggered_at: payload.triggered_at || new Date().toISOString(),
+        value: payload.triggered_value ?? payload.current_value ?? payload.value ?? 0,
+        triggered_at: payload.triggered_at || payload.timestamp || new Date().toISOString(),
         sequence_number: payload.sequence_number || 0,
         is_first_out: payload.is_first_out || false,
         message: payload.message || ''
@@ -1167,12 +1209,12 @@ export function useMqtt(prefix: string = 'nisystem') {
       channel: payload.channel || '',
       name: payload.name || payload.channel || alarmId,
       severity: (payload.severity || 'medium').toLowerCase(),
-      state: payload.state || 'active',
-      threshold_type: payload.threshold_type,
-      threshold: payload.threshold_value,
-      value: payload.triggered_value ?? payload.current_value ?? 0,
+      state: (payload.state || 'active').toLowerCase(),
+      threshold_type: payload.threshold_type || payload.alarm_type,
+      threshold: payload.threshold_value ?? payload.limit,
+      value: payload.triggered_value ?? payload.current_value ?? payload.value ?? 0,
       current_value: payload.current_value,
-      triggered_at: payload.triggered_at || new Date().toISOString(),
+      triggered_at: payload.triggered_at || payload.timestamp || new Date().toISOString(),
       acknowledged_at: payload.acknowledged_at,
       acknowledged_by: payload.acknowledged_by,
       cleared_at: payload.cleared_at,
@@ -1679,14 +1721,50 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   /**
-   * Send a system command with acknowledgment tracking
+   * Send a system command with acknowledgment tracking.
+   * System commands (acquire, recording, session) always go to the DAQ service
+   * (node-001), never to a cRIO/edge node — the DAQ service forwards as needed.
    */
   async function sendSystemCommandWithAck(
     command: string,
     payload?: any,
     timeoutMs: number = COMMAND_ACK_TIMEOUT_MS
   ): Promise<{ success: boolean; error?: string }> {
-    return sendCommandWithAck(`system/${command}`, payload, timeoutMs)
+    if (!client.value || !connected.value) {
+      return { success: false, error: 'MQTT not connected' }
+    }
+
+    const requestId = generateRequestId()
+    const topic = `${systemPrefix}/nodes/node-001/system/${command}`
+    const message = {
+      ...(payload || {}),
+      request_id: requestId
+    }
+
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        if (pendingCommands.has(requestId)) {
+          pendingCommands.delete(requestId)
+          resolve({ success: false, error: 'Command timed out waiting for acknowledgment' })
+        }
+      }, timeoutMs)
+
+      pendingCommands.set(requestId, {
+        requestId,
+        command: `system/${command}`,
+        timestamp: Date.now(),
+        resolve: (result) => {
+          clearTimeout(timeoutId)
+          resolve(result)
+        },
+        reject: (error) => {
+          clearTimeout(timeoutId)
+          resolve({ success: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      })
+
+      client.value!.publish(topic, JSON.stringify(message))
+    })
   }
 
   function isAlarm(value: number, config: ChannelConfig): boolean {
@@ -1721,9 +1799,8 @@ export function useMqtt(prefix: string = 'nisystem') {
 
   // Commands - using backend's node-prefixed topic structure
   function sendSystemCommand(command: string, payload?: any) {
-    // Use sendNodeCommand to ensure correct node-prefixed topic
-    // Backend subscribes to: nisystem/nodes/{node_id}/system/{command}
-    sendNodeCommand(`system/${command}`, payload)
+    // System commands always go to DAQ service (node-001), not active node
+    sendNodeCommand(`system/${command}`, payload, 'node-001')
   }
 
   function sendCommand(command: string, payload?: any) {
@@ -1812,30 +1889,36 @@ export function useMqtt(prefix: string = 'nisystem') {
       const result = await sendSystemCommandWithAck('acquire/start', undefined, 15000)
       if (!result.success) {
         lastAcquireError.value = result.error || 'Start failed'
+        setTimeout(() => { lastAcquireError.value = null }, 8000)
       }
       return result
     } catch (e) {
       const error = e instanceof Error ? e.message : 'Start failed'
       lastAcquireError.value = error
+      setTimeout(() => { lastAcquireError.value = null }, 8000)
       return { success: false, error }
     } finally {
       acquireCommandPending.value = false
     }
   }
 
-  async function stopAcquisition(): Promise<{ success: boolean; error?: string }> {
-    console.debug('[MQTT] stopAcquisition called, connected:', connected.value)
+  async function stopAcquisition(force = false): Promise<{ success: boolean; error?: string }> {
+    console.debug('[MQTT] stopAcquisition called, connected:', connected.value, 'force:', force)
     acquireCommandPending.value = true
     lastAcquireError.value = null
     try {
-      const result = await sendSystemCommandWithAck('acquire/stop', undefined, 10000)
+      // 20s timeout — coordinated stop: session + recording + cRIO ACK wait (up to 5s)
+      const payload = force ? { force: true } : undefined
+      const result = await sendSystemCommandWithAck('acquire/stop', payload, 20000)
       if (!result.success) {
         lastAcquireError.value = result.error || 'Stop failed'
+        setTimeout(() => { lastAcquireError.value = null }, 8000)
       }
       return result
     } catch (e) {
       const error = e instanceof Error ? e.message : 'Stop failed'
       lastAcquireError.value = error
+      setTimeout(() => { lastAcquireError.value = null }, 8000)
       return { success: false, error }
     } finally {
       acquireCommandPending.value = false
@@ -2709,6 +2792,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Multi-node support
     knownNodes,
     activeNodeId,
+    stationRegistry,
     batchDebug,
     nodeStatuses,
     setActiveNode: (nodeId: string | null) => {

@@ -116,7 +116,8 @@ vi.mock('../composables/useAuth', () => {
       exportAuditEvents: vi.fn(),
       listArchives: vi.fn(),
       verifyArchive: vi.fn(),
-      retrieveArchive: vi.fn()
+      retrieveArchive: vi.fn(),
+      reloadSecuritySettings: vi.fn()
     })
   }
 })
@@ -205,6 +206,17 @@ describe('AdminTab', () => {
     })
   })
 
+  // Helper: mount and navigate to a specific section
+  async function mountAndNavigateTo(section: 'stations' | 'nodes' | 'users' | 'audit' | 'archives' | 'settings' | 'security') {
+    const sectionIndex: Record<string, number> = { stations: 0, nodes: 1, users: 2, audit: 3, archives: 4, settings: 5, security: 6 }
+    const wrapper = mount(AdminTab, { global: { stubs: { Teleport: true } } })
+    if (section !== 'stations') {
+      const btn = wrapper.findAll('.section-btn')[sectionIndex[section]]
+      await btn.trigger('click')
+    }
+    return wrapper
+  }
+
   // ===========================================================================
   // SECTION NAVIGATION TESTS
   // ===========================================================================
@@ -220,16 +232,19 @@ describe('AdminTab', () => {
       })
 
       const sectionButtons = wrapper.findAll('.section-btn')
-      expect(sectionButtons.length).toBe(4)
+      expect(sectionButtons.length).toBe(7)
 
       const buttonTexts = sectionButtons.map(b => b.text())
+      expect(buttonTexts).toContain('🏭 Stations')
       expect(buttonTexts).toContain('🖥️ Nodes')
       expect(buttonTexts).toContain('👥 Users')
       expect(buttonTexts).toContain('📋 Audit Trail')
       expect(buttonTexts).toContain('📦 Archives')
+      expect(buttonTexts).toContain('⚙️ Settings')
+      expect(buttonTexts).toContain('🛡️ Security')
     })
 
-    it('should start with Users section active', () => {
+    it('should start with Stations section active', () => {
       const wrapper = mount(AdminTab, {
         global: {
           stubs: {
@@ -239,7 +254,7 @@ describe('AdminTab', () => {
       })
 
       const activeButton = wrapper.find('.section-btn.active')
-      expect(activeButton.text()).toContain('Users')
+      expect(activeButton.text()).toContain('Stations')
     })
 
     it('should switch to Audit Trail section on click', async () => {
@@ -251,7 +266,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       expect(wrapper.find('.section-btn.active').text()).toContain('Audit Trail')
@@ -266,7 +281,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       expect(wrapper.find('.section-btn.active').text()).toContain('Archives')
@@ -278,14 +293,8 @@ describe('AdminTab', () => {
   // ===========================================================================
 
   describe('User Management Section', () => {
-    it('should display user table headers', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should display user table headers', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       const headers = wrapper.findAll('th')
       const headerTexts = headers.map(h => h.text())
@@ -298,14 +307,8 @@ describe('AdminTab', () => {
       expect(headerTexts).toContain('Actions')
     })
 
-    it('should display users in the table', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should display users in the table', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       expect(wrapper.text()).toContain('admin')
       expect(wrapper.text()).toContain('operator1')
@@ -313,53 +316,29 @@ describe('AdminTab', () => {
       expect(wrapper.text()).toContain('Test Operator')
     })
 
-    it('should display role badges', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should display role badges', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       expect(wrapper.find('.role-admin').exists()).toBe(true)
       expect(wrapper.find('.role-operator').exists()).toBe(true)
     })
 
-    it('should display status badges', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should display status badges', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       const enabledBadges = wrapper.findAll('.status-badge.enabled')
       expect(enabledBadges.length).toBeGreaterThan(0)
     })
 
-    it('should have Add User button', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should have Add User button', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       const addButton = wrapper.find('button.btn-primary')
       expect(addButton.text()).toContain('Add User')
     })
 
-    it('should disable delete button for current user', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should disable delete button for current user', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       // Find the row for admin user and check if delete is disabled
       const rows = wrapper.findAll('tbody tr')
@@ -387,7 +366,7 @@ describe('AdminTab', () => {
       })
 
       // Switch to audit section
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       expect(wrapper.find('.audit-filters').exists()).toBe(true)
@@ -403,7 +382,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       expect(wrapper.text()).toContain('Refresh')
@@ -419,7 +398,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       const headerTexts = wrapper.findAll('th').map(h => h.text())
@@ -439,7 +418,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       expect(wrapper.text()).toContain('admin')
@@ -461,7 +440,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       expect(wrapper.find('.archive-info').exists()).toBe(true)
@@ -477,7 +456,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('Total Archives')
@@ -493,7 +472,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('10 Years')
@@ -509,7 +488,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       expect(wrapper.text()).toContain('session_2024-06-15.csv')
@@ -536,7 +515,7 @@ describe('AdminTab', () => {
       expect(wrapper.find('.section-nav').exists()).toBe(true)
     })
 
-    it('should show users section by default for admin', () => {
+    it('should show Stations section by default', () => {
       const wrapper = mount(AdminTab, {
         global: {
           stubs: {
@@ -545,18 +524,12 @@ describe('AdminTab', () => {
         }
       })
 
-      // Users section should be active
-      expect(wrapper.find('.section-btn.active').text()).toContain('Users')
+      // Stations section should be active by default
+      expect(wrapper.find('.section-btn.active').text()).toContain('Stations')
     })
 
-    it('should display users table for admin', () => {
-      const wrapper = mount(AdminTab, {
-        global: {
-          stubs: {
-            Teleport: true
-          }
-        }
-      })
+    it('should display users table when users section selected', async () => {
+      const wrapper = await mountAndNavigateTo('users')
 
       // Users table should be visible
       expect(wrapper.find('.data-table').exists()).toBe(true)
@@ -598,7 +571,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const archivesButton = wrapper.findAll('.section-btn')[3]
+      const archivesButton = wrapper.findAll('.section-btn')[4]
       await archivesButton.trigger('click')
 
       // 1024000 bytes = ~1000 KB or ~1 MB
@@ -614,7 +587,7 @@ describe('AdminTab', () => {
         }
       })
 
-      const auditButton = wrapper.findAll('.section-btn')[2]
+      const auditButton = wrapper.findAll('.section-btn')[3]
       await auditButton.trigger('click')
 
       // Should show truncated checksum with ...
@@ -648,6 +621,9 @@ describe('AdminTab User Dialogs', () => {
       }
     })
 
+    // Navigate to Users section first (default is Nodes)
+    await wrapper.findAll('.section-btn')[2].trigger('click')
+
     const addButton = wrapper.find('button.btn-primary')
     await addButton.trigger('click')
 
@@ -663,6 +639,8 @@ describe('AdminTab User Dialogs', () => {
         }
       }
     })
+
+    await wrapper.findAll('.section-btn')[2].trigger('click')
 
     const addButton = wrapper.find('button.btn-primary')
     await addButton.trigger('click')
@@ -680,6 +658,8 @@ describe('AdminTab User Dialogs', () => {
         }
       }
     })
+
+    await wrapper.findAll('.section-btn')[2].trigger('click')
 
     const addButton = wrapper.find('button.btn-primary')
     await addButton.trigger('click')
@@ -702,6 +682,8 @@ describe('AdminTab User Dialogs', () => {
         }
       }
     })
+
+    await wrapper.findAll('.section-btn')[2].trigger('click')
 
     // Open dialog
     const addButton = wrapper.find('button.btn-primary')
@@ -742,6 +724,9 @@ describe('AdminTab Delete Confirmation', () => {
       }
     })
 
+    // Navigate to Users section first (default is Stations)
+    await wrapper.findAll('.section-btn')[2].trigger('click')
+
     // Find delete button for operator1 (not admin)
     const rows = wrapper.findAll('tbody tr')
     const operatorRow = rows.find(r => r.text().includes('operator1'))
@@ -764,6 +749,9 @@ describe('AdminTab Delete Confirmation', () => {
       }
     })
 
+    // Navigate to Users section first (default is Stations)
+    await wrapper.findAll('.section-btn')[2].trigger('click')
+
     const rows = wrapper.findAll('tbody tr')
     const operatorRow = rows.find(r => r.text().includes('operator1'))
 
@@ -773,5 +761,215 @@ describe('AdminTab Delete Confirmation', () => {
 
       expect(wrapper.text()).toContain('cannot be undone')
     }
+  })
+})
+
+// ===========================================================================
+// SECURITY SECTION TESTS
+// ===========================================================================
+
+describe('AdminTab Security Section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    const { mockCurrentUser } = getMockState()
+    mockCurrentUser.value = {
+      username: 'admin',
+      role: 'admin',
+      displayName: 'Administrator',
+      permissions: ['VIEW_DATA', 'MANAGE_USERS', 'VIEW_AUDIT']
+    }
+    // Reset localStorage for security settings
+    localStorage.removeItem('nisystem-security-settings')
+  })
+
+  async function mountSecurity() {
+    const wrapper = mount(AdminTab, { global: { stubs: { Teleport: true } } })
+    // Security is index 6 in the section buttons
+    const secBtn = wrapper.findAll('.section-btn')[6]
+    await secBtn.trigger('click')
+    return wrapper
+  }
+
+  it('should display Security section when clicked', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.find('.section-btn.active').text()).toContain('Security')
+  })
+
+  it('should show Security Settings header with NIST badge', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Security Settings')
+    expect(wrapper.text()).toContain('NIST 800-171')
+  })
+
+  it('should show description about NIST compliance features', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('NIST 800-171 / CMMC Level 2')
+    expect(wrapper.text()).toContain('disabled by default')
+  })
+
+  it('should display Session Lock toggle group', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Session Lock')
+    expect(wrapper.text()).toContain('Lock session after inactivity')
+    expect(wrapper.text()).toContain('Backend processes')
+  })
+
+  it('should display Access Control toggle group', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Access Control')
+    expect(wrapper.text()).toContain('Allow guest access')
+    expect(wrapper.text()).toContain('Limit concurrent sessions')
+  })
+
+  it('should display Audit & Integrity toggle group', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Audit & Integrity')
+    expect(wrapper.text()).toContain('audit trail integrity verification')
+    expect(wrapper.text()).toContain('NTP time synchronization')
+  })
+
+  it('should display Anomaly Detection toggle group', async () => {
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Anomaly Detection')
+    expect(wrapper.text()).toContain('MQTT anomaly detection')
+    expect(wrapper.text()).toContain('command floods')
+  })
+
+  it('should have Reset to Defaults button', async () => {
+    const wrapper = await mountSecurity()
+
+    const buttons = wrapper.findAll('button')
+    const resetBtn = buttons.find(b => b.text().includes('Reset to Defaults'))
+    expect(resetBtn).toBeDefined()
+  })
+
+  it('should have Enable All (NIST 800-171) button', async () => {
+    const wrapper = await mountSecurity()
+
+    const buttons = wrapper.findAll('button')
+    const nistBtn = buttons.find(b => b.text().includes('Enable All'))
+    expect(nistBtn).toBeDefined()
+  })
+
+  it('should have all security toggle checkboxes', async () => {
+    const wrapper = await mountSecurity()
+
+    // Find all checkboxes in the security section
+    const checkboxes = wrapper.findAll('.security-group input[type="checkbox"]')
+    // Session lock (1) + guest access (1) + concurrent sessions (1) + audit integrity (1) + NTP (1) + anomaly detection (1) = 6
+    expect(checkboxes.length).toBe(6)
+  })
+
+  it('should show sub-settings when session lock is enabled', async () => {
+    // Pre-set session lock enabled
+    localStorage.setItem('nisystem-security-settings', JSON.stringify({
+      session_lock_enabled: true,
+      session_lock_timeout_minutes: 30,
+      session_lock_warning_minutes: 25,
+      guest_access_enabled: true
+    }))
+
+    const wrapper = await mountSecurity()
+
+    // Sub-settings should be visible
+    expect(wrapper.text()).toContain('Lock timeout')
+    expect(wrapper.text()).toContain('Warning before lock')
+  })
+
+  it('should show sub-settings when anomaly detection is enabled', async () => {
+    localStorage.setItem('nisystem-security-settings', JSON.stringify({
+      anomaly_detection_enabled: true,
+      anomaly_command_rate_limit: 200,
+      anomaly_failed_login_rate_limit: 10,
+      security_summary_interval_minutes: 5,
+      guest_access_enabled: true
+    }))
+
+    const wrapper = await mountSecurity()
+
+    expect(wrapper.text()).toContain('Command rate limit')
+    expect(wrapper.text()).toContain('Failed login limit')
+    expect(wrapper.text()).toContain('Security summary interval')
+  })
+
+  it('should persist settings to localStorage when toggle changes', async () => {
+    const wrapper = await mountSecurity()
+
+    // Toggle session lock on
+    const checkboxes = wrapper.findAll('.security-group input[type="checkbox"]')
+    await checkboxes[0].setValue(true)
+
+    // Check localStorage was updated
+    const saved = localStorage.getItem('nisystem-security-settings')
+    expect(saved).toBeTruthy()
+    const parsed = JSON.parse(saved!)
+    expect(parsed.session_lock_enabled).toBe(true)
+  })
+
+  it('should save all-off defaults when Reset to Defaults clicked', async () => {
+    // First enable everything
+    localStorage.setItem('nisystem-security-settings', JSON.stringify({
+      session_lock_enabled: true,
+      anomaly_detection_enabled: true,
+      guest_access_enabled: false
+    }))
+
+    const wrapper = await mountSecurity()
+
+    // Click Reset to Defaults
+    const buttons = wrapper.findAll('button')
+    const resetBtn = buttons.find(b => b.text().includes('Reset to Defaults'))
+    await resetBtn!.trigger('click')
+
+    const saved = JSON.parse(localStorage.getItem('nisystem-security-settings')!)
+    expect(saved.session_lock_enabled).toBe(false)
+    expect(saved.anomaly_detection_enabled).toBe(false)
+    expect(saved.guest_access_enabled).toBe(true)
+  })
+
+  it('should enable all settings when Enable All clicked', async () => {
+    const wrapper = await mountSecurity()
+
+    const buttons = wrapper.findAll('button')
+    const nistBtn = buttons.find(b => b.text().includes('Enable All'))
+    await nistBtn!.trigger('click')
+
+    const saved = JSON.parse(localStorage.getItem('nisystem-security-settings')!)
+    expect(saved.session_lock_enabled).toBe(true)
+    expect(saved.anomaly_detection_enabled).toBe(true)
+    expect(saved.ntp_sync_required).toBe(true)
+    expect(saved.audit_integrity_check_enabled).toBe(true)
+    expect(saved.guest_access_enabled).toBe(false)
+    expect(saved.max_concurrent_sessions).toBe(10)
+  })
+
+  it('should hide Security section for non-admin users', () => {
+    const { mockCurrentUser } = getMockState()
+    mockCurrentUser.value = {
+      username: 'supervisor',
+      role: 'supervisor',
+      displayName: 'Supervisor',
+      permissions: ['VIEW_DATA', 'VIEW_AUDIT']
+    }
+
+    const wrapper = mount(AdminTab, { global: { stubs: { Teleport: true } } })
+
+    // Security should be hidden for supervisor (requiresAdmin: true)
+    const buttonTexts = wrapper.findAll('.section-btn').map(b => b.text())
+    expect(buttonTexts).not.toContain('🛡️ Security')
+  })
+
+  it('should show Security section for admin users', () => {
+    const wrapper = mount(AdminTab, { global: { stubs: { Teleport: true } } })
+
+    const buttonTexts = wrapper.findAll('.section-btn').map(b => b.text())
+    expect(buttonTexts).toContain('🛡️ Security')
   })
 })

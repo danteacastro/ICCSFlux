@@ -1252,6 +1252,10 @@ class CRIONodeV2:
         # Acknowledge config receipt
         self._publish_config_response(True, "Config applied")
 
+        # Publish status immediately so frontend sees new config_version
+        # without waiting for the next heartbeat (5s interval)
+        self._publish_status()
+
         _config_elapsed = time.time() - _config_start
         logger.info(f"[CONFIG] Config applied: {len(channels_data)} channels, "
                      f"version {self.config_version}, took {_config_elapsed:.2f}s")
@@ -1437,8 +1441,8 @@ class CRIONodeV2:
             'severity': event.severity.name,
         })
 
-        # Publish alarm event
-        self.mqtt.publish("alarms/event", {
+        # Build alarm payload
+        alarm_payload = {
             'channel': event.channel,
             'alarm_type': event.alarm_type,
             'value': event.value,
@@ -1446,7 +1450,20 @@ class CRIONodeV2:
             'severity': event.severity.name,
             'state': event.state.name,
             'timestamp': datetime.now().isoformat()
-        })
+        }
+
+        # Publish flat event (backward compat — DAQ service listens for history)
+        self.mqtt.publish("alarms/event", alarm_payload)
+
+        # Publish per-alarm retained topic (dashboard consumes directly)
+        alarm_id = f"{event.channel}_{event.alarm_type}"
+        is_cleared = event.state.name in ('RETURNED', 'NORMAL')
+        if is_cleared:
+            alarm_payload['active'] = False
+        else:
+            alarm_payload['active'] = True
+            alarm_payload['alarm_id'] = alarm_id
+        self.mqtt.publish(f"alarms/active/{alarm_id}", alarm_payload, retain=True)
 
         # Publish updated alarm summary
         self._publish_alarm_status()

@@ -805,15 +805,28 @@ class CFPNodeV2:
             'value': event.value,
             'limit': event.limit,
         })
-        # Publish alarm event
-        self.mqtt.publish_critical("alarms/event", {
+        # Build alarm payload
+        alarm_payload = {
             'channel': event.channel,
+            'alarm_type': event.alarm_type,
             'type': event.alarm_type,
             'severity': event.severity.name,
             'value': event.value,
             'limit': event.limit,
+            'state': event.state.name,
             'timestamp': datetime.now().isoformat(),
-        })
+        }
+        # Flat event (backward compat — DAQ service listens for history)
+        self.mqtt.publish_critical("alarms/event", alarm_payload)
+
+        # Per-alarm retained topic (dashboard consumes directly)
+        alarm_id = f"{event.channel}_{event.alarm_type}"
+        is_cleared = event.state.name in ('RETURNED', 'NORMAL')
+        alarm_payload['active'] = not is_cleared
+        if not is_cleared:
+            alarm_payload['alarm_id'] = alarm_id
+        self.mqtt.publish_critical(f"alarms/active/{alarm_id}", alarm_payload, retain=True)
+
         # Publish retained alarm status
         self.mqtt.publish_critical("alarms/status", self.safety.get_alarm_summary(), retain=True)
 

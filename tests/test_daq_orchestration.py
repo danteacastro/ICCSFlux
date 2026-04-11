@@ -418,13 +418,37 @@ def _make_service():
     }
     svc._rate_limit_warn_times = {}
 
+    # Acquisition event pipeline (diagnostic overlay)
+    svc._acq_events = None
+
+    # Safety managers (for stop safety gate)
+    svc.alarm_manager = MagicMock()
+    svc.alarm_manager.get_active_alarms.return_value = []
+    svc.safety_manager = MagicMock()
+    svc.safety_manager.latch_state = MagicMock()
+    svc.safety_manager.latch_state.name = 'SAFE'
+    svc.safety_manager.interlocks = {}
+
+    # cRIO stop ACK tracking
+    svc._crio_stop_ack_events = {}
+
+    # User variables (session state)
+    svc.user_variables = MagicMock()
+    svc.user_variables.session.active = False
+
+    # Channel claims
+    svc._clear_channel_claims = MagicMock()
+    svc._publish_channel_claims = MagicMock()
+
     # Stub methods that publish to MQTT (we don't need to test MQTT publishing here)
     svc._publish_system_status = MagicMock()
     svc._publish_command_ack = MagicMock()
     svc._publish_channel_config = MagicMock()
     svc._publish_script_status = MagicMock()
     svc._forward_acquisition_command_to_crio = MagicMock()
+    svc._stop_crio_nodes_and_wait = MagicMock(return_value=True)
     svc._load_config = MagicMock()
+    svc._handle_test_session_stop = MagicMock()
 
     # MAX_SCRIPT_CODE_BYTES
     svc.MAX_SCRIPT_CODE_BYTES = 256 * 1024
@@ -562,6 +586,63 @@ class TestDAQServiceAcquireStop:
         svc._handle_acquire_stop(request_id="req-1")
 
         svc._handle_recording_stop.assert_called_once()
+
+
+    def test_acquire_stop_cascades_to_session(self):
+        """Stopping acquisition should also stop an active session."""
+        svc = _make_service()
+        svc._state_machine.to(DAQState.RUNNING)
+        svc.user_variables = MagicMock()
+        svc.user_variables.session.active = True
+
+        svc._handle_acquire_stop(request_id="req-1")
+
+        assert svc._state_machine.state == DAQState.STOPPED
+        svc._handle_test_session_stop.assert_called_once()
+
+    def test_acquire_stop_blocked_by_active_alarms(self):
+        """Stop should be rejected if alarms are active (without force)."""
+        svc = _make_service()
+        svc._state_machine.to(DAQState.RUNNING)
+        mock_alarm = MagicMock()
+        mock_alarm.channel = "TC001"
+        mock_alarm.severity = MagicMock()
+        mock_alarm.severity.name = "HIGH"
+        svc.alarm_manager.get_active_alarms.return_value = [mock_alarm]
+
+        svc._handle_acquire_stop(request_id="req-1")
+
+        # Should still be RUNNING — stop was blocked
+        assert svc._state_machine.state == DAQState.RUNNING
+        call_args = svc._publish_command_ack.call_args
+        assert call_args[0][2] is False
+        assert "active safety conditions" in call_args[0][3]
+
+    def test_acquire_stop_force_overrides_safety(self):
+        """force=True should allow stop even with active alarms."""
+        svc = _make_service()
+        svc._state_machine.to(DAQState.RUNNING)
+        mock_alarm = MagicMock()
+        mock_alarm.channel = "TC001"
+        mock_alarm.severity = MagicMock()
+        mock_alarm.severity.name = "HIGH"
+        svc.alarm_manager.get_active_alarms.return_value = [mock_alarm]
+
+        svc._handle_acquire_stop(request_id="req-1", force=True)
+
+        assert svc._state_machine.state == DAQState.STOPPED
+        svc._publish_command_ack.assert_called_with(
+            "acquire/stop", "req-1", True
+        )
+
+    def test_acquire_stop_waits_for_crio(self):
+        """Stop should call _stop_crio_nodes_and_wait."""
+        svc = _make_service()
+        svc._state_machine.to(DAQState.RUNNING)
+
+        svc._handle_acquire_stop(request_id="req-1")
+
+        svc._stop_crio_nodes_and_wait.assert_called_once()
 
 
 class TestDAQServiceScriptValidation:

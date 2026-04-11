@@ -8,8 +8,8 @@
     "publish_rate_hz": 10,
     "simulation_mode": true,
     "log_directory": "./logs",
-    "system_name": "GTI H2-Ready Boiler Test Facility",
-    "system_id": "GTI-BOILER-001",
+    "system_name": "H2-Ready Boiler Test Facility",
+    "system_id": "ICCSFLUX-BOILER-001",
     "datalog_rate_ms": 1000,
     "datalog_rearm": true,
     "datalog_rearm_rate_sec": 3600

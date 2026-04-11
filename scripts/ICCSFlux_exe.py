@@ -40,6 +40,12 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
+try:
+    import paho.mqtt.client as paho_mqtt
+    HAS_PAHO = True
+except ImportError:
+    HAS_PAHO = False
+
 # tkinter is lazy-imported to avoid crashes in headless/service mode (LocalSystem has no desktop)
 tk = None
 ttk = None
@@ -940,6 +946,41 @@ def start_mosquitto():
     return svc
 
 
+# ─── Station Manager ──────────────────────────────────────────────────────────
+# Manages multiple DAQ service instances for station mode.
+# Uses the shared StationManager from station_manager.py.
+
+try:
+    from station_manager import StationManager as _SharedStationManager
+    HAS_STATION_MANAGER = True
+except ImportError:
+    HAS_STATION_MANAGER = False
+
+
+def _create_station_manager():
+    """Create the station manager with portable-specific configuration."""
+    if not HAS_STATION_MANAGER:
+        # Return a stub that does nothing
+        class _Stub:
+            def start(self): pass
+            def stop(self): pass
+            def check_stations(self): pass
+        return _Stub()
+
+    return _SharedStationManager(
+        root=ROOT,
+        daq_command_fn=lambda config_path: [str(DAQ_SERVICE), "-c", config_path],
+        credential_fn=load_mqtt_credentials,
+        log_fn=log_entry,
+        creation_flags=_NO_WINDOW,
+        process_tracker=processes,
+    )
+
+
+# Global station manager instance
+_station_manager = _create_station_manager()
+
+
 def start_daq_service():
     svc = ManagedService("DAQ Service", "DAQ")
     update_service_status("DAQ", "DAQ Service", "stopped")
@@ -1303,6 +1344,9 @@ def monitor_loop(managed_services, stop_event):
                     log_entry(svc.tag, "Max restarts exceeded — giving up", "error")
                     svc.status = "failed"
                     svc.update_status_display()
+        # Check station health every ~30s (3s poll * 10 cycles)
+        if health_counter % 10 == 0:
+            _station_manager.check_stations()
         stop_event.wait(3)
 
 
@@ -1975,6 +2019,9 @@ def start_services_thread(port_requested, stop_event):
     managed_services.append(svc_azure)
 
     _dashboard_port = start_web_server(port_requested)
+
+    # Start station manager (manages multi-instance DAQ for station mode)
+    _station_manager.start()
 
     _managed_services.clear()
     _managed_services.extend(managed_services)

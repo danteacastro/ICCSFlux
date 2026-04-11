@@ -713,7 +713,8 @@ def load_config(config_path: str) -> NISystemConfig:
                 # Resistance
                 resistance_range=float(sec.get('resistance_range', 1000.0)),
                 resistance_wiring=sec.get('resistance_wiring', '4-wire'),
-                counter_mode=sec.get('counter_mode', 'frequency'),
+                counter_mode={'count_edges': 'count', 'edge_count': 'count'}.get(
+                    sec.get('counter_mode', 'frequency'), sec.get('counter_mode', 'frequency')),
                 pulses_per_unit=float(sec.get('pulses_per_unit', 1.0)),
                 counter_edge=sec.get('counter_edge', 'rising'),
                 counter_reset_on_read=parse_bool(sec.get('counter_reset_on_read', 'false')),

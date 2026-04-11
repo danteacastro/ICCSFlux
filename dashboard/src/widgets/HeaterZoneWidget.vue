@@ -46,10 +46,10 @@ const mqtt = useMqtt('nisystem')
 const safety = useSafety()
 
 // Channel data
-const pvValue = computed(() => props.pvChannel ? store.values[props.pvChannel] : undefined)
-const spValue = computed(() => props.spChannel ? store.values[props.spChannel] : undefined)
-const enableValue = computed(() => props.enableChannel ? store.values[props.enableChannel] : undefined)
-const outputValue = computed(() => props.outputChannel ? store.values[props.outputChannel] : undefined)
+const pvValue = computed(() => props.pvChannel ? store.getChannelRef(props.pvChannel).value : undefined)
+const spValue = computed(() => props.spChannel ? store.getChannelRef(props.spChannel).value : undefined)
+const enableValue = computed(() => props.enableChannel ? store.getChannelRef(props.enableChannel).value : undefined)
+const outputValue = computed(() => props.outputChannel ? store.getChannelRef(props.outputChannel).value : undefined)
 
 // State
 const isEnabled = computed(() => {

@@ -64,7 +64,7 @@ const channelConfig = computed((): ChannelConfig | null => {
 
 const channelValue = computed(() => {
   if (!props.symbol.channel) return null
-  return store.values[props.symbol.channel] || null
+  return store.getChannelRef(props.symbol.channel).value || null
 })
 
 // Format value display
@@ -259,7 +259,7 @@ function setAnalogOutput() {
 const auxChannelValues = computed(() => {
   if (!props.symbol.auxiliaryChannels?.length) return []
   return props.symbol.auxiliaryChannels.map(aux => {
-    const val = aux.channel ? store.values[aux.channel] : null
+    const val = aux.channel ? store.getChannelRef(aux.channel).value : null
     const config = aux.channel ? store.channels[aux.channel] : null
     let formatted = '--'
     if (val && typeof val.value === 'number') {

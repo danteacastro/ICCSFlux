@@ -25,7 +25,7 @@ const store = useDashboardStore()
 const safety = useSafety()
 
 const channelConfig = computed(() => store.channels[props.channel])
-const channelValue = computed(() => store.values[props.channel])
+const channelValue = computed(() => store.getChannelRef(props.channel).value)
 
 // Check if output is blocked by interlocks (e.g., latched alarms)
 const blockStatus = computed(() => safety.isOutputBlocked(props.channel))

@@ -1,4 +1,4 @@
-# GTI Energy - H2-Ready Boiler Combustion Research
+# ICCSFlux - H2-Ready Boiler Combustion Research
 # Real-time Thermal Efficiency Calculator
 #
 # Calculates combustion efficiency, thermal efficiency, and heat transfer

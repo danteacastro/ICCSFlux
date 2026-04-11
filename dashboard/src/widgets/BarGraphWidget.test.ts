@@ -54,6 +54,7 @@ vi.mock('../stores/dashboard', () => {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } },
       get isAcquiring() { return mockIsAcquiring.value }
     })
   }
@@ -355,7 +356,7 @@ describe('BarGraphWidget', () => {
     it('should have stale class when data is stale', () => {
       const state = getBarMockState()
       state.mockValues.value = {
-        'temp': { value: 50, timestamp: Date.now() - 10000 }
+        'temp': { value: 50, timestamp: Date.now() - 20000 }
       }
 
       const wrapper = mount(BarGraphWidget, {

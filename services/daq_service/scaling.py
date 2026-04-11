@@ -133,9 +133,16 @@ def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:
     Returns:
         The scaled engineering value
     """
-    # Modbus channels handle their own scaling (modbus_scale/modbus_offset) in ModbusReader
-    # Don't apply additional scaling here to avoid double-scaling
-    if channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+    # Channel types that must never be user-scaled:
+    # - Digital I/O: binary 0/1, scaling is meaningless
+    # - Thermocouple/RTD: NI-DAQmx returns engineering temperature units directly
+    # - Modbus: scaling handled by ModbusReader (modbus_scale/modbus_offset)
+    _NO_SCALE_TYPES = (
+        ChannelType.DIGITAL_INPUT, ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE, ChannelType.RTD,
+        ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL,
+    )
+    if channel.channel_type in _NO_SCALE_TYPES:
         return raw_value
 
     # For counter channels - convert pulses/frequency to engineering units
@@ -398,6 +405,22 @@ def validate_scaling_config(channel: ChannelConfig) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
+    # Reject scaling on channel types that should never be scaled
+    _NO_SCALE_TYPES = (
+        ChannelType.DIGITAL_INPUT, ChannelType.DIGITAL_OUTPUT,
+        ChannelType.THERMOCOUPLE, ChannelType.RTD,
+        ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL,
+    )
+    if channel.channel_type in _NO_SCALE_TYPES:
+        has_scaling = (
+            channel.scale_type not in (None, 'none', '')
+            or channel.scale_slope != 1.0
+            or channel.scale_offset != 0.0
+            or channel.four_twenty_scaling
+        )
+        if has_scaling:
+            return False, f"Scaling not supported for {channel.channel_type.value} channels"
+
     if channel.channel_type == ChannelType.CURRENT_INPUT and channel.four_twenty_scaling:
         if channel.eng_units_min is None or channel.eng_units_max is None:
             return False, "4-20mA scaling enabled but eng_units_min/max not set"

@@ -46,6 +46,7 @@ vi.mock('../stores/dashboard', () => {
     useDashboardStore: () => ({
       get channels() { return mockChannels.value },
       get values() { return mockValues.value },
+      getChannelRef(name: string) { return { get value() { return mockValues.value[name] } } },
       get isAcquiring() { return mockIsAcquiring.value },
       get isRecording() { return false },
       get isConnected() { return true },
@@ -83,6 +84,7 @@ vi.mock('../composables/useMqtt', () => {
       recordedFiles: ref([]),
       crioSyncStatus: ref({}),
       dataIsStale: ref(false),
+      batchDebug: ref({ msg_total: 0, msg_node_match: 0, msg_crio: 0, msg_batch_topic: 0, batch_entered: 0, individual_entered: 0, individual_last_channel: '', callbacks_fired: 0, callbacks_count: 0, store_values_count: 0, last_topic: '', last_crio_topic: '' }),
 
       // Commands
       sendCommand: vi.fn(),
