@@ -440,9 +440,19 @@ class TestModuleDatabaseChannelCounts:
 class TestThreadSafety:
     """Test concurrent cRIO registration doesn't corrupt state."""
 
+    @staticmethod
+    def _fresh_discovery():
+        """Create a DeviceDiscovery with no persisted nodes."""
+        d = DeviceDiscovery()
+        d._crio_nodes.clear()
+        d._opto22_nodes.clear()
+        d._gc_nodes.clear()
+        d._cfp_nodes.clear()
+        return d
+
     def test_concurrent_register_same_node(self):
         """Multiple threads registering the same node shouldn't corrupt."""
-        discovery = DeviceDiscovery()
+        discovery = self._fresh_discovery()
         errors = []
 
         def register(thread_id):
@@ -472,7 +482,7 @@ class TestThreadSafety:
 
     def test_concurrent_register_different_nodes(self):
         """Multiple threads registering different nodes simultaneously."""
-        discovery = DeviceDiscovery()
+        discovery = self._fresh_discovery()
         errors = []
 
         def register(node_num):
@@ -501,7 +511,7 @@ class TestThreadSafety:
 
     def test_concurrent_register_and_heartbeat(self):
         """Concurrent full registration + heartbeat updates."""
-        discovery = DeviceDiscovery()
+        discovery = self._fresh_discovery()
         errors = []
 
         def register():

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"
 
 from user_session import (
     UserSessionManager, User, Session, ElectronicSignature,
-    UserRole, Permission, ROLE_PERMISSIONS
+    UserRole, Permission, ROLE_PERMISSIONS, SessionState
 )
 
 
@@ -375,7 +375,7 @@ class TestUserSessionManager:
         assert validated is None
 
     def test_validate_session_expired(self, manager):
-        """Test validating an expired session"""
+        """Test validating an expired session transitions to LOCKED state"""
         session = manager.authenticate("admin", "iccsadmin1969")
 
         # Manually expire the session
@@ -385,7 +385,10 @@ class TestUserSessionManager:
 
         validated = manager.validate_session(session.session_id)
 
-        assert validated is None
+        # Expired sessions are now locked (NIST 800-171 inactivity lock),
+        # not deleted. The session is still returned for read-only access.
+        assert validated is not None
+        assert validated.state == SessionState.LOCKED
 
     def test_validate_session_updates_activity(self, manager):
         """Test that validating session updates last_activity"""
@@ -423,12 +426,13 @@ class TestUserSessionManager:
         assert len(active) >= 2
 
     def test_cleanup_expired_sessions(self, manager):
-        """Test cleaning up expired sessions"""
+        """Test cleaning up abandoned sessions (locked >24h)"""
         session = manager.authenticate("admin", "iccsadmin1969")
 
-        # Manually expire the session
+        # Lock the session and set last_activity >24h ago (abandoned)
+        manager.sessions[session.session_id].state = SessionState.LOCKED
         manager.sessions[session.session_id].last_activity = (
-            datetime.now() - timedelta(hours=2)
+            datetime.now() - timedelta(hours=25)
         )
 
         manager.cleanup_expired_sessions()

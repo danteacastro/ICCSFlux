@@ -25,7 +25,7 @@ from notification_manager import (
     NotificationManager, NotificationConfig, TriggerRules,
     TwilioConfig, EmailConfig,
 )
-from user_session import UserSessionManager, UserRole
+from user_session import UserSessionManager, UserRole, SessionState
 
 
 # =========================================================================
@@ -350,7 +350,7 @@ class TestSessionCleanup:
     """Prove sessions don't accumulate forever."""
 
     def test_expired_sessions_removed(self, tmp_path):
-        """cleanup_expired_sessions removes old sessions."""
+        """cleanup_expired_sessions removes abandoned (locked >24h) sessions."""
         mgr = UserSessionManager(data_dir=str(tmp_path))
         # session_timeout is in MINUTES — use 0.01 min (0.6 seconds)
         mgr.session_timeout = 0.01
@@ -365,6 +365,14 @@ class TestSessionCleanup:
         assert len(mgr.sessions) >= 1
 
         time.sleep(2)
+
+        # Expired sessions transition to LOCKED state (NIST 800-171 inactivity
+        # lock). cleanup_expired_sessions only removes sessions locked for >24h.
+        # Force all sessions to LOCKED with >24h-old last_activity.
+        for session in mgr.sessions.values():
+            session.state = SessionState.LOCKED
+            session.last_activity = datetime.now() - timedelta(hours=25)
+
         mgr.cleanup_expired_sessions()
 
         assert len(mgr.sessions) == 0, \

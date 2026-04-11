@@ -36,8 +36,14 @@ from config_parser import (
 
 @pytest.fixture
 def discovery():
-    """Fresh DeviceDiscovery instance."""
-    return DeviceDiscovery()
+    """Fresh DeviceDiscovery instance with no persisted nodes."""
+    d = DeviceDiscovery()
+    # Clear any nodes loaded from disk (known_nodes.json) so tests start clean
+    d._crio_nodes.clear()
+    d._opto22_nodes.clear()
+    d._gc_nodes.clear()
+    d._cfp_nodes.clear()
+    return d
 
 
 @pytest.fixture
@@ -841,15 +847,24 @@ class TestModuleCategoryMapping:
         # Voltage input modules (11)
         ("NI 9201", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9202", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9204", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9205", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9209", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9206", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9215", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9220", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9221", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9222", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9223", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9224", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9225", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9228", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9229", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9238", ModuleCategory.VOLTAGE_INPUT),
         ("NI 9239", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9242", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9244", ModuleCategory.VOLTAGE_INPUT),
+        ("NI 9252", ModuleCategory.VOLTAGE_INPUT),
         # Current input modules (7)
         ("NI 9203", ModuleCategory.CURRENT_INPUT),
         ("NI 9207", ModuleCategory.VOLTAGE_INPUT),  # combo module: ai0-7 V, ai8-15 I
@@ -882,6 +897,8 @@ class TestModuleCategoryMapping:
         ("NI 9425", ModuleCategory.DIGITAL_INPUT),
         ("NI 9426", ModuleCategory.DIGITAL_INPUT),
         ("NI 9435", ModuleCategory.DIGITAL_INPUT),
+        ("NI 9436", ModuleCategory.DIGITAL_INPUT),
+        ("NI 9437", ModuleCategory.DIGITAL_INPUT),
         # Digital output modules (10)
         ("NI 9470", ModuleCategory.DIGITAL_OUTPUT),
         ("NI 9472", ModuleCategory.DIGITAL_OUTPUT),
@@ -904,7 +921,8 @@ class TestModuleCategoryMapping:
         ("NI 9266", ModuleCategory.CURRENT_OUTPUT),
         # Counter modules (1)
         ("NI 9361", ModuleCategory.COUNTER_INPUT),
-        # Universal/Bridge modules (1)
+        # Universal/Bridge modules (2)
+        ("NI 9218", ModuleCategory.BRIDGE_INPUT),
         ("NI 9219", ModuleCategory.BRIDGE_INPUT),
     ])
     def test_module_database_mapping(self, model, expected_category):
@@ -917,8 +935,8 @@ class TestModuleCategoryMapping:
     def test_all_database_entries_covered(self):
         """Verify the parametrized test covers every entry in NI_MODULE_DATABASE."""
         from device_discovery import NI_MODULE_DATABASE
-        assert len(NI_MODULE_DATABASE) == 66, \
-            f"Expected 66 modules in database, got {len(NI_MODULE_DATABASE)}"
+        assert len(NI_MODULE_DATABASE) == 78, \
+            f"Expected 78 modules in database, got {len(NI_MODULE_DATABASE)}"
 
 
 if __name__ == '__main__':
