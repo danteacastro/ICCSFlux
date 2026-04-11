@@ -1,5 +1,13 @@
 # NISystem Project Instructions
 
+## Git Remotes
+
+This repo pushes to two GitHub repositories:
+- **origin**: `https://github.com/danteacastro/NISystem.git` — private development repo
+- **iccsflux**: `https://github.com/danteacastro/ICCSFlux.git` — public release repo (the product name is **ICCSFlux**)
+
+When pushing releases, **always push to the `iccsflux` remote**. The NISystem repo is for internal development only. Releases, CI checks, and LinkedIn-facing content all reference ICCSFlux.
+
 ## Architecture Overview
 
 - **Backend**: Python DAQ service (`services/daq_service/daq_service.py`, ~13k lines) — reads NI hardware (or simulation), publishes over MQTT
