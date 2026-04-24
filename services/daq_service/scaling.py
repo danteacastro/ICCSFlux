@@ -149,8 +149,11 @@ def apply_scaling(channel: ChannelConfig, raw_value: float) -> float:
         if channel.eng_units_min is not None and channel.eng_units_max is not None:
             return scale_four_twenty(raw_value, channel.eng_units_min, channel.eng_units_max)
 
-    # For voltage inputs with map scaling
-    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
+    # Map scaling for analog inputs (voltage, current without 4-20mA, etc.)
+    if channel.scale_type == 'map' and channel.channel_type in (
+        ChannelType.VOLTAGE_INPUT, ChannelType.CURRENT_INPUT,
+        ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+    ):
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
             return scale_map(
