@@ -80,6 +80,38 @@ logger = logging.getLogger('HardwareReader')
 DEFAULT_SAMPLE_RATE_HZ = 10  # Fallback if config doesn't specify scan_rate_hz
 BUFFER_SIZE = 100    # Hardware buffer size (samples per channel)
 
+
+def _safe_create_task(task_name: str) -> Any:
+    """Create an nidaqmx.Task, clearing any orphaned task with the same name first.
+
+    NI-DAQmx reserves a task name globally.  If a previous HardwareReader was not
+    closed cleanly (e.g. an exception during close(), or the process was killed),
+    the old task may still be registered.  Attempting ``nidaqmx.Task(task_name)``
+    in that state raises DaqError "resource already reserved".
+
+    This helper catches that error, forcibly clears the orphan, and retries once.
+    """
+    try:
+        return nidaqmx.Task(task_name)
+    except Exception as first_err:
+        err_str = str(first_err)
+        # NI error -88709 / -50103: "resource is reserved" or "name already exists"
+        if 'reserved' in err_str.lower() or 'already' in err_str.lower() or '-88709' in err_str or '-50103' in err_str:
+            logger.warning(f"Orphaned task '{task_name}' detected – clearing before retry: {first_err}")
+            try:
+                orphan = nidaqmx.system.System.local()
+                for t in orphan.tasks:
+                    if t.name == task_name:
+                        t.close()
+                        logger.info(f"Closed orphaned task: {task_name}")
+                        break
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to clean orphaned task '{task_name}': {cleanup_err}")
+            # Retry once
+            return nidaqmx.Task(task_name)
+        else:
+            raise
+
 # Mapping from our ThermocoupleType enum to nidaqmx constants
 TC_TYPE_MAP = {
     ThermocoupleType.J: 'J',
@@ -453,7 +485,7 @@ class HardwareReader:
         )
 
         task_name = f"{module_name}_analog"
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
         channel_types: Dict[str, ChannelType] = {}  # Track type per channel for post-processing
 
@@ -685,7 +717,7 @@ class HardwareReader:
     def _create_thermocouple_task(self, task_name: str, module_name: str,
                                    channels: List[ChannelConfig]):
         """Create thermocouple input task with CONTINUOUS acquisition"""
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         try:
@@ -761,7 +793,7 @@ class HardwareReader:
     def _create_voltage_task(self, task_name: str, module_name: str,
                               channels: List[ChannelConfig]):
         """Create voltage input task with CONTINUOUS acquisition"""
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         try:
@@ -810,7 +842,7 @@ class HardwareReader:
         """Create current input task (4-20mA) with CONTINUOUS acquisition"""
         from nidaqmx.constants import CurrentShuntResistorLocation
 
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         try:
@@ -866,7 +898,7 @@ class HardwareReader:
             RTDType, ResistanceConfiguration, ExcitationSource
         )
 
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         # Map RTD type string to nidaqmx constant
@@ -942,7 +974,7 @@ class HardwareReader:
             StrainGageBridgeType, BridgeConfiguration, ExcitationSource
         )
 
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         # Map bridge config
@@ -1000,7 +1032,7 @@ class HardwareReader:
         """Create IEPE (accelerometer/microphone) input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import ExcitationSource, Coupling
 
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         try:
@@ -1053,7 +1085,7 @@ class HardwareReader:
         """Create resistance measurement input task with CONTINUOUS acquisition"""
         from nidaqmx.constants import ResistanceConfiguration, ExcitationSource
 
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         wiring_map = {
@@ -1107,7 +1139,7 @@ class HardwareReader:
     def _create_digital_input_task(self, task_name: str, module_name: str,
                                     channels: List[ChannelConfig]):
         """Create digital input task"""
-        task = nidaqmx.Task(task_name)
+        task = _safe_create_task(task_name)
         channel_names = []
 
         # CRITICAL: Sort channels by physical index before adding to task
@@ -1139,7 +1171,7 @@ class HardwareReader:
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"DO_{channel.name}")
+                task = _safe_create_task(f"DO_{channel.name}")
 
                 task.do_channels.add_do_chan(
                     phys_chan,
@@ -1169,7 +1201,7 @@ class HardwareReader:
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"VO_{channel.name}")
+                task = _safe_create_task(f"VO_{channel.name}")
 
                 v_range = channel.voltage_range or 10.0
                 v_min = getattr(channel, 'voltage_range_min', None)
@@ -1204,7 +1236,7 @@ class HardwareReader:
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"CO_{channel.name}")
+                task = _safe_create_task(f"CO_{channel.name}")
 
                 # Current outputs are typically 0-20mA or 0-24mA
                 max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
@@ -1239,7 +1271,7 @@ class HardwareReader:
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"CTR_{channel.name}")
+                task = _safe_create_task(f"CTR_{channel.name}")
 
                 # Use configured min/max frequency from channel config
                 min_freq = channel.counter_min_freq  # Default 0.1 Hz
@@ -1270,7 +1302,7 @@ class HardwareReader:
                         )
                     except Exception:
                         task.close()
-                        task = nidaqmx.Task(f"CTR_{channel.name}")
+                        task = _safe_create_task(f"CTR_{channel.name}")
                         try:
                             task.ci_channels.add_ci_freq_chan(
                                 phys_chan,
@@ -1287,7 +1319,7 @@ class HardwareReader:
                             logger.warning(f"Counter {channel.name}: frequency mode not supported ({freq_err}), "
                                          f"falling back to edge count mode")
                             task.close()
-                            task = nidaqmx.Task(f"CTR_{channel.name}")
+                            task = _safe_create_task(f"CTR_{channel.name}")
                             task.ci_channels.add_ci_count_edges_chan(
                                 phys_chan,
                                 name_to_assign_to_channel=channel.name,
@@ -1319,7 +1351,7 @@ class HardwareReader:
                         logger.warning(f"Counter {channel.name}: period mode not supported ({period_err}), "
                                      f"falling back to edge count mode")
                         task.close()
-                        task = nidaqmx.Task(f"CTR_{channel.name}")
+                        task = _safe_create_task(f"CTR_{channel.name}")
                         task.ci_channels.add_ci_count_edges_chan(
                             phys_chan,
                             name_to_assign_to_channel=channel.name,
@@ -1359,7 +1391,7 @@ class HardwareReader:
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = nidaqmx.Task(f"CTR_OUT_{channel.name}")
+                task = _safe_create_task(f"CTR_OUT_{channel.name}")
 
                 idle_state = Level.LOW
                 if getattr(channel, 'pulse_idle_state', 'LOW') == 'HIGH':
@@ -2013,7 +2045,11 @@ class HardwareReader:
         pass
 
     def close(self):
-        """Close all tasks and release hardware"""
+        """Close all tasks and release hardware.
+
+        Uses stop-then-close pattern: stopping a running task before closing
+        prevents NI-DAQmx from raising errors when the task is mid-acquisition.
+        """
         logger.info("Closing hardware reader tasks...")
 
         # Stop continuous acquisition first (stops background thread)
@@ -2024,8 +2060,12 @@ class HardwareReader:
             self._watchdog_thread.join(timeout=3.0)
 
         with self.lock:
-            # Close input tasks
+            # Close input tasks (stop before close to avoid mid-read errors)
             for task_name, task_group in self.tasks.items():
+                try:
+                    task_group.task.stop()
+                except Exception:
+                    pass  # May already be stopped
                 try:
                     task_group.task.close()
                     logger.debug(f"Closed task: {task_name}")
@@ -2036,6 +2076,10 @@ class HardwareReader:
             # Close output tasks
             for name, task in self.output_tasks.items():
                 try:
+                    task.stop()
+                except Exception:
+                    pass
+                try:
                     task.close()
                     logger.debug(f"Closed output task: {name}")
                 except Exception as e:
@@ -2044,6 +2088,10 @@ class HardwareReader:
 
             # Close counter tasks
             for name, task in self.counter_tasks.items():
+                try:
+                    task.stop()
+                except Exception:
+                    pass
                 try:
                     task.close()
                     logger.debug(f"Closed counter task: {name}")

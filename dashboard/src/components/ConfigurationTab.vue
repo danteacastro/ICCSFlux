@@ -254,6 +254,13 @@ const hasCrioOutOfSync = computed(() => {
   return false
 })
 
+// Current project mode - gates which features are visible/interactive
+const projectMode = computed(() => {
+  return (store.status?.project_mode as string) || 'cdaq'
+})
+const isCdaqMode = computed(() => projectMode.value === 'cdaq')
+const isRemoteMode = computed(() => projectMode.value === 'crio' || projectMode.value === 'opto22')
+
 // Recompute local config hashes for each cRIO node when channels change.
 // This lets the Push button detect local edits that haven't been pushed yet.
 watch(
@@ -1218,6 +1225,49 @@ const NUMERIC_CHANNEL_FIELDS = new Set([
   'scaled_min', 'scaled_max',
 ])
 
+// ---------------------------------------------------------------------------
+// Inline Edit Guard
+// ---------------------------------------------------------------------------
+// Tracks the currently-focused inline input so that live value re-renders
+// (store.values updates at 2-4 Hz) do NOT overwrite what the user is typing.
+// While a cell is focused we serve a local copy of the value; on blur we
+// flush the edit to the backend and release the guard.
+const inlineEditCell = ref<{ channel: string; field: string } | null>(null)
+const inlineEditValue = ref<string>('')
+
+function isEditingCell(channel: string, field: string): boolean {
+  const c = inlineEditCell.value
+  return c !== null && c.channel === channel && c.field === field
+}
+
+function onInlineFocus(channel: string, field: string, currentValue: any) {
+  inlineEditCell.value = { channel, field }
+  inlineEditValue.value = currentValue != null ? String(currentValue) : ''
+}
+
+function onInlineInput(event: Event) {
+  inlineEditValue.value = (event.target as HTMLInputElement).value
+}
+
+function onInlineBlurText(channel: string, field: string) {
+  updateChannelField(channel, field, inlineEditValue.value)
+  inlineEditCell.value = null
+  inlineEditValue.value = ''
+}
+
+function onInlineBlurNumeric(channel: string, field: string) {
+  updateChannelField(channel, field, parseFloat(inlineEditValue.value))
+  inlineEditCell.value = null
+  inlineEditValue.value = ''
+}
+
+/** Return the display value for an inline input.
+ *  If the cell is currently focused, return the local edit buffer so the
+ *  user's keystrokes are not overwritten by incoming store updates. */
+function inlineValue(channel: string, field: string, storeValue: any): any {
+  return isEditingCell(channel, field) ? inlineEditValue.value : storeValue
+}
+
 // Update a single channel field inline (for editable table cells)
 function updateChannelField(channelName: string, field: string, value: any) {
   if (!canEdit.value) return
@@ -2164,9 +2214,11 @@ function pushConfigToOpto22(node: any) {
 }
 
 // Auto-push config to all connected remote nodes (cRIO and Opto22)
-// Called after successful save if there are remote channels in the project
+// Called after successful save if there are remote channels in the project.
+// No-op in cDAQ mode — there are no remote nodes to push to.
 function autoPushToRemoteNodes() {
   if (!mqtt.connected.value) return
+  if (isCdaqMode.value) return  // cDAQ: PC is the controller, nothing to push
 
   // Find all unique node IDs from channels with source_type === 'crio' or 'opto22'
   const crioNodeIds = new Set<string>()
@@ -2690,13 +2742,17 @@ function applyConfigChanges() {
     restart_acquisition: false  // Just reinitialize, don't start acquisition
   })
 
-  // Also push to any cRIO nodes if present
-  autoPushToRemoteNodes()
+  // Push to remote nodes only in cRIO/Opto22 mode (no-op guard inside too)
+  if (!isCdaqMode.value) {
+    autoPushToRemoteNodes()
+  }
 
   // Save current widget layout to localStorage so it persists across page reloads
   store.saveLayoutToStorage()
 
-  showFeedback('info', 'Applying configuration to hardware...')
+  showFeedback('info', isCdaqMode.value
+    ? 'Applying configuration to local hardware...'
+    : 'Pushing configuration to hardware...')
   configDirty.value = false
 }
 
@@ -4509,20 +4565,22 @@ watch(
 
         <div class="toolbar-divider"></div>
 
-        <!-- Group 5: Push (blue - sends to hardware) -->
+        <!-- Group 5: Apply/Push (blue - sends to hardware) -->
+        <!-- cDAQ mode: "Apply" (reinit local tasks only) -->
+        <!-- cRIO/Opto22 mode: "Push" (reinit + push to remote nodes) -->
         <button
           class="action-btn accent"
-          :class="{ 'out-of-sync': hasCrioOutOfSync, 'no-permission': !hasEditPermission }"
+          :class="{ 'out-of-sync': !isCdaqMode && hasCrioOutOfSync, 'no-permission': !hasEditPermission }"
           @click="applyConfigChanges"
           :disabled="!mqtt.connected.value || !hasEditPermission"
-          :title="!hasEditPermission ? 'Requires Operator or higher' : (hasCrioOutOfSync ? 'Push config to hardware (cRIO out of sync!)' : 'Push channel config to hardware')"
+          :title="!hasEditPermission ? 'Requires Operator or higher' : (isCdaqMode ? 'Apply channel config to local hardware' : (hasCrioOutOfSync ? 'Push config to hardware (out of sync!)' : 'Push channel config to remote nodes'))"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
             <polyline points="22 4 12 14.01 9 11.01"/>
           </svg>
-          Push
-          <span v-if="hasCrioOutOfSync" class="sync-badge">!</span>
+          {{ isCdaqMode ? 'Apply' : 'Push' }}
+          <span v-if="!isCdaqMode && hasCrioOutOfSync" class="sync-badge">!</span>
         </button>
       </div>
       <div class="right-info">
@@ -4755,8 +4813,10 @@ watch(
                 <input
                   v-else
                   type="text"
-                  :value="config.physical_channel || ''"
-                  @blur="updateChannelField(name, 'physical_channel', ($event.target as HTMLInputElement).value)"
+                  :value="inlineValue(name, 'physical_channel', config.physical_channel || '')"
+                  @focus="onInlineFocus(name, 'physical_channel', config.physical_channel || '')"
+                  @input="onInlineInput($event)"
+                  @blur="onInlineBlurText(name, 'physical_channel')"
                   @keyup.enter="($event.target as HTMLInputElement).blur()"
                   class="inline-input channel-input"
                   :placeholder="getPhysicalChannelHint(config.source_type || 'local')"
@@ -4768,8 +4828,10 @@ watch(
               <td class="col-description editable-cell" @click.stop>
                 <input
                   type="text"
-                  :value="config.description || ''"
-                  @blur="updateChannelField(name, 'description', ($event.target as HTMLInputElement).value)"
+                  :value="inlineValue(name, 'description', config.description || '')"
+                  @focus="onInlineFocus(name, 'description', config.description || '')"
+                  @input="onInlineInput($event)"
+                  @blur="onInlineBlurText(name, 'description')"
                   @keyup.enter="($event.target as HTMLInputElement).blur()"
                   class="inline-input description-input"
                   placeholder="Description..."
@@ -4863,8 +4925,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? (typeof config.voltage_range === 'number' ? -Math.abs(config.voltage_range) : -10)"
-                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? (typeof config.voltage_range === 'number' ? -Math.abs(config.voltage_range) : -10))"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? (typeof config.voltage_range === 'number' ? -Math.abs(config.voltage_range) : -10))"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4872,8 +4936,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_max ?? (config.voltage_range ?? 10)"
-                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? (config.voltage_range ?? 10))"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? (config.voltage_range ?? 10))"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4881,8 +4947,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
-                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4890,8 +4958,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
-                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4899,8 +4969,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || ''"
-                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    :value="inlineValue(name, 'unit', config.unit || '')"
+                    @focus="onInlineFocus(name, 'unit', config.unit || '')"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurText(name, 'unit')"
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
@@ -4923,8 +4995,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0)"
-                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0))"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0))"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4932,8 +5006,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_max ?? 20"
-                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4941,8 +5017,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
-                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4950,8 +5028,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
-                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -4959,8 +5039,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || ''"
-                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    :value="inlineValue(name, 'unit', config.unit || '')"
+                    @focus="onInlineFocus(name, 'unit', config.unit || '')"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurText(name, 'unit')"
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
@@ -5195,8 +5277,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? 0"
-                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? 0)"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5204,8 +5288,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_max ?? 10"
-                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? 10)"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? 10)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5213,8 +5299,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
-                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5222,8 +5310,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
-                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5231,8 +5321,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || ''"
-                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    :value="inlineValue(name, 'unit', config.unit || '')"
+                    @focus="onInlineFocus(name, 'unit', config.unit || '')"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurText(name, 'unit')"
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
@@ -5246,8 +5338,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? (config.ao_range === '4-20mA' ? 4 : 0)"
-                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.ao_range === '4-20mA' ? 4 : 0))"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.ao_range === '4-20mA' ? 4 : 0))"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5255,8 +5349,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_max ?? 20"
-                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5264,8 +5360,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
-                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5273,8 +5371,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
-                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5282,8 +5382,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || ''"
-                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    :value="inlineValue(name, 'unit', config.unit || '')"
+                    @focus="onInlineFocus(name, 'unit', config.unit || '')"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurText(name, 'unit')"
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
@@ -5298,8 +5400,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_min ?? 0"
-                    @blur="updateChannelField(name, 'pre_scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? 0)"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5307,8 +5411,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.pre_scaled_max ?? 10"
-                    @blur="updateChannelField(name, 'pre_scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? 10)"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? 10)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5316,8 +5422,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_min ?? config.eng_units_min ?? 0"
-                    @blur="updateChannelField(name, 'scaled_min', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? config.eng_units_min ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5325,8 +5433,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.scaled_max ?? config.eng_units_max ?? 100"
-                    @blur="updateChannelField(name, 'scaled_max', parseFloat(($event.target as HTMLInputElement).value))"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? config.eng_units_max ?? 100)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5334,8 +5444,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || ''"
-                    @blur="updateChannelField(name, 'unit', ($event.target as HTMLInputElement).value)"
+                    :value="inlineValue(name, 'unit', config.unit || '')"
+                    @focus="onInlineFocus(name, 'unit', config.unit || '')"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurText(name, 'unit')"
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
@@ -5786,7 +5898,7 @@ watch(
             </template>
 
             <!-- Voltage Input settings -->
-            <template v-if="editingConfig.config.channel_type === 'voltage'">
+            <template v-if="editingConfig.config.channel_type === 'voltage' || editingConfig.config.channel_type === 'voltage_input'">
               <div class="config-section">
                 <h4>Voltage Input Settings</h4>
                 <div class="form-row">
@@ -5886,7 +5998,7 @@ watch(
             </template>
 
             <!-- Current Input settings -->
-            <template v-if="editingConfig.config.channel_type === 'current'">
+            <template v-if="editingConfig.config.channel_type === 'current' || editingConfig.config.channel_type === 'current_input'">
               <div class="config-section">
                 <h4>Current Input Settings</h4>
                 <div class="form-row">
@@ -6586,7 +6698,8 @@ watch(
                   </div>
                 </div>
 
-                <!-- cRIO Nodes (Remote CompactRIO devices) -->
+                <!-- cRIO Nodes (Remote CompactRIO devices) - hidden in cDAQ mode -->
+                <template v-if="!isCdaqMode">
                 <div v-for="node in discoveryResult.crio_nodes" :key="node.node_id" class="tree-crio">
                   <div class="tree-header crio-header" @click="toggleCrioNode(node.node_id)">
                     <svg class="tree-arrow" :class="{ expanded: expandedCrioNodes.has(node.node_id) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -6668,8 +6781,10 @@ watch(
                     </div>
                   </div>
                 </div>
+                </template>
 
-                <!-- Opto22 Nodes (Remote groov EPIC/RIO devices) -->
+                <!-- Opto22 Nodes (Remote groov EPIC/RIO devices) - hidden in cDAQ mode -->
+                <template v-if="!isCdaqMode">
                 <div v-for="node in discoveryResult.opto22_nodes" :key="node.node_id" class="tree-opto22">
                   <div class="tree-header opto22-header" @click="toggleOpto22Node(node.node_id)">
                     <svg class="tree-arrow" :class="{ expanded: expandedOpto22Nodes.has(node.node_id) }" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -6752,6 +6867,7 @@ watch(
                     </div>
                   </div>
                 </div>
+                </template>
               </div>
             </template>
 
