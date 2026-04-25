@@ -1299,8 +1299,67 @@ function updateChannelField(channelName: string, field: string, value: any) {
 }
 
 // ---------------------------------------------------------------------------
-// Column Resize (drag dividers between column headers)
+// Terminal Config Compatibility
 // ---------------------------------------------------------------------------
+// Different channel types support different terminal configurations.
+// Current/TC/RTD/strain/IEPE/resistance channels REQUIRE differential — using
+// RSE/NRSE on these causes wrong readings (e.g., RSE on a current input
+// reads shunt voltage instead of current).
+const _DIFFERENTIAL_ONLY_TYPES = new Set([
+  'current_input', 'current_output', 'current',
+  'thermocouple', 'rtd',
+  'strain', 'strain_input', 'bridge_input',
+  'resistance', 'resistance_input',
+  'iepe', 'iepe_input',
+])
+
+function getAllowedTerminalConfigs(channelType: string | undefined) {
+  if (channelType && _DIFFERENTIAL_ONLY_TYPES.has(channelType)) {
+    return TERMINAL_CONFIGS.filter(t => t.value === 'differential')
+  }
+  return TERMINAL_CONFIGS
+}
+
+// CJC source options — only meaningful for thermocouple channels.
+// For non-thermocouple channels, the field is ignored entirely.
+const CJC_SOURCES = [
+  { value: 'internal', label: 'INT', description: "Module's built-in CJC sensor (most common)" },
+  { value: 'constant', label: 'CONST', description: 'Fixed temperature (e.g., 0°C ice bath)' },
+  { value: 'channel', label: 'EXT', description: 'External RTD on another channel' },
+]
+function isCjcRelevant(channelType: string | undefined) {
+  return channelType === 'thermocouple'
+}
+
+// ---------------------------------------------------------------------------
+// Column Resize (drag dividers between column headers)
+// Widths persist per-tab in localStorage so they survive page reloads.
+// ---------------------------------------------------------------------------
+const COL_WIDTH_STORAGE_KEY = 'iccsflux.config.columnWidths'
+
+const columnWidths = ref<Record<string, Record<string, number>>>(loadColumnWidths())
+
+function loadColumnWidths(): Record<string, Record<string, number>> {
+  try {
+    const raw = localStorage.getItem(COL_WIDTH_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveColumnWidths() {
+  try {
+    localStorage.setItem(COL_WIDTH_STORAGE_KEY, JSON.stringify(columnWidths.value))
+  } catch (e) {
+    console.warn('Could not save column widths', e)
+  }
+}
+
+function colKey(th: HTMLElement): string | null {
+  return th.dataset?.colKey || null
+}
+
 let _resizeCol: HTMLElement | null = null
 let _resizeStartX = 0
 let _resizeStartW = 0
@@ -1331,10 +1390,25 @@ function onColResizeEnd() {
   if (_resizeCol) {
     const handle = _resizeCol.querySelector('.col-resize-handle')
     if (handle) handle.classList.remove('dragging')
+    // Persist the new width per-tab + per-column
+    const key = colKey(_resizeCol)
+    if (key) {
+      const tab = activeTypeTab.value || 'all'
+      if (!columnWidths.value[tab]) columnWidths.value[tab] = {}
+      columnWidths.value[tab][key] = _resizeCol.offsetWidth
+      saveColumnWidths()
+    }
   }
   _resizeCol = null
   document.removeEventListener('mousemove', onColResizeMove)
   document.removeEventListener('mouseup', onColResizeEnd)
+}
+
+function colWidthStyle(colKey: string, defaultWidth: string): string {
+  const tab = activeTypeTab.value || 'all'
+  const stored = columnWidths.value[tab]?.[colKey]
+  if (stored) return `width: ${stored}px; min-width: ${stored}px; max-width: ${stored}px;`
+  return `width: ${defaultWidth};`
 }
 
 // Handle tag rename from inline edit (wrapper for renameChannel)
@@ -4785,12 +4859,13 @@ watch(
               <th
                 v-for="col in tableColumns"
                 :key="col.key"
-                :style="`width: ${col.width}; text-align: ${col.align || 'left'}`"
+                :data-col-key="col.key"
+                :style="colWidthStyle(col.key, col.width) + ` text-align: ${col.align || 'left'}`"
               >
                 {{ col.label }}
                 <span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span>
               </th>
-              <th class="col-alarm">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
+              <th class="col-alarm" data-col-key="alarm" :style="colWidthStyle('alarm', 'auto')">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
               <th class="col-status-indicators" title="Configuration errors and warnings"></th>
               <th class="col-actions">CONFIG</th>
             </tr>
@@ -4967,7 +5042,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -5037,7 +5112,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -5143,7 +5218,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -5963,7 +6038,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
@@ -6063,7 +6138,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
@@ -6220,7 +6295,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in TERMINAL_CONFIGS" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>

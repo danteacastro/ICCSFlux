@@ -27,6 +27,9 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from queue import Queue
 
+import terminal_config as tc_validator
+import cjc_source as cjc_validator
+
 def _get_physical_channel_index(physical_channel: str) -> int:
     """
     Extract the channel index from a physical_channel string.
@@ -124,59 +127,64 @@ TC_TYPE_MAP = {
     ThermocoupleType.B: 'B',
 }
 
-def get_terminal_config(config_str: str):
+def get_terminal_config(config_str: str, channel_type=None):
     """
     Map terminal configuration string to nidaqmx TerminalConfiguration constant.
-    Validates the configuration string against supported options.
 
-    Note: nidaqmx uses DIFFERENTIAL (not PSEUDO_DIFF). We accept both for compatibility.
+    If channel_type is provided, the value is coerced to a valid option for
+    that channel type. Current/thermocouple/strain/etc channels are always
+    forced to DIFFERENTIAL — using anything else causes wrong readings.
     """
     if not NIDAQMX_AVAILABLE:
         return None
 
-    # nidaqmx API uses DIFF and PSEUDO_DIFF (not DIFFERENTIAL/PSEUDODIFFERENTIAL)
+    # If channel_type is provided, coerce to a valid value for that type
+    if channel_type is not None:
+        canonical = tc_validator.coerce(channel_type, config_str)
+    else:
+        canonical = tc_validator.normalize(config_str)
+
+    # Map canonical lowercase values to nidaqmx constants
     config_map = {
-        'RSE': TerminalConfiguration.RSE,
-        'DIFF': TerminalConfiguration.DIFF,
-        'DIFFERENTIAL': TerminalConfiguration.DIFF,
-        'NRSE': TerminalConfiguration.NRSE,
-        'PSEUDO_DIFF': TerminalConfiguration.PSEUDO_DIFF,
-        'PSEUDODIFFERENTIAL': TerminalConfiguration.PSEUDO_DIFF,
-        'DEFAULT': TerminalConfiguration.DIFF,  # Legacy: treat DEFAULT as DIFFERENTIAL
+        tc_validator.DIFFERENTIAL: TerminalConfiguration.DIFF,
+        tc_validator.RSE: TerminalConfiguration.RSE,
+        tc_validator.NRSE: TerminalConfiguration.NRSE,
+        tc_validator.PSEUDODIFFERENTIAL: TerminalConfiguration.PSEUDO_DIFF,
     }
 
-    config_upper = config_str.upper().strip()
-    if config_upper not in config_map:
-        logger.warning(f"Unknown terminal config '{config_str}', defaulting to DIFFERENTIAL. "
-                      f"Valid options: DIFFERENTIAL, RSE, NRSE, PSEUDODIFFERENTIAL")
-        return TerminalConfiguration.DIFF
+    result = config_map.get(canonical, TerminalConfiguration.DIFF)
 
-    return config_map[config_upper]
+    # Warn if we had to coerce
+    if channel_type is not None and config_str:
+        original = tc_validator.normalize(config_str)
+        if original != canonical:
+            logger.warning(
+                f"Terminal config '{config_str}' is not valid for "
+                f"{channel_type.value} channels — coercing to '{canonical}'. "
+                f"This is the correct setting; using anything else would cause "
+                f"incorrect readings (e.g., RSE on a current input reads shunt voltage)."
+            )
+
+    return result
 
 def get_cjc_source(config_str: str):
     """
     Map CJC source configuration string to nidaqmx CJCSource constant.
+    Uses cjc_source validator to normalize aliases (built_in/internal,
+    constant/const_val, channel/external, etc.).
     """
     if not NIDAQMX_AVAILABLE:
         return None
 
     from nidaqmx.constants import CJCSource
 
+    canonical = cjc_validator.normalize(config_str)
     config_map = {
-        'INTERNAL': CJCSource.BUILT_IN,
-        'BUILT_IN': CJCSource.BUILT_IN,
-        'CONSTANT': CJCSource.CONSTANT_USER_VALUE,
-        'CONST_VAL': CJCSource.CONSTANT_USER_VALUE,
-        'CHANNEL': CJCSource.SCANNABLE_CHANNEL,
-        'SCANNABLE_CHANNEL': CJCSource.SCANNABLE_CHANNEL,
+        cjc_validator.INTERNAL: CJCSource.BUILT_IN,
+        cjc_validator.CONSTANT: CJCSource.CONSTANT_USER_VALUE,
+        cjc_validator.CHANNEL: CJCSource.SCANNABLE_CHANNEL,
     }
-
-    config_upper = config_str.upper().strip()
-    if config_upper not in config_map:
-        logger.warning(f"Unknown CJC source '{config_str}', defaulting to BUILT_IN")
-        return CJCSource.BUILT_IN
-
-    return config_map[config_upper]
+    return config_map.get(canonical, CJCSource.BUILT_IN)
 
 @dataclass
 class TaskGroup:
@@ -526,7 +534,7 @@ class HardwareReader:
                 elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
                     # Voltage input
                     v_range = channel.voltage_range or 10.0
-                    term_config = get_terminal_config(channel.terminal_config)
+                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
 
                     task.ai_channels.add_ai_voltage_chan(
                         phys_chan,
@@ -538,9 +546,9 @@ class HardwareReader:
                     logger.info(f"Added voltage input: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.CURRENT_INPUT:
-                    # Current input (4-20mA)
+                    # Current input (4-20mA) — REQUIRES DIFFERENTIAL terminal config
                     max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                    term_config = get_terminal_config(channel.terminal_config)
+                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
 
                     shunt_loc_map = {
                         'internal': CurrentShuntResistorLocation.INTERNAL,
@@ -800,7 +808,7 @@ class HardwareReader:
             for channel in channels:
                 phys_chan = self._get_physical_channel_path(channel)
                 v_range = channel.voltage_range or 10.0
-                term_config = get_terminal_config(channel.terminal_config)
+                term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
 
                 task.ai_channels.add_ai_voltage_chan(
                     phys_chan,
@@ -851,7 +859,7 @@ class HardwareReader:
                 # NI current modules typically read in Amps, we want mA
                 # Most 4-20mA modules have 0-20mA or 0-25mA range
                 max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                term_config = get_terminal_config(channel.terminal_config)
+                term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
 
                 # NI-9203 and similar modules have internal shunt resistors
                 task.ai_channels.add_ai_current_chan(

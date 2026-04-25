@@ -13557,7 +13557,15 @@ Unit conversions:
             except ValueError:
                 logger.warning(f"Invalid thermocouple type: {config_data['tc_type']}")
         if 'cjc_source' in config_data:
-            channel.cjc_source = config_data['cjc_source']
+            import cjc_source as _cjc
+            requested = config_data['cjc_source']
+            coerced = _cjc.coerce(channel.channel_type, requested)
+            channel.cjc_source = coerced
+            if requested and _cjc.normalize(requested) != coerced:
+                logger.warning(
+                    f"Channel {channel_name}: cjc_source '{requested}' is "
+                    f"invalid for {channel.channel_type.value} — coerced to '{coerced}'"
+                )
         if 'cjc_value' in config_data:
             channel.cjc_value = float(config_data['cjc_value'])
 
@@ -13604,8 +13612,18 @@ Unit conversions:
             channel.group = config_data['group']
 
         # Terminal configuration (for analog inputs)
+        # Coerce to a valid value for the channel type — current/TC/RTD/strain
+        # are forced to 'differential' since other configs cause wrong readings.
         if 'terminal_config' in config_data:
-            channel.terminal_config = config_data['terminal_config']
+            import terminal_config as _tc
+            requested = config_data['terminal_config']
+            coerced = _tc.coerce(channel.channel_type, requested)
+            channel.terminal_config = coerced
+            if _tc.normalize(requested) != coerced:
+                logger.warning(
+                    f"Channel {channel_name}: terminal_config '{requested}' is "
+                    f"invalid for {channel.channel_type.value} — coerced to '{coerced}'"
+                )
 
         # RTD-specific parameters
         if 'rtd_type' in config_data:
