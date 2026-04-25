@@ -13612,17 +13612,21 @@ Unit conversions:
             channel.group = config_data['group']
 
         # Terminal configuration (for analog inputs)
-        # Coerce to a valid value for the channel type — current/TC/RTD/strain
-        # are forced to 'differential' since other configs cause wrong readings.
+        # Coerce to a valid value for the channel type AND module — current/TC/RTD/strain
+        # and DIFF-only modules (NI-9215 etc) are forced to 'differential' since
+        # other configs cause wrong readings.
         if 'terminal_config' in config_data:
             import terminal_config as _tc
             requested = config_data['terminal_config']
-            coerced = _tc.coerce(channel.channel_type, requested)
+            mod = self.config.modules.get(channel.module) if channel.module else None
+            mod_type = getattr(mod, 'module_type', None) if mod else None
+            coerced = _tc.coerce(channel.channel_type, requested, mod_type)
             channel.terminal_config = coerced
             if _tc.normalize(requested) != coerced:
                 logger.warning(
                     f"Channel {channel_name}: terminal_config '{requested}' is "
-                    f"invalid for {channel.channel_type.value} — coerced to '{coerced}'"
+                    f"invalid for {channel.channel_type.value} (module {mod_type or 'unknown'}) "
+                    f"— coerced to '{coerced}'"
                 )
 
         # RTD-specific parameters

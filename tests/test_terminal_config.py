@@ -416,5 +416,90 @@ class TestAllChannelTypes:
         assert isinstance(err, str)
 
 
+# ===================================================================
+# 9. Per-module overrides (NI-9215 etc. are DIFF-only by hardware)
+# ===================================================================
+
+class TestPerModuleOverride:
+    """Some voltage modules are DIFF-only by physical design even though
+    voltage_input would normally allow RSE/NRSE."""
+
+    @pytest.mark.parametrize("module", [
+        "NI-9215",  # 4-Ch Simultaneous ±10V
+        "NI-9220",  # 16-Ch Simultaneous ±10V
+        "NI-9229",  # 4-Ch Isolated ±60V
+        "NI-9239",  # 4-Ch Isolated ±10V
+    ])
+    def test_simultaneous_voltage_modules_diff_only(self, module):
+        """Simultaneous-sampling and isolated voltage modules are DIFF-only."""
+        assert tc.is_module_differential_only(module)
+
+    @pytest.mark.parametrize("module", [
+        "NI-9201",  # 8-Ch ±10V (RSE/NRSE/DIFF configurable)
+        "NI-9205",  # 32-Ch ±10V (RSE/NRSE/DIFF configurable)
+        "NI-9221",  # 8-Ch ±60V
+    ])
+    def test_multimode_voltage_modules_not_diff_only(self, module):
+        """Configurable voltage modules accept all terminal configs."""
+        assert not tc.is_module_differential_only(module)
+
+    def test_module_type_normalization(self):
+        """Module names work with NI- prefix or bare model number."""
+        assert tc.is_module_differential_only("NI-9215")
+        assert tc.is_module_differential_only("ni-9215")
+        assert tc.is_module_differential_only("9215")
+        assert tc.is_module_differential_only("  NI-9215  ")
+
+    def test_unknown_module_falls_back_to_channel_type(self):
+        """Unknown module → no module-level restriction."""
+        assert not tc.is_module_differential_only("NI-9999")
+        assert not tc.is_module_differential_only("UNKNOWN")
+        assert not tc.is_module_differential_only(None)
+        assert not tc.is_module_differential_only("")
+
+    def test_voltage_on_diff_only_module_coerced(self):
+        """Voltage input on NI-9215 (DIFF-only) → forced to differential."""
+        assert tc.coerce(ChannelType.VOLTAGE_INPUT, "RSE", "NI-9215") == "differential"
+        assert tc.coerce(ChannelType.VOLTAGE_INPUT, "NRSE", "NI-9215") == "differential"
+
+    def test_voltage_on_regular_module_preserves(self):
+        """Voltage input on NI-9201 (configurable) → keeps user's choice."""
+        assert tc.coerce(ChannelType.VOLTAGE_INPUT, "RSE", "NI-9201") == "rse"
+        assert tc.coerce(ChannelType.VOLTAGE_INPUT, "NRSE", "NI-9201") == "nrse"
+
+    def test_validate_rejects_rse_on_diff_only_module(self):
+        """RSE on NI-9215 must be rejected with a clear error message."""
+        valid, err = tc.validate(ChannelType.VOLTAGE_INPUT, "RSE", "NI-9215")
+        assert not valid
+        assert "NI-9215" in err
+        assert "differential-only" in err.lower()
+
+    def test_validate_accepts_diff_on_diff_only_module(self):
+        valid, _ = tc.validate(ChannelType.VOLTAGE_INPUT, "differential", "NI-9215")
+        assert valid
+
+    def test_validate_accepts_rse_on_regular_module(self):
+        valid, _ = tc.validate(ChannelType.VOLTAGE_INPUT, "RSE", "NI-9201")
+        assert valid
+
+    def test_allowed_for_diff_only_module(self):
+        """allowed_for() returns only {differential} for DIFF-only modules."""
+        allowed = tc.allowed_for(ChannelType.VOLTAGE_INPUT, "NI-9215")
+        assert allowed == {"differential"}
+
+    def test_allowed_for_regular_module(self):
+        """allowed_for() returns all four for regular voltage modules."""
+        allowed = tc.allowed_for(ChannelType.VOLTAGE_INPUT, "NI-9201")
+        assert allowed == tc.ALL_TERMINAL_CONFIGS
+
+    def test_allowed_for_no_module_uses_channel_type(self):
+        """When module is unknown, fall back to channel-type rules."""
+        allowed = tc.allowed_for(ChannelType.VOLTAGE_INPUT, None)
+        assert allowed == tc.ALL_TERMINAL_CONFIGS
+        # Current input still DIFF-only via channel-type rule
+        allowed = tc.allowed_for(ChannelType.CURRENT_INPUT, None)
+        assert allowed == {"differential"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

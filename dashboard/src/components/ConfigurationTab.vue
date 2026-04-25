@@ -1333,10 +1333,12 @@ function isCjcRelevant(channelType: string | undefined) {
 
 // ---------------------------------------------------------------------------
 // Column Resize (drag dividers between column headers)
-// Widths persist per-tab in localStorage so they survive page reloads.
+// Widths stored as PERCENTAGE of the table width so they scale with the
+// browser window. Persisted per-tab in localStorage across page reloads.
 // ---------------------------------------------------------------------------
-const COL_WIDTH_STORAGE_KEY = 'iccsflux.config.columnWidths'
+const COL_WIDTH_STORAGE_KEY = 'iccsflux.config.columnWidths.v2'
 
+// Map: tab -> { colKey -> percentage of table width (0-100) }
 const columnWidths = ref<Record<string, Record<string, number>>>(loadColumnWidths())
 
 function loadColumnWidths(): Record<string, Record<string, number>> {
@@ -1363,14 +1365,19 @@ function colKey(th: HTMLElement): string | null {
 let _resizeCol: HTMLElement | null = null
 let _resizeStartX = 0
 let _resizeStartW = 0
+let _resizeTableW = 0
 
 function onColResizeStart(event: MouseEvent) {
   const handle = event.target as HTMLElement
   const th = handle.parentElement as HTMLElement
   if (!th) return
+  // Find the table to compute percentage relative to its width
+  const table = th.closest('table') as HTMLElement | null
+  if (!table) return
   _resizeCol = th
   _resizeStartX = event.clientX
   _resizeStartW = th.offsetWidth
+  _resizeTableW = table.offsetWidth
   handle.classList.add('dragging')
   document.addEventListener('mousemove', onColResizeMove)
   document.addEventListener('mouseup', onColResizeEnd)
@@ -1381,21 +1388,24 @@ function onColResizeMove(event: MouseEvent) {
   if (!_resizeCol) return
   const diff = event.clientX - _resizeStartX
   const newWidth = Math.max(40, _resizeStartW + diff)
-  _resizeCol.style.width = `${newWidth}px`
-  _resizeCol.style.minWidth = `${newWidth}px`
-  _resizeCol.style.maxWidth = `${newWidth}px`
+  // Apply as percentage so it scales with table width
+  const pct = (newWidth / _resizeTableW) * 100
+  _resizeCol.style.width = `${pct}%`
+  _resizeCol.style.minWidth = '40px'
+  _resizeCol.style.maxWidth = ''
 }
 
 function onColResizeEnd() {
   if (_resizeCol) {
     const handle = _resizeCol.querySelector('.col-resize-handle')
     if (handle) handle.classList.remove('dragging')
-    // Persist the new width per-tab + per-column
+    // Persist the new width AS PERCENTAGE per-tab + per-column
     const key = colKey(_resizeCol)
-    if (key) {
+    if (key && _resizeTableW > 0) {
+      const pct = (_resizeCol.offsetWidth / _resizeTableW) * 100
       const tab = activeTypeTab.value || 'all'
       if (!columnWidths.value[tab]) columnWidths.value[tab] = {}
-      columnWidths.value[tab][key] = _resizeCol.offsetWidth
+      columnWidths.value[tab][key] = Math.round(pct * 100) / 100  // 2 decimal places
       saveColumnWidths()
     }
   }
@@ -1406,8 +1416,8 @@ function onColResizeEnd() {
 
 function colWidthStyle(colKey: string, defaultWidth: string): string {
   const tab = activeTypeTab.value || 'all'
-  const stored = columnWidths.value[tab]?.[colKey]
-  if (stored) return `width: ${stored}px; min-width: ${stored}px; max-width: ${stored}px;`
+  const storedPct = columnWidths.value[tab]?.[colKey]
+  if (storedPct) return `width: ${storedPct}%; min-width: 40px;`
   return `width: ${defaultWidth};`
 }
 

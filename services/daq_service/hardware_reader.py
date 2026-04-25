@@ -127,20 +127,23 @@ TC_TYPE_MAP = {
     ThermocoupleType.B: 'B',
 }
 
-def get_terminal_config(config_str: str, channel_type=None):
+def get_terminal_config(config_str: str, channel_type=None, module_type=None):
     """
     Map terminal configuration string to nidaqmx TerminalConfiguration constant.
 
-    If channel_type is provided, the value is coerced to a valid option for
-    that channel type. Current/thermocouple/strain/etc channels are always
-    forced to DIFFERENTIAL — using anything else causes wrong readings.
+    If channel_type is provided, coerced to a valid option for that type.
+    If module_type is provided, additionally checks per-module rules
+    (e.g., NI-9215 is DIFF-only by hardware design).
+
+    Current/TC/RTD/strain channels and DIFF-only modules are always forced
+    to DIFFERENTIAL — using anything else causes wrong readings.
     """
     if not NIDAQMX_AVAILABLE:
         return None
 
     # If channel_type is provided, coerce to a valid value for that type
     if channel_type is not None:
-        canonical = tc_validator.coerce(channel_type, config_str)
+        canonical = tc_validator.coerce(channel_type, config_str, module_type)
     else:
         canonical = tc_validator.normalize(config_str)
 
@@ -371,6 +374,17 @@ class HardwareReader:
             return physical_channel.split('/')[0]
         return ""
 
+    def _lookup_module_type(self, module_name: str) -> Optional[str]:
+        """Look up the module type (e.g., 'NI-9215') from the module name.
+
+        Returns None if the module isn't in the config — terminal_config
+        validation will fall back to channel-type rules.
+        """
+        if not module_name or not hasattr(self.config, 'modules'):
+            return None
+        mod = self.config.modules.get(module_name)
+        return getattr(mod, 'module_type', None) if mod else None
+
     def _create_tasks(self):
         """
         Create nidaqmx tasks for all input channels.
@@ -534,7 +548,8 @@ class HardwareReader:
                 elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
                     # Voltage input
                     v_range = channel.voltage_range or 10.0
-                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
+                    mod_type = self._lookup_module_type(channel.module)
+                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                     task.ai_channels.add_ai_voltage_chan(
                         phys_chan,
@@ -548,7 +563,8 @@ class HardwareReader:
                 elif channel.channel_type == ChannelType.CURRENT_INPUT:
                     # Current input (4-20mA) — REQUIRES DIFFERENTIAL terminal config
                     max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
+                    mod_type = self._lookup_module_type(channel.module)
+                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                     shunt_loc_map = {
                         'internal': CurrentShuntResistorLocation.INTERNAL,
@@ -808,7 +824,8 @@ class HardwareReader:
             for channel in channels:
                 phys_chan = self._get_physical_channel_path(channel)
                 v_range = channel.voltage_range or 10.0
-                term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
+                mod_type = self._lookup_module_type(channel.module)
+                term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                 task.ai_channels.add_ai_voltage_chan(
                     phys_chan,
@@ -859,7 +876,8 @@ class HardwareReader:
                 # NI current modules typically read in Amps, we want mA
                 # Most 4-20mA modules have 0-20mA or 0-25mA range
                 max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                term_config = get_terminal_config(channel.terminal_config, channel.channel_type)
+                mod_type = self._lookup_module_type(channel.module)
+                term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                 # NI-9203 and similar modules have internal shunt resistors
                 task.ai_channels.add_ai_current_chan(
