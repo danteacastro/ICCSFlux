@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, inject, nextTick } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import type { ChannelType, ChannelConfig, NotificationSettings, NotificationTriggerRules, AlarmSeverityLevel } from '../types'
 import {
@@ -1296,6 +1296,45 @@ function updateChannelField(channelName: string, field: string, value: any) {
 
   mqtt.updateChannelConfig(channelName, { [field]: coerced })
   markDirty()
+}
+
+// ---------------------------------------------------------------------------
+// Column Resize (drag dividers between column headers)
+// ---------------------------------------------------------------------------
+let _resizeCol: HTMLElement | null = null
+let _resizeStartX = 0
+let _resizeStartW = 0
+
+function onColResizeStart(event: MouseEvent) {
+  const handle = event.target as HTMLElement
+  const th = handle.parentElement as HTMLElement
+  if (!th) return
+  _resizeCol = th
+  _resizeStartX = event.clientX
+  _resizeStartW = th.offsetWidth
+  handle.classList.add('dragging')
+  document.addEventListener('mousemove', onColResizeMove)
+  document.addEventListener('mouseup', onColResizeEnd)
+  event.preventDefault()
+}
+
+function onColResizeMove(event: MouseEvent) {
+  if (!_resizeCol) return
+  const diff = event.clientX - _resizeStartX
+  const newWidth = Math.max(40, _resizeStartW + diff)
+  _resizeCol.style.width = `${newWidth}px`
+  _resizeCol.style.minWidth = `${newWidth}px`
+  _resizeCol.style.maxWidth = `${newWidth}px`
+}
+
+function onColResizeEnd() {
+  if (_resizeCol) {
+    const handle = _resizeCol.querySelector('.col-resize-handle')
+    if (handle) handle.classList.remove('dragging')
+  }
+  _resizeCol = null
+  document.removeEventListener('mousemove', onColResizeMove)
+  document.removeEventListener('mouseup', onColResizeEnd)
 }
 
 // Handle tag rename from inline edit (wrapper for renameChannel)
@@ -4749,8 +4788,9 @@ watch(
                 :style="`width: ${col.width}; text-align: ${col.align || 'left'}`"
               >
                 {{ col.label }}
+                <span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span>
               </th>
-              <th class="col-alarm">ALARM</th>
+              <th class="col-alarm">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
               <th class="col-status-indicators" title="Configuration errors and warnings"></th>
               <th class="col-actions">CONFIG</th>
             </tr>
@@ -8472,7 +8512,7 @@ watch(
   top: 25px;
 }
 
-/* Column headers — resizable by dragging right edge */
+/* Column headers — resizable via drag handle on right edge */
 .column-headers-row th {
   background: var(--bg-secondary);
   padding: 8px 6px;
@@ -8482,7 +8522,22 @@ watch(
   border-bottom: 2px solid var(--border-color);
   white-space: nowrap;
   overflow: hidden;
-  resize: horizontal;
+  position: relative;
+}
+.column-headers-row th .col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 4;
+}
+.column-headers-row th .col-resize-handle:hover,
+.column-headers-row th .col-resize-handle.dragging {
+  background: var(--accent-color, #3b82f6);
+  opacity: 0.6;
 }
 
 /* When signal type row is present, column headers are offset via sticky top (see above) */
