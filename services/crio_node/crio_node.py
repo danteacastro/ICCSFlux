@@ -345,7 +345,7 @@ class ChannelConfig:
     thermocouple_type: str = 'K'
     voltage_range: float = 10.0
     current_range_ma: float = 20.0
-    terminal_config: str = 'RSE'
+    terminal_config: str = 'DIFF'  # Safest default — required for current/TC/RTD/strain
     cjc_source: str = 'BUILT_IN'
 
     # Output settings

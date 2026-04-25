@@ -44,6 +44,55 @@ def _get_physical_channel_index(physical_channel: str) -> int:
 logger = logging.getLogger('cRIONode')
 
 # ---------------------------------------------------------------------------
+# Terminal configuration validation
+# ---------------------------------------------------------------------------
+# Channel types that REQUIRE differential mode. Anything else causes wrong
+# readings (e.g., RSE on a current input reads shunt voltage instead of
+# current, producing values like 127 mA on a 4-20 mA loop).
+_DIFFERENTIAL_ONLY_TYPES = {
+    'current_input', 'current_output',
+    'thermocouple', 'rtd',
+    'strain', 'strain_input', 'bridge_input',
+    'resistance', 'resistance_input',
+    'iepe', 'iepe_input',
+}
+
+def _resolve_terminal_config(channel_type: str, requested: str):
+    """Map a terminal_config string to nidaqmx constant, coercing to a valid
+    value for the channel type.
+
+    For DIFFERENTIAL-only types (current/TC/RTD/strain/IEPE/resistance),
+    always returns DIFF regardless of what was requested.
+    """
+    try:
+        import nidaqmx
+        TC = nidaqmx.constants.TerminalConfiguration
+    except Exception:
+        return None
+
+    # Differential-only types: always DIFF
+    if channel_type in _DIFFERENTIAL_ONLY_TYPES:
+        if requested and requested.upper().strip() not in ('DIFF', 'DIFFERENTIAL', 'DEFAULT', ''):
+            logger.warning(
+                f"Terminal config '{requested}' is not valid for {channel_type} channels — "
+                f"forcing DIFFERENTIAL. Using anything else causes incorrect readings."
+            )
+        return TC.DIFF
+
+    # Voltage types: respect the user's choice
+    config_map = {
+        'RSE': TC.RSE,
+        'DIFF': TC.DIFF,
+        'DIFFERENTIAL': TC.DIFF,
+        'NRSE': TC.NRSE,
+        'PSEUDO_DIFF': TC.PSEUDO_DIFF,
+        'PSEUDODIFFERENTIAL': TC.PSEUDO_DIFF,
+        'DEFAULT': TC.DIFF,  # Legacy: treat DEFAULT as DIFF (safer than NI auto-pick)
+    }
+    key = (requested or 'DIFFERENTIAL').upper().strip()
+    return config_map.get(key, TC.DIFF)
+
+# ---------------------------------------------------------------------------
 # Hardware constants (extracted from inline magic numbers)
 # ---------------------------------------------------------------------------
 SLOW_READ_MIN_INTERVAL_S = 1.0      # Physical floor: TC autozero takes ~1s per read
@@ -1066,16 +1115,23 @@ class NIDAQmxHardware(HardwareInterface):
                         tc_type_str = 'K'
                     tc_type = getattr(nidaqmx.constants.ThermocoupleType,
                                       tc_type_str.upper(), nidaqmx.constants.ThermocoupleType.K)
-                    # Map CJC source from config
+                    # Map CJC source from config — accept all aliases
                     cjc_map = {
                         'INTERNAL': nidaqmx.constants.CJCSource.BUILT_IN,
                         'BUILT_IN': nidaqmx.constants.CJCSource.BUILT_IN,
+                        'BUILTIN': nidaqmx.constants.CJCSource.BUILT_IN,
                         'CONSTANT': nidaqmx.constants.CJCSource.CONSTANT_USER_VALUE,
+                        'CONST_VAL': nidaqmx.constants.CJCSource.CONSTANT_USER_VALUE,
+                        'CONSTANT_USER_VALUE': nidaqmx.constants.CJCSource.CONSTANT_USER_VALUE,
                         'CHANNEL': nidaqmx.constants.CJCSource.SCANNABLE_CHANNEL,
+                        'EXTERNAL': nidaqmx.constants.CJCSource.SCANNABLE_CHANNEL,
+                        'EXT': nidaqmx.constants.CJCSource.SCANNABLE_CHANNEL,
+                        'SCANNABLE_CHANNEL': nidaqmx.constants.CJCSource.SCANNABLE_CHANNEL,
                     }
                     cjc_str = (ch.cjc_source or 'internal').upper().strip()
                     cjc_source = cjc_map.get(cjc_str, nidaqmx.constants.CJCSource.BUILT_IN)
-                    cjc_val = getattr(ch, 'cjc_value', 25.0) if cjc_str == 'CONSTANT' else 25.0
+                    is_constant = cjc_str in ('CONSTANT', 'CONST_VAL', 'CONSTANT_USER_VALUE')
+                    cjc_val = getattr(ch, 'cjc_value', 25.0) if is_constant else 25.0
 
                     logger.info(f"Creating TC channel: {ch.name} ({full_path}) type={tc_type_str} cjc={ch.cjc_source}")
                     task.ai_channels.add_ai_thrmcpl_chan(
@@ -1086,14 +1142,16 @@ class NIDAQmxHardware(HardwareInterface):
                     )
                 elif actual_type == 'current_input':
                     # Current input (e.g., NI 9203, 9207, 9208) - typically ±20mA
-                    # cRIO C Series modules have fixed terminal config - use DEFAULT
+                    # MUST use DIFFERENTIAL — DEFAULT/RSE causes wrong readings
+                    # (ADC reads shunt voltage instead of current).
                     max_current = ch.current_range_ma / 1000.0  # Convert mA to A
-                    logger.info(f"Creating current input channel: {ch.name} ({full_path}) range=±{ch.current_range_ma}mA")
+                    term_config = _resolve_terminal_config('current_input', getattr(ch, 'terminal_config', 'differential'))
+                    logger.info(f"Creating current input channel: {ch.name} ({full_path}) range=±{ch.current_range_ma}mA term=DIFF")
                     task.ai_channels.add_ai_current_chan(
                         full_path,
                         min_val=-max_current,
                         max_val=max_current,
-                        terminal_config=TerminalConfiguration.DEFAULT
+                        terminal_config=term_config
                     )
                 elif actual_type == 'rtd':
                     # RTD channel (e.g., NI 9216, 9217, 9226)
@@ -1186,13 +1244,14 @@ class NIDAQmxHardware(HardwareInterface):
                         task.ai_channels.add_ai_voltage_chan(full_path, min_val=-0.1, max_val=0.1)
                 else:
                     # Voltage input (default for voltage_input, strain_input, etc.)
-                    # cRIO C Series modules have fixed terminal config - use DEFAULT
+                    # Use the channel's terminal_config (validator coerces to safe value)
+                    term_config = _resolve_terminal_config(actual_type, getattr(ch, 'terminal_config', 'differential'))
                     logger.info(f"Creating voltage channel: {ch.name} ({full_path}) actual_type={actual_type}")
                     task.ai_channels.add_ai_voltage_chan(
                         full_path,
                         min_val=-ch.voltage_range,
                         max_val=ch.voltage_range,
-                        terminal_config=TerminalConfiguration.DEFAULT
+                        terminal_config=term_config
                     )
 
                 self._ai_channels[task_key].append(ch.name)

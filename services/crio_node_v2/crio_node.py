@@ -1273,7 +1273,7 @@ class CRIONodeV2:
                     'thermocouple_type': getattr(ch, 'thermocouple_type', 'K'),
                     'voltage_range': getattr(ch, 'voltage_range', 10.0),
                     'current_range_ma': getattr(ch, 'current_range_ma', 20.0),
-                    'terminal_config': getattr(ch, 'terminal_config', 'RSE'),
+                    'terminal_config': getattr(ch, 'terminal_config', 'differential'),
                     'cjc_source': getattr(ch, 'cjc_source', 'BUILT_IN'),
                     'default_state': getattr(ch, 'default_state', False),
                     'invert': getattr(ch, 'invert', False),
