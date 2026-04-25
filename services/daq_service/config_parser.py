@@ -263,13 +263,12 @@ class ChannelConfig:
     current_range_ma: float = 20.0
     shunt_resistor_loc: str = "internal"  # internal or external (for current input modules)
 
-    # Terminal configuration for analog inputs (DEFAULT, RSE, DIFF, NRSE, PSEUDO_DIFF)
-    # DEFAULT = Let DAQmx auto-select (recommended - works with all modules)
+    # Terminal configuration for analog inputs (DIFFERENTIAL, RSE, NRSE, PSEUDODIFFERENTIAL)
+    # DIFFERENTIAL = Best noise rejection, correct for current inputs (4-20mA shunt)
     # RSE = Referenced Single-Ended
-    # DIFF = Differential (better noise rejection, uses 2 channels)
     # NRSE = Non-Referenced Single-Ended
-    # PSEUDO_DIFF = Pseudo-Differential
-    terminal_config: str = "DEFAULT"
+    # PSEUDODIFFERENTIAL = For floating signals with common-mode
+    terminal_config: str = "differential"
 
     # Thermocouple specific
     thermocouple_type: Optional[ThermocoupleType] = None
@@ -676,7 +675,7 @@ def load_config(config_path: str) -> NISystemConfig:
                 scaled_max=float(sec['scaled_max']) if 'scaled_max' in sec else None,
                 voltage_range=float(sec.get('voltage_range', 10.0)),
                 current_range_ma=float(sec.get('current_range_ma', 20.0)),
-                terminal_config=sec.get('terminal_config', 'DEFAULT'),
+                terminal_config=sec.get('terminal_config', 'differential'),
                 thermocouple_type=tc_type,
                 cjc_source=sec.get('cjc_source', 'internal'),
                 # RTD

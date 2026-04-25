@@ -3612,7 +3612,7 @@ function saveChannelConfig() {
     // Parse voltage range from string like "10V" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
     config.voltage_range = rangeMatch ? parseFloat(rangeMatch[1]) : 10
-    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
+    config.terminal_config = mc.terminal_config ?? 'differential'
     config.scale_type = mc.scale_type
     config.scale_slope = mc.scale_slope
     config.scale_offset = mc.scale_offset
@@ -3627,7 +3627,7 @@ function saveChannelConfig() {
     // Parse current range from string like "20mA" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
     config.current_range_ma = rangeMatch ? parseFloat(rangeMatch[1]) : 20
-    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
+    config.terminal_config = mc.terminal_config ?? 'differential'
     config.shunt_resistor_loc = mc.shunt_location ?? 'internal'  // internal or external
     config.four_twenty_scaling = mc.four_twenty_scaling
     config.eng_units_min = mc.eng_units_min
@@ -3662,7 +3662,7 @@ function saveChannelConfig() {
 
   // IEPE types — field names must match config_parser.py ChannelConfig
   if (['iepe', 'iepe_input'].includes(channelType)) {
-    config.terminal_config = mc.terminal_config ?? 'DEFAULT'
+    config.terminal_config = mc.terminal_config ?? 'differential'
     config.iepe_coupling = mc.coupling  // UI: coupling → backend: iepe_coupling
     config.iepe_sensitivity = parseFloat(mc.sensitivity) || 100  // UI: sensitivity → backend: iepe_sensitivity
     config.iepe_current = (parseFloat(mc.excitation_current) || 4) / 1000  // UI: mA → backend: Amps
@@ -4923,7 +4923,7 @@ watch(
               <template v-else-if="activeTypeTab === 'voltage_input'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.terminal_config || 'DEFAULT'"
+                    :value="config.terminal_config || 'differential'"
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
@@ -4993,7 +4993,7 @@ watch(
               <template v-else-if="activeTypeTab === 'current_input'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.terminal_config || 'DEFAULT'"
+                    :value="config.terminal_config || 'differential'"
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
@@ -5099,7 +5099,7 @@ watch(
               <template v-else-if="activeTypeTab === 'iepe'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.terminal_config || 'DEFAULT'"
+                    :value="config.terminal_config || 'differential'"
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >

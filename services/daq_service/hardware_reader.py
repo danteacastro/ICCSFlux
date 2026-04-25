@@ -142,14 +142,14 @@ def get_terminal_config(config_str: str):
         'NRSE': TerminalConfiguration.NRSE,
         'PSEUDO_DIFF': TerminalConfiguration.PSEUDO_DIFF,
         'PSEUDODIFFERENTIAL': TerminalConfiguration.PSEUDO_DIFF,
-        'DEFAULT': TerminalConfiguration.DEFAULT,
+        'DEFAULT': TerminalConfiguration.DIFF,  # Legacy: treat DEFAULT as DIFFERENTIAL
     }
 
     config_upper = config_str.upper().strip()
     if config_upper not in config_map:
-        logger.warning(f"Unknown terminal config '{config_str}', defaulting to DEFAULT. "
-                      f"Valid options: DEFAULT, RSE, DIFF, NRSE, PSEUDO_DIFF")
-        return TerminalConfiguration.DEFAULT
+        logger.warning(f"Unknown terminal config '{config_str}', defaulting to DIFFERENTIAL. "
+                      f"Valid options: DIFFERENTIAL, RSE, NRSE, PSEUDODIFFERENTIAL")
+        return TerminalConfiguration.DIFF
 
     return config_map[config_upper]
 

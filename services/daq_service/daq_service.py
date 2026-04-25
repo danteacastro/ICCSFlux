@@ -821,7 +821,7 @@ class DAQService:
                     scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                     voltage_range=float(ch_data.get("voltage_range", 10.0)),
                     current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
-                    terminal_config=ch_data.get("terminal_config", "DEFAULT"),
+                    terminal_config=ch_data.get("terminal_config", "differential"),
                     thermocouple_type=tc_type,
                     cjc_source=ch_data.get("cjc_source", "internal"),
                     cjc_value=float(ch_data.get("cjc_value", 25.0)),
@@ -8231,7 +8231,7 @@ Unit conversions:
                 scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                 voltage_range=float(ch_data.get("voltage_range", 10.0)),
                 current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
-                terminal_config=ch_data.get("terminal_config", "DEFAULT"),
+                terminal_config=ch_data.get("terminal_config", "differential"),
                 thermocouple_type=tc_type,
                 cjc_source=ch_data.get("cjc_source", "internal"),
                 cjc_value=float(ch_data.get("cjc_value", 25.0)),
@@ -14153,7 +14153,7 @@ Unit conversions:
                     cjc_value=float(ch_config.get('cjc_value', 25.0)),
                     voltage_range=float(ch_config.get('voltage_range', 10.0)),
                     current_range_ma=float(ch_config.get('current_range_ma', 20.0)),
-                    terminal_config=ch_config.get('terminal_config', 'DEFAULT'),
+                    terminal_config=ch_config.get('terminal_config', 'differential'),
                     # RTD
                     rtd_type=ch_config.get('rtd_type', 'Pt100'),
                     rtd_wiring=ch_config.get('rtd_wiring', ch_config.get('resistance_config', '4-wire')),
@@ -15195,8 +15195,8 @@ Unit conversions:
             if ch.log_interval_ms != 1000:
                 section['log_interval_ms'] = str(ch.log_interval_ms)
 
-            # Terminal configuration (only save if not default)
-            if ch.terminal_config != 'DEFAULT':
+            # Terminal configuration (always save — critical for correct hardware readings)
+            if ch.terminal_config:
                 section['terminal_config'] = ch.terminal_config
 
             # RTD-specific (only save if not default)
