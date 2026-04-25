@@ -1313,7 +1313,67 @@ const _DIFFERENTIAL_ONLY_TYPES = new Set([
   'iepe', 'iepe_input',
 ])
 
-function getAllowedTerminalConfigs(channelType: string | undefined) {
+// Modules that are DIFF-only by hardware design even though their channel
+// type (e.g., voltage_input) would normally allow RSE/NRSE.
+// MUST stay in sync with services/daq_service/terminal_config.py.
+const _DIFFERENTIAL_ONLY_MODULES = new Set([
+  // Simultaneous-sampling voltage modules
+  'NI-9215', 'NI-9220', 'NI-9222', 'NI-9223', 'NI-9224', 'NI-9225',
+  // Isolated voltage modules
+  'NI-9229', 'NI-9239',
+  // IEPE/Sound&Vibration
+  'NI-9230', 'NI-9231', 'NI-9232', 'NI-9234', 'NI-9250', 'NI-9251',
+  // Strain/bridge
+  'NI-9219', 'NI-9237',
+  // Thermocouple/RTD
+  'NI-9211', 'NI-9213', 'NI-9214', 'NI-9216', 'NI-9217', 'NI-9226',
+  // Current input
+  'NI-9203', 'NI-9207', 'NI-9208', 'NI-9227', 'NI-9246', 'NI-9247', 'NI-9253',
+])
+
+function isModuleDifferentialOnly(moduleType: string | undefined | null): boolean {
+  if (!moduleType) return false
+  let normalized = moduleType.trim().toUpperCase()
+  if (_DIFFERENTIAL_ONLY_MODULES.has(normalized)) return true
+  // Also accept bare model number (e.g., '9215' -> 'NI-9215')
+  if (!normalized.startsWith('NI-')) {
+    return _DIFFERENTIAL_ONLY_MODULES.has(`NI-${normalized}`)
+  }
+  return false
+}
+
+/**
+ * Look up the module type (e.g., 'NI-9215') from a physical channel string
+ * by walking the discovery result. Falls back to null if not found.
+ *
+ * Example: physical_channel='cDAQ1Mod1/ai0' -> module='cDAQ1Mod1' -> 'NI-9215'
+ */
+function lookupModuleType(physicalChannel: string | undefined): string | null {
+  if (!physicalChannel) return null
+  // Module name is everything before the first '/'
+  const slash = physicalChannel.indexOf('/')
+  if (slash < 0) return null
+  const moduleName = physicalChannel.substring(0, slash)
+  // Search the discovery result
+  const result = discoveryResult.value
+  if (!result?.chassis) return null
+  for (const chassis of result.chassis) {
+    for (const mod of chassis.modules || []) {
+      if (mod.name === moduleName || mod.device === moduleName) {
+        return mod.product_type || mod.type || null
+      }
+    }
+  }
+  return null
+}
+
+function getAllowedTerminalConfigs(channelType: string | undefined, physicalChannel?: string) {
+  // Per-module override takes precedence: NI-9215 etc. are DIFF-only by hardware
+  const moduleType = lookupModuleType(physicalChannel)
+  if (isModuleDifferentialOnly(moduleType)) {
+    return TERMINAL_CONFIGS.filter(t => t.value === 'differential')
+  }
+  // Channel-type rule
   if (channelType && _DIFFERENTIAL_ONLY_TYPES.has(channelType)) {
     return TERMINAL_CONFIGS.filter(t => t.value === 'differential')
   }
@@ -5052,7 +5112,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -5122,7 +5182,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -5228,7 +5288,7 @@ watch(
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type)" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -6048,7 +6108,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
@@ -6148,7 +6208,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
@@ -6305,7 +6365,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type)" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
