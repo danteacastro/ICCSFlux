@@ -316,8 +316,11 @@ def reverse_scaling(channel: ChannelConfig, eng_value: float) -> float:
                 return 4.0 + (normalized * 16.0)
             return 4.0
 
-    # For map scaling
-    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
+    # For map scaling (any analog type)
+    if channel.scale_type == 'map' and channel.channel_type in (
+        ChannelType.VOLTAGE_INPUT, ChannelType.CURRENT_INPUT,
+        ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+    ):
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
             scaled_span = channel.scaled_max - channel.scaled_min
@@ -363,16 +366,20 @@ def get_scaling_info(channel: ChannelConfig) -> dict:
             info['example'] = f'12mA -> {mid_eng} {channel.units}'
             return info
 
-    if channel.channel_type == ChannelType.VOLTAGE_INPUT and channel.scale_type == 'map':
+    if channel.scale_type == 'map' and channel.channel_type in (
+        ChannelType.VOLTAGE_INPUT, ChannelType.CURRENT_INPUT,
+        ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+    ):
         if (channel.pre_scaled_min is not None and channel.pre_scaled_max is not None and
             channel.scaled_min is not None and channel.scaled_max is not None):
+            raw_unit = 'mA' if channel.channel_type in (ChannelType.CURRENT_INPUT, ChannelType.CURRENT_OUTPUT) else 'V'
             info['type'] = 'map'
-            info['formula'] = f'{channel.pre_scaled_min}V-{channel.pre_scaled_max}V -> {channel.scaled_min}-{channel.scaled_max} {channel.units}'
+            info['formula'] = f'{channel.pre_scaled_min}{raw_unit}-{channel.pre_scaled_max}{raw_unit} -> {channel.scaled_min}-{channel.scaled_max} {channel.units}'
             info['raw_range'] = (channel.pre_scaled_min, channel.pre_scaled_max)
             info['scaled_range'] = (channel.scaled_min, channel.scaled_max)
             mid_raw = (channel.pre_scaled_min + channel.pre_scaled_max) / 2
             mid_scaled = (channel.scaled_min + channel.scaled_max) / 2
-            info['example'] = f'{mid_raw}V -> {mid_scaled} {channel.units}'
+            info['example'] = f'{mid_raw}{raw_unit} -> {mid_scaled} {channel.units}'
             return info
 
     if channel.scale_slope != 1.0 or channel.scale_offset != 0.0:

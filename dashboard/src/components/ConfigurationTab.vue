@@ -1281,6 +1281,19 @@ function updateChannelField(channelName: string, field: string, value: any) {
     coerced = parseFloat(value)
     if (isNaN(coerced)) coerced = 0
   }
+
+  // Auto-enable map scaling when user sets any scaling field via the inline table.
+  // This makes scaling "just work" without needing a separate checkbox or dropdown.
+  const SCALING_FIELDS = new Set(['pre_scaled_min', 'pre_scaled_max', 'scaled_min', 'scaled_max'])
+  if (SCALING_FIELDS.has(field)) {
+    const config = store.channels[channelName]
+    if (config && (!config.scale_type || config.scale_type === 'none')) {
+      mqtt.updateChannelConfig(channelName, { [field]: coerced, scale_type: 'map' })
+      markDirty()
+      return
+    }
+  }
+
   mqtt.updateChannelConfig(channelName, { [field]: coerced })
   markDirty()
 }
@@ -5018,15 +5031,15 @@ watch(
                     :disabled="!canEdit"
                   />
                 </td>
-                <!-- For current_input: Scaled Min/Max map to eng_units_min/max
-                     which is what scale_four_twenty() actually reads. -->
+                <!-- Scaled Min/Max — same universal fields as voltage_input.
+                     Map scaling (pre_scaled→scaled) works for any raw range. -->
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'eng_units_min', config.eng_units_min ?? config.scaled_min ?? 0)"
-                    @focus="onInlineFocus(name, 'eng_units_min', config.eng_units_min ?? config.scaled_min ?? 0)"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? 0)"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'eng_units_min')"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5034,10 +5047,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'eng_units_max', config.eng_units_max ?? config.scaled_max ?? 100)"
-                    @focus="onInlineFocus(name, 'eng_units_max', config.eng_units_max ?? config.scaled_max ?? 100)"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? 100)"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'eng_units_max')"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5363,15 +5376,14 @@ watch(
                     :disabled="!canEdit"
                   />
                 </td>
-                <!-- current_output: Scaled Min/Max map to eng_units_min/max
-                     (same as current_input — scale_four_twenty reads these) -->
+                <!-- Scaled Min/Max — universal fields, same as all analog types -->
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'eng_units_min', config.eng_units_min ?? config.scaled_min ?? 0)"
-                    @focus="onInlineFocus(name, 'eng_units_min', config.eng_units_min ?? config.scaled_min ?? 0)"
+                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? 0)"
+                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? 0)"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'eng_units_min')"
+                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5379,10 +5391,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'eng_units_max', config.eng_units_max ?? config.scaled_max ?? 100)"
-                    @focus="onInlineFocus(name, 'eng_units_max', config.eng_units_max ?? config.scaled_max ?? 100)"
+                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? 100)"
+                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? 100)"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'eng_units_max')"
+                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />

@@ -90,7 +90,9 @@ A Python-based, open-architecture alternative to LabVIEW for National Instrument
 
 - Python 3.11+ with venv
 - Node.js 18+ with npm
-- NI-DAQmx drivers (optional — runs in simulation mode without them)
+- **NI-DAQmx drivers** (required for real hardware — download from [ni.com/downloads](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html))
+
+> **Important:** If NI-DAQmx is not installed, the system will automatically fall back to simulation mode and display a **SIM MODE** banner in the dashboard. All channel values will be simulated, not real hardware readings. If you see SIM MODE unexpectedly, verify that NI-DAQmx drivers are installed and your cDAQ hardware is connected.
 
 ### Development
 

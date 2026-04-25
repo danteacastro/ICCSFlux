@@ -686,9 +686,14 @@ class DAQService:
                 self.simulator = self._create_simulator()
                 self.hardware_reader = None
             elif not HW_READER_AVAILABLE:
-                logger.warning("nidaqmx not available - falling back to simulator")
+                logger.error(
+                    "NI-DAQmx driver not installed — running in SIMULATION MODE. "
+                    "Install NI-DAQmx to use real hardware: https://ni.com/downloads"
+                )
                 self.simulator = self._create_simulator()
                 self.hardware_reader = None
+                # Set flag so frontend shows the SIM MODE banner
+                self.config.system.simulation_mode = True
             else:
                 # Real hardware mode
                 logger.info("Initializing hardware reader for real NI hardware")
@@ -698,9 +703,13 @@ class DAQService:
                     logger.info("Hardware reader initialized successfully")
                 except Exception as e:
                     logger.error(f"Failed to initialize hardware reader: {e}")
-                    logger.warning("Falling back to simulator")
+                    logger.warning(
+                        "Falling back to SIMULATION MODE — check hardware connection"
+                    )
                     self.hardware_reader = None
                     self.simulator = self._create_simulator()
+                    # Set flag so frontend shows the SIM MODE banner
+                    self.config.system.simulation_mode = True
 
             # Initialize Modbus reader if we have Modbus devices configured
             self._init_modbus_reader()
@@ -873,9 +882,13 @@ class DAQService:
                 self.simulator = self._create_simulator()
                 self.hardware_reader = None
             elif not HW_READER_AVAILABLE:
-                logger.warning("nidaqmx not available - falling back to simulator")
+                logger.error(
+                    "NI-DAQmx driver not installed — running in SIMULATION MODE. "
+                    "Install NI-DAQmx to use real hardware: https://ni.com/downloads"
+                )
                 self.simulator = self._create_simulator()
                 self.hardware_reader = None
+                self.config.system.simulation_mode = True
             else:
                 # Real hardware mode
                 logger.info("Initializing hardware reader for real NI hardware")
@@ -885,9 +898,12 @@ class DAQService:
                     logger.info("Hardware reader initialized successfully")
                 except Exception as e:
                     logger.error(f"Failed to initialize hardware reader: {e}")
-                    logger.warning("Falling back to simulator")
+                    logger.warning(
+                        "Falling back to SIMULATION MODE — check hardware connection"
+                    )
                     self.hardware_reader = None
                     self.simulator = self._create_simulator()
+                    self.config.system.simulation_mode = True
 
             # Initialize channel values (clear stale entries from previous project)
             old_names = set(self.channel_values.keys())
@@ -7659,8 +7675,10 @@ Unit conversions:
                 logger.info("Hardware reader reinitialized successfully")
             except Exception as e:
                 logger.error(f"Failed to reinitialize hardware reader: {e}")
-                logger.warning("Falling back to simulator")
+                logger.warning("Falling back to simulator - check NI hardware connection")
                 self.simulator = self._create_simulator()
+                self._publish_config_response(True,
+                    f"WARNING: NI hardware unavailable ({e}). Running in simulation mode.")
 
         # Reinitialize Modbus reader if configured
         self._init_modbus_reader()
@@ -9923,7 +9941,7 @@ Unit conversions:
         try:
             node_id = payload.get('node_id', '').strip()
             node_name = payload.get('node_name', '').strip() or node_id
-            simulation_mode = payload.get('simulation_mode', True)
+            simulation_mode = payload.get('simulation_mode', False)
 
             if not node_id:
                 self.mqtt_client.publish(
@@ -13511,6 +13529,16 @@ Unit conversions:
         if 'eng_units_max' in config_data:
             channel.eng_units_max = float(config_data['eng_units_max']) if config_data['eng_units_max'] is not None else None
 
+        # Auto-enable map scaling when user sets any of the four scaling fields
+        # but scale_type wasn't explicitly included in this update.
+        # This makes inline table edits "just work" without a separate dropdown.
+        _MAP_FIELDS = {'pre_scaled_min', 'pre_scaled_max', 'scaled_min', 'scaled_max'}
+        if (_MAP_FIELDS & set(config_data.keys())
+                and 'scale_type' not in config_data
+                and (channel.scale_type or 'none') == 'none'):
+            channel.scale_type = 'map'
+            logger.info(f"Auto-enabled map scaling for {channel_name} (scaling fields set via inline edit)")
+
         # Map scaling parameters
         if 'pre_scaled_min' in config_data:
             channel.pre_scaled_min = float(config_data['pre_scaled_min']) if config_data['pre_scaled_min'] is not None else None
@@ -16337,9 +16365,11 @@ Unit conversions:
             is_modbus = channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL) or source_type == 'cfp'
 
             # Auto-detect cRIO channels: if physical_channel starts with "Mod" (no chassis prefix)
-            # it's ALWAYS a cRIO channel - local cDAQ channels have chassis prefix like "cDAQ1Mod1/ai0"
+            # it's a cRIO channel - local cDAQ channels have chassis prefix like "cDAQ1Mod1/ai0"
+            # Only auto-promote in cRIO mode; in cDAQ mode all channels are local.
             physical_ch = getattr(channel, 'physical_channel', '')
-            if source_type != 'crio' and physical_ch.startswith('Mod'):
+            if (source_type != 'crio' and physical_ch.startswith('Mod')
+                    and self.config.system.project_mode == ProjectMode.CRIO):
                 # This is a cRIO channel - route to cRIO regardless of online status
                 # (MQTT will queue the message if cRIO isn't connected yet)
                 source_type = 'crio'
