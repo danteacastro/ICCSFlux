@@ -16721,6 +16721,13 @@ Unit conversions:
                     # Snapshot channel config to prevent race with config updates
                     channel_config_snapshot = dict(self.config.channels)
 
+                    # Periodic scaling diagnostic (every 10 seconds)
+                    _now = time.time()
+                    _diag_scaling = getattr(self, '_diag_scaling_next', 0)
+                    _do_scaling_diag = _now >= _diag_scaling
+                    if _do_scaling_diag:
+                        self._diag_scaling_next = _now + 10.0
+
                     with self.values_lock:
                         for name, raw_value in raw_values.items():
                             # Validate raw value first (catches NaN, Inf, open TC, etc.)
@@ -16742,6 +16749,21 @@ Unit conversions:
                                     # Only scale valid values
                                     if is_valid_value(validated_raw):
                                         scaled_value = apply_scaling(channel, validated_raw)
+
+                                        # Scaling diagnostic — log every 10s so we can see what's happening
+                                        if _do_scaling_diag:
+                                            logger.info(
+                                                f"[SCALING] {name}: raw={validated_raw:.4f} "
+                                                f"scaled={scaled_value:.4f} "
+                                                f"type={channel.channel_type.value} "
+                                                f"scale_type={channel.scale_type} "
+                                                f"four_twenty={channel.four_twenty_scaling} "
+                                                f"eng_min={channel.eng_units_min} eng_max={channel.eng_units_max} "
+                                                f"pre_min={channel.pre_scaled_min} pre_max={channel.pre_scaled_max} "
+                                                f"sc_min={channel.scaled_min} sc_max={channel.scaled_max} "
+                                                f"slope={channel.scale_slope} offset={channel.scale_offset}"
+                                            )
+
                                         # Validate scaled value too (scaling could produce bad values)
                                         if is_valid_value(scaled_value):
                                             self.channel_values[name] = scaled_value
