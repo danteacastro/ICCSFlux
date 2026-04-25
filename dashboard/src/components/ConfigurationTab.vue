@@ -8472,7 +8472,7 @@ watch(
   top: 25px;
 }
 
-/* Column headers */
+/* Column headers — resizable by dragging right edge */
 .column-headers-row th {
   background: var(--bg-secondary);
   padding: 8px 6px;
@@ -8481,6 +8481,8 @@ watch(
   color: var(--text-secondary);
   border-bottom: 2px solid var(--border-color);
   white-space: nowrap;
+  overflow: hidden;
+  resize: horizontal;
 }
 
 /* When signal type row is present, column headers are offset via sticky top (see above) */

@@ -16677,7 +16677,7 @@ Unit conversions:
                         # Check hardware reader health
                         if not self.hardware_reader.is_healthy():
                             if not getattr(self, '_reader_degraded_notified', False):
-                                logger.error("[SCAN] Hardware reader unhealthy — values may be stale")
+                                logger.error("[SCAN] Hardware reader unhealthy — attempting auto-reinit")
                                 self._reader_degraded_notified = True
                                 base = self.get_topic_base()
                                 self.mqtt_client.publish(
@@ -16686,6 +16686,12 @@ Unit conversions:
                                         'health': self.hardware_reader.get_health_status(),
                                         'timestamp': datetime.now().isoformat(),
                                     }), qos=1)
+                                # Auto-reinit: try to recreate the hardware reader
+                                try:
+                                    self._reinit_hardware_reader()
+                                    logger.info("[SCAN] Hardware reader auto-reinit successful")
+                                except Exception as reinit_err:
+                                    logger.error(f"[SCAN] Hardware reader auto-reinit failed: {reinit_err}")
                         else:
                             self._reader_degraded_notified = False
 
@@ -16903,11 +16909,11 @@ Unit conversions:
                         self._acq_events.emit(AcquisitionEvent.SCAN_LOOP_ERROR, {
                             'error': str(e), 'consecutive': self._scan_consecutive_errors,
                         }, severity='error')
-                    if self._scan_consecutive_errors >= 10:
-                        logger.critical("[SCAN] 10 consecutive errors — auto-stopping acquisition")
+                    if self._scan_consecutive_errors >= 100:
+                        logger.critical("[SCAN] 100 consecutive errors — auto-stopping acquisition")
                         if self._acq_events:
                             self._acq_events.emit(AcquisitionEvent.SCAN_LOOP_FATAL, {
-                                'error': 'Auto-stopped after 10 consecutive scan failures',
+                                'error': 'Auto-stopped after 100 consecutive scan failures',
                                 'total_errors': self._scan_total_errors,
                             }, severity='error')
                         self._handle_acquire_stop()

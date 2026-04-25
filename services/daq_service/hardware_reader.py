@@ -232,10 +232,10 @@ class HardwareReader:
         self._running = False
         self._reader_thread: Optional[threading.Thread] = None
         self._error_count = 0
-        self._max_errors = 10  # Stop after this many consecutive errors
+        self._max_errors = 50  # Stop after this many consecutive errors (real hardware can have transient bursts)
         self._reader_died = False  # Flag set when reader exits due to errors
         self._recovery_attempts = 0
-        self._max_recovery_attempts = 3
+        self._max_recovery_attempts = 10  # More attempts before giving up on real hardware
         self._error_callback: Optional[callable] = None  # Callback when reader dies
 
         # Software watchdog for output safety
