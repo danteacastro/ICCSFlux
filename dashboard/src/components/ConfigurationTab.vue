@@ -4655,15 +4655,6 @@ watch(
       </div>
     </Transition>
 
-    <!-- DEBUG: Data flow counters -->
-    <div style="padding: 6px 16px; font-size: 0.72rem; font-family: monospace; background: #1a1a2e; color: #0f0; line-height: 1.6;">
-      <div>CONN: {{ mqtt.connected.value ? 'YES' : 'NO' }} | MQTT IN: msgs={{ mqtt.batchDebug.value.msg_total }} matched={{ mqtt.batchDebug.value.msg_node_match }} crio={{ mqtt.batchDebug.value.msg_crio }} batch_topic={{ mqtt.batchDebug.value.msg_batch_topic }}</div>
-      <div>HANDLERS: batch={{ mqtt.batchDebug.value.batch_entered }} individual={{ mqtt.batchDebug.value.individual_entered }} last_ch={{ mqtt.batchDebug.value.individual_last_channel }}</div>
-      <div>OUTPUT: callbacks={{ mqtt.batchDebug.value.callbacks_fired }} cb_count={{ mqtt.batchDebug.value.callbacks_count }} store_vals={{ mqtt.batchDebug.value.store_values_count }}</div>
-      <div>LAST: topic={{ mqtt.batchDebug.value.last_topic }} | crio={{ mqtt.batchDebug.value.last_crio_topic }}</div>
-      <div style="color: #ff0;">NOTE: If CONN=YES but msgs=0, do a FULL page reload (Ctrl+Shift+R) — HMR breaks message handler</div>
-    </div>
-
     <!-- Populating Channels Indicator -->
     <Transition name="fade">
       <div v-if="isPopulating" class="populating-banner">

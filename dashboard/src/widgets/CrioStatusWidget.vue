@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useCrio } from '../composables/useCrio'
+import { useDashboardStore } from '../stores/dashboard'
 
+const store = useDashboardStore()
 const crio = useCrio()
+
+// Hide this widget entirely in cDAQ mode — there is no cRIO
+const isCdaqMode = computed(() => (store.status?.project_mode || 'cdaq') === 'cdaq')
 
 // State classes
 const stateClass = computed(() => {
@@ -37,7 +42,11 @@ function handleReset() {
 </script>
 
 <template>
-  <div class="crio-status-widget">
+  <div v-if="isCdaqMode" class="crio-status-widget cdaq-placeholder">
+    <div class="header"><span class="title">Local DAQ</span></div>
+    <div class="cdaq-note">cDAQ mode — no remote controller</div>
+  </div>
+  <div v-else class="crio-status-widget">
     <!-- Header with connection status -->
     <div class="header">
       <div class="title">
