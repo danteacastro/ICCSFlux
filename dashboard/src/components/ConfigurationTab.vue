@@ -1275,11 +1275,20 @@ function updateChannelField(channelName: string, field: string, value: any) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
-  // Coerce numeric fields from string (HTML inputs) to number
+  // Coerce numeric fields from string (HTML inputs) to number.
+  // Reject (don't silently zero) invalid input — Mike should see the error
+  // immediately if he typos a value, not realize it after the fact.
   let coerced = value
   if (NUMERIC_CHANNEL_FIELDS.has(field) && typeof value === 'string') {
+    if (value.trim() === '') {
+      // Empty string — treat as no change
+      return
+    }
     coerced = parseFloat(value)
-    if (isNaN(coerced)) coerced = 0
+    if (isNaN(coerced)) {
+      showFeedback('error', `Invalid number for ${field}: "${value}"`)
+      return  // Don't save garbage as 0
+    }
   }
 
   // Auto-enable map scaling when user sets any scaling field via the inline table.
@@ -2709,7 +2718,7 @@ function addSelectedChannels() {
       enabled: true,
       // Thermocouple defaults - Type K is most common
       thermocouple_type: category === 'thermocouple' ? 'K' : null,
-      cjc_source: category === 'thermocouple' ? 'BUILT_IN' : null,
+      cjc_source: category === 'thermocouple' ? 'internal' : null,
       // Source tracking (for multi-node systems)
       // For cRIO/Opto22: use node_id (e.g., "crio-001", "opto22-001")
       // For cDAQ: use chassis_name (e.g., "cDAQ-9189") for identification

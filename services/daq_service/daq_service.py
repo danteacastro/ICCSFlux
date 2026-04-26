@@ -13517,8 +13517,11 @@ Unit conversions:
         # Update allowed fields (check both payload and config_data for backwards compatibility)
         if 'description' in config_data:
             channel.description = config_data['description']
+        # Accept both 'unit' (singular, used by frontend) and 'units' (plural, legacy)
         if 'units' in config_data:
             channel.units = config_data['units']
+        elif 'unit' in config_data:
+            channel.units = config_data['unit']
         if 'low_limit' in config_data:
             channel.low_limit = config_data['low_limit']
         if 'high_limit' in config_data:
@@ -13566,13 +13569,15 @@ Unit conversions:
         if 'scaled_max' in config_data:
             channel.scaled_max = float(config_data['scaled_max']) if config_data['scaled_max'] is not None else None
 
-        # Thermocouple-specific parameters
-        if 'tc_type' in config_data:
+        # Thermocouple-specific parameters — accept both 'tc_type' and
+        # 'thermocouple_type' (frontend sends thermocouple_type)
+        tc_field_value = config_data.get('thermocouple_type') or config_data.get('tc_type')
+        if tc_field_value is not None and ('tc_type' in config_data or 'thermocouple_type' in config_data):
             from config_parser import ThermocoupleType
             try:
-                channel.thermocouple_type = ThermocoupleType(config_data['tc_type'])
+                channel.thermocouple_type = ThermocoupleType(tc_field_value)
             except ValueError:
-                logger.warning(f"Invalid thermocouple type: {config_data['tc_type']}")
+                logger.warning(f"Invalid thermocouple type: {tc_field_value}")
         if 'cjc_source' in config_data:
             import cjc_source as _cjc
             requested = config_data['cjc_source']
@@ -15325,6 +15330,7 @@ Unit conversions:
                 "channel_type": channel.channel_type.value,
                 "description": channel.description,  # For tooltips/documentation only
                 "units": channel.units,
+                "unit": channel.units,  # Frontend uses 'unit' (singular) — publish both
                 "visible": channel.visible,
                 "group": channel.group or channel.module or "Ungrouped",
                 "low_limit": channel.low_limit,
