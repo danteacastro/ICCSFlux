@@ -2187,17 +2187,18 @@ class ScriptRuntime:
             tree = ast.parse(code, mode='exec')
             _SandboxValidator().visit(tree)
 
-            # Compile and execute. Lower the recursion limit aggressively to
-            # protect daq_service from script recursion bombs (one-liner
-            # `f = lambda: f(); f()` would otherwise crash the whole service).
+            # Compile and execute.
+            #
+            # Note: we do NOT lower sys.setrecursionlimit() here because it's
+            # process-global — Script A lowering the limit affects Script B
+            # running in another thread concurrently. A recursion bomb in a
+            # script will hit the default ~1000 limit and raise RecursionError
+            # which kills only that script's thread, not the whole service.
+            # The exception is caught below and logged to the script's error
+            # state, leaving other scripts unaffected.
             code_obj = compile(tree, f"<script:{self.script.name}>", 'exec')
             logger.info(f"Script {self.script.name}: executing with timeout={self.script.max_runtime_seconds}s")
-            _orig_recursion_limit = sys.getrecursionlimit()
-            try:
-                sys.setrecursionlimit(100)
-                exec(code_obj, namespace)
-            finally:
-                sys.setrecursionlimit(_orig_recursion_limit)
+            exec(code_obj, namespace)
 
             # If script has a main loop, it should have exited by now
             self.script.state = ScriptState.IDLE
@@ -2851,7 +2852,12 @@ class ScriptManager:
         # console<->script interoperability (define in console, use in script)
         self.on_get_shared_namespace: Optional[Callable[[], Dict[str, Any]]] = None
 
-        self._lock = threading.Lock()
+        # RLock so methods that hold the lock can call other methods that
+        # also acquire the lock (e.g., add_script() → stop_script() →
+        # release_all_outputs()) without deadlocking. With a plain Lock,
+        # this scenario hung the entire ScriptManager and froze every
+        # script in the system.
+        self._lock = threading.RLock()
 
         # Track which outputs are controlled by scripts during active session
         # This allows selective lockout of only script-controlled channels
@@ -3001,31 +3007,36 @@ class ScriptManager:
         1. Nested: project_data['scripts']['pythonScripts'] (frontend format)
         2. Flat: project_data['scripts'] as array (legacy format)
         """
-        # Stop all current scripts first
+        # Stop all current scripts first (outside the lock — stop_all_scripts
+        # acquires its own lock and we must not nest)
         self.stop_all_scripts()
-        self.scripts.clear()
-        self.runtimes.clear()
 
-        # Try nested format first (frontend saves as scripts.pythonScripts)
-        scripts_section = project_data.get('scripts', {})
-        if isinstance(scripts_section, dict):
-            scripts_data = scripts_section.get('pythonScripts', [])
-        elif isinstance(scripts_section, list):
-            # Legacy flat format
-            scripts_data = scripts_section
-        else:
-            scripts_data = []
+        # Now mutate the script tables under lock so concurrent get_status()
+        # / start_script() etc. don't race with us clearing & rebuilding.
+        with self._lock:
+            self.scripts.clear()
+            self.runtimes.clear()
 
-        # Load scripts
-        for script_data in scripts_data:
-            try:
-                script = Script.from_dict(script_data)
-                self.scripts[script.id] = script
-                logger.debug(f"Loaded script: {script.name} (runMode={script.run_mode.value})")
-            except Exception as e:
-                logger.error(f"Failed to load script: {e}")
+            # Try nested format first (frontend saves as scripts.pythonScripts)
+            scripts_section = project_data.get('scripts', {})
+            if isinstance(scripts_section, dict):
+                scripts_data = scripts_section.get('pythonScripts', [])
+            elif isinstance(scripts_section, list):
+                # Legacy flat format
+                scripts_data = scripts_section
+            else:
+                scripts_data = []
 
-        logger.info(f"Loaded {len(self.scripts)} scripts from project")
+            # Load scripts
+            for script_data in scripts_data:
+                try:
+                    script = Script.from_dict(script_data)
+                    self.scripts[script.id] = script
+                    logger.debug(f"Loaded script: {script.name} (runMode={script.run_mode.value})")
+                except Exception as e:
+                    logger.error(f"Failed to load script: {e}")
+
+            logger.info(f"Loaded {len(self.scripts)} scripts from project")
 
     def export_scripts_for_project(self) -> List[dict]:
         """Export scripts for saving to project"""
@@ -3036,46 +3047,68 @@ class ScriptManager:
     # =========================================================================
 
     def start_script(self, script_id: str) -> bool:
-        """Start a script"""
-        script = self.scripts.get(script_id)
-        if not script:
-            logger.error(f"Script not found: {script_id}")
-            return False
+        """Start a script.
 
-        if not script.enabled:
-            logger.warning(f"Script is disabled: {script.name}")
-            return False
+        Lock-protected so two concurrent start commands cannot both pass
+        the is_running() check and end up with two threads executing the
+        same script. _emit_event runs outside the lock to avoid deadlock
+        with listeners.
+        """
+        script_to_emit = None
+        with self._lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                logger.error(f"Script not found: {script_id}")
+                return False
 
-        # Create runtime if needed
-        if script_id not in self.runtimes:
-            self.runtimes[script_id] = ScriptRuntime(script, self)
+            if not script.enabled:
+                logger.warning(f"Script is disabled: {script.name}")
+                return False
 
-        runtime = self.runtimes[script_id]
+            # Create runtime if needed
+            if script_id not in self.runtimes:
+                self.runtimes[script_id] = ScriptRuntime(script, self)
 
-        if runtime.is_running():
-            logger.warning(f"Script already running: {script.name}")
-            return False
+            runtime = self.runtimes[script_id]
 
-        if runtime.start():
-            self._emit_event('started', script)
+            if runtime.is_running():
+                logger.warning(f"Script already running: {script.name}")
+                return False
+
+            if runtime.start():
+                script_to_emit = script
+
+        if script_to_emit is not None:
+            self._emit_event('started', script_to_emit)
             return True
         return False
 
     def stop_script(self, script_id: str) -> bool:
-        """Stop a script and release its output claims"""
-        if script_id not in self.runtimes:
-            return False
+        """Stop a script and release its output claims.
 
-        runtime = self.runtimes[script_id]
-        script = self.scripts.get(script_id)
+        Lock-protected so concurrent stop commands don't double-release
+        outputs or fight over runtime state. _emit_event runs outside the
+        lock to avoid deadlock.
+        """
+        script_to_emit = None
+        with self._lock:
+            if script_id not in self.runtimes:
+                return False
 
-        runtime.stop()
+            runtime = self.runtimes[script_id]
+            script = self.scripts.get(script_id)
 
-        # Auto-release any outputs claimed by this script
-        self.release_all_outputs(script_id)
+            runtime.stop()
 
-        if script:
-            self._emit_event('stopped', script)
+            # Auto-release any outputs claimed by this script
+            # (release_all_outputs acquires the same lock — RLock allows it)
+            self.release_all_outputs(script_id)
+
+            if script:
+                script_to_emit = script
+
+        if script_to_emit is not None:
+            self._emit_event('stopped', script_to_emit)
 
         return True
 
@@ -3583,15 +3616,21 @@ class ScriptManager:
     # =========================================================================
 
     def get_status(self) -> dict:
-        """Get script manager status"""
-        running = self.get_running_scripts()
-        return {
-            "script_count": len(self.scripts),
-            "running_count": len(running),
-            "running_scripts": running,
-            "scripts": {sid: s.to_dict() for sid, s in self.scripts.items()},
-            "output_claims": self._output_claims.copy()
-        }
+        """Get script manager status.
+
+        Lock-protected so the dict iteration doesn't race with concurrent
+        add_script/remove_script/load_scripts_from_project, which would
+        raise `RuntimeError: dictionary changed size during iteration`.
+        """
+        with self._lock:
+            running = [sid for sid, rt in self.runtimes.items() if rt.is_running()]
+            return {
+                "script_count": len(self.scripts),
+                "running_count": len(running),
+                "running_scripts": running,
+                "scripts": {sid: s.to_dict() for sid, s in self.scripts.items()},
+                "output_claims": self._output_claims.copy()
+            }
 
     def shutdown(self) -> None:
         """Shutdown the script manager"""

@@ -68,12 +68,16 @@ class TestSourceLevelFixes:
         assert "ast.Attribute" in body
         assert "Method call" in body or "method-style" in body.lower()
 
-    def test_recursion_limit_lowered_for_scripts(self):
-        """exec() must run inside setrecursionlimit() context to protect daq_service."""
+    def test_recursion_limit_documented_not_lowered(self):
+        """We documented why we DON'T lower setrecursionlimit() — it's
+        process-global and would race between concurrent scripts. The
+        existing default (~1000) is fine; a recursion bomb just kills
+        that script's thread."""
         content = self._read_source()
-        assert "setrecursionlimit(100)" in content
-        # And restored afterwards
-        assert "setrecursionlimit(_orig_recursion_limit)" in content
+        # The old code set this — verify it's NOT there now (multi-script
+        # safety) and that we have a comment explaining why.
+        assert "sys.setrecursionlimit(100)" not in content
+        assert "process-global" in content
 
 
 # ===================================================================
@@ -363,25 +367,18 @@ class TestExploitChains:
 # 6. Recursion limit fix verified
 # ===================================================================
 
-class TestRecursionLimit:
-    """Bug 4: setrecursionlimit must protect daq_service from recursion bombs."""
+class TestRecursionLimitMultiScriptSafety:
+    """Recursion bomb protection lives in the timeout monitor and the
+    standard Python recursion limit (~1000). We deliberately do NOT
+    lower setrecursionlimit() because it's process-global and would
+    cause Script A to corrupt Script B's recursion environment."""
 
-    def test_recursion_limit_low_during_exec(self):
-        """Verify setrecursionlimit is called with a low value before exec."""
+    def test_no_global_recursion_limit_change(self):
         path = Path(__file__).parent.parent / "services" / "daq_service" / "script_manager.py"
         content = path.read_text(encoding='utf-8')
-        # Locate the limit value
-        assert "sys.setrecursionlimit(100)" in content
-
-    def test_recursion_limit_restored(self):
-        """After exec, original limit must be restored (try/finally)."""
-        path = Path(__file__).parent.parent / "services" / "daq_service" / "script_manager.py"
-        content = path.read_text(encoding='utf-8')
-        # Find the section
-        idx = content.find("sys.setrecursionlimit(100)")
-        snippet = content[idx:idx+500]
-        assert "finally:" in snippet
-        assert "sys.setrecursionlimit(_orig_recursion_limit)" in snippet
+        assert "sys.setrecursionlimit(100)" not in content
+        # And we documented why
+        assert "process-global" in content
 
 
 if __name__ == "__main__":
