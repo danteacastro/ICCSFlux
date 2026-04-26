@@ -3403,12 +3403,17 @@ Unit conversions:
         """Callback for sequence to set output"""
         self._set_output_value(channel, value)
 
-    def _set_output_value(self, channel: str, value: Any):
+    def _set_output_value(self, channel: str, value: Any, bypass_interlock: bool = False):
         """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences, safe-state).
 
         Serializes all output writes via output_write_lock so concurrent writers
         (scripts + MQTT commands + watchdog + safe-state) cannot interleave and
         produce wrong actuation order.
+
+        ALSO checks safety interlocks before writing — previously only the MQTT
+        command path checked these, so triggers/watchdogs/scripts could bypass
+        safety locks. The bypass_interlock flag is for safe-state itself, which
+        must always be able to drive outputs to their safe value.
         """
         if channel not in self.config.channels:
             return
@@ -3418,6 +3423,29 @@ Unit conversions:
                                    ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT,
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
             return
+
+        # Validate value type for analog outputs — non-numeric values would
+        # crash hardware_reader.write_channel() with float() error.
+        if ch.channel_type in (ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                               ChannelType.MODBUS_REGISTER):
+            if not isinstance(value, (int, float, bool)):
+                logger.warning(f"[OUTPUT] Cannot write non-numeric value {value!r} to analog output {channel}")
+                return
+
+        # SAFETY: Check interlocks (skipped for safe-state which IS the response
+        # to interlock trips). Without this, triggers/watchdogs/scripts could
+        # write to an output that an active interlock has locked — defeating
+        # the safety system.
+        if not bypass_interlock and getattr(self, 'safety_manager', None) is not None:
+            try:
+                block_result = self.safety_manager.is_output_blocked(channel)
+                if isinstance(block_result, dict) and block_result.get('blocked', False):
+                    reason = block_result.get('reason', 'safety interlock')
+                    logger.warning(f"[OUTPUT] Blocked write to {channel}: {reason}")
+                    return
+            except Exception as e:
+                # Don't block the write if interlock check itself fails
+                logger.debug(f"[OUTPUT] Interlock check failed for {channel}: {e}")
 
         # Serialize the entire write so two threads can't interleave reads/writes
         # of channel_values OR send out-of-order commands to the same hardware.
@@ -5551,25 +5579,27 @@ Unit conversions:
         # rather than relying on individual per-channel output commands
         self._forward_safe_state_to_crio(reason, request_id)
 
-        # Reset all local outputs (cRIO channels also sent individually as fallback)
+        # Reset all local outputs (cRIO channels also sent individually as fallback).
+        # bypass_interlock=True: safe state IS the interlock response, it MUST
+        # be able to drive outputs to safe values regardless of interlock state.
         for channel_name, config in self.config.channels.items():
             if config.channel_type == ChannelType.DIGITAL_OUTPUT:
                 try:
-                    self._set_output_value(channel_name, 0)
+                    self._set_output_value(channel_name, 0, bypass_interlock=True)
                     logger.info(f"[SAFE STATE] DO {channel_name} -> 0 (OFF)")
                 except Exception as e:
                     logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
             elif config.channel_type == ChannelType.VOLTAGE_OUTPUT:
                 try:
                     # Voltage output safe state: 0V
-                    self._set_output_value(channel_name, 0.0)
+                    self._set_output_value(channel_name, 0.0, bypass_interlock=True)
                     logger.info(f"[SAFE STATE] VO {channel_name} -> 0.0V")
                 except Exception as e:
                     logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")
             elif config.channel_type == ChannelType.CURRENT_OUTPUT:
                 try:
                     # Current output safe state: 0mA
-                    self._set_output_value(channel_name, 0.0)
+                    self._set_output_value(channel_name, 0.0, bypass_interlock=True)
                     logger.info(f"[SAFE STATE] CO {channel_name} -> 0.0mA")
                 except Exception as e:
                     logger.error(f"[SAFE STATE] Failed to set {channel_name}: {e}")

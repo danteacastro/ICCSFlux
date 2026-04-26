@@ -3234,17 +3234,31 @@ class ScriptManager:
 
         If another script has claimed exclusive control of this channel,
         the write will be rejected unless script_id matches the claim owner.
-        """
-        # Check if channel is claimed by another script
-        if channel in self._output_claims:
-            claim_owner = self._output_claims[channel]
-            if script_id and claim_owner != script_id:
-                logger.warning(f"Output {channel} blocked: claimed by script {claim_owner}, "
-                             f"write attempted by {script_id}")
-                return False
 
-        # Track this channel as script-controlled for session lockout
-        self._controlled_outputs.add(channel)
+        Claim/controlled-set checks are protected by self._lock to prevent
+        race conditions when multiple scripts call this concurrently.
+        """
+        # Validate channel exists — silent failures cause subtle script bugs
+        if not channel or not isinstance(channel, str):
+            logger.warning(f"set_output called with invalid channel: {channel!r}")
+            return False
+
+        # Atomically check claim ownership and mark as controlled
+        with self._lock:
+            if channel in self._output_claims:
+                claim_owner = self._output_claims[channel]
+                if script_id and claim_owner != script_id:
+                    logger.warning(f"Output {channel} blocked: claimed by script {claim_owner}, "
+                                 f"write attempted by {script_id}")
+                    return False
+            # Track this channel as script-controlled for session lockout
+            self._controlled_outputs.add(channel)
+
+        # Perform the actual write outside the lock — on_set_output goes
+        # through daq_service which has its own output_write_lock for hardware
+        # serialization. Holding both locks here could deadlock.
+        # The callback (typically daq_service._set_output_value) validates
+        # channel existence, type, value range, and safety interlocks.
         if self.on_set_output:
             return self.on_set_output(channel, value)
         return False
@@ -3352,8 +3366,13 @@ class ScriptManager:
             return self._output_claims.copy()
 
     def get_claim_owner(self, channel: str) -> Optional[str]:
-        """Get the script_id that has claimed a channel, or None if unclaimed."""
-        return self._output_claims.get(channel)
+        """Get the script_id that has claimed a channel, or None if unclaimed.
+
+        Lock-protected to prevent dirty reads while claim_output() is
+        modifying the dict on another thread.
+        """
+        with self._lock:
+            return self._output_claims.get(channel)
 
     def start_acquisition(self) -> None:
         if self.on_start_acquisition:
