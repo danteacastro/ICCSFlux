@@ -166,6 +166,34 @@ function exportPdf() {
   notebook.exportToPdf()
   showExportMenu.value = false
 }
+
+// Delete confirms in two steps: confirm dialog + reason prompt. The reason
+// becomes part of the audit-trail amendment so the deleted record retains
+// its provenance (ALCOA+ compliance).
+function deleteEntry(id: string, title: string) {
+  if (!confirm(`Delete entry "${title}"?\n\nThe entry will be archived for audit retrieval but removed from the active list.`)) return
+  const reason = window.prompt('Reason for deletion (required for audit trail):') || ''
+  if (!reason.trim()) {
+    alert('A reason is required to delete an entry.')
+    return
+  }
+  notebook.deleteEntry(id, reason.trim())
+  if (expandedEntryId.value === id) expandedEntryId.value = null
+}
+
+function deleteExperiment(id: string, name: string) {
+  if (!confirm(`Delete experiment "${name}"?\n\nAll associated entries remain. The experiment record is archived for audit retrieval.`)) return
+  const reason = window.prompt('Reason for deletion (required for audit trail):') || ''
+  if (!reason.trim()) {
+    alert('A reason is required to delete an experiment.')
+    return
+  }
+  notebook.deleteExperiment(id, reason.trim())
+}
+
+function dismissSaveError() {
+  notebook.lastSaveError.value = null
+}
 </script>
 
 <template>
@@ -207,16 +235,26 @@ function exportPdf() {
         <!-- Completed experiments -->
         <div v-if="notebook.experiments.value.filter(e => e.status === 'completed').length" class="exp-section">
           <div class="exp-section-label">Completed</div>
-          <button
+          <div
             v-for="exp in notebook.experiments.value.filter(e => e.status === 'completed')"
             :key="exp.id"
-            class="exp-tab"
-            :class="{ active: notebook.activeExperimentId.value === exp.id }"
-            @click="selectExperiment(exp.id)"
+            class="exp-tab-row"
           >
-            <span class="exp-icon">✓</span>
-            <span class="exp-name">{{ exp.name }}</span>
-          </button>
+            <button
+              class="exp-tab"
+              :class="{ active: notebook.activeExperimentId.value === exp.id }"
+              @click="selectExperiment(exp.id)"
+            >
+              <span class="exp-icon">✓</span>
+              <span class="exp-name">{{ exp.name }}</span>
+            </button>
+            <button
+              class="exp-delete-btn"
+              @click.stop="deleteExperiment(exp.id, exp.name)"
+              title="Delete experiment (archived for audit)"
+              aria-label="Delete experiment"
+            >🗑</button>
+          </div>
         </div>
       </div>
     </aside>
@@ -264,6 +302,21 @@ function exportPdf() {
         </div>
       </div>
 
+      <!-- Save status / error banner -->
+      <div v-if="notebook.lastSaveError.value" class="save-status-banner error" role="alert">
+        <span class="save-icon" aria-hidden="true">⚠</span>
+        <span class="save-text">{{ notebook.lastSaveError.value }}</span>
+        <button class="save-dismiss" @click="dismissSaveError" aria-label="Dismiss">×</button>
+      </div>
+      <div v-else-if="notebook.savePending.value" class="save-status-banner pending">
+        <span class="save-icon" aria-hidden="true">⟳</span>
+        <span class="save-text">Saving…</span>
+      </div>
+      <div v-else-if="notebook.lastSavedAt.value" class="save-status-banner ok">
+        <span class="save-icon" aria-hidden="true">✓</span>
+        <span class="save-text">Saved {{ formatTime(notebook.lastSavedAt.value) }}</span>
+      </div>
+
       <!-- Quick Note -->
       <div class="quick-note">
         <input
@@ -302,6 +355,12 @@ function exportPdf() {
               <span class="entry-time">{{ formatTime(entry.timestamp) }}</span>
             </div>
             <span v-if="entry.dataSnapshot" class="has-data" title="Has data snapshot">📊</span>
+            <button
+              class="entry-delete-btn"
+              @click.stop="deleteEntry(entry.id, entry.title)"
+              :title="'Delete entry (archived for audit)'"
+              aria-label="Delete entry"
+            >🗑</button>
             <span class="expand-icon">{{ expandedEntryId === entry.id ? '▼' : '▶' }}</span>
           </div>
 
@@ -965,5 +1024,76 @@ function exportPdf() {
 .amendment-reason {
   color: var(--text-secondary);
   font-style: italic;
+}
+
+/* Save status banner — surfaces persistence failures so they aren't silent */
+.save-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 6px 16px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  border: 1px solid transparent;
+}
+.save-status-banner.error {
+  background: var(--color-error-bg, #2d1418);
+  color: var(--color-error, #f85149);
+  border-color: var(--color-error, #f85149);
+}
+.save-status-banner.pending {
+  background: var(--bg-widget);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+.save-status-banner.ok {
+  background: var(--color-success-bg, #14241b);
+  color: var(--color-success, #56d364);
+  border-color: var(--color-success, #56d364);
+}
+.save-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+/* Delete affordances */
+.entry-delete-btn,
+.exp-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  opacity: 0.5;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.entry-delete-btn:hover,
+.exp-delete-btn:hover {
+  opacity: 1;
+  color: var(--color-error, #f85149);
+  background: var(--bg-hover);
+}
+
+.exp-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.exp-tab-row .exp-tab {
+  flex: 1;
 }
 </style>

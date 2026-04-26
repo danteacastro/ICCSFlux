@@ -404,6 +404,12 @@ class RecordingManager:
         # Trigger state
         self.trigger_armed = False
         self.trigger_fired = False
+        # One-shot flag so we don't spam the log on every sample when the
+        # configured trigger channel is missing from incoming values.
+        self._warned_trigger_missing = False
+        # Set when the trigger transitions to fired so write_sample knows to
+        # drain pre_trigger_buffer to disk before writing the current sample.
+        self._pretrigger_flush_pending = False
         self.last_trigger_value: Optional[float] = None
         self.pre_trigger_buffer: List[Dict] = []
         self.post_trigger_count: int = 0
@@ -525,6 +531,8 @@ class RecordingManager:
                 self.trigger_armed = (self.config.mode == 'triggered')
                 self.trigger_fired = False
                 self.pre_trigger_buffer = []
+                self._warned_trigger_missing = False
+                self._pretrigger_flush_pending = False
                 self.post_trigger_count = 0
 
                 # Reset buffer
@@ -585,6 +593,25 @@ class RecordingManager:
             if not self.recording:
                 logger.warning("Recording not active")
                 return False
+
+            # Warn if the trigger was armed but never fired — the pre-trigger
+            # buffer is intentionally discarded, but the operator should know
+            # so they can verify the trigger condition was set correctly.
+            if (
+                self.config.mode == 'triggered'
+                and self.trigger_armed
+                and not self.trigger_fired
+                and len(self.pre_trigger_buffer) > 0
+            ):
+                logger.warning(
+                    "Recording stopped while trigger armed but never fired — "
+                    "%d buffered pre-trigger samples discarded "
+                    "(trigger_channel=%r, condition=%r, value=%r)",
+                    len(self.pre_trigger_buffer),
+                    self.config.trigger_channel,
+                    self.config.trigger_condition,
+                    self.config.trigger_value,
+                )
 
             # Flush any remaining buffered data
             if self.write_buffer:
@@ -670,6 +697,17 @@ class RecordingManager:
             if self.config.mode == 'triggered':
                 if not self._handle_trigger(filtered_values):
                     return
+                # If the trigger just fired this sample, drain the pre-trigger
+                # buffer to disk first so the captured pre-event context is
+                # actually written. Previously this buffer was silently dropped.
+                if self._pretrigger_flush_pending:
+                    self._pretrigger_flush_pending = False
+                    for buffered in self.pre_trigger_buffer:
+                        try:
+                            self._write_row(buffered, channel_configs)
+                        except Exception as e:
+                            logger.error(f"Failed to write pre-trigger sample: {e}")
+                    self.pre_trigger_buffer = []
 
             # Write the sample
             self._write_row(filtered_values, channel_configs)
@@ -916,9 +954,27 @@ class RecordingManager:
         """Handle triggered recording mode. Returns True if sample should be written."""
         trigger_channel = self.config.trigger_channel
 
-        if not trigger_channel or trigger_channel not in values:
-            # No trigger channel configured or not in values, record everything
+        if not trigger_channel:
+            # Triggered mode selected but no channel configured. Defensive:
+            # treat as "record everything" but warn once so the operator
+            # knows the config is incomplete.
+            if not self._warned_trigger_missing:
+                logger.warning("Triggered mode active but no trigger_channel set — recording all samples")
+                self._warned_trigger_missing = True
             return True
+
+        if trigger_channel not in values:
+            # Trigger channel was deleted or never published. Previously this
+            # silently degraded to "record everything", which masked a config
+            # bug. Now we drop samples and warn once.
+            if not self._warned_trigger_missing:
+                logger.error(
+                    "Trigger channel '%s' missing from incoming values — "
+                    "dropping samples until it appears or the trigger is reconfigured",
+                    trigger_channel,
+                )
+                self._warned_trigger_missing = True
+            return False
 
         current_value = values[trigger_channel]
 
@@ -946,10 +1002,15 @@ class RecordingManager:
             if triggered:
                 self.trigger_fired = True
                 self.trigger_armed = False
-                logger.info(f"Trigger fired: {trigger_channel}={current_value}")
-
-                # Write pre-trigger buffer
-                # Note: We'll write these without calling this function recursively
+                # Mark for buffer flush — write_sample will drain
+                # pre_trigger_buffer before writing the current sample.
+                # Without this the pre-trigger feature was completely broken:
+                # buffered samples accumulated but were never written to disk.
+                self._pretrigger_flush_pending = True
+                logger.info(
+                    f"Trigger fired: {trigger_channel}={current_value} "
+                    f"(flushing {len(self.pre_trigger_buffer)} pre-trigger samples)"
+                )
                 return True
 
             return False  # Don't write yet

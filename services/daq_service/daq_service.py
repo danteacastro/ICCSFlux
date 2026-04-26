@@ -3981,6 +3981,11 @@ Unit conversions:
             client.subscribe(f"{base}/interlocks/list")
             client.subscribe(f"{base}/interlocks/acknowledge_trip")
             client.subscribe(f"{base}/alarms/config/sync")
+            # Channel cascade: when a channel/uv./py. ref is deleted in
+            # ConfigurationTab, prune the matching alarm + interlock configs
+            # so we don't leave orphaned safety state pointing at nothing.
+            client.subscribe(f"{base}/safety/alarm/delete")
+            client.subscribe(f"{base}/safety/interlock/delete")
 
             # Subscribe to PID control topics
             client.subscribe(f"{base}/pid/loops")
@@ -4250,6 +4255,8 @@ Unit conversions:
         'interlocks/sync': Permission.MODIFY_SAFETY,
         'interlocks/acknowledge_trip': Permission.ACK_ALARMS,
         'alarms/config/sync': Permission.MODIFY_SAFETY,
+        'safety/alarm/delete': Permission.MODIFY_SAFETY,
+        'safety/interlock/delete': Permission.MODIFY_SAFETY,
         # Alarm operations (Operator+)
         'alarm/acknowledge': Permission.ACK_ALARMS,
         'alarm/clear': Permission.RESET_ALARMS,
@@ -4537,6 +4544,10 @@ Unit conversions:
             self._handle_interlock_acknowledge_trip(payload)
         elif topic == f"{base}/alarms/config/sync":
             self._handle_alarm_config_sync(payload)
+        elif topic == f"{base}/safety/alarm/delete":
+            self._handle_safety_alarm_delete(payload)
+        elif topic == f"{base}/safety/interlock/delete":
+            self._handle_safety_interlock_delete(payload)
 
         # === PID CONTROL ===
         elif topic == f"{base}/pid/loops":
@@ -16268,6 +16279,82 @@ Unit conversions:
                 updated += 1
         if updated:
             logger.info(f"Synced {updated} alarm configs from frontend")
+
+    def _handle_safety_alarm_delete(self, payload: Any):
+        """Cascade-purge alarm configs for a deleted channel/variable/script.
+
+        Called when ConfigurationTab deletes a channel (or a user variable /
+        python script reference is removed). Without this handler, alarm
+        configs become orphaned and may continue to evaluate against ghost
+        channels — leading to phantom trips or stale UI state.
+
+        Accepts either:
+            { "channel": "<name>" }   — primary form
+            { "alarm_id": "<id>" }    — for direct ID-based delete
+        """
+        if not self.alarm_manager or not isinstance(payload, dict):
+            return
+        channel = payload.get('channel')
+        alarm_id = payload.get('alarm_id')
+        removed = 0
+        if alarm_id:
+            existing = self.alarm_manager.get_alarm_config(alarm_id)
+            if existing:
+                self.alarm_manager.remove_alarm_config(alarm_id)
+                removed += 1
+        if channel:
+            # Iterate over a snapshot — remove_alarm_config mutates the dict.
+            for cfg in list(self.alarm_manager.get_configs_for_channel(channel)):
+                self.alarm_manager.remove_alarm_config(cfg.id)
+                removed += 1
+        if removed:
+            logger.info(f"Cascade-deleted {removed} alarm config(s) for channel={channel!r} alarm_id={alarm_id!r}")
+
+    def _handle_safety_interlock_delete(self, payload: Any):
+        """Cascade-purge interlocks (or interlock conditions) referencing
+        a deleted channel/variable/script.
+
+        Two modes:
+          1) Whole-interlock delete by id: { "interlock_id": "<id>" }
+          2) Reference cascade: { "channel": "<name>" } — remove every
+             interlock that has at least one condition pointing at the
+             named channel/variable/script. Critical interlocks armed/tripped
+             are protected by remove_interlock's existing guard.
+        """
+        if not self.safety_manager or not isinstance(payload, dict):
+            return
+        interlock_id = payload.get('interlock_id')
+        channel = payload.get('channel')
+        user = payload.get('user', 'system')
+        reason = payload.get('reason', 'Cascade delete from channel removal')
+        removed = 0
+        if interlock_id:
+            if self.safety_manager.remove_interlock(interlock_id, user=user, reason=reason):
+                removed += 1
+        if channel:
+            # Snapshot — remove_interlock mutates the interlocks dict.
+            try:
+                with self.safety_manager.lock:
+                    candidates = list(self.safety_manager.interlocks.values())
+            except Exception:
+                candidates = list(getattr(self.safety_manager, 'interlocks', {}).values())
+            for il in candidates:
+                # Remove if any condition references the deleted channel/var.
+                refs_channel = any(
+                    (getattr(c, 'channel', None) == channel)
+                    or (getattr(c, 'variable_id', None) == channel)
+                    for c in (il.conditions or [])
+                )
+                if refs_channel:
+                    if self.safety_manager.remove_interlock(il.id, user=user, reason=reason):
+                        removed += 1
+                    else:
+                        logger.warning(
+                            f"Could not cascade-delete interlock {il.id!r} ({il.name!r}) — "
+                            f"likely critical+armed; leaving in place"
+                        )
+        if removed:
+            logger.info(f"Cascade-deleted {removed} interlock(s) for channel={channel!r} interlock_id={interlock_id!r}")
 
     # =========================================================================
     # PID CONTROL HANDLERS

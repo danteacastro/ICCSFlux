@@ -141,8 +141,20 @@ export function usePlayground() {
 
   function deleteVariable(id: string): void {
     // Optimistic update: remove from local state immediately
+    const v = variables.value[id]
     delete variables.value[id]
     publish('nisystem/variables/delete', { id })
+    // Cascade safety cleanup — any alarm or interlock condition referencing
+    // this variable as `uv.NAME` becomes a dangling reference. Tell the
+    // safety system to purge those configs. Best-effort, non-fatal.
+    if (v && v.name) {
+      const ref = `uv.${v.name}`
+      try {
+        const mqtt = useMqtt()
+        mqtt.sendNodeCommand('safety/alarm/delete', { channel: ref })
+        mqtt.sendNodeCommand('safety/interlock/delete', { channel: ref })
+      } catch { /* non-fatal — safety configs may not exist for this var */ }
+    }
   }
 
   function setVariableValue(id: string, value: number): void {

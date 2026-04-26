@@ -8,6 +8,7 @@
  */
 
 import { ref, computed, shallowRef } from 'vue'
+import { useMqtt } from './useMqtt'
 import type {
   PythonScript,
   PublishedValue,
@@ -228,6 +229,15 @@ export function usePythonScripts() {
   }
 
   function deleteScript(id: string): void {
+    // Capture published-value names BEFORE deleting state — we need them
+    // for the safety cascade.
+    const publishedKeysToCascade: string[] = []
+    for (const key of Object.keys(publishedValues.value)) {
+      if (publishedValues.value[key]?.scriptId === id) {
+        publishedKeysToCascade.push(key)
+      }
+    }
+
     // Stop if running
     stopScript(id)
 
@@ -236,10 +246,22 @@ export function usePythonScripts() {
     delete scriptStatuses.value[id]
 
     // Remove published values from this script
-    for (const key of Object.keys(publishedValues.value)) {
-      if (publishedValues.value[key]?.scriptId === id) {
-        delete publishedValues.value[key]
-      }
+    for (const key of publishedKeysToCascade) {
+      delete publishedValues.value[key]
+    }
+
+    // Cascade safety cleanup — alarms and interlock conditions may
+    // reference this script's published values as `py.NAME`. Without this
+    // they'd become dangling references and silently fail to evaluate.
+    if (publishedKeysToCascade.length > 0) {
+      try {
+        const mqtt = useMqtt()
+        for (const name of publishedKeysToCascade) {
+          const ref = name.startsWith('py.') ? name : `py.${name}`
+          mqtt.sendNodeCommand('safety/alarm/delete', { channel: ref })
+          mqtt.sendNodeCommand('safety/interlock/delete', { channel: ref })
+        }
+      } catch { /* non-fatal — safety configs may not exist for these */ }
     }
 
     saveToLocalStorage()

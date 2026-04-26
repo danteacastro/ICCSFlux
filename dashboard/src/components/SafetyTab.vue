@@ -102,16 +102,51 @@ const activeAlarms = computed(() => [...safety.activeAlarms.value])
 const alarmHistory = computed(() => [...safety.alarmHistory.value])
 const alarmCounts = safety.alarmCounts
 
-// Sound for alarms
-let alarmSound: HTMLAudioElement | null = null
-onMounted(() => {
-  // Create alarm sound (simple beep using Web Audio API fallback)
+// Sound for alarms — Web Audio API tone generator. The previous implementation
+// used a truncated base64 WAV that silently failed to load (Mike heard nothing
+// when alarms tripped). This generates a real beep on demand.
+let audioCtx: AudioContext | null = null
+function getAudioCtx(): AudioContext | null {
+  if (audioCtx) return audioCtx
   try {
-    alarmSound = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU')
+    const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext
+    if (!Ctor) return null
+    audioCtx = new Ctor()
+    return audioCtx
   } catch {
-    // Audio not available
+    return null
   }
-})
+}
+function playAlarmBeep() {
+  const ctx = getAudioCtx()
+  if (!ctx) return
+  // Browsers suspend AudioContext until a user gesture. If still suspended,
+  // resume() best-effort; if blocked, the beep just won't play this time.
+  if (ctx.state === 'suspended') {
+    try { ctx.resume() } catch { /* ignore */ }
+  }
+  try {
+    const now = ctx.currentTime
+    // Two short pulses at ~880Hz — clearly synthetic, recognizable as alert.
+    for (let i = 0; i < 2; i++) {
+      const start = now + i * 0.18
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'square'
+      osc.frequency.value = 880
+      // Quick attack/release envelope to avoid clicks; peak ~0.25 (not loud).
+      gain.gain.setValueAtTime(0, start)
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.01)
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.10)
+      gain.gain.linearRampToValueAtTime(0, start + 0.13)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(start)
+      osc.stop(start + 0.14)
+    }
+  } catch (e) {
+    console.warn('[SAFETY] Alarm beep failed:', e)
+  }
+}
 
 // ============================================
 // Alarm Checking Logic
@@ -213,8 +248,8 @@ function processAlarms() {
         delete delayTimers.value[alarmKey]
 
         // Play sound if enabled
-        if (config.play_sound && alarmSound && check.severity === 'alarm') {
-          try { alarmSound.play() } catch {}
+        if (config.play_sound && check.severity === 'alarm') {
+          playAlarmBeep()
         }
 
         // Start recording if enabled
@@ -415,10 +450,32 @@ function validateAlarmThresholds(config: AlarmConfig): string | null {
 
 function saveAlarmConfig(config: AlarmConfig) {
   if (!requireEditPermission()) return
+
+  // Validate the channel actually accepts analog limits. Digital inputs are
+  // 0/1 — high_limit=50.5 is nonsensical and would never trip, but the
+  // operator may not realize it's broken until an emergency. Reject loudly.
+  const channelCfg = store.channels[config.channel]
+  if (channelCfg && channelCfg.channel_type === 'digital_input') {
+    const hasAnyAnalogLimit = (
+      config.high_high != null || config.high != null ||
+      config.low != null || config.low_low != null
+    )
+    if (hasAnyAnalogLimit) {
+      safety.showSafetyFeedback(
+        'error',
+        `Channel "${config.channel}" is a digital input — set the alarm via state condition, not high/low limits. Limits ignored.`,
+        9000,
+      )
+      // Strip analog limits — we save the rest of the config but force these blank
+      // so the operator sees the warning and the backend doesn't store nonsense.
+      config = { ...config, high_high: null, high: null, low: null, low_low: null }
+    }
+  }
+
   // Validate threshold order before saving
   const validationError = validateAlarmThresholds(config)
   if (validationError) {
-    alert(`Invalid alarm configuration: ${validationError}`)
+    safety.showSafetyFeedback('error', `Invalid alarm configuration: ${validationError}`, 8000)
     return
   }
   safety.updateAlarmConfig(config.channel, config)
@@ -1042,8 +1099,28 @@ function toggleInterlockEnabled(id: string) {
 function toggleInterlockBypass(id: string) {
   if (!requireOperatePermission()) return
   const interlock = safety.interlocks.value.find(i => i.id === id)
-  if (interlock) {
-    safety.bypassInterlock(id, !interlock.bypassed)
+  if (!interlock) return
+  const goingToBypass = !interlock.bypassed
+  // Bypassing a safety interlock disables protection. Require explicit
+  // confirmation + audit reason. Critical interlocks get an extra warning.
+  if (goingToBypass) {
+    const criticalWarn = interlock.is_critical
+      ? '\n\n⚠ THIS IS A CRITICAL INTERLOCK ⚠\nBypassing disables a safety-rated protection.'
+      : ''
+    if (!confirm(
+      `Bypass interlock "${interlock.name}"?${criticalWarn}\n\n` +
+      `Any output controlled by this interlock will no longer be blocked when its conditions fail. ` +
+      `The bypass is logged to the audit trail.`
+    )) return
+    const reason = window.prompt('Reason for bypass (required for audit trail):') || ''
+    if (!reason.trim()) {
+      alert('A reason is required to bypass an interlock.')
+      return
+    }
+    safety.bypassInterlock(id, true, undefined, reason.trim())
+  } else {
+    if (!confirm(`Remove bypass on "${interlock.name}"?\n\nProtection will resume immediately.`)) return
+    safety.bypassInterlock(id, false)
   }
 }
 
@@ -1202,14 +1279,19 @@ function getControlDescription(ctrl: InterlockControl): string {
         </div>
 
         <!-- Latch Status (prominent when latches active) -->
-        <div v-if="safety.hasLatchedAlarms.value" class="latch-status active" @click="resetAllLatched">
+        <div
+          v-if="safety.hasLatchedAlarms.value"
+          class="latch-status active"
+          @click="resetAllLatched"
+          title="Latched alarms stay tripped until manually reset, even if the value returns to OK. This is intentional safety behavior — the operator must explicitly clear after investigating the cause."
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 17a2 2 0 002-2V9a2 2 0 00-4 0v6a2 2 0 002 2zm6-9v6a6 6 0 11-12 0V8h2v6a4 4 0 008 0V8h2z"/>
           </svg>
           <span>{{ safety.latchedAlarmCount.value }} LATCHED</span>
           <span class="reset-hint">Click to reset all</span>
         </div>
-        <div v-else class="latch-status clear">
+        <div v-else class="latch-status clear" title="No latched alarms. Auto-clear alarms reset themselves when the condition returns to OK; latched alarms require manual reset.">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 12l2 2 4-4"/>
           </svg>

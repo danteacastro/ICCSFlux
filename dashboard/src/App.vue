@@ -27,6 +27,7 @@ import { availableWidgets, type WidgetTypeInfo } from './widgets'
 import type { WidgetConfig, WidgetType } from './types'
 import { useTheme } from './composables/useTheme'
 import { useBrokerConfig } from './composables/useBrokerConfig'
+import { useSafety } from './composables/useSafety'
 
 const store = useDashboardStore()
 const { theme, toggleTheme } = useTheme()
@@ -36,6 +37,7 @@ const auth = useAuth()
 const playground = usePlayground()
 const windowSync = useWindowSync()
 const brokerConfig = useBrokerConfig()
+const safety = useSafety()
 
 // Track if project has been loaded from backend (module-level for access in loadLastProject)
 let projectLoadHandled = false
@@ -603,6 +605,19 @@ async function handleStart() {
 
 async function handleStop() {
   console.log('[APP] handleStop called, isAcquiring:', store.isAcquiring)
+  // Confirm before stopping: stop also cascades into any active recording and
+  // running session, so a misclick can wipe an hour of test data.
+  const warnRecording = store.isRecording ? '\n  • End the current recording' : ''
+  const warnSession = playground.isSessionActive.value ? '\n  • Stop the running test session and any sequence/scripts' : ''
+  if (!window.confirm(
+    'Stop acquisition?\n\nThis will:' +
+    '\n  • Stop reading from hardware' +
+    warnRecording +
+    warnSession +
+    '\n\nContinue?'
+  )) {
+    return
+  }
   const result = await mqtt.stopAcquisition()
   if (result.success) {
     // Only clear values after backend confirms stop succeeded
@@ -637,6 +652,10 @@ async function handleRecordStart() {
 
 async function handleRecordStop() {
   console.log('[APP] handleRecordStop called, isRecording:', store.isRecording)
+  // Confirm before ending recording — closes the file and cannot be resumed.
+  if (!window.confirm('Stop recording?\n\nThe file will be finalized and a new run will start a new file. This cannot be undone.')) {
+    return
+  }
   const result = await mqtt.stopRecording()
   if (!result.success) {
     console.error('[APP] Recording stop failed:', result.error)
@@ -652,6 +671,10 @@ async function handleSessionStart() {
 }
 
 async function handleSessionStop() {
+  // Confirm: stopping the session aborts any running sequence and session scripts.
+  if (!window.confirm('Stop test session?\n\nThis will:\n  • Abort any running sequence\n  • Stop session scripts\n\nContinue?')) {
+    return
+  }
   const result = await playground.stopTestSession()
   if (!result.success) {
     console.error('[APP] Session stop failed:', result.error)
@@ -914,6 +937,39 @@ async function handleManualSave() {
 
     <!-- Status Messages (only on overview) -->
     <StatusMessages v-if="activeTab === 'overview'" :maxMessages="50" />
+
+    <!-- Global alarm + safety banner: visible on every tab so a trip
+         on Configuration / Data / Notebook is still impossible to miss.
+         Click navigates to Safety tab. -->
+    <Teleport to="body">
+      <div
+        v-if="safety.hasActiveAlarms.value || safety.isTripped.value"
+        class="global-alarm-banner"
+        :class="{ critical: safety.isTripped.value }"
+        role="alert"
+        @click="activeTab = 'safety'"
+        :title="'Click to open Safety tab'"
+      >
+        <span class="banner-icon">⚠</span>
+        <span class="banner-text">
+          <template v-if="safety.isTripped.value">SAFETY TRIPPED</template>
+          <template v-else>{{ safety.alarmCounts.value.total }} active alarm(s)</template>
+          <template v-if="safety.firstOutAlarm.value">
+            — first: {{ safety.firstOutAlarm.value.name || safety.firstOutAlarm.value.channel }}
+          </template>
+        </span>
+      </div>
+      <!-- Non-blocking safety feedback toast (replaces alert() lockup) -->
+      <div
+        v-if="safety.safetyFeedback.value"
+        class="safety-feedback-toast"
+        :class="safety.safetyFeedback.value.type"
+        role="status"
+      >
+        <span class="banner-text">{{ safety.safetyFeedback.value.text }}</span>
+        <button class="banner-dismiss" @click="safety.dismissSafetyFeedback()" aria-label="Dismiss">×</button>
+      </div>
+    </Teleport>
 
     <!-- Connection Overlay -->
     <ConnectionOverlay
@@ -2001,5 +2057,83 @@ async function handleManualSave() {
 
 .startup-btn.recovery:hover svg {
   color: var(--color-warning);
+}
+
+/* Global alarm banner — visible across every tab so a trip / active
+   alarm is impossible to miss when Mike is on Configuration / Data / Scripts. */
+.global-alarm-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-radius: 24px;
+  background: var(--color-warning, #d29922);
+  color: #1f2328;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: alarm-pulse 1.5s ease-in-out infinite;
+}
+.global-alarm-banner.critical {
+  background: var(--color-error, #f85149);
+  color: #fff;
+}
+.global-alarm-banner .banner-icon {
+  font-size: 1.1rem;
+}
+
+@keyframes alarm-pulse {
+  0%, 100% { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+  50% { box-shadow: 0 4px 20px rgba(248, 81, 73, 0.7); }
+}
+
+/* Non-blocking safety feedback toast (replaces blocking window.alert) */
+.safety-feedback-toast {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  max-width: 600px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.safety-feedback-toast.error {
+  background: var(--color-error, #f85149);
+  color: #fff;
+}
+.safety-feedback-toast.warning {
+  background: var(--color-warning, #d29922);
+  color: #1f2328;
+}
+.safety-feedback-toast.info {
+  background: var(--bg-widget);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+.safety-feedback-toast.success {
+  background: var(--color-success, #56d364);
+  color: #1f2328;
+}
+.safety-feedback-toast .banner-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0 4px;
 }
 </style>

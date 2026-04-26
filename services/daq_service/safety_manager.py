@@ -67,6 +67,12 @@ class InterlockCondition:
     alarm_state_check: Optional[str] = None  # For alarm_state: expected state (active, acknowledged, etc.)
     variable_id: Optional[str] = None    # For variable_value conditions
     expression: Optional[str] = None     # For expression conditions
+    # Hysteresis (deadband) for analog channel/variable comparisons. Once a
+    # condition becomes "satisfied" it stays satisfied until the value crosses
+    # the threshold by at least `deadband` in the opposite direction. Without
+    # this, noisy signals oscillating around the threshold cause flapping
+    # trips/clears (chatter) and rapid cycling of safety actions.
+    deadband: float = 0.0
 
     def to_dict(self) -> dict:
         d = {
@@ -76,7 +82,8 @@ class InterlockCondition:
             'operator': self.operator,
             'value': self.value,
             'invert': self.invert,
-            'delay_s': self.delay_s
+            'delay_s': self.delay_s,
+            'deadband': self.deadband,
         }
         if self.alarm_id is not None:
             d['alarmId'] = self.alarm_id
@@ -132,7 +139,8 @@ class InterlockCondition:
             alarm_id=d.get('alarmId'),
             alarm_state_check=d.get('alarmState'),
             variable_id=d.get('variableId'),
-            expression=d.get('expression')
+            expression=d.get('expression'),
+            deadband=float(d.get('deadband', 0.0) or 0.0),
         )
 
 @dataclass
@@ -414,6 +422,12 @@ class SafetyManager:
 
         # Condition delay tracking
         self._condition_delay_state: Dict[str, Dict[str, Any]] = {}
+
+        # Previous satisfied state per condition — for hysteresis (deadband)
+        # on analog channel_value / variable_value conditions. Without this,
+        # a value oscillating around the threshold causes condition flapping
+        # which produces rapid trip/clear cycling of safety actions.
+        self._condition_prev_satisfied: Dict[str, bool] = {}
 
         # Latch state
         self.latch_state = LatchState.SAFE
@@ -733,7 +747,11 @@ class SafetyManager:
                     result['reason'] = f'Channel {condition.channel} has NaN value (OFFLINE?)'
                     result['channel_offline'] = True
                 else:
-                    satisfied = self._compare_values(value, condition.operator, condition.value)
+                    satisfied = self._compare_with_hysteresis(
+                        value, condition.operator, float(condition.value),
+                        deadband=float(condition.deadband or 0.0),
+                        cond_id=condition.id,
+                    )
                     if condition.invert:
                         satisfied = not satisfied
                     invert_note = ' [inverted]' if condition.invert else ''
@@ -806,7 +824,11 @@ class SafetyManager:
                 if value is None:
                     result['reason'] = f'Variable {condition.variable_id} not found'
                 else:
-                    satisfied = self._compare_values(value, condition.operator, condition.value)
+                    satisfied = self._compare_with_hysteresis(
+                        value, condition.operator, float(condition.value),
+                        deadband=float(condition.deadband or 0.0),
+                        cond_id=condition.id,
+                    )
                     result = {
                         'satisfied': satisfied,
                         'current_value': value,
@@ -840,6 +862,52 @@ class SafetyManager:
         elif operator == '!=' or operator == '<>':
             return current != threshold
         return False
+
+    def _compare_with_hysteresis(
+        self,
+        current: float,
+        operator: str,
+        threshold: float,
+        deadband: float,
+        cond_id: str,
+    ) -> bool:
+        """Compare values with hysteresis applied.
+
+        Once a condition becomes satisfied, the value must move past the
+        threshold by `deadband` in the OPPOSITE direction before the
+        condition is considered no longer satisfied. This prevents flapping
+        on noisy analog signals.
+
+        For non-directional operators (== / !=) deadband is ignored: there's
+        no meaningful "opposite direction" to apply hysteresis on.
+        """
+        # Default raw comparison
+        raw = self._compare_values(current, operator, threshold)
+        if not deadband or deadband <= 0 or operator in ('=', '==', '!=', '<>'):
+            self._condition_prev_satisfied[cond_id] = raw
+            return raw
+
+        prev = self._condition_prev_satisfied.get(cond_id)
+        if prev is None:
+            # First evaluation — use raw comparison.
+            self._condition_prev_satisfied[cond_id] = raw
+            return raw
+
+        if prev:
+            # Was satisfied — keep satisfied until value crosses BACK by deadband.
+            if operator in ('>', '>='):
+                # Was current > threshold; keep True until current < threshold - deadband.
+                still = current > (threshold - deadband)
+            elif operator in ('<', '<='):
+                still = current < (threshold + deadband)
+            else:
+                still = raw
+            self._condition_prev_satisfied[cond_id] = still
+            return still
+        else:
+            # Was not satisfied — only flip True on a clean raw comparison.
+            self._condition_prev_satisfied[cond_id] = raw
+            return raw
 
     def _evaluate_condition(self, condition: InterlockCondition) -> Dict[str, Any]:
         """Evaluate condition with delay logic"""
@@ -1735,6 +1803,7 @@ class SafetyManager:
             self.history.clear()
             self._previous_states.clear()
             self._condition_delay_state.clear()
+            self._condition_prev_satisfied.clear()
             self._executed_actions.clear()
             self.latch_state = LatchState.SAFE
             self.is_tripped = False

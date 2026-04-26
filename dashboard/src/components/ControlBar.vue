@@ -13,6 +13,24 @@ defineProps<{
   showEditControls?: boolean
 }>()
 
+// Pending flags from useMqtt: backend round-trip is 2-3s; without these the
+// user can rapid-click the buttons during the gap and double-fire commands.
+const acquirePending = computed(() => mqtt.acquireCommandPending.value)
+const recordingPending = computed(() => mqtt.recordingCommandPending.value)
+const sessionPending = computed(() => mqtt.sessionCommandPending.value)
+
+// Last error refs — surfaced as a small banner under the bar so failures are
+// visible (previously only logged to console; silent to operators like Mike).
+const acquireError = computed(() => mqtt.lastAcquireError.value)
+const recordingError = computed(() => mqtt.lastRecordingError.value)
+const sessionError = computed(() => mqtt.lastSessionError.value)
+const anyError = computed(() => acquireError.value || recordingError.value || sessionError.value)
+function dismissError() {
+  mqtt.lastAcquireError.value = null
+  mqtt.lastRecordingError.value = null
+  mqtt.lastSessionError.value = null
+}
+
 const emit = defineEmits<{
   (e: 'start'): void
   (e: 'stop'): void
@@ -57,69 +75,77 @@ const recordingTime = computed(() => {
       <button
         v-if="!store.isAcquiring"
         class="btn btn-start"
-        :class="{ locked: !canStartAcquisition }"
-        @click="canStartAcquisition && emit('start')"
-        :disabled="!store.isConnected || !canStartAcquisition"
-        :title="canStartAcquisition ? 'Start Acquisition' : 'Requires Operator or higher'"
+        :class="{ locked: !canStartAcquisition, pending: acquirePending }"
+        @click="canStartAcquisition && !acquirePending && emit('start')"
+        :disabled="!store.isConnected || !canStartAcquisition || acquirePending"
+        :title="canStartAcquisition ? (acquirePending ? 'Starting…' : 'Start Acquisition') : 'Requires Operator or higher'"
         aria-label="Start acquisition"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <polygon points="5,3 19,12 5,21"/>
         </svg>
-        START
+        {{ acquirePending ? 'STARTING…' : 'START' }}
         <span v-if="!canStartAcquisition" class="lock-icon" aria-label="Locked">🔒</span>
       </button>
       <button
         v-else
         class="btn btn-stop"
-        @click="emit('stop')"
+        :class="{ pending: acquirePending }"
+        @click="!acquirePending && emit('stop')"
+        :disabled="acquirePending"
+        :title="acquirePending ? 'Stopping…' : 'Stop Acquisition'"
         aria-label="Stop acquisition"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <rect x="4" y="4" width="16" height="16"/>
         </svg>
-        STOP
+        {{ acquirePending ? 'STOPPING…' : 'STOP' }}
       </button>
 
       <!-- Record -->
       <button
         v-if="!store.isRecording"
         class="btn btn-record"
-        :class="{ disabled: !store.isAcquiring, locked: !canStartRecording }"
-        @click="canStartRecording && store.isAcquiring && emit('record-start')"
-        :disabled="!store.isAcquiring || !canStartRecording"
-        :title="canStartRecording ? 'Start Recording' : 'Requires Operator or higher'"
+        :class="{ disabled: !store.isAcquiring, locked: !canStartRecording, pending: recordingPending }"
+        @click="canStartRecording && store.isAcquiring && !recordingPending && emit('record-start')"
+        :disabled="!store.isAcquiring || !canStartRecording || recordingPending"
+        :title="canStartRecording ? (recordingPending ? 'Starting recording…' : 'Start Recording') : 'Requires Operator or higher'"
         aria-label="Start recording"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="12" cy="12" r="8"/>
         </svg>
-        RECORD
+        {{ recordingPending ? 'STARTING…' : 'RECORD' }}
         <span v-if="!canStartRecording" class="lock-icon" aria-label="Locked">🔒</span>
       </button>
       <button
         v-else
         class="btn btn-record recording"
-        @click="emit('record-stop')"
+        :class="{ pending: recordingPending }"
+        @click="!recordingPending && emit('record-stop')"
+        :disabled="recordingPending"
+        :title="recordingPending ? 'Stopping recording…' : 'Stop Recording'"
         aria-label="Stop recording"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="12" cy="12" r="8"/>
         </svg>
-        <span aria-live="polite">{{ recordingTime }}</span>
+        <span aria-live="polite">{{ recordingPending ? 'STOPPING…' : recordingTime }}</span>
       </button>
     </div>
 
     <!-- Session toggle - controls test session (session scripts, sequences) -->
     <div class="control-group">
       <div class="session-toggle" :class="{ locked: !canControlSession, disabled: !store.isAcquiring }" role="group" aria-label="Session controls">
-        <span class="label" id="session-label">SESSION</span>
+        <span class="label" id="session-label">
+          SESSION<span v-if="sessionPending" class="session-pending-text"> ({{ playground.isSessionActive.value ? 'stopping…' : 'starting…' }})</span>
+        </span>
         <button
           class="toggle-btn"
-          :class="{ on: playground.isSessionActive.value, locked: !canControlSession, disabled: !store.isAcquiring }"
-          @click="canControlSession && store.isAcquiring && (playground.isSessionActive.value ? emit('session-stop') : emit('session-start'))"
-          :disabled="!canControlSession || !store.isAcquiring"
-          :title="!store.isAcquiring ? 'Start acquisition first' : (canControlSession ? 'Toggle Test Session' : 'Requires Operator or higher')"
+          :class="{ on: playground.isSessionActive.value, locked: !canControlSession, disabled: !store.isAcquiring, pending: sessionPending }"
+          @click="canControlSession && store.isAcquiring && !sessionPending && (playground.isSessionActive.value ? emit('session-stop') : emit('session-start'))"
+          :disabled="!canControlSession || !store.isAcquiring || sessionPending"
+          :title="!store.isAcquiring ? 'Start acquisition first' : (sessionPending ? 'Session command pending…' : (canControlSession ? 'Toggle Test Session' : 'Requires Operator or higher'))"
           role="switch"
           :aria-checked="playground.isSessionActive.value"
           aria-labelledby="session-label"
@@ -128,6 +154,14 @@ const recordingTime = computed(() => {
         </button>
         <span v-if="!canControlSession" class="lock-icon" aria-label="Locked">🔒</span>
       </div>
+    </div>
+
+    <!-- Error feedback banner: surfaces backend command failures inline so
+         operators don't have to open dev console to see why a click did nothing. -->
+    <div v-if="anyError" class="control-error-banner" role="alert">
+      <span class="control-error-icon" aria-hidden="true">⚠</span>
+      <span class="control-error-text">{{ acquireError || recordingError || sessionError }}</span>
+      <button class="control-error-dismiss" @click="dismissError" aria-label="Dismiss error">×</button>
     </div>
 
     <div v-if="showEditControls" class="control-group edit-group">
@@ -377,6 +411,58 @@ const recordingTime = computed(() => {
 @keyframes pulse-record {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+/* Pending state for in-flight commands */
+.btn.pending {
+  opacity: 0.7;
+  cursor: wait;
+}
+.toggle-btn.pending {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.session-pending-text {
+  font-weight: 400;
+  color: var(--color-warning, #d29922);
+}
+
+/* Inline error banner under the bar */
+.control-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-left: 8px;
+  border-radius: 4px;
+  background: var(--color-error-bg, #2d1418);
+  color: var(--color-error, #f85149);
+  border: 1px solid var(--color-error, #f85149);
+  font-size: 0.75rem;
+  font-weight: 500;
+  max-width: 360px;
+}
+.control-error-icon {
+  font-size: 0.9rem;
+}
+.control-error-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.control-error-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--color-error, #f85149);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 4px;
+}
+.control-error-dismiss:hover {
+  color: var(--text-primary);
 }
 
 /* Theme toggle */

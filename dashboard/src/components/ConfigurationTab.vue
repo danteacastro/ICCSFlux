@@ -1759,9 +1759,7 @@ function cascadeChannelDelete(channelName: string) {
   }
 
   // 4. Alarm config — backend stores the per-channel alarm; tell it to clean
-  // up too. Best-effort: the backend's _handle_channel_delete should already
-  // do this, but we emit an explicit cleanup as a belt-and-suspenders.
-  // (No-op if no alarm exists.)
+  // up too. Now actually wired in the backend (was a dead command before).
   try {
     mqtt.sendNodeCommand('safety/alarm/delete', { channel: channelName })
     removedAlarm = true
@@ -1769,11 +1767,23 @@ function cascadeChannelDelete(channelName: string) {
     // Non-fatal — alarm may not exist
   }
 
-  if (removedWidgets || removedFromRecording || removedAlarm) {
+  // 5. Interlock conditions — any interlock with a condition referencing
+  // this channel/variable becomes a dangling reference. Backend cascades
+  // by removing those interlocks (critical+armed ones are protected).
+  let removedInterlock = false
+  try {
+    mqtt.sendNodeCommand('safety/interlock/delete', { channel: channelName })
+    removedInterlock = true
+  } catch (e) {
+    // Non-fatal
+  }
+
+  if (removedWidgets || removedFromRecording || removedAlarm || removedInterlock) {
     const parts: string[] = []
     if (removedWidgets) parts.push(`${removedWidgets} widget(s)`)
     if (removedFromRecording) parts.push('recording')
     if (removedAlarm) parts.push('alarm')
+    if (removedInterlock) parts.push('interlock(s)')
     showFeedback('info', `Cleaned up references in ${parts.join(', ')}`)
   }
 }

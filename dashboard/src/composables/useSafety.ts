@@ -168,6 +168,54 @@ const alarmSequence = ref(0)
 const cascadeStartTime = ref<number | null>(null)
 const CASCADE_WINDOW_MS = 5000  // 5 seconds
 
+// Surface safety errors / pending state to the UI without using browser
+// alert() (which freezes the entire HMI event loop). Bind to a banner.
+type SafetyFeedback = {
+  type: 'info' | 'success' | 'warning' | 'error'
+  text: string
+  at: number
+}
+const safetyFeedback = ref<SafetyFeedback | null>(null)
+let safetyFeedbackTimeoutId: ReturnType<typeof setTimeout> | null = null
+function showSafetyFeedback(type: SafetyFeedback['type'], text: string, durationMs = 6000) {
+  if (safetyFeedbackTimeoutId) {
+    clearTimeout(safetyFeedbackTimeoutId)
+    safetyFeedbackTimeoutId = null
+  }
+  safetyFeedback.value = { type, text, at: Date.now() }
+  if (durationMs > 0) {
+    safetyFeedbackTimeoutId = setTimeout(() => {
+      safetyFeedback.value = null
+      safetyFeedbackTimeoutId = null
+    }, durationMs)
+  }
+}
+function dismissSafetyFeedback() {
+  safetyFeedback.value = null
+  if (safetyFeedbackTimeoutId) {
+    clearTimeout(safetyFeedbackTimeoutId)
+    safetyFeedbackTimeoutId = null
+  }
+}
+
+// Pending state for ACK round-trips so the operator sees "Acknowledging…"
+// instead of clicking again. Cleared by the ack response or 6s timeout.
+const ackPending = ref<Set<string>>(new Set())
+function setAckPending(interlockId: string) {
+  const s = new Set(ackPending.value)
+  s.add(interlockId)
+  ackPending.value = s
+}
+function clearAckPending(interlockId: string) {
+  if (!ackPending.value.has(interlockId)) return
+  const s = new Set(ackPending.value)
+  s.delete(interlockId)
+  ackPending.value = s
+}
+function isAckPending(interlockId: string): boolean {
+  return ackPending.value.has(interlockId)
+}
+
 // Track if already initialized
 let initialized = false
 
@@ -893,9 +941,18 @@ export function useSafety() {
   }
 
   function acknowledgeTrip(interlockId: string, reason: string = '') {
-    if (!mqtt.connected.value) return
+    if (!mqtt.connected.value) {
+      showSafetyFeedback('error', 'Not connected to broker — ACK could not be sent', 6000)
+      return
+    }
+    if (isAckPending(interlockId)) {
+      // Already pending — block double-fire (round-trip is 1-3s).
+      return
+    }
     const auth = useAuth()
     const user = auth.currentUser.value?.username || 'operator'
+    setAckPending(interlockId)
+    showSafetyFeedback('info', 'Acknowledging trip…', 4000)
     mqtt.sendCommand('interlocks/acknowledge_trip', {
       id: interlockId,
       user,
@@ -906,6 +963,15 @@ export function useSafety() {
     if (interlock) {
       recordInterlockEvent(interlock, 'trip_acknowledged', user, reason)
     }
+    // Fallback timeout — clear the pending flag if the response never
+    // arrives, so the operator can retry. The success/failure response
+    // (if it comes) will also clear it via the subscription handler.
+    setTimeout(() => {
+      if (isAckPending(interlockId)) {
+        clearAckPending(interlockId)
+        showSafetyFeedback('warning', 'ACK acknowledgement timed out — verify in audit log', 8000)
+      }
+    }, 6000)
   }
 
   // ============================================
@@ -2241,11 +2307,31 @@ export function useSafety() {
       handleBackendInterlockUpdate(payload)
     })
 
-    // Subscribe to interlock error responses (blocked operations on critical interlocks)
+    // ACK response — clears the pending flag and confirms with a toast so
+    // the operator knows their action was applied (was fire-and-forget).
+    mqtt.subscribe('nisystem/nodes/+/interlocks/acknowledged', (payload: any) => {
+      const id = payload?.id || payload?.interlock_id
+      if (id) clearAckPending(String(id))
+      if (payload?.success === false) {
+        showSafetyFeedback('error', `ACK failed: ${payload?.error || 'unknown'}`, 8000)
+      } else {
+        showSafetyFeedback('success', 'Trip acknowledged', 3000)
+      }
+    })
+
+    // Subscribe to interlock error responses (blocked operations on critical interlocks).
+    // Replaced blocking alert() with a non-blocking feedback banner — alert()
+    // froze the entire HMI event loop while the dialog was open, which is
+    // unacceptable for a control system. The banner stays visible until
+    // dismissed or 10s elapse.
     mqtt.subscribe('nisystem/nodes/+/interlocks/error', (payload: BackendInterlockErrorPayload) => {
       if (payload?.error === 'blocked') {
         console.error(`[SAFETY] Backend blocked interlock operation: ${payload.message}`)
-        alert(`Safety guard: ${payload.message || 'Operation blocked by backend safety system'}`)
+        showSafetyFeedback(
+          'error',
+          `Safety guard: ${payload.message || 'Operation blocked by backend safety system'}`,
+          10000,
+        )
       }
     })
 
@@ -2610,6 +2696,13 @@ export function useSafety() {
 
     // Trip acknowledgment (IEC 61511)
     acknowledgeTrip,
+    isAckPending,
+    ackPending: readonly(ackPending),
+
+    // UI feedback (replaces blocking alert() — see showSafetyFeedback above)
+    safetyFeedback: readonly(safetyFeedback),
+    showSafetyFeedback,
+    dismissSafetyFeedback,
 
     // Interlock trip system
     hasFailedInterlocks,

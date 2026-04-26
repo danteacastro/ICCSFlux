@@ -96,3 +96,6 @@ export const DEFAULT_TEMPLATES: NotebookTemplate[] = [
 
 export const NOTEBOOK_STORAGE_KEY = 'nisystem_notebook'
 export const EXPERIMENTS_STORAGE_KEY = 'nisystem_experiments'
+// Deleted entries / experiments are kept in archive for ALCOA+ traceability.
+export const NOTEBOOK_ARCHIVE_KEY = 'nisystem_notebook_archive'
+export const EXPERIMENTS_ARCHIVE_KEY = 'nisystem_experiments_archive'

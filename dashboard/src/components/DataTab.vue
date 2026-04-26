@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted, inject, watch } from 'vue'
 import { useDashboardStore, toBackendRecordingConfig } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
@@ -482,13 +482,25 @@ const estimatedSizePerHour = computed(() => {
 
 // Start/Stop Recording
 const isRecordingOp = ref(false)
+// Tracks which command is in flight so the badge / button label is accurate
+// while waiting on the backend round-trip ("STARTING…" vs "STOPPING…").
+const recordingOpKind = ref<'start' | 'stop' | null>(null)
 let recordingOpTimeoutId: ReturnType<typeof setTimeout> | null = null
 
-function setRecordingOp() {
+function setRecordingOp(kind: 'start' | 'stop') {
   isRecordingOp.value = true
+  recordingOpKind.value = kind
   if (recordingOpTimeoutId) clearTimeout(recordingOpTimeoutId)
   // Fallback timeout — reset if no response within 10s
-  recordingOpTimeoutId = setTimeout(() => { isRecordingOp.value = false; recordingOpTimeoutId = null }, 10000)
+  recordingOpTimeoutId = setTimeout(() => {
+    isRecordingOp.value = false
+    recordingOpKind.value = null
+    recordingOpTimeoutId = null
+    // Refresh file list so the user can verify ground truth even if the
+    // command response was lost.
+    if (mqtt.connected.value) mqtt.listRecordedFiles()
+    showFeedback('error', 'Recording command timed out — check status below', 8000)
+  }, 10000)
 }
 
 function startRecording() {
@@ -506,10 +518,20 @@ function startRecording() {
     return
   }
 
-  // Validate triggered mode
-  if (recordingConfig.value.mode === 'triggered' && !recordingConfig.value.triggerChannel) {
-    showFeedback('error', 'Select a trigger tag for triggered recording mode')
-    return
+  // Validate triggered mode — the trigger channel must currently exist in
+  // availableChannels. If it was deleted from ConfigurationTab between the
+  // time the user picked it and now, the backend would silently record
+  // everything (degraded to manual mode) without telling the operator.
+  if (recordingConfig.value.mode === 'triggered') {
+    const trig = recordingConfig.value.triggerChannel
+    if (!trig) {
+      showFeedback('error', 'Select a trigger tag for triggered recording mode')
+      return
+    }
+    if (!allChannelNames.value.includes(trig)) {
+      showFeedback('error', `Trigger tag "${trig}" no longer exists. Pick a different tag.`)
+      return
+    }
   }
 
   // Validate scheduled mode
@@ -535,7 +557,7 @@ function startRecording() {
   mqtt.updateRecordingConfig(config)
 
   // Use the system command to start recording
-  setRecordingOp()
+  setRecordingOp('start')
   mqtt.startRecording()
   showFeedback('info', 'Starting recording...')
 }
@@ -544,7 +566,11 @@ function startRecording() {
 function stopRecording() {
   if (isRecordingOp.value) return
   if (!requireEditPermission()) return
-  setRecordingOp()
+  // Confirm: stopping finalizes the file. A new run starts a new file.
+  if (!confirm('Stop recording?\n\nThe file will be finalized and cannot be resumed.')) {
+    return
+  }
+  setRecordingOp('stop')
   mqtt.stopRecording()
   showFeedback('info', 'Stopping recording...')
 }
@@ -763,6 +789,57 @@ function formatDuration(seconds: number): string {
   return `${s}s`
 }
 
+// Reconcile every user variable's `log` flag with the current selection.
+// Frontend selection is the single source of truth; if a `uv.X` is in
+// selectedRecordingChannels, its variable's `log` must be true (and vice
+// versa). Without this, vars restored from localStorage display as checked
+// but silently don't record.
+function reconcileUserVariableLogs() {
+  const selected = new Set(store.selectedRecordingChannels)
+  for (const v of playground.variablesList.value) {
+    const shouldLog = selected.has(`uv.${v.name}`)
+    if (!!v.log !== shouldLog) {
+      playground.updateVariable(v.id, { log: shouldLog })
+    }
+  }
+}
+
+// If the trigger channel disappears (deleted in ConfigurationTab), clear it
+// and warn the user. Otherwise the backend would degrade to "always record"
+// without any visible signal. Keyed off allChannelNames so it fires whenever
+// hardware channels OR user variables change.
+watch(allChannelNames, (names) => {
+  const trig = recordingConfig.value.triggerChannel
+  if (trig && !names.includes(trig)) {
+    store.setRecordingConfig({ triggerChannel: '' })
+    showFeedback(
+      'warning',
+      `Trigger tag "${trig}" was deleted. Recording trigger has been cleared.`,
+      6000,
+    )
+  }
+})
+
+// Track which user variables have been touched recently so newly-created
+// variables with log=true auto-appear in the selection.
+watch(() => playground.variablesList.value.map(v => `${v.name}:${v.log}`).join(','), () => {
+  // Re-run reconciliation in case a variable was added with log already true,
+  // OR a variable's log flag was toggled from VariablesTab. Keep frontend
+  // selection authoritative: if log is true and not selected, add to selection.
+  const selected = new Set(store.selectedRecordingChannels)
+  let changed = false
+  for (const v of playground.variablesList.value) {
+    const key = `uv.${v.name}`
+    if (v.log && !selected.has(key)) {
+      selected.add(key)
+      changed = true
+    }
+  }
+  if (changed) {
+    store.setSelectedRecordingChannels(Array.from(selected))
+  }
+})
+
 // Initialize
 onMounted(() => {
   // Select all channels by default if none selected
@@ -789,6 +866,12 @@ onMounted(() => {
     }
   })
 
+  // Reconcile user-variable `log` flags with the current selection so
+  // checkboxes restored from localStorage actually take effect on the backend.
+  // Fixes: vars showed as "selected" in the UI but were silently skipped
+  // by the recording engine because their `log` flag was still `false`.
+  reconcileUserVariableLogs()
+
   // Listen for recording responses (store unsubscribe for cleanup)
   unsubscribeRecordingResponse = mqtt.onRecordingResponse((response) => {
     // Skip if a DB connection test is in progress — its own listener handles the response
@@ -797,6 +880,7 @@ onMounted(() => {
     // Reset recording op guard on any response (replaces blind timeout)
     if (isRecordingOp.value) {
       isRecordingOp.value = false
+      recordingOpKind.value = null
       if (recordingOpTimeoutId) { clearTimeout(recordingOpTimeoutId); recordingOpTimeoutId = null }
     }
     if (response.success) {
@@ -806,6 +890,9 @@ onMounted(() => {
       mqtt.listRecordedFiles()
     } else {
       showFeedback('error', response.message || 'Recording operation failed')
+      // Refresh file list on failure too so the user can see ground-truth
+      // recording state — previously stale state was a silent confusion.
+      if (mqtt.connected.value) mqtt.listRecordedFiles()
     }
   })
 })
@@ -862,13 +949,18 @@ const scheduleDayLabels = [
     </div>
 
     <!-- Recording Status Bar -->
-    <div class="status-bar" :class="{ recording: isRecording }">
+    <div class="status-bar" :class="{ recording: isRecording, transitioning: isRecordingOp }">
       <div class="status-left">
-        <div class="status-indicator" :class="{ active: isRecording }">
-          <span class="pulse" v-if="isRecording"></span>
+        <div class="status-indicator" :class="{ active: isRecording, pending: isRecordingOp }">
+          <span class="pulse" v-if="isRecording || isRecordingOp"></span>
           <span class="dot"></span>
         </div>
-        <span class="status-text">{{ isRecording ? 'RECORDING' : 'IDLE' }}</span>
+        <span class="status-text">
+          <template v-if="isRecordingOp && recordingOpKind === 'start'">STARTING…</template>
+          <template v-else-if="isRecordingOp && recordingOpKind === 'stop'">STOPPING…</template>
+          <template v-else-if="isRecording">RECORDING</template>
+          <template v-else>IDLE</template>
+        </span>
         <template v-if="isRecording">
           <span class="status-divider">|</span>
           <span class="status-info">{{ recordingFile }}</span>
@@ -886,19 +978,22 @@ const scheduleDayLabels = [
         <button
           v-if="!isRecording"
           class="record-btn start"
+          :class="{ pending: isRecordingOp }"
           @click="startRecording"
-          :disabled="!mqtt.connected.value"
+          :disabled="!mqtt.connected.value || isRecordingOp"
         >
           <span class="record-icon"></span>
-          Start Recording
+          {{ isRecordingOp && recordingOpKind === 'start' ? 'Starting…' : 'Start Recording' }}
         </button>
         <button
           v-else
           class="record-btn stop"
+          :class="{ pending: isRecordingOp }"
           @click="stopRecording"
+          :disabled="isRecordingOp"
         >
           <span class="stop-icon"></span>
-          Stop Recording
+          {{ isRecordingOp && recordingOpKind === 'stop' ? 'Stopping…' : 'Stop Recording' }}
         </button>
       </div>
     </div>
@@ -1035,7 +1130,8 @@ const scheduleDayLabels = [
             </div>
             <div class="rate-row">
               <span>Est. file size:</span>
-              <strong>~{{ estimatedSizePerHour.toFixed(1) }} MB/hour</strong>
+              <strong v-if="(selectAllChannels ? allChannelNames.length : selectedChannels.length) > 0">~{{ estimatedSizePerHour.toFixed(1) }} MB/hour</strong>
+              <strong v-else class="rate-detail">Select tags to estimate</strong>
             </div>
           </div>
         </div>
@@ -1775,8 +1871,16 @@ const scheduleDayLabels = [
           <h3>PostgreSQL</h3>
           <div class="info-item">
             <span class="info-label">Status:</span>
-            <span class="info-value" :class="{ active: store.status?.db_connected }">
-              {{ store.status?.db_connected ? 'Connected' : (isRecording ? 'Disconnected' : 'Idle') }}
+            <span
+              class="info-value"
+              :class="{
+                active: store.status?.db_connected,
+                warning: isRecording && !store.status?.db_connected,
+              }"
+            >
+              <template v-if="store.status?.db_connected">Connected</template>
+              <template v-else-if="isRecording">⚠ Disconnected — file-only mode</template>
+              <template v-else>Idle</template>
             </span>
           </div>
           <div class="info-item" v-if="store.status?.db_rows_written">
