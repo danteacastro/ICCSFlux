@@ -20,6 +20,7 @@ import asyncio
 import threading
 import logging
 import traceback
+from collections import deque
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Callable, Set
@@ -324,9 +325,11 @@ class Counter:
         self._batch = 0
         self._mode = mode  # 'rate' or 'cumulative'
 
-        # Sliding window
+        # Sliding window — use deque for O(1) popleft on expired events
+        # (was O(n) list comprehension every tick — at 1000 Hz with 10K
+        # events, that was rebuilding the list every millisecond).
         self._window_seconds = window
-        self._events: list = []
+        self._events: deque = deque(maxlen=self._MAX_EVENTS)
 
         # Debounce
         self._debounce_n = max(0, int(debounce))
@@ -369,12 +372,15 @@ class Counter:
 
     def tick(self):
         now = time.time()
+        # deque with maxlen handles the unbounded-window cap automatically
         self._events.append(now)
         if self._window_seconds:
+            # Pop expired entries from the left in O(k) where k = expired
+            # count, instead of O(n) list comprehension over the whole list.
             cutoff = now - self._window_seconds
-            self._events = [t for t in self._events if t >= cutoff]
-        elif len(self._events) > self._MAX_EVENTS:
-            self._events = self._events[-self._MAX_EVENTS:]
+            while self._events and self._events[0] < cutoff:
+                self._events.popleft()
+        # Unbounded window case: deque.maxlen=_MAX_EVENTS auto-trims oldest
         self.increment()
 
     def reset(self):
@@ -418,9 +424,9 @@ class Counter:
                 self._events.append(now)
                 if self._window_seconds:
                     cutoff = now - self._window_seconds
-                    self._events = [t for t in self._events if t >= cutoff]
-                elif len(self._events) > self._MAX_EVENTS:
-                    self._events = self._events[-self._MAX_EVENTS:]
+                    while self._events and self._events[0] < cutoff:
+                        self._events.popleft()
+                # Unbounded case: deque.maxlen handles cap automatically
                 self._cycle_start = now
             if not current and self._last_bool:
                 if self._cycle_start is not None:
@@ -510,7 +516,8 @@ class Counter:
         if not self._window_seconds:
             return len(self._events)
         cutoff = time.time() - self._window_seconds
-        self._events = [t for t in self._events if t >= cutoff]
+        while self._events and self._events[0] < cutoff:
+            self._events.popleft()
         return len(self._events)
 
     @property
@@ -1234,9 +1241,20 @@ class TrendLine:
         return slope * (self._n + steps_ahead) + intercept
 
     def time_to_value(self, target: float) -> float:
-        """Estimate steps until value reaches target. Returns float('nan') if unreachable."""
+        """Estimate steps until value reaches target. Returns float('nan') if unreachable.
+
+        Returns NaN early when slope/intercept become NaN (e.g., from a buffer
+        with NaN samples). Without this check, callers comparing
+        `time_to_value() < 10` would silently get False (NaN compares False
+        with everything) and treat the target as unreachable indefinitely.
+        """
         n = len(self._xs)
         if n < 2:
+            return float('nan')
+        # Reject if any input is NaN/inf — would corrupt slope calculation
+        if any(math.isnan(y) or math.isinf(y) for y in self._ys):
+            return float('nan')
+        if math.isnan(target) or math.isinf(target):
             return float('nan')
         sum_x = sum(self._xs)
         sum_y = sum(self._ys)
@@ -1247,11 +1265,13 @@ class TrendLine:
             return float('nan')
         slope = (n * sum_xy - sum_x * sum_y) / denom
         intercept = (sum_y - slope * sum_x) / n
-        if slope == 0:
+        if math.isnan(slope) or math.isinf(slope) or slope == 0:
+            return float('nan')
+        if math.isnan(intercept) or math.isinf(intercept):
             return float('nan')
         x_target = (target - intercept) / slope
         steps = x_target - self._n
-        if steps < 0:
+        if math.isnan(steps) or steps < 0:
             return float('nan')
         return steps
 

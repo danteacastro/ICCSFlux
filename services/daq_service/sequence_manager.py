@@ -25,6 +25,13 @@ from datetime import datetime
 
 logger = logging.getLogger('SequenceManager')
 
+
+class StepTimeoutError(Exception):
+    """Raised when a sequence step (e.g., WAIT_CONDITION) times out.
+    Caught by the execution loop to mark the sequence as ERROR instead of
+    silently continuing to the next step."""
+    pass
+
 class SequenceState(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -150,6 +157,8 @@ class SequenceManager:
 
     MAX_SEQUENCES = 50              # Security Compliance resource limit
     MAX_STEPS_PER_SEQUENCE = 500    # Security Compliance resource limit
+    MAX_LOOP_ITERATIONS = 100000    # Hard cap to prevent runaway loops
+                                    # (1000 iter/sec for ~100s before forced exit)
 
     def __init__(self, sequences_file: Optional[str] = None):
         self.sequences: Dict[str, Sequence] = {}
@@ -308,7 +317,13 @@ class SequenceManager:
             return True
 
     def pause_sequence(self, sequence_id: str) -> bool:
-        """Pause a running sequence"""
+        """Pause a running sequence.
+
+        Callbacks (_emit_event) fire OUTSIDE the lock to prevent deadlock
+        if a listener tries to acquire the lock or holds another lock that
+        would lead to inversion.
+        """
+        seq_to_emit = None
         with self._lock:
             if self._running_sequence_id != sequence_id:
                 return False
@@ -319,12 +334,16 @@ class SequenceManager:
                 seq.paused_time = time.time()
                 self._pause_event.clear()
                 logger.info(f"Paused sequence: {seq.name}")
-                self._emit_event("paused", seq)
-                return True
-            return False
+                seq_to_emit = seq
+            else:
+                return False
+        if seq_to_emit is not None:
+            self._emit_event("paused", seq_to_emit)
+        return True
 
     def resume_sequence(self, sequence_id: str) -> bool:
-        """Resume a paused sequence"""
+        """Resume a paused sequence. _emit_event called outside lock."""
+        seq_to_emit = None
         with self._lock:
             if self._running_sequence_id != sequence_id:
                 return False
@@ -335,9 +354,12 @@ class SequenceManager:
                 seq.paused_time = None
                 self._pause_event.set()
                 logger.info(f"Resumed sequence: {seq.name}")
-                self._emit_event("resumed", seq)
-                return True
-            return False
+                seq_to_emit = seq
+            else:
+                return False
+        if seq_to_emit is not None:
+            self._emit_event("resumed", seq_to_emit)
+        return True
 
     def abort_sequence(self, sequence_id: str) -> bool:
         """Abort a running or paused sequence"""
@@ -445,9 +467,22 @@ class SequenceManager:
 
         elif step_type == StepType.LOOP_END.value:
             loop_id = step.loop_id or f"loop_{seq.current_step_index}"
-            if loop_id in seq.loop_counters:
+            if loop_id not in seq.loop_counters:
+                # LOOP_END without matching LOOP_START — log and skip to avoid hang.
+                logger.warning(
+                    f"[SEQUENCE {seq.name}] LOOP_END at step {seq.current_step_index} "
+                    f"has no matching LOOP_START (loop_id={loop_id!r}) — skipping"
+                )
+            else:
                 seq.loop_counters[loop_id] += 1
-                loop_count = step.loop_count or 1
+                # Cap requested iterations at MAX_LOOP_ITERATIONS to prevent runaway loops
+                requested = step.loop_count or 1
+                if requested > self.MAX_LOOP_ITERATIONS:
+                    logger.warning(
+                        f"[SEQUENCE {seq.name}] Loop count {requested} exceeds "
+                        f"MAX_LOOP_ITERATIONS={self.MAX_LOOP_ITERATIONS} — capping"
+                    )
+                loop_count = min(requested, self.MAX_LOOP_ITERATIONS)
                 if seq.loop_counters[loop_id] < loop_count:
                     # Jump back to loop start
                     seq.current_step_index = seq.loop_start_indices[loop_id]
@@ -458,10 +493,22 @@ class SequenceManager:
 
         elif step_type == StepType.CONDITIONAL.value:
             condition_met = self._evaluate_condition(step)
+            target_index = None
             if condition_met and step.true_step_index is not None:
-                seq.current_step_index = step.true_step_index - 1  # -1 because we'll increment
+                target_index = step.true_step_index
             elif not condition_met and step.false_step_index is not None:
-                seq.current_step_index = step.false_step_index - 1
+                target_index = step.false_step_index
+            if target_index is not None:
+                # Validate bounds — bad index would silently terminate sequence
+                # (the while loop exits when current_step_index >= len(steps)).
+                if target_index < 0 or target_index >= len(seq.steps):
+                    logger.error(
+                        f"[SEQUENCE {seq.name}] CONDITIONAL step jumps to invalid "
+                        f"index {target_index} (sequence has {len(seq.steps)} steps) "
+                        f"— skipping jump"
+                    )
+                else:
+                    seq.current_step_index = target_index - 1  # -1 because we'll increment
 
         elif step_type == StepType.CALL_SEQUENCE.value:
             # Note: nested sequences not implemented yet
@@ -479,26 +526,43 @@ class SequenceManager:
             time.sleep(0.1)
 
     def _wait_for_condition(self, step: SequenceStep):
-        """Wait for a condition to be met"""
-        if not self.on_get_channel_value or not step.condition_channel:
-            return
+        """Wait for a condition to be met.
+
+        Raises StepTimeoutError if the condition isn't met within the
+        configured timeout. Previously it just logged a warning and let
+        the sequence continue as if the condition had been satisfied —
+        which silently moved Mike's equipment to the wrong state.
+        """
+        if not self.on_get_channel_value:
+            raise StepTimeoutError(
+                f"WAIT_CONDITION step has no channel-value callback registered"
+            )
+        if not step.condition_channel:
+            raise StepTimeoutError(
+                f"WAIT_CONDITION step is missing condition_channel"
+            )
 
         timeout_s = (step.condition_timeout_ms or 30000) / 1000.0
         end_time = time.time() + timeout_s
 
         while time.time() < end_time:
             if self._stop_event.is_set():
-                break
+                return  # Aborted, not a timeout
             self._pause_event.wait()
             if self._stop_event.is_set():
-                break
+                return
 
             if self._evaluate_condition(step):
-                return
+                return  # Condition satisfied
 
             time.sleep(0.1)
 
-        logger.warning(f"Condition timeout: {step.condition_channel} {step.condition_operator} {step.condition_value}")
+        # Timeout fired — raise so the execution loop can mark the sequence
+        # as ERROR instead of silently proceeding to the next step.
+        raise StepTimeoutError(
+            f"Condition timeout after {timeout_s}s: "
+            f"{step.condition_channel} {step.condition_operator} {step.condition_value}"
+        )
 
     def _evaluate_condition(self, step: SequenceStep) -> bool:
         """Evaluate a condition"""

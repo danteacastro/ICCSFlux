@@ -7,7 +7,9 @@ with persistence and test session coordination.
 
 import json
 import logging
+import math
 import threading
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, time as dt_time
 from pathlib import Path
@@ -495,11 +497,19 @@ class UserVariableManager:
 
             var = self.variables[var_id]
 
-            # Handle string vs numeric values
-            if var.data_type == 'string' or var.variable_type == 'string':
-                var.string_value = str(value)
-            else:
-                var.value = float(value)
+            # Handle string vs numeric values. float() can raise ValueError
+            # or TypeError on bad input — catch and reject cleanly so the
+            # variable manager doesn't crash on user input.
+            try:
+                if var.data_type == 'string' or var.variable_type == 'string':
+                    var.string_value = str(value) if value is not None else ''
+                else:
+                    var.value = float(value)
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    f"set_variable_value({var_id!r}, {value!r}) rejected: {e}"
+                )
+                return False
 
             var._last_update = datetime.now().timestamp()
 
@@ -855,20 +865,36 @@ class UserVariableManager:
         else:
             increment = self._check_accumulator_edge(var, current_value)
 
+        # Convert to deque on first use for O(1) append/popleft (was O(n) per scan).
+        # The list comprehension at the bottom of this function used to rebuild
+        # the entire list on every scan — at 100 Hz with 100K samples that
+        # caused massive CPU overhead.
+        if not isinstance(var._rolling_buffer, deque):
+            var._rolling_buffer = deque(var._rolling_buffer, maxlen=MAX_ROLLING_BUFFER_SAMPLES)
+
         if increment != 0:
-            # Add new sample with timestamp
+            # Add new sample with timestamp — deque with maxlen auto-drops oldest
             var._rolling_buffer.append((now_ts, increment))
 
-        # Prune samples outside the rolling window
+        # Prune samples outside the rolling window — O(k) where k = expired count,
+        # not O(n) for the whole buffer.
         cutoff = now_ts - var.rolling_window_s
-        var._rolling_buffer = [(t, v) for t, v in var._rolling_buffer if t > cutoff]
+        while var._rolling_buffer and var._rolling_buffer[0][0] <= cutoff:
+            var._rolling_buffer.popleft()
 
-        # Safety limit: prevent unbounded growth at high scan rates
-        # At 100Hz with 24h window = 8.64M samples. Cap at 100K to prevent memory exhaustion.
-        if len(var._rolling_buffer) > MAX_ROLLING_BUFFER_SAMPLES:
-            # Keep most recent samples
-            var._rolling_buffer = var._rolling_buffer[-MAX_ROLLING_BUFFER_SAMPLES:]
-            logger.warning(f"Rolling buffer for {var.name} capped at {MAX_ROLLING_BUFFER_SAMPLES} samples")
+        # If we hit the size cap (deque dropped oldest before they expired by time),
+        # the effective window is shorter than configured. Warn ONCE per variable
+        # so we don't spam the log every scan.
+        if len(var._rolling_buffer) >= MAX_ROLLING_BUFFER_SAMPLES:
+            if not getattr(var, '_rolling_capped_warned', False):
+                logger.warning(
+                    f"Rolling buffer for {var.name} hit cap ({MAX_ROLLING_BUFFER_SAMPLES} samples) — "
+                    f"effective window may be shorter than configured {var.rolling_window_s}s. "
+                    f"Reduce scan rate or shorten the window."
+                )
+                var._rolling_capped_warned = True
+        else:
+            var._rolling_capped_warned = False
 
         # Calculate sum of all samples in window
         var.value = sum(v for _, v in var._rolling_buffer)
@@ -1065,12 +1091,24 @@ class UserVariableManager:
                             var.timer_running = False
                             var.timer_start_time = None
 
-            # Reset all variables with reset_mode='test_session'
+            # Reset all variables with reset_mode='test_session'.
+            # CRITICAL: also reset the running-stats accumulators, otherwise
+            # the next sample after session start still uses the OLD
+            # _sum_squares / _mean_accumulator / sample_count from before
+            # — RMS/stddev/sum would carry pre-session contamination.
             for var in self.variables.values():
                 if var.reset_mode == 'test_session':
                     var.value = 0.0
                     var.last_reset = datetime.now().isoformat()
                     var._last_source_value = None
+                    var.sample_count = 0
+                    var._sum_squares = 0.0
+                    var._mean_accumulator = 0.0
+                    var._m2_accumulator = 0.0
+                    if hasattr(var, '_rolling_buffer'):
+                        var._rolling_buffer = []
+                    if hasattr(var, '_reservoir'):
+                        var._reservoir = []
 
             # Start all timers
             now_ts = datetime.now().timestamp()
@@ -1211,8 +1249,16 @@ class UserVariableManager:
         Check if session has timed out (autonomous operation protection).
 
         Returns:
-            None if no timeout occurred, or dict with stop result if session was stopped
+            None if no timeout occurred, or dict with stop result if session was stopped.
+
+        Captures all state inside the lock so we don't race with a concurrent
+        stop_session() call (which sets started_at = None). Previously this
+        method re-read self.session.started_at AFTER releasing the lock,
+        which crashed with TypeError when another thread cleared it.
         """
+        elapsed_seconds = None
+        timeout_minutes = 0
+
         with self.lock:
             if not self.session.active:
                 return None
@@ -1227,33 +1273,30 @@ class UserVariableManager:
             try:
                 started = datetime.fromisoformat(self.session.started_at)
                 elapsed_seconds = (datetime.now() - started).total_seconds()
-                timeout_seconds = timeout_minutes * 60
-
-                if elapsed_seconds >= timeout_seconds:
-                    logger.warning(f"Session timeout after {elapsed_seconds/60:.1f} minutes (limit: {timeout_minutes})")
-                    # Release lock before calling stop_session (it acquires lock)
-                    # Store values needed for stop
-                    pass
             except Exception as e:
-                logger.error(f"Error checking session timeout: {e}")
+                logger.error(f"Error parsing session.started_at: {e}")
                 return None
 
-        # Outside lock - call stop_session which acquires its own lock
-        if self.session.active:
-            try:
-                started = datetime.fromisoformat(self.session.started_at)
-                elapsed_seconds = (datetime.now() - started).total_seconds()
-                timeout_seconds = self.session.config.timeout_minutes * 60
-                if elapsed_seconds >= timeout_seconds:
-                    result = self.stop_session()
-                    if result.get('success'):
-                        result['reason'] = 'timeout'
-                        result['timeout_minutes'] = self.session.config.timeout_minutes
-                    return result
-            except Exception as e:
-                logger.error(f"Error checking session timeout: {e}")
+            timeout_seconds = timeout_minutes * 60
+            if elapsed_seconds < timeout_seconds:
+                return None  # Not timed out yet
 
-        return None
+            logger.warning(
+                f"Session timeout after {elapsed_seconds/60:.1f} min (limit: {timeout_minutes})"
+            )
+
+        # Lock released — now call stop_session (which acquires its own lock).
+        # If another thread already stopped the session in the gap, stop_session
+        # will return success=False which we propagate.
+        try:
+            result = self.stop_session()
+            if isinstance(result, dict) and result.get('success'):
+                result['reason'] = 'timeout'
+                result['timeout_minutes'] = timeout_minutes
+            return result
+        except Exception as e:
+            logger.error(f"Error stopping session on timeout: {e}")
+            return None
 
     # =========================================================================
     # DATA EXPORT
