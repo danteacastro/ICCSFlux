@@ -9580,13 +9580,37 @@ Unit conversions:
                     json.dumps(batch_payload)
                 )
 
-                # Write to project's recording manager
+                # Write to project's recording manager — include user variables
+                # so they end up in CSV/TDMS alongside hardware channels.
+                # Variables are prefixed with "uv." to distinguish from channels.
                 if ctx.recording_manager and ctx.recording_manager.recording:
                     channel_configs = {
                         name: {'units': ch.units, 'description': ch.description}
                         for name, ch in ctx.config.channels.items()
                     }
-                    ctx.recording_manager.write_sample(project_values, channel_configs)
+                    record_values = dict(project_values)
+                    if getattr(ctx, 'user_variables', None):
+                        try:
+                            var_dict = ctx.user_variables.get_values_dict()
+                            for var_id, var_info in var_dict.items():
+                                vname = var_info.get('name')
+                                if not vname:
+                                    continue
+                                # Per-variable opt-in flag — only included if
+                                # Mike checked "Record this variable" on the
+                                # Data tab. Default False so existing projects
+                                # don't suddenly grow new CSV columns.
+                                if not var_info.get('log', False):
+                                    continue
+                                key = f"uv.{vname}"
+                                record_values[key] = var_info.get('value')
+                                channel_configs[key] = {
+                                    'units': var_info.get('units', ''),
+                                    'description': f"User variable: {vname}",
+                                }
+                        except Exception as e:
+                            logger.debug(f"User-vars recording skipped: {e}")
+                    ctx.recording_manager.write_sample(record_values, channel_configs)
 
             except Exception as e:
                 logger.error(f"[STATION] Publish error for project {project_id}: {e}")
@@ -17141,9 +17165,14 @@ Unit conversions:
                         channel_configs['sys.session_active'] = {'units': 'bool', 'description': 'Test session active'}
                         channel_configs['sys.recording'] = {'units': 'bool', 'description': 'Recording active'}
 
-                        # Add user variables to recording (uv.* prefix)
+                        # Add user variables to recording (uv.* prefix) —
+                        # only those with the "Record" checkbox enabled
+                        # (var.log=True). Default is False so existing
+                        # projects don't grow new CSV columns unexpectedly.
                         if self.user_variables:
                             for var in self.user_variables.get_all_variables():
+                                if not getattr(var, 'log', False):
+                                    continue
                                 uv_name = f"uv.{var.name}"
                                 values[uv_name] = var.value
                                 channel_configs[uv_name] = {'units': var.units, 'description': var.description or var.variable_type}

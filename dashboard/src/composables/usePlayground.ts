@@ -81,6 +81,7 @@ export function usePlayground() {
       value: config.value ?? 0,
       units: config.units || '',
       persistent: config.persistent ?? true,
+      log: config.log ?? false,
       sourceChannel: config.sourceChannel || null,
       edgeType: config.edgeType || 'increment',
       scaleFactor: config.scaleFactor ?? 1.0,
@@ -100,6 +101,7 @@ export function usePlayground() {
       value: config.value ?? 0,
       units: config.units || '',
       persistent: config.persistent ?? true,
+      log: config.log ?? false,
       reset_mode: config.resetMode || 'manual',
       source_channel: config.sourceChannel || null,
       edge_type: config.edgeType || 'increment',
@@ -123,6 +125,7 @@ export function usePlayground() {
     if (updates.value !== undefined) payload.value = updates.value
     if (updates.units !== undefined) payload.units = updates.units
     if (updates.persistent !== undefined) payload.persistent = updates.persistent
+    if (updates.log !== undefined) payload.log = updates.log
     if (updates.resetMode !== undefined) payload.reset_mode = updates.resetMode
     if (updates.sourceChannel !== undefined) payload.source_channel = updates.sourceChannel
     if (updates.edgeType !== undefined) payload.edge_type = updates.edgeType
@@ -275,6 +278,7 @@ export function usePlayground() {
         value: data.value,
         units: data.units || '',
         persistent: data.persistent ?? true,
+        log: data.log ?? false,
         sourceChannel: data.source_channel,
         edgeType: data.edge_type,
         scaleFactor: data.scale_factor,

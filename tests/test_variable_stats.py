@@ -34,7 +34,7 @@ class TestSourceLevelFixes:
         idx = content.find("variable_type == 'rms'")
         snippet = content[idx:idx + 600]
         assert "math.isnan(scaled)" in snippet
-        assert "continue" in snippet
+        assert "return" in snippet  # Skip-NaN exits the method early
 
     def test_stddev_skips_nan(self):
         content = self._read()

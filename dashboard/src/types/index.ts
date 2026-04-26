@@ -2144,6 +2144,11 @@ export interface UserVariable {
   // Rolling window config
   rollingWindowS?: number     // Window size in seconds (default 86400 = 24 hours)
 
+  // Recording — opt-in to include this variable in CSV/TDMS recording.
+  // Defaults to false so existing variables don't suddenly start
+  // appearing in recordings (Mike picks which ones matter).
+  log?: boolean
+
   // UI state
   lastUpdated?: number
   formatted?: string          // Pre-formatted value (for timers)

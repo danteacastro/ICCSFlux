@@ -5,6 +5,7 @@ import { useMqtt } from '../composables/useMqtt'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
 import { useSafety } from '../composables/useSafety'
+import { usePlayground } from '../composables/usePlayground'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useAzureIot } from '../composables/useAzureIot'
 import DataViewerTab from './DataViewerTab.vue'
@@ -17,6 +18,7 @@ const mqtt = useMqtt()
 const pythonScripts = usePythonScripts()
 const backendScripts = useBackendScripts()
 const safety = useSafety()
+const playground = usePlayground()
 const projectFiles = useProjectFiles()
 const azureIot = useAzureIot()
 
@@ -206,6 +208,19 @@ const availableChannels = computed(() => {
     })
   }
 
+  // 6. User variables — opt-in recording per variable.
+  // Mike sees these on the Data tab and checks the ones he wants
+  // to include in CSV/TDMS recording.
+  for (const v of playground.variablesList.value) {
+    if (!v || !v.name) continue
+    all.push({
+      name: `uv.${v.name}`,
+      displayName: v.displayName || v.name,
+      type: 'user_variable',
+      unit: v.units || '',
+    })
+  }
+
   return all
 })
 
@@ -276,13 +291,22 @@ const channelGroups = computed<DataChannelGroup[]>(() => {
 
   // 1. Tags (hardware channels, sorted by module)
   const tags = all
-    .filter(ch => ch.type !== 'published' && ch.type !== 'system' && ch.type !== 'alarm' && ch.type !== 'interlock')
+    .filter(ch => ch.type !== 'published' && ch.type !== 'system' && ch.type !== 'alarm' && ch.type !== 'interlock' && ch.type !== 'user_variable')
     .sort(moduleSort)
   if (tags.length > 0) {
     groups.push({ id: 'tags', label: 'Tags', color: '#888', channels: tags })
   }
 
-  // 2. Published Variables (sorted alphabetically)
+  // 2. User Variables (sorted alphabetically) — Mike's calculated values,
+  // counters, accumulators, manual setpoints, etc.
+  const userVars = all
+    .filter(ch => ch.type === 'user_variable')
+    .sort((a, b) => naturalSort(a.displayName, b.displayName))
+  if (userVars.length > 0) {
+    groups.push({ id: 'user_variables', label: 'User Variables', color: '#0ea5e9', channels: userVars })
+  }
+
+  // 3. Published Variables (sorted alphabetically)
   const published = all
     .filter(ch => ch.type === 'published')
     .sort((a, b) => naturalSort(a.displayName, b.displayName))
@@ -333,6 +357,17 @@ const channelGroups = computed<DataChannelGroup[]>(() => {
 // Flat list of all channel names for select-all / count
 const allChannelNames = computed(() => availableChannels.value.map(ch => ch.name))
 
+// If the toggled channel is a user variable (uv.NAME), sync the
+// variable's `log` flag to the backend so recording actually picks it up.
+function syncUserVariableLog(channelName: string, enabled: boolean) {
+  if (!channelName.startsWith('uv.')) return
+  const varName = channelName.slice(3)
+  const v = playground.variablesList.value.find(x => x.name === varName)
+  if (v) {
+    playground.updateVariable(v.id, { log: enabled })
+  }
+}
+
 // Toggle channel selection
 function toggleChannel(channelName: string) {
   const current = [...store.selectedRecordingChannels]
@@ -341,9 +376,11 @@ function toggleChannel(channelName: string) {
     current.splice(idx, 1)
     store.setSelectedRecordingChannels(current)
     store.setSelectAllRecordingChannels(false)
+    syncUserVariableLog(channelName, false)
   } else {
     current.push(channelName)
     store.setSelectedRecordingChannels(current)
+    syncUserVariableLog(channelName, true)
     if (current.length === allChannelNames.value.length) {
       store.setSelectAllRecordingChannels(true)
     }
@@ -353,8 +390,16 @@ function toggleChannel(channelName: string) {
 function toggleAllChannels() {
   if (selectAllChannels.value) {
     store.setSelectedRecordingChannels(allChannelNames.value)
+    // Enable log on every user variable
+    for (const v of playground.variablesList.value) {
+      if (!v.log) playground.updateVariable(v.id, { log: true })
+    }
   } else {
     store.setSelectedRecordingChannels([])
+    // Disable log on every user variable
+    for (const v of playground.variablesList.value) {
+      if (v.log) playground.updateVariable(v.id, { log: false })
+    }
   }
 }
 

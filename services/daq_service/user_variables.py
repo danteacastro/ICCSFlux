@@ -62,6 +62,11 @@ class UserVariable:
     units: str = ""
     persistent: bool = True  # Survives restarts
 
+    # Recording: opt-in inclusion in CSV/TDMS. Default False so old projects
+    # don't unexpectedly start logging every variable. Mike checks the box
+    # on the Data tab next to the variable to enable recording.
+    log: bool = False
+
     # Accumulator/Counter config
     source_channel: Optional[str] = None  # Channel to watch
     edge_type: str = 'increment'  # 'increment', 'rising', 'falling', 'rate'
@@ -116,6 +121,7 @@ class UserVariable:
             'data_type': self.data_type,
             'units': self.units,
             'persistent': self.persistent,
+            'log': self.log,
             'source_channel': self.source_channel,
             'edge_type': self.edge_type,
             'scale_factor': self.scale_factor,
@@ -155,6 +161,7 @@ class UserVariable:
             data_type=data_type,
             units=data.get('units', ''),
             persistent=data.get('persistent', True),
+            log=data.get('log', False),
             source_channel=data.get('source_channel'),
             edge_type=data.get('edge_type', 'increment'),
             scale_factor=data.get('scale_factor', 1.0),
@@ -790,7 +797,7 @@ class UserVariableManager:
             # Running standard deviation using Welford's online algorithm.
             # Skip NaN/inf samples — they would corrupt accumulators forever.
             if math.isnan(scaled) or math.isinf(scaled):
-                continue
+                return
             var.sample_count += 1
             delta = scaled - var._mean_accumulator
             var._mean_accumulator += delta / var.sample_count
@@ -810,7 +817,7 @@ class UserVariableManager:
             # Skip NaN/inf samples — once _sum_squares is NaN, all future
             # RMS values are NaN forever (NaN + anything = NaN).
             if math.isnan(scaled) or math.isinf(scaled):
-                continue
+                return
             var.sample_count += 1
             var._sum_squares += scaled * scaled
             var.value = math.sqrt(var._sum_squares / var.sample_count)
@@ -1322,6 +1329,7 @@ class UserVariableManager:
                     'data_type': var.data_type,
                     'last_reset': var.last_reset,
                     'last_update': var._last_update,
+                    'log': var.log,  # Recording opt-in flag
                 }
                 # Include both values for flexibility
                 if var.data_type == 'string' or var.variable_type == 'string':
