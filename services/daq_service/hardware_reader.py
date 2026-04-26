@@ -101,16 +101,33 @@ def _safe_create_task(task_name: str) -> Any:
         # NI error -88709 / -50103: "resource is reserved" or "name already exists"
         if 'reserved' in err_str.lower() or 'already' in err_str.lower() or '-88709' in err_str or '-50103' in err_str:
             logger.warning(f"Orphaned task '{task_name}' detected – clearing before retry: {first_err}")
+            cleaned = False
             try:
                 orphan = nidaqmx.system.System.local()
                 for t in orphan.tasks:
                     if t.name == task_name:
                         t.close()
+                        cleaned = True
                         logger.info(f"Closed orphaned task: {task_name}")
                         break
             except Exception as cleanup_err:
-                logger.warning(f"Failed to clean orphaned task '{task_name}': {cleanup_err}")
-            # Retry once
+                # Cleanup itself failed — re-raise with descriptive context
+                # so the caller doesn't blindly retry into the same error.
+                raise RuntimeError(
+                    f"Could not create task '{task_name}' (resource reserved) "
+                    f"AND could not clean up the orphan: {cleanup_err}. "
+                    f"Restart the service or reboot the machine to release "
+                    f"the NI-DAQmx task lock."
+                ) from first_err
+            if not cleaned:
+                # The task name conflict exists but we didn't find an orphan
+                # we could close (might be reserved by a different process).
+                raise RuntimeError(
+                    f"Task name '{task_name}' is reserved but no orphan was "
+                    f"found in this process. Another DAQ Service or NI MAX "
+                    f"session may be holding the resource."
+                ) from first_err
+            # Retry once now that the orphan is closed
             return nidaqmx.Task(task_name)
         else:
             raise
@@ -385,6 +402,41 @@ class HardwareReader:
         mod = self.config.modules.get(module_name)
         return getattr(mod, 'module_type', None) if mod else None
 
+    def _close_all_tasks_silently(self):
+        """Close every task we've created so far. Used for rollback when
+        _create_tasks() fails partway through, so we don't leave orphaned
+        NI-DAQmx tasks blocking the next acquisition start."""
+        for tg in list(self.tasks.values()):
+            try:
+                tg.task.stop()
+            except Exception:
+                pass
+            try:
+                tg.task.close()
+            except Exception:
+                pass
+        self.tasks.clear()
+        for t in list(self.output_tasks.values()):
+            try:
+                t.stop()
+            except Exception:
+                pass
+            try:
+                t.close()
+            except Exception:
+                pass
+        self.output_tasks.clear()
+        for t in list(self.counter_tasks.values()):
+            try:
+                t.stop()
+            except Exception:
+                pass
+            try:
+                t.close()
+            except Exception:
+                pass
+        self.counter_tasks.clear()
+
     def _create_tasks(self):
         """
         Create nidaqmx tasks for all input channels.
@@ -395,7 +447,18 @@ class HardwareReader:
 
         This is valid because NI-DAQmx allows mixing different add_ai_*_chan methods
         in the same task.
+
+        On failure mid-way, all already-created tasks are closed before re-raising
+        so the next acquisition start has a clean slate.
         """
+        try:
+            self._create_tasks_inner()
+        except Exception as e:
+            logger.error(f"Task creation failed — rolling back created tasks: {e}")
+            self._close_all_tasks_silently()
+            raise
+
+    def _create_tasks_inner(self):
 
         # Group channels by module
         # For channels with direct paths (containing '/'), extract module from path
@@ -1453,19 +1516,46 @@ class HardwareReader:
     # =========================================================================
 
     def _start_continuous_acquisition(self):
-        """Start all continuous acquisition tasks and the background reader thread"""
+        """Start all continuous acquisition tasks and the background reader thread.
+
+        Raises RuntimeError if any task fails to start — caller must catch this
+        and abort the acquisition rather than silently entering a broken state.
+
+        Blocks briefly waiting for the reader thread to acquire its first sample
+        so that read_all() returns real data immediately after this returns.
+        """
         logger.info("Starting continuous acquisition...")
 
-        # Start all continuous tasks
+        # Start all continuous tasks. Track failures so we can report them
+        # accurately AND clean up before raising.
+        failed_tasks = []
+        started_tasks = []
         for task_name, task_group in self.tasks.items():
             if task_group.is_continuous:
                 try:
                     task_group.task.start()
+                    started_tasks.append(task_name)
                     logger.info(f"Started continuous task: {task_name}")
                 except Exception as e:
+                    failed_tasks.append((task_name, str(e)))
                     logger.error(f"Failed to start task {task_name}: {e}")
 
-        # Start background reader thread
+        if failed_tasks:
+            # Roll back: stop tasks we already started so we leave the system clean
+            for task_name in started_tasks:
+                try:
+                    self.tasks[task_name].task.stop()
+                except Exception:
+                    pass
+            failures = "; ".join(f"{n}: {e}" for n, e in failed_tasks)
+            raise RuntimeError(
+                f"Hardware acquisition failed to start — {len(failed_tasks)} "
+                f"task(s) could not start: {failures}"
+            )
+
+        # Start background reader thread with a "first sample acquired" event
+        # so we can synchronously wait for the first read to complete.
+        self._first_sample_event = threading.Event()
         self._running = True
         self._reader_thread = threading.Thread(
             target=self._reader_thread_func,
@@ -1473,7 +1563,18 @@ class HardwareReader:
             daemon=True
         )
         self._reader_thread.start()
-        logger.info("Continuous acquisition started")
+
+        # Wait up to 2s for the reader thread to acquire the first sample.
+        # This prevents the race where the scan loop reads before any data
+        # is in latest_values, causing all channels to show as missing on
+        # the first scan cycle.
+        if not self._first_sample_event.wait(timeout=2.0):
+            logger.warning(
+                "Reader thread did not acquire first sample within 2s — "
+                "first scan cycle may show missing values"
+            )
+        else:
+            logger.info("Continuous acquisition started — first sample acquired")
 
     def _stop_continuous_acquisition(self):
         """Stop the background reader thread and all continuous tasks"""
@@ -1653,6 +1754,10 @@ class HardwareReader:
                                     self.value_timestamps[name] = now
 
                             self._error_count = 0  # Reset error count on success
+                            # Signal first-sample event so _start_continuous_acquisition()
+                            # can return without leaving the scan loop reading nothing.
+                            if hasattr(self, '_first_sample_event'):
+                                self._first_sample_event.set()
                         else:
                             _diag_empty_polls += 1
 
@@ -1755,8 +1860,17 @@ class HardwareReader:
                         except Exception as recovery_err:
                             logger.error(f"Recovery failed: {recovery_err}")
 
-                    # Max recovery attempts reached - stop for good
+                    # Max recovery attempts reached - stop for good.
+                    # CRITICAL: invalidate cached values so the scan loop
+                    # sees NaN instead of silently publishing stale data.
                     logger.critical(f"HARDWARE READER FAILED after {self._max_recovery_attempts} recovery attempts")
+                    with self.lock:
+                        for name in self.latest_values.keys():
+                            self.latest_values[name] = float('nan')
+                        # Also bump timestamps so anyone checking freshness
+                        # sees the values are invalid right now.
+                        for name in self.value_timestamps.keys():
+                            self.value_timestamps[name] = time.time()
                     if self._error_callback:
                         try:
                             self._error_callback("reader_failed", {
@@ -1838,12 +1952,19 @@ class HardwareReader:
         Read all channels and return raw values.
         This returns CACHED values from the background reader thread - INSTANT!
         No hardware blocking here.
+
+        If the reader thread has died, returns NaN for all input channels so
+        the scan loop sees the data is bad instead of silently publishing
+        stale values for minutes (Bug A in pre-Monday audit).
         """
         with self.lock:
-            # Copy latest values
-            values = dict(self.latest_values)
+            if self._reader_died:
+                # Reader is dead — return NaN for all inputs to signal staleness
+                values = {name: float('nan') for name in self.latest_values.keys()}
+            else:
+                values = dict(self.latest_values)
 
-            # Include current output states
+            # Output states are always current (we own them)
             for name, value in self.output_values.items():
                 values[name] = value
 

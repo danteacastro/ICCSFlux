@@ -413,6 +413,11 @@ class DAQService:
 
         # Locks
         self.values_lock = threading.Lock()
+        # Output write serialization lock — prevents output writes from racing
+        # when triggers, scripts, MQTT commands, watchdogs, and safe-state all
+        # try to write at the same time. Without this, write order is non-
+        # deterministic which is a safety hazard for valves/relays.
+        self.output_write_lock = threading.Lock()
         self.state_lock = threading.Lock()  # Protects acquiring/recording state transitions
 
         # Data logging
@@ -3399,7 +3404,12 @@ Unit conversions:
         self._set_output_value(channel, value)
 
     def _set_output_value(self, channel: str, value: Any):
-        """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences, safe-state)"""
+        """Generic callback for setting output values (used by scripts, triggers, watchdogs, sequences, safe-state).
+
+        Serializes all output writes via output_write_lock so concurrent writers
+        (scripts + MQTT commands + watchdog + safe-state) cannot interleave and
+        produce wrong actuation order.
+        """
         if channel not in self.config.channels:
             return
 
@@ -3409,6 +3419,13 @@ Unit conversions:
                                    ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
             return
 
+        # Serialize the entire write so two threads can't interleave reads/writes
+        # of channel_values OR send out-of-order commands to the same hardware.
+        with self.output_write_lock:
+            self._set_output_value_locked(channel, value, ch)
+
+    def _set_output_value_locked(self, channel: str, value: Any, ch):
+        """Inner output write — must be called with output_write_lock held."""
         # Use centralized hardware source detection from ChannelConfig
         is_crio_channel = ch.is_crio
         is_modbus = ch.is_modbus
@@ -15443,6 +15460,11 @@ Unit conversions:
         This method returns immediately, even if the broker is slow or disconnected.
         Messages are published by a background thread.
 
+        On queue full: drops the OLDEST queued message and inserts the new one.
+        For real-time telemetry, the latest reading is always more valuable than
+        a stale one. QoS-1+ messages are kept (they need delivery guarantees) and
+        only QoS-0 messages get dropped.
+
         Args:
             topic: MQTT topic
             payload: JSON payload string
@@ -15452,9 +15474,34 @@ Unit conversions:
         try:
             self._publish_queue.put_nowait((topic, payload, qos, retain))
         except queue.Full:
-            self._publish_queue_drops += 1
+            # Queue is full — drop the oldest QoS-0 message to make room for
+            # this newer one. This keeps live data fresh during slow-broker
+            # periods instead of accumulating a backlog of stale values.
+            try:
+                # Find and drop the oldest QoS-0 message
+                with self._publish_queue.mutex:
+                    dropped = None
+                    for i, (t, p, q, r) in enumerate(self._publish_queue.queue):
+                        if q == 0:
+                            dropped = self._publish_queue.queue[i]
+                            del self._publish_queue.queue[i]
+                            break
+                if dropped:
+                    # Now there's space — insert the new message
+                    self._publish_queue.put_nowait((topic, payload, qos, retain))
+                    self._publish_queue_drops += 1
+                else:
+                    # All queued messages are QoS-1+ (delivery-guaranteed) —
+                    # we must drop the new one to honor the QoS contract.
+                    self._publish_queue_drops += 1
+            except Exception:
+                self._publish_queue_drops += 1
             if self._publish_queue_drops % 100 == 1:
-                logger.warning(f"MQTT publish queue full - dropped {self._publish_queue_drops} messages total")
+                logger.warning(
+                    f"MQTT publish queue full — dropped oldest message to keep "
+                    f"latest data fresh ({self._publish_queue_drops} drops total). "
+                    f"Check MQTT broker performance."
+                )
 
     def _start_publish_queue_thread(self):
         """Start the background publish queue drain thread."""
@@ -16403,38 +16450,42 @@ Unit conversions:
                     source_node_id = 'crio-001'  # Default cRIO node ID
                 logger.debug(f"Auto-detected cRIO channel {channel_name} -> {source_node_id}")
 
-            if source_type == 'crio':
-                # Forward command to cRIO node via MQTT
-                if source_node_id and self.mqtt_client:
-                    base = self.get_topic_base()
-                    # Extract base topic (e.g., "nisystem" from "nisystem/daq")
-                    mqtt_base = base.split('/')[0] if '/' in base else base
-                    # Send to cRIO's command topic with TAG name in payload
-                    # (cRIO stores output_tasks by TAG name, not physical channel)
-                    # Include physical_channel for fallback when config not pushed to cRIO
-                    crio_topic = f"{mqtt_base}/nodes/{source_node_id}/commands/output"
-                    cmd_payload = {
-                        "channel": channel_name,  # Use TAG name
-                        "value": raw_value,
-                        "physical_channel": physical_ch  # Fallback for when config not pushed
-                    }
-                    self.mqtt_client.publish(crio_topic, json.dumps(cmd_payload), qos=1)
-                    logger.info(f"Forwarded output command to cRIO: {source_node_id} {channel_name} ({physical_ch}) = {raw_value}")
-                else:
-                    logger.error(f"Cannot forward to cRIO - missing node_id or MQTT client")
-                    self._publish_output_response(False, channel=channel_name, error="cRIO node not available")
-                    return
-            elif is_modbus and self.modbus_reader:
-                self.modbus_reader.write_channel(channel_name, raw_value)
-            elif self.simulator:
-                self.simulator.write_channel(channel_name, raw_value)
-            elif self.hardware_reader:
-                self.hardware_reader.write_channel(channel_name, raw_value)
+            # Serialize the entire write+cache update under output_write_lock
+            # so this MQTT-driven write can't interleave with concurrent writes
+            # from scripts, triggers, watchdogs, or safe-state.
+            with self.output_write_lock:
+                if source_type == 'crio':
+                    # Forward command to cRIO node via MQTT
+                    if source_node_id and self.mqtt_client:
+                        base = self.get_topic_base()
+                        # Extract base topic (e.g., "nisystem" from "nisystem/daq")
+                        mqtt_base = base.split('/')[0] if '/' in base else base
+                        # Send to cRIO's command topic with TAG name in payload
+                        # (cRIO stores output_tasks by TAG name, not physical channel)
+                        # Include physical_channel for fallback when config not pushed to cRIO
+                        crio_topic = f"{mqtt_base}/nodes/{source_node_id}/commands/output"
+                        cmd_payload = {
+                            "channel": channel_name,  # Use TAG name
+                            "value": raw_value,
+                            "physical_channel": physical_ch  # Fallback for when config not pushed
+                        }
+                        self.mqtt_client.publish(crio_topic, json.dumps(cmd_payload), qos=1)
+                        logger.info(f"Forwarded output command to cRIO: {source_node_id} {channel_name} ({physical_ch}) = {raw_value}")
+                    else:
+                        logger.error(f"Cannot forward to cRIO - missing node_id or MQTT client")
+                        self._publish_output_response(False, channel=channel_name, error="cRIO node not available")
+                        return
+                elif is_modbus and self.modbus_reader:
+                    self.modbus_reader.write_channel(channel_name, raw_value)
+                elif self.simulator:
+                    self.simulator.write_channel(channel_name, raw_value)
+                elif self.hardware_reader:
+                    self.hardware_reader.write_channel(channel_name, raw_value)
 
-            # Update cache with engineering value (for display)
-            with self.values_lock:
-                self.channel_values[channel_name] = eng_value
-                self.channel_timestamps[channel_name] = time.time()
+                # Update cache with engineering value (for display)
+                with self.values_lock:
+                    self.channel_values[channel_name] = eng_value
+                    self.channel_timestamps[channel_name] = time.time()
 
             # Publish engineering value for dashboard display
             self._publish_channel_value(channel_name, eng_value)
