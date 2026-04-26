@@ -777,22 +777,30 @@ class UserVariableManager:
             var.sample_count += 1
 
         elif var.variable_type == 'stddev':
-            # Running standard deviation using Welford's online algorithm
-            # More numerically stable than naive (sum of squares - mean^2)
+            # Running standard deviation using Welford's online algorithm.
+            # Skip NaN/inf samples — they would corrupt accumulators forever.
+            if math.isnan(scaled) or math.isinf(scaled):
+                continue
             var.sample_count += 1
             delta = scaled - var._mean_accumulator
             var._mean_accumulator += delta / var.sample_count
             delta2 = scaled - var._mean_accumulator
             var._m2_accumulator += delta * delta2
-            # Compute sample standard deviation (n-1 denominator)
+            # Compute sample standard deviation (n-1 denominator).
+            # Clamp _m2 to >=0 because floating-point rounding in Welford's
+            # algorithm can produce tiny negative values near steady-state.
             if var.sample_count > 1:
-                var.value = math.sqrt(var._m2_accumulator / (var.sample_count - 1))
+                m2 = max(0.0, var._m2_accumulator)
+                var.value = math.sqrt(m2 / (var.sample_count - 1))
             else:
                 var.value = 0.0
 
         elif var.variable_type == 'rms':
-            # Running root mean square
-            # RMS = sqrt(mean of squared values) - critical for AC/vibration
+            # Running root mean square — critical for AC/vibration.
+            # Skip NaN/inf samples — once _sum_squares is NaN, all future
+            # RMS values are NaN forever (NaN + anything = NaN).
+            if math.isnan(scaled) or math.isinf(scaled):
+                continue
             var.sample_count += 1
             var._sum_squares += scaled * scaled
             var.value = math.sqrt(var._sum_squares / var.sample_count)
