@@ -13,6 +13,7 @@ Scripts run in isolated threads and can be controlled via MQTT.
 
 import ast
 import json
+import sys
 import time
 import math
 import asyncio
@@ -2112,12 +2113,51 @@ class ScriptRuntime:
                 def visit_ImportFrom(self, node):
                     raise SecurityError("Import statements are not allowed")
                 def visit_Attribute(self, node):
+                    # Block direct attribute access: x.__class__
                     if node.attr in _blocked_dunder_attrs:
                         raise SecurityError(f"Access to '{node.attr}' is not allowed")
                     self.generic_visit(node)
+                def visit_Subscript(self, node):
+                    # Block subscript bypass: x['__class__'], x['__import__']
+                    # Reject ANY non-literal key — string concatenation like
+                    # '__' + 'class__' evaluates at runtime and would defeat
+                    # static analysis if we only checked literal strings.
+                    sl = node.slice
+                    # In py 3.9+, slice is the value directly; in 3.8 it's ast.Index
+                    if hasattr(ast, 'Index') and isinstance(sl, ast.Index):
+                        sl = sl.value
+                    if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                        if sl.value in _blocked_dunder_attrs or sl.value in _blocked_func_names:
+                            raise SecurityError(
+                                f"Subscript access to '{sl.value}' is not allowed"
+                            )
+                    elif isinstance(sl, (ast.BinOp, ast.JoinedStr, ast.FormattedValue, ast.Call)):
+                        # String concatenation, f-strings, .format(), or function
+                        # calls at runtime could bypass the literal check.
+                        # Note: bare Name references (key=...; d[key]) are allowed
+                        # since `d = {'a': 1}; key = 'a'; v = d[key]` is common
+                        # and legitimate. Determined attackers can still indirect
+                        # through Name references — this is a known gap.
+                        raise SecurityError(
+                            "Dynamic subscript keys (string concat, f-strings, "
+                            "function calls) are not allowed — use literal keys "
+                            "or named variables holding literals only"
+                        )
+                    self.generic_visit(node)
                 def visit_Call(self, node):
+                    # Block direct calls: getattr(...), exec(...)
                     if isinstance(node.func, ast.Name) and node.func.id in _blocked_func_names:
                         raise SecurityError(f"Call to '{node.func.id}()' is not allowed")
+                    # Block method-style calls: x.getattr(...), x.__import__(...)
+                    if isinstance(node.func, ast.Attribute):
+                        if node.func.attr in _blocked_func_names:
+                            raise SecurityError(
+                                f"Method call to '{node.func.attr}()' is not allowed"
+                            )
+                        if node.func.attr in _blocked_dunder_attrs:
+                            raise SecurityError(
+                                f"Method call to '{node.func.attr}()' is not allowed"
+                            )
                     self.generic_visit(node)
                 def visit_Name(self, node):
                     if node.id in _blocked_module_names:
@@ -2127,10 +2167,17 @@ class ScriptRuntime:
             tree = ast.parse(code, mode='exec')
             _SandboxValidator().visit(tree)
 
-            # Compile and execute (timeout enforced by _monitor_timeout thread)
+            # Compile and execute. Lower the recursion limit aggressively to
+            # protect daq_service from script recursion bombs (one-liner
+            # `f = lambda: f(); f()` would otherwise crash the whole service).
             code_obj = compile(tree, f"<script:{self.script.name}>", 'exec')
             logger.info(f"Script {self.script.name}: executing with timeout={self.script.max_runtime_seconds}s")
-            exec(code_obj, namespace)
+            _orig_recursion_limit = sys.getrecursionlimit()
+            try:
+                sys.setrecursionlimit(100)
+                exec(code_obj, namespace)
+            finally:
+                sys.setrecursionlimit(_orig_recursion_limit)
 
             # If script has a main loop, it should have exited by now
             self.script.state = ScriptState.IDLE
