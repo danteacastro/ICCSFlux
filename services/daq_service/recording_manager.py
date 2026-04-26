@@ -645,11 +645,22 @@ class RecordingManager:
             else:
                 filtered_values = channel_values.copy()
 
-            # Add script values if configured
-            # Take a snapshot to avoid RuntimeError if dict changes during iteration
+            # Add script values if configured.
+            # Take a snapshot to avoid RuntimeError if dict changes during iteration.
+            # Respect selected_channels filter: if Mike unchecked py.X in the
+            # Data tab, it should NOT appear in the CSV even though
+            # include_scripts is True. This matches the behavior of hardware
+            # channels and uv.* user variables.
             if self.config.include_scripts and self.script_values:
                 script_snapshot = dict(self.script_values)  # Atomic copy
                 for name, value in script_snapshot.items():
+                    # Honor the per-channel selection from the frontend.
+                    # The frontend names them "py.X" so we check that too.
+                    if self.config.selected_channels:
+                        if (name not in self.config.selected_channels
+                                and f"py.{name}" not in self.config.selected_channels
+                                and f"script:{name}" not in self.config.selected_channels):
+                            continue
                     # Validate value type - only accept numeric types
                     if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value or abs(value) == float('inf'))):
                         filtered_values[f"script:{name}"] = value

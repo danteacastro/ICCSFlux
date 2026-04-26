@@ -534,6 +534,27 @@ export function usePythonScripts() {
       if (scriptStatuses.value[id]?.state === 'running') {
         scriptStatuses.value[id].state = 'idle'
       }
+
+      // Clear published values from this script — otherwise widgets bound
+      // to py.* keep showing stale "frozen-in-time" data after the script
+      // stops. Use the same cleanup logic as deleteScript.
+      // Audit Bug #7 (Phase 2L).
+      const toRemove: string[] = []
+      for (const key of Object.keys(publishedValues.value)) {
+        if (publishedValues.value[key]?.scriptId === id) {
+          toRemove.push(key)
+        }
+      }
+      for (const key of toRemove) {
+        delete publishedValues.value[key]
+      }
+
+      // Clear collision warning flags for this script's published names so
+      // a future restart doesn't think it's already conflicted.
+      for (const key of toRemove) {
+        scriptWarnings.delete(`publish_conflict_${key}`)
+      }
+
       addScriptOutput(id, 'info', 'Script stopped')
     })
   }
@@ -943,10 +964,16 @@ except Exception as e:
           return
         }
 
-        // Check for reserved prefixes
-        if (name.startsWith('py.')) {
-          addScriptOutput(id, 'error', `publish() name cannot start with "py." - just use "${name.slice(3)}"`)
-          return
+        // Check for reserved prefixes — these namespaces belong to other
+        // systems and would create confusing duplicates.
+        const RESERVED_PREFIXES = ['py.', 'uv.', 'sys.', 'alarm.', 'interlock.', 'fx.', 'script:']
+        for (const prefix of RESERVED_PREFIXES) {
+          if (name.startsWith(prefix)) {
+            addScriptOutput(id, 'error',
+              `publish() name "${name}" uses reserved prefix "${prefix}" — ` +
+              `pick a different name.`)
+            return
+          }
         }
 
         // Check for conflict with hardware channels
@@ -967,14 +994,26 @@ except Exception as e:
           units = String(units)
         }
 
-        // Check if another script already publishes this name
+        // Check if another script already publishes this name.
+        // Block (don't silently overwrite) — Mike's analysis would otherwise
+        // see Script B's value in py.{name} when Script A is still running
+        // and computing the "real" value. Exception: if the existing
+        // publisher is no longer running, take over silently (e.g., script
+        // restarted under a new id after a crash).
         const existing = publishedValues.value[name]
         if (existing && existing.scriptId !== id) {
-          const warningKey = `publish_conflict_${name}`
-          if (!scriptWarnings.has(warningKey)) {
-            scriptWarnings.add(warningKey)
-            addScriptOutput(id, 'warning', `publish() "${name}" also published by another script`)
+          const otherStillRunning = runningScripts.value.has(existing.scriptId)
+          if (otherStillRunning) {
+            const warningKey = `publish_conflict_${name}`
+            if (!scriptWarnings.has(warningKey)) {
+              scriptWarnings.add(warningKey)
+              addScriptOutput(id, 'error',
+                `publish() rejected: "${name}" is already published by another running script ` +
+                `(${existing.scriptId}). Choose a unique name.`)
+            }
+            return  // BLOCK the write — don't overwrite
           }
+          // Otherwise the previous publisher stopped — take over.
         }
 
         // Store published value

@@ -401,6 +401,9 @@ class DAQService:
         self.channel_values: Dict[str, Any] = {}      # Scaled engineering values
         self.channel_raw_values: Dict[str, Any] = {}  # Raw values before scaling
         self.channel_timestamps: Dict[str, float] = {}
+        # Units for script-published py.* values, populated by _script_publish_value
+        # so the historian and other consumers know what units the script declared.
+        self._published_units: Dict[str, str] = {}  # py.NAME -> units string
         # SOE (Sequence of Events) support - microsecond precision acquisition timestamps
         self.channel_acquisition_ts_us: Dict[str, int] = {}  # Microseconds since epoch
         # Rate-limited warning/log flags (bounded dicts, not dynamic setattr)
@@ -1544,6 +1547,9 @@ class DAQService:
         full_name = f"py.{name}"
         self.channel_values[full_name] = value
         self.channel_timestamps[full_name] = time.time()
+        # Track units so historian/recording can report them correctly
+        if units:
+            self._published_units[full_name] = units
 
         # Also record in CSV if recording
         if self.recording_manager and self.recording_manager.recording:
@@ -17199,6 +17205,16 @@ Unit conversions:
                             hist_units = {}
                             for name, ch in self.config.channels.items():
                                 hist_units[name] = ch.units or ''
+                            # Include units for script-published py.* channels too,
+                            # otherwise DataViewer historical playback shows them
+                            # without units even when the script declared them.
+                            for pname, punits in self._published_units.items():
+                                hist_units[pname] = punits
+                            # Include units for user variables that opted into recording
+                            if self.user_variables:
+                                for var in self.user_variables.get_all_variables():
+                                    if getattr(var, 'log', False):
+                                        hist_units[f"uv.{var.name}"] = var.units or ''
                             self.historian.write_batch(int(time.time() * 1000), values, units=hist_units)
                         except Exception as hist_err:
                             self._historian_error_count += 1
