@@ -25,6 +25,74 @@ const showAddModal = ref(false)
 const showConfigModal = ref(false)
 const editingVariable = ref<UserVariable | null>(null)
 
+// Session command feedback — shows transient success/error messages
+// after clicking Start/Stop. Without this Mike has no idea if a click
+// was registered or if the command failed.
+const sessionFeedback = ref<{ type: 'info' | 'success' | 'error'; text: string } | null>(null)
+const sessionCommandPending = ref(false)
+
+function setSessionFeedback(type: 'info' | 'success' | 'error', text: string) {
+  sessionFeedback.value = { type, text }
+  setTimeout(() => {
+    if (sessionFeedback.value?.text === text) sessionFeedback.value = null
+  }, 5000)
+}
+
+// Wrap session start with loading indicator + error feedback.
+function handleStartSession() {
+  if (!confirm('Start test session?\n\nThis will:\n- Reset configured variables\n- Start any auto-run sequences\n- Begin recording (if configured)')) {
+    return
+  }
+  sessionCommandPending.value = true
+  setSessionFeedback('info', 'Starting session...')
+  try {
+    playground.startTestSession()
+    // Success path is signaled by isSessionActive watcher; clear pending after a delay
+    setTimeout(() => { sessionCommandPending.value = false }, 2000)
+  } catch (e: any) {
+    sessionCommandPending.value = false
+    setSessionFeedback('error', `Start failed: ${e?.message || e}`)
+  }
+}
+
+// Wrap session stop with confirmation. Stop is destructive — recording
+// stops, scripts stop, sequences abort. Mike should not click this by accident.
+function handleStopSession() {
+  if (!confirm('Stop test session?\n\nThis will:\n- Stop recording (if started by session)\n- Stop session-mode scripts\n- Abort the running sequence\n- Drive outputs to safe state if configured')) {
+    return
+  }
+  sessionCommandPending.value = true
+  setSessionFeedback('info', 'Stopping session...')
+  try {
+    playground.stopTestSession()
+    setTimeout(() => { sessionCommandPending.value = false }, 2000)
+  } catch (e: any) {
+    sessionCommandPending.value = false
+    setSessionFeedback('error', `Stop failed: ${e?.message || e}`)
+  }
+}
+
+// Reset all variables — currently has zero protection. One click wipes
+// every counter, accumulator, RMS, etc. Mike could blow away an hour's
+// worth of test data with a misclick.
+function handleResetAllVariables() {
+  const count = playground.variablesList.value.length
+  if (!confirm(`Reset ALL ${count} user variable(s) to initial values?\n\nThis cannot be undone — counters, accumulators, RMS calculations, and timers will all return to zero.`)) {
+    return
+  }
+  playground.resetAllVariables()
+  setSessionFeedback('info', `Reset ${count} variable(s)`)
+}
+
+// Reset a single variable — also gets confirmation since it's destructive
+// for accumulators tracking long-running totals.
+function handleResetVariable(variable: UserVariable) {
+  if (!confirm(`Reset variable "${variable.displayName || variable.name}" to initial value?`)) {
+    return
+  }
+  playground.resetVariable(variable.id)
+}
+
 // New variable form
 const newVariable = ref({
   name: '',
@@ -343,22 +411,26 @@ onMounted(() => {
       <div class="session-controls">
         <button
           class="btn btn-success"
-          @click="playground.startTestSession()"
-          :disabled="playground.isSessionActive.value || !store.isAcquiring"
+          @click="handleStartSession"
+          :disabled="playground.isSessionActive.value || !store.isAcquiring || sessionCommandPending"
           :title="!store.isAcquiring ? 'Start acquisition first' : ''"
         >
-          Start Session
+          {{ sessionCommandPending ? 'Starting…' : 'Start Session' }}
         </button>
         <button
           class="btn btn-danger"
-          @click="playground.stopTestSession()"
-          :disabled="!playground.isSessionActive.value"
+          @click="handleStopSession"
+          :disabled="!playground.isSessionActive.value || sessionCommandPending"
         >
-          Stop Session
+          {{ sessionCommandPending ? 'Stopping…' : 'Stop Session' }}
         </button>
         <button class="btn btn-secondary" @click="openConfigModal">
           Configure
         </button>
+      </div>
+
+      <div v-if="sessionFeedback" class="session-feedback" :class="sessionFeedback.type">
+        {{ sessionFeedback.text }}
       </div>
 
       <div class="session-hint" v-if="!store.isAcquiring">
@@ -371,7 +443,7 @@ onMounted(() => {
       <div class="section-header">
         <h3>User Variables</h3>
         <div class="section-actions">
-          <button class="btn btn-sm" @click="playground.resetAllVariables()">
+          <button class="btn btn-sm" @click="handleResetAllVariables">
             Reset All
           </button>
           <button class="btn btn-sm" @click="playground.refreshVariables()">
@@ -419,7 +491,7 @@ onMounted(() => {
                 >
                   {{ variable.timerRunning ? 'Stop' : 'Start' }}
                 </button>
-                <button class="btn btn-xs" @click="playground.resetVariable(variable.id)">
+                <button class="btn btn-xs" @click="handleResetVariable(variable)">
                   Reset
                 </button>
                 <button class="btn btn-xs" @click="openEditModal(variable)">
@@ -974,6 +1046,30 @@ onMounted(() => {
   color: var(--text-secondary);
   margin-top: 0.75rem;
   font-style: italic;
+}
+
+.session-feedback {
+  text-align: center;
+  font-size: 0.9rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.session-feedback.info {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.session-feedback.success {
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+.session-feedback.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 /* Variables Section */
