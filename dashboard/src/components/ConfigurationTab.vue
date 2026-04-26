@@ -1713,6 +1713,10 @@ function deleteChannel(channelName: string, event?: Event) {
   mqtt.sendNodeCommand('config/channel/delete', { channel: channelName })
   showFeedback('info', `Deleting channel: ${channelName}...`)
 
+  // Cascade cleanup — these used to be the user's responsibility, leaving
+  // orphaned widgets/scripts/alarms silently broken (audit Bug P5).
+  cascadeChannelDelete(channelName)
+
   // Close config panel if this channel was selected
   if (selectedChannel.value === channelName) {
     closeConfigPanel()
@@ -1721,6 +1725,57 @@ function deleteChannel(channelName: string, event?: Event) {
   // Remove from local enable state
   delete channelEnabled.value[channelName]
   markDirty()
+}
+
+// Remove all references to a deleted channel from widgets, recording config,
+// alarms, etc. Called from deleteChannel() — the user has already confirmed
+// in the warning dialog so we proceed to the actual cleanup.
+function cascadeChannelDelete(channelName: string) {
+  let removedWidgets = 0
+  let removedFromRecording = false
+  let removedAlarm = false
+
+  // 1. Widgets — store has a helper that removes single-channel widgets
+  // and prunes multi-channel widgets (charts) of the deleted channel.
+  if (typeof (store as any).handleChannelDeleted === 'function') {
+    try {
+      removedWidgets = (store as any).handleChannelDeleted(channelName) || 0
+    } catch (e) {
+      console.warn('handleChannelDeleted failed:', e)
+    }
+  }
+
+  // 2. Recording channel selection — if Mike had checked it for recording,
+  // remove from the list so the next start_recording doesn't fail.
+  const sel = store.selectedRecordingChannels
+  if (Array.isArray(sel) && sel.includes(channelName)) {
+    store.setSelectedRecordingChannels(sel.filter((n: string) => n !== channelName))
+    removedFromRecording = true
+  }
+
+  // 3. Recording trigger channel — if it was the trigger channel, clear it.
+  if (store.recordingConfig?.triggerChannel === channelName) {
+    store.setRecordingConfig({ triggerChannel: '' })
+  }
+
+  // 4. Alarm config — backend stores the per-channel alarm; tell it to clean
+  // up too. Best-effort: the backend's _handle_channel_delete should already
+  // do this, but we emit an explicit cleanup as a belt-and-suspenders.
+  // (No-op if no alarm exists.)
+  try {
+    mqtt.sendNodeCommand('safety/alarm/delete', { channel: channelName })
+    removedAlarm = true
+  } catch (e) {
+    // Non-fatal — alarm may not exist
+  }
+
+  if (removedWidgets || removedFromRecording || removedAlarm) {
+    const parts: string[] = []
+    if (removedWidgets) parts.push(`${removedWidgets} widget(s)`)
+    if (removedFromRecording) parts.push('recording')
+    if (removedAlarm) parts.push('alarm')
+    showFeedback('info', `Cleaned up references in ${parts.join(', ')}`)
+  }
 }
 
 // Rename channel (change tag name)

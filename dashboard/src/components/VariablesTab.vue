@@ -54,10 +54,11 @@ const SOURCE_RATE_UNIT_INFO: Record<SourceRateUnit, { label: string; description
   per_day: { label: 'Per Day', description: 'Source value is X per day' }
 }
 
-// Available channels for source selection
+// Available channels for source selection.
+// Includes invisible channels (visible=false just hides from the dashboard;
+// formulas/variables should still be able to reference them).
 const availableChannels = computed(() => {
   return Object.entries(store.channels)
-    .filter(([_, ch]) => ch.visible !== false)
     .map(([name, ch]) => ({
       name,
       displayName: name,
