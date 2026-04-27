@@ -520,6 +520,58 @@ def load_mqtt_credentials():
     except Exception:
         return None, None
 
+def validate_required_files():
+    """Pre-flight check: every required file/dir must exist before we start.
+
+    Without this, the launcher would proceed past the missing-file
+    moment and Mike would see a blank dashboard, blank logs, and a
+    silently-failed-to-start service. Surface the missing files in an
+    error dialog or stderr (depending on whether tk is initialized).
+
+    Returns a list of missing items (empty list = all good).
+    """
+    required = [
+        (MOSQUITTO,      "Mosquitto MQTT broker (mosquitto/mosquitto.exe)"),
+        (MOSQUITTO_CONF, "Mosquitto config (config/mosquitto.conf)"),
+        (DAQ_SERVICE,    "DAQ service executable (DAQService.exe)"),
+        (CONFIG,         "System config (config/system.ini)"),
+        (WWW,            "Dashboard static files (www/)"),
+    ]
+    missing = []
+    for path, label in required:
+        if not path.exists():
+            missing.append((path, label))
+    return missing
+
+
+def show_missing_files_error(missing):
+    """Display the missing-file list to the operator. Tries a tk dialog
+    first; falls back to stderr if tk isn't available."""
+    lines = ["ICCSFlux cannot start — required files are missing:", ""]
+    for path, label in missing:
+        lines.append(f"  • {label}")
+        lines.append(f"    expected at: {path}")
+    lines.append("")
+    lines.append("Likely cause: the install is incomplete or corrupted. "
+                 "Re-run the installer or rebuild via scripts/build_exe.py.")
+    msg = "\n".join(lines)
+    # Always log to file/stderr so service-mode (NSSM) operators can find it.
+    try:
+        sys.stderr.write(msg + "\n")
+    except Exception:
+        pass
+    # Try a graphical dialog for desktop mode. If tk is not yet imported
+    # or fails, the stderr write above is the fallback.
+    try:
+        _import_tkinter()
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("ICCSFlux — Missing Files", msg)
+        root.destroy()
+    except Exception:
+        pass
+
+
 def setup_tls_if_needed():
     """Generate TLS certificates if missing. Idempotent."""
     tls_dir = ROOT / "config" / "tls"
@@ -1000,14 +1052,31 @@ def start_azure_uploader():
     # Resolve historian.db path (same as DAQ service uses)
     log_dir = ROOT / "logs"
     db_path = log_dir / "historian" / "historian.db"
+    # Ensure the historian directory exists — AzureUploader.exe expects it
+    # and would silently fail if missing (was hitting DEVNULL with no log).
+    try:
+        (log_dir / "historian").mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log_entry("AZURE", f"Could not create historian dir: {e}", "warn")
     env = os.environ.copy()
     mqtt_user, mqtt_pass = load_mqtt_credentials()
     if mqtt_user and mqtt_pass:
         env["MQTT_USERNAME"] = mqtt_user
         env["MQTT_PASSWORD"] = mqtt_pass
+    # Capture stdout/stderr to a log file instead of DEVNULL so a startup
+    # crash leaves a forensic trail. Previously the uploader could crash
+    # immediately and the launcher just marked it "failed" with no detail.
+    azure_log_path = log_dir / "azure_uploader.log"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        azure_log_handle = open(azure_log_path, 'a', buffering=1, encoding='utf-8')
+    except Exception as e:
+        log_entry("AZURE", f"Could not open log file ({e}); falling back to DEVNULL", "warn")
+        azure_log_handle = subprocess.DEVNULL
     proc = subprocess.Popen(
         [str(AZURE_UPLOADER), "--db-path", str(db_path)],
-        cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(ROOT), env=env,
+        stdout=azure_log_handle, stderr=subprocess.STDOUT,
         creationflags=_NO_WINDOW,
     )
     processes.append(proc)
@@ -2004,6 +2073,18 @@ def main():
     args = parser.parse_args()
 
     _setup_file_logging()
+
+    # ── Pre-flight: required files exist? ──
+    # Run this FIRST (before service install/uninstall, before headless
+    # mode, before everything) so a corrupted/incomplete install fails
+    # loudly instead of leaving Mike with a blank dashboard. The setup
+    # mode is exempt because it's responsible for generating some of
+    # what we'd be checking for.
+    if not args.setup:
+        missing = validate_required_files()
+        if missing:
+            show_missing_files_error(missing)
+            return 1
 
     # ── Setup-only mode: generate creds + TLS, exit ──
     if args.setup:

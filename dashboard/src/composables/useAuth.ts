@@ -96,6 +96,23 @@ function saveCachedCredentials(username: string, passwordHash: string, user: Aut
   }
 }
 
+// Purge a user's cached offline-login credentials. Called when an admin
+// deletes the user — without this the deleted user could still log in
+// offline using the cached password hash until their laptop's localStorage
+// was manually cleared. Real risk for terminated employees retaining
+// hardware access on a workstation that's been offline-locked.
+function purgeCachedCredentials(username: string) {
+  try {
+    const existing = loadAllCachedCredentials()
+    if (username in existing) {
+      delete existing[username]
+      localStorage.setItem(CREDENTIAL_CACHE_KEY, JSON.stringify(existing))
+    }
+  } catch (e) {
+    console.warn('[AUTH] Failed to purge cached credentials:', e)
+  }
+}
+
 function loadAllCachedCredentials(): Record<string, CachedCredential> {
   try {
     const saved = localStorage.getItem(CREDENTIAL_CACHE_KEY)
@@ -553,6 +570,11 @@ export function useAuth() {
     if (!mqtt.connected.value) return
 
     mqtt.sendNodeCommand('users/delete', { username }, 'node-001')
+    // Local-side cleanup: the backend invalidates active sessions, but the
+    // offline-login credential cache lives in this browser's localStorage.
+    // Purge it now so the deleted user can't log back in offline using a
+    // stale password hash (real risk for terminated-employee scenarios).
+    purgeCachedCredentials(username)
   }
 
   // ============================================================================

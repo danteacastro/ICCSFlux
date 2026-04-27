@@ -782,20 +782,34 @@ async function testBrokerConnection() {
 }
 
 function applyBrokerAndConnect() {
+  // Confirm if changing to a different broker URL — switching disconnects
+  // every active subscription, which can interrupt an in-flight recording
+  // or a running session script. The retry button on the connection
+  // overlay would also kick in. Only ask if the URL actually changed.
+  if (brokerUrlInput.value !== brokerConfig.brokerUrl.value) {
+    if (!confirm(
+      `Switch broker to "${brokerUrlInput.value}"?\n\n` +
+      'This will disconnect all subscriptions and reconnect. Active recordings, ' +
+      'session scripts, and live channel data will briefly drop until the new ' +
+      'broker is reachable.\n\nContinue?'
+    )) {
+      return
+    }
+  }
   brokerConfig.setBrokerUrl(brokerUrlInput.value)
   if (isBrokerRemote.value) {
     brokerConfig.setBrokerCredentials(brokerUsernameInput.value, brokerPasswordInput.value)
   } else {
     brokerConfig.setBrokerCredentials('', '')
   }
-  mqttClient.disconnect()
-  setTimeout(() => {
-    mqttClient.connect(
-      brokerConfig.brokerUrl.value,
-      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
-      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
-    )
-  }, 100)
+  // useMqtt.connect() now tears down any existing client internally
+  // (added in the App shell phase), so we don't need disconnect() + setTimeout
+  // any more. Direct call is safe.
+  mqttClient.connect(
+    brokerConfig.brokerUrl.value,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+  )
 }
 
 function resetBrokerToLocal() {
@@ -1132,9 +1146,21 @@ function loadSecuritySettings(): SecuritySettings {
 }
 
 const securitySettings = ref<SecuritySettings>(loadSecuritySettings())
+// Inline feedback for localStorage / MQTT save failures on security settings.
+// Cleared by an 8s timer set inside saveSecuritySettings().
+const securityMessage = ref('')
 
 function saveSecuritySettings() {
-  localStorage.setItem(SECURITY_SETTINGS_KEY, JSON.stringify(securitySettings.value))
+  // Surface localStorage failures (quota, private mode, disk full) instead
+  // of silently swallowing them — was console-only. The toggle would flip
+  // in the UI but the security policy never persisted.
+  try {
+    localStorage.setItem(SECURITY_SETTINGS_KEY, JSON.stringify(securitySettings.value))
+  } catch (e: any) {
+    securityMessage.value = `Failed to save security settings: ${e?.message || e}`
+    setTimeout(() => { securityMessage.value = '' }, 8000)
+    return
+  }
   // Notify useAuth to pick up changes (guest access, session lock)
   reloadSecuritySettings()
   // Publish to backend so DAQ service can apply the settings
@@ -1155,6 +1181,20 @@ function resetSecurityDefaults() {
 }
 
 function enableNistPreset() {
+  // Confirm before flipping every security toggle on at once. Some of
+  // these settings (session lock, max concurrent sessions, anomaly
+  // rate limit) can lock the current operator out if misconfigured —
+  // a misclick on this button mid-test was a real risk.
+  if (!confirm(
+    'Apply NIST 800-53 preset?\n\n' +
+    'This enables session lock (30min), guest access disabled, ' +
+    'audit integrity checks, NTP sync requirement, and anomaly detection. ' +
+    'Some of these can lock you out if your environment isn\'t configured ' +
+    'correctly (e.g., NTP not configured, or you\'re the only admin and ' +
+    'session lock kicks in).\n\nContinue?'
+  )) {
+    return
+  }
   securitySettings.value = {
     session_lock_enabled: true,
     session_lock_timeout_minutes: 30,
