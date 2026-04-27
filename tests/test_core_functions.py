@@ -31,9 +31,14 @@ from dataclasses import dataclass, field
 
 try:
     import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
-    sys.exit(1)
+    MQTT_AVAILABLE = False
+    # Don't sys.exit() at module load — pytest collection of unrelated tests
+    # in this directory would also abort. Hard exit only when run as script.
+    if __name__ == "__main__":
+        print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
+        sys.exit(1)
 
 @dataclass
 class TestResult:

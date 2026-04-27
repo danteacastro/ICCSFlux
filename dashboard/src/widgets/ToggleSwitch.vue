@@ -2,6 +2,8 @@
 import { computed, ref, onUnmounted } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
+import { useMqtt } from '../composables/useMqtt'
+import { useAuth } from '../composables/useAuth'
 import InterlockBlockOverlay from '../components/InterlockBlockOverlay.vue'
 
 const props = defineProps<{
@@ -23,6 +25,14 @@ const emit = defineEmits<{
 
 const store = useDashboardStore()
 const safety = useSafety()
+const mqtt = useMqtt()
+const auth = useAuth()
+// Per-channel pending flag — disable the toggle during the backend round-trip
+// so a rapid double-click doesn't fire two writes.
+const writePending = computed(() => !!mqtt.outputWritePending.value[props.channel])
+// Frontend role gate. Backend is authoritative but disabling the click
+// rather than silently rejecting matches the rest of the dashboard pattern.
+const hasOperatorRole = computed(() => auth.isOperator.value)
 
 const channelConfig = computed(() => store.channels[props.channel])
 const channelValue = computed(() => store.getChannelRef(props.channel).value)
@@ -55,12 +65,21 @@ const displayLabel = computed(() => {
 const onColor = computed(() => props.style?.onColor || '#22c55e')
 const offColor = computed(() => props.style?.offColor || '#4b5563')
 
-// Block toggle if: disabled, not acquiring, OR blocked by interlocks
-const canToggle = computed(() => !props.disabled && store.isAcquiring && !isBlocked.value)
+// Block toggle if: disabled, not acquiring, blocked by interlocks, write pending,
+// or current user lacks operator role.
+const canToggle = computed(() =>
+  !props.disabled
+  && store.isAcquiring
+  && !isBlocked.value
+  && !writePending.value
+  && hasOperatorRole.value
+)
 
 const statusText = computed(() => {
   if (isBlocked.value) return `Blocked: ${blockedBy.value}`
+  if (!hasOperatorRole.value) return 'Requires Operator role'
   if (!store.isAcquiring) return 'Not acquiring'
+  if (writePending.value) return 'Writing…'
   return ''
 })
 
@@ -100,9 +119,10 @@ function toggle() {
     : props.confirmOff
 
   if (needsConfirm && !showConfirm.value) {
+    // Show confirmation overlay and keep it visible until the operator
+    // explicitly accepts or cancels. Previously a 3s auto-dismiss could
+    // make the prompt vanish mid-decision — risky for an industrial HMI.
     showConfirm.value = true
-    clearConfirmTimer()
-    confirmTimer = setTimeout(() => { showConfirm.value = false }, 3000)
     return
   }
 

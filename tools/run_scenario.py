@@ -24,9 +24,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
-    sys.exit(1)
+    MQTT_AVAILABLE = False
+    if __name__ == "__main__":
+        print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
+        sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Scenario Data Model

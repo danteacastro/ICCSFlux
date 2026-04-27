@@ -303,6 +303,19 @@ function removeAdvancedParam(index: number) {
   localWidget.value.advancedParams.splice(index, 1)
 }
 
+// Channel-existence check used at save time. Channels can be hardware,
+// user variables (uv.*), python publish (py.*), or script source. Saving
+// a widget pointing at a deleted channel produces orphan widgets that
+// display 0 / undefined and confuse the operator.
+function channelExists(name: string | undefined): boolean {
+  if (!name) return false
+  if (name in store.channels) return true
+  // User variables and python script values aren't in store.channels but
+  // are still valid widget bindings.
+  if (name.startsWith('uv.') || name.startsWith('py.') || name.startsWith('script:')) return true
+  return false
+}
+
 // Save changes
 function save() {
   if (!props.widgetId || !localWidget.value) return
@@ -312,8 +325,40 @@ function save() {
     localWidget.value.title = undefined
   }
 
-  store.updateWidget(props.widgetId, localWidget.value)
-  emit('close')
+  // Validate primary channel binding (single-channel widgets). We don't
+  // block saving — just warn — because the user may legitimately be
+  // editing a widget for a channel they're about to add. But we do tell
+  // them so they're not surprised by the "--" display later.
+  const w = localWidget.value as { channel?: string; type?: string }
+  if (w.channel && !channelExists(w.channel)) {
+    if (!window.confirm(
+      `Channel "${w.channel}" doesn't exist in the current configuration.\n\n` +
+      `The widget will save, but it'll display "--" until the channel is added or restored.\n\nSave anyway?`
+    )) {
+      return
+    }
+  }
+
+  // Multi-channel widgets (charts): drop any references that no longer
+  // resolve so the chart doesn't carry dead bindings forever.
+  const wm = localWidget.value as { channels?: string[] }
+  if (Array.isArray(wm.channels)) {
+    const before = wm.channels.length
+    wm.channels = wm.channels.filter(channelExists)
+    if (wm.channels.length < before) {
+      console.warn(`[WidgetConfig] Dropped ${before - wm.channels.length} unresolved channel(s) on save`)
+    }
+  }
+
+  try {
+    store.updateWidget(props.widgetId, localWidget.value)
+    emit('close')
+  } catch (err: any) {
+    // Defensive: if the store update throws, surface it. Previously the
+    // save was treated as infallible.
+    console.error('[WidgetConfig] save failed:', err)
+    alert(`Save failed: ${err?.message || err}`)
+  }
 }
 
 // Cancel without saving

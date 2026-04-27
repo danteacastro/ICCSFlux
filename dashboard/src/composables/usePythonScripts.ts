@@ -46,6 +46,27 @@ const scriptOutputs = ref<Record<string, ScriptOutput[]>>({})
 // Published values from scripts
 const publishedValues = ref<Record<string, PublishedValue>>({})
 
+// Persistence error surface — bind to UI for a banner. Previously every
+// localStorage failure was console-only, so a quota-exceeded error after
+// dozens of imports left the user thinking everything saved.
+const lastScriptsSaveError = ref<string | null>(null)
+let _lastScriptsSaveErrorTimer: ReturnType<typeof setTimeout> | null = null
+function _setScriptsSaveError(message: string) {
+  lastScriptsSaveError.value = message
+  if (_lastScriptsSaveErrorTimer) clearTimeout(_lastScriptsSaveErrorTimer)
+  _lastScriptsSaveErrorTimer = setTimeout(() => {
+    lastScriptsSaveError.value = null
+    _lastScriptsSaveErrorTimer = null
+  }, 8000)
+}
+function clearScriptsSaveError() {
+  lastScriptsSaveError.value = null
+  if (_lastScriptsSaveErrorTimer) {
+    clearTimeout(_lastScriptsSaveErrorTimer)
+    _lastScriptsSaveErrorTimer = null
+  }
+}
+
 // Abort controllers for running scripts
 const scriptAbortControllers = new Map<string, AbortController>()
 
@@ -1365,8 +1386,12 @@ asyncio.ensure_future(__user_script__())
     try {
       const data = Object.values(scripts.value)
       localStorage.setItem(PYTHON_SCRIPTS_STORAGE_KEY, JSON.stringify(data))
-    } catch (error) {
-      console.error('Failed to save Python scripts to localStorage:', error)
+      // Clear stale error on successful save
+      if (lastScriptsSaveError.value) clearScriptsSaveError()
+    } catch (error: any) {
+      const msg = `Failed to save Python scripts: ${error?.message || error}`
+      console.error(msg)
+      _setScriptsSaveError(msg)
     }
   }
 
@@ -1381,8 +1406,10 @@ asyncio.ensure_future(__user_script__())
           scriptOutputs.value[script.id] = []
         }
       }
-    } catch (error) {
-      console.error('Failed to load Python scripts from localStorage:', error)
+    } catch (error: any) {
+      const msg = `Failed to load Python scripts: ${error?.message || error}`
+      console.error(msg)
+      _setScriptsSaveError(msg)
     }
   }
 
@@ -1498,6 +1525,9 @@ asyncio.ensure_future(__user_script__())
     consoleOutput,
     publishedValues,
     publishedValuesList,
+    // Persistence error surface (bind to UI banner)
+    lastScriptsSaveError,
+    clearScriptsSaveError,
 
     // Pyodide state
     pyodideStatus,

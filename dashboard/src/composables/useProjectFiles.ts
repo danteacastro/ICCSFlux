@@ -186,6 +186,19 @@ let autoSaveTimeout: ReturnType<typeof setTimeout> | null = null
 let ignoreNextChange = false
 const IGNORE_CHANGES_AFTER_LOAD_MS = 1500  // Ignore changes for 1.5 seconds after load
 
+// Dedupe project apply: backend publishes both project/loaded and
+// project/current near each other; without a guard each handler runs
+// applyProjectData() and fires the callbacks, so widgets re-initialize
+// twice and any expensive subscriber side-effect runs twice.
+let lastAppliedKey: string | null = null
+const APPLY_DEDUPE_WINDOW_MS = 1500
+function shouldApplyOnce(filename: string | undefined): boolean {
+  const key = `${filename || ''}@${Math.floor(Date.now() / APPLY_DEDUPE_WINDOW_MS)}`
+  if (key === lastAppliedKey) return false
+  lastAppliedKey = key
+  return true
+}
+
 // Backend autosave state (crash recovery)
 const BACKEND_AUTOSAVE_INTERVAL_MS = 30000  // 30 seconds
 let backendAutosaveInterval: ReturnType<typeof setInterval> | null = null
@@ -240,6 +253,14 @@ export function useProjectFiles() {
         currentProject.value = payload.filename
         currentProjectData.value = payload.project
 
+        // Skip the apply if project/current already ran applyProjectData()
+        // for the same filename in the dedupe window.
+        if (!shouldApplyOnce(payload.filename)) {
+          console.debug('[PROJECT LOADING] Skipping duplicate apply (project/current already ran)')
+          isLoading.value = false
+          return
+        }
+
         try {
           // Apply project data to frontend
           console.debug('[PROJECT LOADING] Calling applyProjectData...')
@@ -284,6 +305,12 @@ export function useProjectFiles() {
 
       // Apply project data if present (same as project/loaded)
       if (payload.project) {
+        // Skip the apply if project/loaded already ran applyProjectData()
+        // for the same filename in the dedupe window.
+        if (!shouldApplyOnce(payload.filename)) {
+          console.debug('[PROJECT LOADING] Skipping duplicate apply (project/loaded already ran)')
+          return
+        }
         try {
           console.debug('[PROJECT LOADING] Applying current project data...')
           await applyProjectData(payload.project)
@@ -414,6 +441,11 @@ export function useProjectFiles() {
   // Send current state to backend for autosave (crash recovery)
   function autosaveToBackend() {
     if (!isDirty.value) return  // Only autosave when dirty
+    // Don't fire when disconnected — the publish would land in mqtt.js's
+    // outgoing queue and either drop or replay later, neither of which is
+    // useful for a crash-recovery snapshot. We also don't want to spam the
+    // log with "MQTT not connected" once every 30s while offline.
+    if (!mqtt.connected.value) return
 
     const projectData = collectCurrentState()
     projectData.name = currentProjectData.value?.name || 'Unsaved Project'
@@ -945,6 +977,12 @@ export function useProjectFiles() {
   async function newProject() {
     console.debug('[PROJECT] Starting fresh - clearing all state...')
 
+    // Cancel any pending autosave before nulling the project, otherwise
+    // the debounced timer fires on a null project and emits a useless
+    // saveProject() call (or worse, races with the new project's first edit).
+    stopAutoSaveTimers()
+    isDirty.value = false
+
     // Stop acquisition if running (backend needs to be stopped before clearing channels)
     if (store.isAcquiring) {
       console.debug('[PROJECT] Stopping acquisition...')
@@ -1036,6 +1074,13 @@ export function useProjectFiles() {
     scheduleAutoSave()
   }
 
+  // Cooldown after a save failure so we don't hammer a dead broker. When a
+  // save fails, every subsequent change re-arms the debounce immediately;
+  // without this, a string of edits while offline queued up many timers
+  // that all fired in rapid succession when the broker came back.
+  const AUTO_SAVE_FAILURE_COOLDOWN_MS = 15000
+  let autoSaveLastFailureAt = 0
+
   // Schedule an auto-save with debouncing
   function scheduleAutoSave() {
     if (!autoSaveEnabled.value || !currentProject.value) return
@@ -1045,8 +1090,16 @@ export function useProjectFiles() {
       clearTimeout(autoSaveTimeout)
     }
 
+    // If the last save failed recently, extend the debounce so we don't
+    // spam-retry while the broker is unreachable.
+    const sinceFailure = Date.now() - autoSaveLastFailureAt
+    const delay = sinceFailure < AUTO_SAVE_FAILURE_COOLDOWN_MS
+      ? AUTO_SAVE_FAILURE_COOLDOWN_MS - sinceFailure
+      : AUTO_SAVE_DEBOUNCE_MS
+
     // Schedule new auto-save
     autoSaveTimeout = setTimeout(async () => {
+      autoSaveTimeout = null
       if (!currentProject.value || !isDirty.value) return
 
       console.debug('[AUTO-SAVE] Saving project...', currentProject.value)
@@ -1054,11 +1107,28 @@ export function useProjectFiles() {
       if (success) {
         isDirty.value = false
         lastSaveTime.value = Date.now()
+        autoSaveLastFailureAt = 0
         console.debug('[AUTO-SAVE] ✅ Project saved successfully')
       } else {
-        console.error('[AUTO-SAVE] ❌ Failed to save project')
+        autoSaveLastFailureAt = Date.now()
+        console.error('[AUTO-SAVE] ❌ Failed to save project — backing off')
       }
-    }, AUTO_SAVE_DEBOUNCE_MS)
+    }, delay)
+  }
+
+  // Cancel any pending auto-save and stop the backend autosave interval.
+  // Called when the project is unloaded (newProject) or when the connection
+  // is closed — without this, timers fired against a null project or a
+  // dead broker, producing useless work and noisy logs.
+  function stopAutoSaveTimers() {
+    if (autoSaveTimeout) {
+      clearTimeout(autoSaveTimeout)
+      autoSaveTimeout = null
+    }
+    if (backendAutosaveInterval) {
+      clearInterval(backendAutosaveInterval)
+      backendAutosaveInterval = null
+    }
   }
 
   // Force an immediate save (bypass debounce)

@@ -3,6 +3,7 @@ import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 import { usePythonScripts } from '../composables/usePythonScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
+import { useScripts } from '../composables/useScripts'
 import { useProjectFiles } from '../composables/useProjectFiles'
 import { useDashboardStore } from '../stores/dashboard'
 import { useSafety } from '../composables/useSafety'
@@ -28,6 +29,8 @@ function requireEditPermission(): boolean {
 const pythonScripts = usePythonScripts()
 // Backend scripts - actual execution happens server-side
 const backendScripts = useBackendScripts()
+// Used to surface errors to the operator via the existing toast bus.
+const scripts = useScripts()
 // Project file management - for persisting scripts to project
 const projectFiles = useProjectFiles()
 // Safety data for AI context
@@ -561,7 +564,16 @@ async function deleteScript() {
   if (!requireEditPermission()) return
   if (!selectedScriptId.value) return
 
-  if (!confirm('Delete this script? This cannot be undone.')) {
+  // Build a context-aware confirm so deleting a running or unsaved script
+  // gets an extra warning. A misclick in the middle of a test run could
+  // kill a script Mike is depending on.
+  const warnings: string[] = []
+  if (isScriptRunning.value) warnings.push('• The script is currently RUNNING — it will be stopped first.')
+  if (isDirty.value) warnings.push('• You have unsaved edits — they will be lost.')
+  const prompt = warnings.length
+    ? `Delete this script?\n\n${warnings.join('\n')}\n\nThis cannot be undone.`
+    : 'Delete this script? This cannot be undone.'
+  if (!confirm(prompt)) {
     return
   }
 
@@ -592,9 +604,12 @@ async function toggleScript() {
     // Stop script on backend
     backendScripts.stopScript(selectedScriptId.value)
   } else {
-    // Save before running
+    // Save before running. Previously saveScript() was fire-and-forget,
+    // so validation could run against in-memory code while the backend
+    // was still receiving the previous version — leading to "validation
+    // passed but my new code isn't actually running" surprises.
     if (isDirty.value) {
-      saveScript()
+      await saveScript()
     }
 
     // Validate syntax before running (uses Pyodide for quick check)
@@ -692,6 +707,10 @@ function updateAutoRestart(event: Event) {
 }
 
 function clearConsole() {
+  // Match the rest of the dashboard's permission model — even though
+  // clearing console output isn't destructive in the safety sense, all
+  // other mutations on this tab gate on operator role.
+  if (!requireEditPermission()) return
   if (selectedScriptId.value) {
     backendScripts.clearScriptOutput(selectedScriptId.value)
   }
@@ -727,7 +746,12 @@ async function handleFileSelect(event: Event) {
 
     showImportDataModal.value = false
   } catch (error: any) {
+    // Surface to the user via the existing notification bus instead of
+    // burying in console. A failed import previously looked like the
+    // file did nothing.
+    const msg = error?.message || String(error)
     console.error('Failed to import file:', error)
+    scripts.addNotification('error', 'File import failed', msg)
   } finally {
     // Reset file input
     input.value = ''

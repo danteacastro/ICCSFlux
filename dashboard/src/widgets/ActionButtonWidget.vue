@@ -5,6 +5,7 @@ import { useSafety } from '../composables/useSafety'
 import { useMqtt } from '../composables/useMqtt'
 import { useScripts } from '../composables/useScripts'
 import { useBackendScripts } from '../composables/useBackendScripts'
+import { useAuth } from '../composables/useAuth'
 import type { ButtonAction, ButtonBehavior, ButtonStyle } from '../types'
 
 const props = defineProps<{
@@ -24,6 +25,33 @@ const safety = useSafety()
 const mqtt = useMqtt('nisystem')
 const scripts = useScripts()
 const backendScripts = useBackendScripts()
+const auth = useAuth()
+
+// Destructive system commands that should always confirm regardless of
+// the requireConfirmation prop. A misclick on any of these mid-test can
+// cost Mike an hour of work, so we override the default to be safe.
+// `acquisition_start` and `recording_start` are NOT destructive (they
+// initiate, they don't end).
+const _DESTRUCTIVE_SYSTEM_COMMANDS = new Set([
+  'acquisition_stop',
+  'recording_stop',
+  'latch_reset_all',
+])
+
+// Effective confirmation gate: explicit prop OR destructive command.
+const requiresConfirmation = computed(() => {
+  if (props.requireConfirmation) return true
+  if (props.buttonAction?.type === 'system_command') {
+    const cmd = props.buttonAction.command
+    if (cmd && _DESTRUCTIVE_SYSTEM_COMMANDS.has(cmd)) return true
+  }
+  return false
+})
+
+// Operator role required for any output / system action. Backend is the
+// authority but the frontend should disable rather than letting the
+// operator click and silently fail.
+const hasOperatorRole = computed(() => auth.isOperator.value)
 
 // Check if this button is blocked by interlocks
 const blockStatus = computed(() => safety.isButtonBlocked(props.widgetId))
@@ -66,6 +94,10 @@ const isDisabled = computed(() => {
   if (isBlocked.value) return true
   if (!props.buttonAction) return true
   if (!store.isConnected) return true
+  // Frontend gate: backend authoritatively rejects, but UI should disable
+  // rather than letting the click silently fail. Match the existing
+  // ControlBar pattern (lockable buttons with role check).
+  if (!hasOperatorRole.value) return true
   return false
 })
 
@@ -73,6 +105,7 @@ const statusText = computed(() => {
   if (isBlocked.value) return `Blocked: ${blockedBy.value}`
   if (!props.buttonAction) return 'Not configured'
   if (!store.isConnected) return 'Offline'
+  if (!hasOperatorRole.value) return 'Requires Operator role'
   if (isExecuting.value) return 'Executing...'
   return ''
 })
@@ -112,15 +145,19 @@ function handleClick() {
   // Momentary behavior handles action in pointer down/up
   if (behavior.value === 'momentary') return
 
-  if (props.requireConfirmation && !showConfirm.value) {
+  if (requiresConfirmation.value && !showConfirm.value) {
+    // Show confirmation prompt and keep it visible until the operator
+    // explicitly accepts or cancels. Previously a 3s auto-dismiss could
+    // make the prompt vanish mid-decision — risky for an industrial HMI.
     showConfirm.value = true
-    // Auto-cancel after 3 seconds
-    if (confirmTimeout) clearTimeout(confirmTimeout)
-    confirmTimeout = setTimeout(() => {
-      showConfirm.value = false
-      confirmTimeout = null
-    }, 3000)
     return
+  }
+
+  // Reaching here means we're either confirmed or no confirm needed —
+  // clear any in-flight confirm timer (defensive; we no longer set one).
+  if (confirmTimeout) {
+    clearTimeout(confirmTimeout)
+    confirmTimeout = null
   }
 
   // Handle toggle behavior
@@ -187,7 +224,15 @@ async function executeAction() {
       case 'digital_output':
         if (action.channel) {
           const value = action.setValue ?? 1
-          mqtt.setOutput(action.channel, value)
+          // setOutput now returns a status — surface failure via the global
+          // toast wired in App.vue. Previously the rejection was console-only.
+          const result = mqtt.setOutput(action.channel, value)
+          if (!result.success) {
+            // Toast already shown by useMqtt; just bail without setting up
+            // the pulse timer so we don't blast a "reset" write the backend
+            // will also reject.
+            break
+          }
 
           // If pulse mode, reset after duration
           if (action.pulseMs && action.pulseMs > 0) {

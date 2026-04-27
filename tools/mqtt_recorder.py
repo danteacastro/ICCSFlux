@@ -22,9 +22,15 @@ from typing import List, Optional
 
 try:
     import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
-    sys.exit(1)
+    MQTT_AVAILABLE = False
+    # Don't exit at module import — `tests/test_mqtt_tools.py` imports this
+    # module to test the helpers. A hard exit aborts pytest collection of
+    # unrelated tests in the same suite. Hard exit only when run as script.
+    if __name__ == "__main__":
+        print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
+        sys.exit(1)
 
 class MQTTRecorder:
     """Records MQTT messages to a gzip-compressed JSONL file."""

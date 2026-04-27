@@ -254,19 +254,55 @@ const categoryButtons = computed(() => {
 // Actions
 // ============================================================================
 
+// Validate the custom time range. Returns an error message if invalid.
+function customRangeError(): string | null {
+  if (timePreset.value !== 'custom') return null
+  if (!customStart.value || !customEnd.value) return null
+  const s = new Date(customStart.value).getTime()
+  const e = new Date(customEnd.value).getTime()
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return 'Invalid date format'
+  if (e < s) return 'End date is before start date'
+  // Sanity-check: more than 5 years is almost certainly a typo and will
+  // crush the backend query.
+  if (e - s > 5 * 365 * 86400_000) return 'Range too large (max 5 years)'
+  return null
+}
+
+const dateRangeError = computed(() => customRangeError())
+
 function refresh() {
+  const err = customRangeError()
+  if (err) {
+    // Don't fire a query for an invalid range; the template surfaces the
+    // error inline near the date inputs.
+    isLoading.value = false
+    return
+  }
+
   const { start, end } = getTimeRange()
   isLoading.value = true
 
-  // Query audit trail if Supervisor+
+  // Query audit trail if Supervisor+. The response-driven loading flag
+  // (auth.isLoadingAudit) is the source of truth — we mirror it into
+  // local isLoading via a watcher below. Previously we used a blind 1.5s
+  // setTimeout that lied about completion: faster backends finished but
+  // the spinner kept going; slower backends finished after the spinner
+  // cleared, leaving the user thinking nothing arrived.
   if (auth.isSupervisor.value) {
     auth.queryAuditEvents({ start_time: start, end_time: end, limit: 1000 })
+  } else {
+    // Non-supervisor: only alarm/interlock history is shown (already reactive).
+    isLoading.value = false
   }
-
-  // Alarm/interlock history is reactive — no query needed
-  // Wait a moment for audit response
-  setTimeout(() => { isLoading.value = false }, 1500)
 }
+
+// Mirror auth.isLoadingAudit into our local isLoading so the spinner clears
+// only when the response actually arrives. This replaces the 1.5s lie.
+watch(() => auth.isLoadingAudit.value, (loading) => {
+  if (auth.isSupervisor.value) {
+    isLoading.value = loading
+  }
+})
 
 function exportCsv() {
   if (!auth.isSupervisor.value) return
@@ -361,9 +397,10 @@ watch([customStart, customEnd], () => {
 
         <!-- Custom range inputs -->
         <div v-if="timePreset === 'custom'" class="custom-range">
-          <input type="datetime-local" v-model="customStart" class="datetime-input" />
+          <input type="datetime-local" v-model="customStart" class="datetime-input" :class="{ invalid: dateRangeError }" />
           <span class="range-sep">to</span>
-          <input type="datetime-local" v-model="customEnd" class="datetime-input" />
+          <input type="datetime-local" v-model="customEnd" class="datetime-input" :class="{ invalid: dateRangeError }" />
+          <span v-if="dateRangeError" class="range-error" role="alert">⚠ {{ dateRangeError }}</span>
         </div>
 
         <div class="separator" />
@@ -584,6 +621,17 @@ watch([customStart, customEnd], () => {
 .range-sep {
   color: var(--text-tertiary, #666);
   font-size: 11px;
+}
+
+.datetime-input.invalid {
+  border-color: var(--color-error, #ef4444);
+}
+
+.range-error {
+  color: var(--color-error, #ef4444);
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
 }
 
 /* Category filter buttons */

@@ -3869,6 +3869,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     for (const widget of widgets.value) {
       if (widget.channel === channelName) {
         toRemove.push(widget.id)
+        continue
       }
       // Remove from multi-channel widgets (charts)
       if (widget.channels && Array.isArray(widget.channels)) {
@@ -3878,14 +3879,52 @@ export const useDashboardStore = defineStore('dashboard', () => {
           // If chart has no channels left, mark for removal
           if (widget.channels.length === 0) {
             toRemove.push(widget.id)
+            continue
           }
         }
+      }
+      // Prune plotStyles entries for the deleted channel — these were
+      // becoming orphaned after channel delete and could cause stale
+      // style references when the chart re-rendered.
+      const wAny = widget as any
+      if (wAny.plotStyles && Array.isArray(wAny.plotStyles)) {
+        wAny.plotStyles = wAny.plotStyles.filter((p: { channel: string }) => p.channel !== channelName)
       }
     }
 
     // Remove orphaned widgets
     for (const id of toRemove) {
       removeWidget(id)
+    }
+
+    // Cascade across all P&ID layers (every page) — symbols and pipes can
+    // bind to channel/fillChannel/flowChannel. Without this, a deleted
+    // channel left ghost references that displayed "undefined" or 0 and
+    // confused the operator.
+    let pidSymbolsTouched = 0
+    let pidPipesTouched = 0
+    for (const page of pages.value) {
+      const layer = page.pidLayer
+      if (!layer) continue
+      // Symbols: clear any of three channel bindings if matched.
+      if (Array.isArray(layer.symbols)) {
+        for (const s of layer.symbols) {
+          if (s.channel === channelName) { s.channel = undefined; pidSymbolsTouched++ }
+          if (s.fillChannel === channelName) { s.fillChannel = undefined; pidSymbolsTouched++ }
+          if (s.flowChannel === channelName) { s.flowChannel = undefined; pidSymbolsTouched++ }
+        }
+      }
+      // Pipes: clear flowChannel if matched. We do NOT remove the pipe —
+      // its geometry connects two symbols; clearing the channel just
+      // disables flow animation/value display.
+      if (Array.isArray(layer.pipes)) {
+        for (const p of layer.pipes as Array<{ flowChannel?: string }>) {
+          if (p.flowChannel === channelName) { p.flowChannel = undefined; pidPipesTouched++ }
+        }
+      }
+    }
+    if (pidSymbolsTouched || pidPipesTouched) {
+      console.info(`[STORE] Cleared ${pidSymbolsTouched} P&ID symbol binding(s) and ${pidPipesTouched} pipe binding(s) for deleted channel "${channelName}"`)
     }
 
     // Also remove from channel values

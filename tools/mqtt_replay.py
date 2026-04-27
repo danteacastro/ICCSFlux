@@ -22,9 +22,14 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
-    sys.exit(1)
+    MQTT_AVAILABLE = False
+    # Don't exit at module import — tests/tools that import this module
+    # would also abort. Hard exit only when run as a script.
+    if __name__ == "__main__":
+        print("Error: paho-mqtt is required. Install with: pip install paho-mqtt", file=sys.stderr)
+        sys.exit(1)
 
 class TopicRemapper:
     """Remaps MQTT topics based on prefix substitution rules."""

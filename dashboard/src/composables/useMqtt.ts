@@ -243,6 +243,9 @@ const lastHeartbeatTime = ref<number>(0)
 
 // Pending commands for acknowledgment (shared) - NOT a ref, just a Map
 const pendingCommands = new Map<string, PendingCommand>()
+// Monotonic counter for the generateRequestId fallback path (non-secure
+// contexts). Defeats same-millisecond Math.random collisions.
+let _requestIdCounter = 0
 
 // Acquisition command state (shared)
 const acquireCommandPending = ref(false)
@@ -255,6 +258,45 @@ const lastRecordingError = ref<string | null>(null)
 // Session command state (shared)
 const sessionCommandPending = ref(false)
 const lastSessionError = ref<string | null>(null)
+
+// Output write state (shared) — surfaces failures from setOutput so widgets
+// don't fail silently. Previously every output widget logged to console only;
+// Mike spent hours debugging "why didn't my toggle/setpoint do anything"
+// when the answer was a validation rejection or disconnected broker.
+const lastOutputError = ref<{ channel: string; message: string; at: number } | null>(null)
+let lastOutputErrorTimeoutId: ReturnType<typeof setTimeout> | null = null
+function _setOutputError(channel: string, message: string) {
+  lastOutputError.value = { channel, message, at: Date.now() }
+  if (lastOutputErrorTimeoutId) clearTimeout(lastOutputErrorTimeoutId)
+  lastOutputErrorTimeoutId = setTimeout(() => {
+    lastOutputError.value = null
+    lastOutputErrorTimeoutId = null
+  }, 8000)
+}
+function clearLastOutputError() {
+  lastOutputError.value = null
+  if (lastOutputErrorTimeoutId) {
+    clearTimeout(lastOutputErrorTimeoutId)
+    lastOutputErrorTimeoutId = null
+  }
+}
+// Per-channel pending flag — widgets can check to disable buttons during
+// the round-trip and avoid double-fire. Cleared on next successful publish
+// or after 1.2s timeout (the backend usually echoes the new value back via
+// the channel-values stream within a couple hundred ms).
+const outputWritePending = ref<Record<string, boolean>>({})
+const outputWritePendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+function _setOutputPending(channel: string) {
+  outputWritePending.value = { ...outputWritePending.value, [channel]: true }
+  const existing = outputWritePendingTimers.get(channel)
+  if (existing) clearTimeout(existing)
+  outputWritePendingTimers.set(channel, setTimeout(() => {
+    const next = { ...outputWritePending.value }
+    delete next[channel]
+    outputWritePending.value = next
+    outputWritePendingTimers.delete(channel)
+  }, 1200))
+}
 
 // Acquisition event pipeline (shared)
 const acquisitionEvents = ref<AcquisitionPipelineEvent[]>([])
@@ -404,6 +446,20 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   function connect(brokerUrl: string = 'ws://localhost:9002', username?: string, password?: string) {
+    // Idempotency guard: if a client already exists, tear it down before
+    // creating a new one. Without this, a second connect() call (e.g. from
+    // handleRetryConnection or a broker switch) leaks the previous client
+    // and its mqtt-internal reconnect timers, which can manifest as phantom
+    // "MQTT disconnected" toasts and double-publish of every command.
+    if (client.value) {
+      try {
+        client.value.end(true) // force close, drop any in-flight messages
+      } catch (e) {
+        console.warn('[MQTT] connect: failed to close previous client cleanly:', e)
+      }
+      client.value = null
+    }
+
     // Station mode: scope this window to a specific node via URL param
     const urlParams = new URLSearchParams(window.location.search)
     const urlNode = urlParams.get('node')
@@ -1364,6 +1420,9 @@ export function useMqtt(prefix: string = 'nisystem') {
       if (channelValues.value[channelName]) {
         delete channelValues.value[channelName]
       }
+      // Drop the ownership entry too — over a long session of repeated
+      // channel create/delete the Map would grow unbounded, never collected.
+      channelOwners.delete(channelName)
       console.debug('Channel deleted:', channelName)
       channelDeletedCallbacks.forEach(cb => cb(channelName))
     }
@@ -1663,10 +1722,19 @@ export function useMqtt(prefix: string = 'nisystem') {
   }
 
   /**
-   * Generate a unique request ID for command tracking
+   * Generate a unique request ID for command tracking. crypto.randomUUID()
+   * is collision-impossible; the previous Date.now()+Math.random() form
+   * could theoretically collide on rapid-fire commands in the same ms,
+   * which would let one command steal another's ACK and cause hangs.
    */
   function generateRequestId(): string {
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+    // Fallback for non-secure contexts: include a counter to defeat
+    // same-millisecond same-Math.random collisions.
+    _requestIdCounter++
+    return `${Date.now()}-${_requestIdCounter}-${Math.random().toString(36).slice(2, 11)}`
   }
 
   /**
@@ -2028,29 +2096,46 @@ export function useMqtt(prefix: string = 'nisystem') {
     sendLocalCommand('config/save', { config: configName })
   }
 
-  function setOutput(channelName: string, value: number | boolean) {
-    // Output commands go through DAQ service for safety checks (interlocks, session lockout)
+  function setOutput(channelName: string, value: number | boolean): { success: boolean; error?: string } {
+    // Output commands go through DAQ service for safety checks (interlocks, session lockout).
+    // Returns a status object so callers can react. Also sets lastOutputError so
+    // a global toast surfaces the failure even when the caller ignores the return.
     if (!client.value || !connected.value) {
-      console.error('MQTT not connected')
-      return
+      const msg = 'Not connected to MQTT broker'
+      console.error(`[MQTT] setOutput rejected for ${channelName}: ${msg}`)
+      _setOutputError(channelName, msg)
+      return { success: false, error: msg }
     }
 
     // Defense-in-depth validation (backend is authority, but catch obvious errors early)
     const config = channelConfigs.value[channelName]
     if (config && typeof value === 'number') {
       if (!Number.isFinite(value)) {
-        console.error(`[MQTT] setOutput rejected: non-finite value for ${channelName}`)
-        return
+        const msg = `Invalid value for ${channelName} (NaN or Infinity)`
+        console.error(`[MQTT] ${msg}`)
+        _setOutputError(channelName, msg)
+        return { success: false, error: msg }
       }
       if (config.channel_type === 'digital_output' && value !== 0 && value !== 1) {
-        console.error(`[MQTT] setOutput rejected: digital channel ${channelName} requires 0 or 1, got ${value}`)
-        return
+        const msg = `Digital channel ${channelName} requires 0 or 1, got ${value}`
+        console.error(`[MQTT] ${msg}`)
+        _setOutputError(channelName, msg)
+        return { success: false, error: msg }
       }
       if (config.high_limit != null && value > config.high_limit) {
-        console.warn(`[MQTT] setOutput: ${channelName} value ${value} exceeds high_limit ${config.high_limit}`)
+        // Reject (not just warn) — clamp client-side if you want, but don't
+        // silently send out-of-range values that the backend may also reject
+        // without surfacing to the operator.
+        const msg = `${channelName} value ${value} exceeds high_limit ${config.high_limit}`
+        console.warn(`[MQTT] ${msg}`)
+        _setOutputError(channelName, msg)
+        return { success: false, error: msg }
       }
       if (config.low_limit != null && value < config.low_limit) {
-        console.warn(`[MQTT] setOutput: ${channelName} value ${value} below low_limit ${config.low_limit}`)
+        const msg = `${channelName} value ${value} below low_limit ${config.low_limit}`
+        console.warn(`[MQTT] ${msg}`)
+        _setOutputError(channelName, msg)
+        return { success: false, error: msg }
       }
     }
 
@@ -2061,6 +2146,10 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Clear any pending send for this channel (superseded by new value)
     const pending = pendingOutputTimers.get(channelName)
     if (pending) clearTimeout(pending)
+
+    // Mark this channel pending so widgets can disable the input during the
+    // round-trip and avoid double-fire. Cleared on next value tick or 1.2s timeout.
+    _setOutputPending(channelName)
 
     if (now - lastSend >= OUTPUT_RATE_LIMIT_MS) {
       // Enough time passed, send immediately
@@ -2075,6 +2164,7 @@ export function useMqtt(prefix: string = 'nisystem') {
         sendNodeCommand(`commands/${channelName}`, { value })
       }, delay))
     }
+    return { success: true }
   }
 
   function resetCounter(channelName: string) {
@@ -2675,6 +2765,10 @@ export function useMqtt(prefix: string = 'nisystem') {
     loadConfig,
     saveConfig,
     setOutput,
+    // Output write feedback — bind to UI for global toast + per-channel pending.
+    lastOutputError,
+    clearLastOutputError,
+    outputWritePending,
     setAllOutputsSafe,
     setUserAuthenticated,
     resetCounter,

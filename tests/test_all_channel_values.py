@@ -26,8 +26,13 @@ try:
     MQTT_AVAILABLE = True
 except ImportError:
     MQTT_AVAILABLE = False
-    print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
-    sys.exit(1)
+    # This module is meant to be run directly (`python tests/test_all_channel_values.py`)
+    # but lives in tests/ so it gets collected by pytest. Don't sys.exit() at
+    # module load — that aborts pytest collection of unrelated tests in the
+    # same directory. The hard exit only fires when run as a script.
+    if __name__ == "__main__":
+        print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
+        sys.exit(1)
 
 @dataclass
 class ChannelValue:

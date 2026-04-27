@@ -6,11 +6,15 @@ import { useDashboardStore } from '../stores/dashboard'
 const store = useDashboardStore()
 const crio = useCrio()
 
-// Hide this widget entirely in cDAQ mode — there is no cRIO
+// Hide this widget entirely in cDAQ mode — there is no cRIO. Short-circuit
+// every downstream computed so a brief cRIO-mode → cDAQ-mode flip can't
+// leave stale state visible (the v-if also destroys the DOM, but doubling
+// up the guard makes the intent explicit and removes wasted reactivity).
 const isCdaqMode = computed(() => (store.status?.project_mode || 'cdaq') === 'cdaq')
 
 // State classes
 const stateClass = computed(() => {
+  if (isCdaqMode.value) return 'unknown'
   switch (crio.safetyState.value) {
     case 'emergency': return 'emergency'
     case 'tripped': return 'tripped'
@@ -21,6 +25,7 @@ const stateClass = computed(() => {
 })
 
 const stateLabel = computed(() => {
+  if (isCdaqMode.value) return 'OFFLINE'
   switch (crio.safetyState.value) {
     case 'emergency': return 'EMERGENCY'
     case 'tripped': return 'TRIPPED'
@@ -30,9 +35,9 @@ const stateLabel = computed(() => {
   }
 })
 
-const inputCount = computed(() => Object.keys(crio.inputStates.value).length)
-const outputCount = computed(() => Object.keys(crio.outputStates.value).length)
-const trippedCount = computed(() => crio.trippedInputs.value.length)
+const inputCount = computed(() => isCdaqMode.value ? 0 : Object.keys(crio.inputStates.value).length)
+const outputCount = computed(() => isCdaqMode.value ? 0 : Object.keys(crio.outputStates.value).length)
+const trippedCount = computed(() => isCdaqMode.value ? 0 : crio.trippedInputs.value.length)
 
 function handleReset() {
   if (confirm('Reset cRIO safety system?')) {

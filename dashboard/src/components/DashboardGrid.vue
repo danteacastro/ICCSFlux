@@ -261,7 +261,10 @@ function toggleChartChannel(chartId: string, channel: string, add: boolean) {
   }
 }
 
-// Handle toggle switch change events for digital outputs
+// Handle toggle switch change events for digital outputs.
+// setOutput now returns a status; failures surface via the global toast in
+// App.vue, so we don't need a per-widget error path here. We just need to
+// not silently swallow it — log success/failure for diagnostics.
 function handleToggleChange(widgetId: string, value: boolean | Event) {
   // Ignore native DOM events from input elements - only handle boolean values
   // from ToggleSwitch custom emit (native input change events bubble up)
@@ -269,7 +272,10 @@ function handleToggleChange(widgetId: string, value: boolean | Event) {
 
   const widget = store.widgets.find(w => w.id === widgetId)
   if (!widget?.channel) return
-  mqtt.setOutput(widget.channel, value)
+  const result = mqtt.setOutput(widget.channel, value)
+  if (!result.success) {
+    console.warn(`[DashboardGrid] toggle write rejected for ${widget.channel}: ${result.error}`)
+  }
 }
 
 // Pipe management

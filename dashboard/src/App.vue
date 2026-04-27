@@ -682,14 +682,15 @@ async function handleSessionStop() {
 }
 
 function handleRetryConnection() {
-  mqtt.disconnect()
-  setTimeout(() => {
-    mqtt.connect(
-      brokerConfig.brokerUrl.value,
-      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
-      brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
-    )
-  }, 100)
+  // mqtt.connect() now tears down any existing client before creating a new
+  // one, so we can call it directly. Previously we used a 100ms setTimeout
+  // after disconnect() which raced the mqtt-library reconnect timer and
+  // could leak a client.
+  mqtt.connect(
+    brokerConfig.brokerUrl.value,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerUsername.value : undefined,
+    brokerConfig.isRemoteBroker.value ? brokerConfig.brokerPassword.value : undefined
+  )
 }
 
 const saveDenied = ref(false)
@@ -968,6 +969,20 @@ async function handleManualSave() {
       >
         <span class="banner-text">{{ safety.safetyFeedback.value.text }}</span>
         <button class="banner-dismiss" @click="safety.dismissSafetyFeedback()" aria-label="Dismiss">×</button>
+      </div>
+      <!-- Output write error toast — surfaces setOutput rejections (validation,
+           disconnected broker, out-of-bounds, etc.) so widgets fail loudly,
+           not silently. Independent of safety feedback so both can show. -->
+      <div
+        v-if="mqtt.lastOutputError.value"
+        class="safety-feedback-toast error output-error-toast"
+        role="alert"
+      >
+        <span class="banner-text">
+          ⚠ Write rejected on <strong>{{ mqtt.lastOutputError.value.channel }}</strong>:
+          {{ mqtt.lastOutputError.value.message }}
+        </span>
+        <button class="banner-dismiss" @click="mqtt.clearLastOutputError()" aria-label="Dismiss">×</button>
       </div>
     </Teleport>
 
@@ -2135,5 +2150,9 @@ async function handleManualSave() {
   font-size: 1.2rem;
   line-height: 1;
   padding: 0 4px;
+}
+/* Stack the output-error toast below the safety-feedback toast so both can show */
+.output-error-toast {
+  top: 110px;
 }
 </style>

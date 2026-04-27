@@ -33,8 +33,9 @@ try:
     MQTT_AVAILABLE = True
 except ImportError:
     MQTT_AVAILABLE = False
-    print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
-    sys.exit(1)
+    if __name__ == "__main__":
+        print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
+        sys.exit(1)
 
 @dataclass
 class ChannelSample:

@@ -20,9 +20,14 @@ from datetime import datetime, timezone
 try:
     import paho.mqtt.client as mqtt
     from paho.mqtt.client import CallbackAPIVersion
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
-    exit(1)
+    MQTT_AVAILABLE = False
+    # Don't exit() at module load — pytest collection of unrelated tests
+    # in this directory would also abort. Hard exit only when run as script.
+    if __name__ == "__main__":
+        print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
+        exit(1)
 
 class MockCRIONode:
     """Simulates a cRIO node for testing"""

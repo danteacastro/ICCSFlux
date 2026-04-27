@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useMqtt } from '../composables/useMqtt'
 import { useSafety } from '../composables/useSafety'
+import { useAuth } from '../composables/useAuth'
 import InterlockBlockOverlay from '../components/InterlockBlockOverlay.vue'
 import { formatUnit } from '../utils/formatUnit'
 import type { WidgetStyle } from '../types'
@@ -34,6 +35,8 @@ const containerStyle = computed(() => {
 const store = useDashboardStore()
 const mqtt = useMqtt('nisystem')
 const safety = useSafety()
+const auth = useAuth()
+const hasOperatorRole = computed(() => auth.isOperator.value)
 
 const channelConfig = computed(() => store.channels[props.channel])
 const channelValue = computed(() => store.getChannelRef(props.channel).value)
@@ -165,7 +168,10 @@ const maxVal = computed(() => {
   return config.high_limit ?? 100
 })
 
-// Step size: props > config > smart default based on range
+// Step size: props > config > smart default based on range. Defaults are
+// proportional to range so arrow-key increments give ~1% per click on
+// large ranges. NaN/Infinity guard prevents bad min/max values from
+// propagating into step.
 const stepVal = computed(() => {
   if (props.step !== undefined) return props.step
   const configStep = channelConfig.value?.step
@@ -173,11 +179,12 @@ const stepVal = computed(() => {
 
   // Smart default: calculate from range
   const range = Number(maxVal.value) - Number(minVal.value)
+  if (!Number.isFinite(range) || range <= 0) return 1
   if (range <= 1) return 0.1      // 0-1V or digital: 0.1 step
   if (range <= 10) return 0.1     // 0-10V: 0.1 step
   if (range <= 20) return 0.5     // 4-20mA: 0.5 step
   if (range <= 100) return 1      // 0-100: 1 step
-  return range / 100              // Large ranges: 1% step
+  return range / 100              // Large ranges: 1% per click
 })
 
 // Decimals: props > smart default based on step
@@ -210,6 +217,10 @@ watch(currentValue, (val) => {
   }
 }, { immediate: true })
 
+// Per-channel pending flag from useMqtt — disable during the backend
+// round-trip so a held arrow key doesn't fire a flood of writes.
+const writePending = computed(() => !!mqtt.outputWritePending.value[props.channel])
+
 const isDisabled = computed(() => {
   if (isBlocked.value) return true
   if (!store.isConnected) return true
@@ -217,6 +228,9 @@ const isDisabled = computed(() => {
   if (!channelConfig.value && !props.channel.startsWith('py.')) return true
   // Disable for input channels - can't set inputs
   if (isInputChannel.value) return true
+  if (writePending.value) return true
+  // Frontend role gate — backend is authoritative.
+  if (!hasOperatorRole.value) return true
   return false
 })
 
@@ -254,7 +268,9 @@ function applyValue() {
   const safeMax = Number.isFinite(maxNum) ? maxNum : Infinity
   const clampedVal = Math.max(safeMin, Math.min(safeMax, val))
 
-  // Send to MQTT
+  // Send to MQTT — status is surfaced via the global toast in App.vue.
+  // We still close the editor either way so the user sees the toast
+  // instead of staring at a frozen input.
   mqtt.setOutput(props.channel, clampedVal)
 
   isEditing.value = false

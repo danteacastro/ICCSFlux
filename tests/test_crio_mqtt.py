@@ -20,9 +20,12 @@ import sys
 
 try:
     import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
 except ImportError:
-    print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
-    sys.exit(1)
+    MQTT_AVAILABLE = False
+    if __name__ == "__main__":
+        print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
+        sys.exit(1)
 
 CRIO_NODE_ID = "crio-001"
 BROKER = "localhost"

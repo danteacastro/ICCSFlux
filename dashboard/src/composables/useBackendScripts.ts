@@ -123,10 +123,13 @@ const isLoading = ref(false)
 const lastError = ref<string | null>(null)
 let handlersInitialized = false
 
-// Track recent optimistic updates to prevent backend status from overwriting
+// Track recent optimistic updates to prevent backend status from overwriting.
+// Window must comfortably exceed the worst-case MQTT round-trip + backend
+// processing latency. 2s was tight on slow links — Mike's user-toggle would
+// flip back when the backend's stale status arrived ~2.1s later.
 // Key format: `${scriptId}:${field}` -> timestamp
 const recentOptimisticUpdates = new Map<string, number>()
-const OPTIMISTIC_UPDATE_TTL = 2000 // 2 seconds protection window
+const OPTIMISTIC_UPDATE_TTL = 8000 // 8 seconds protection window (was 2s; too tight on slow links)
 
 // =============================================================================
 // COMPOSABLE
@@ -281,6 +284,15 @@ export function useBackendScripts() {
     if (!data.success && data.error) {
       lastError.value = data.error
       console.error(`Script ${data.action} failed:`, data.error)
+      // Surface failure to the user via the existing toast bus, not just
+      // console. A failed start/stop/save was previously indistinguishable
+      // from a slow MQTT round-trip — operator just saw nothing happen.
+      const action = data.action || 'operation'
+      scriptsComposable.addNotification(
+        'error',
+        `Script ${action} failed`,
+        data.error,
+      )
     } else {
       lastError.value = null
     }
