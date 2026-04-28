@@ -1437,7 +1437,12 @@ let _resizeStartW = 0
 let _resizeTableW = 0
 
 function onColResizeStart(event: MouseEvent) {
+  // Stop browser default drag/select behavior FIRST, before any other work
+  event.preventDefault()
+  event.stopPropagation()
+
   const handle = event.target as HTMLElement
+  if (!handle || !handle.classList.contains('col-resize-handle')) return
   const th = handle.parentElement as HTMLElement
   if (!th) return
   // Find the table to compute percentage relative to its width
@@ -1448,9 +1453,12 @@ function onColResizeStart(event: MouseEvent) {
   _resizeStartW = th.offsetWidth
   _resizeTableW = table.offsetWidth
   handle.classList.add('dragging')
+  // Mark the row so CSS can disable text selection on all headers
+  const row = th.parentElement as HTMLElement | null
+  if (row) row.classList.add('resizing')
+  document.body.style.cursor = 'col-resize'
   document.addEventListener('mousemove', onColResizeMove)
   document.addEventListener('mouseup', onColResizeEnd)
-  event.preventDefault()
 }
 
 function onColResizeMove(event: MouseEvent) {
@@ -1468,6 +1476,8 @@ function onColResizeEnd() {
   if (_resizeCol) {
     const handle = _resizeCol.querySelector('.col-resize-handle')
     if (handle) handle.classList.remove('dragging')
+    const row = _resizeCol.parentElement as HTMLElement | null
+    if (row) row.classList.remove('resizing')
     // Persist the new width AS PERCENTAGE per-tab + per-column
     const key = colKey(_resizeCol)
     if (key && _resizeTableW > 0) {
@@ -1479,6 +1489,7 @@ function onColResizeEnd() {
     }
   }
   _resizeCol = null
+  document.body.style.cursor = ''
   document.removeEventListener('mousemove', onColResizeMove)
   document.removeEventListener('mouseup', onColResizeEnd)
 }
@@ -8745,18 +8756,27 @@ watch(
 }
 .column-headers-row th .col-resize-handle {
   position: absolute;
-  right: 0;
+  right: -3px;        /* extend past the column edge for easier grabbing */
   top: 0;
   bottom: 0;
-  width: 5px;
+  width: 10px;        /* wider hit area (was 5px) */
   cursor: col-resize;
   background: transparent;
-  z-index: 4;
+  z-index: 10;        /* above sticky headers */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none; /* prevents browser default touch/drag interference */
 }
 .column-headers-row th .col-resize-handle:hover,
 .column-headers-row th .col-resize-handle.dragging {
   background: var(--accent-color, #3b82f6);
   opacity: 0.6;
+}
+/* Disable text selection on header during drag */
+.column-headers-row.resizing,
+.column-headers-row.resizing th {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* When signal type row is present, column headers are offset via sticky top (see above) */

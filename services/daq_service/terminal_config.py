@@ -124,12 +124,21 @@ _DIFFERENTIAL_ONLY_MODULES: Set[str] = {
 def is_module_differential_only(module_type: Optional[str]) -> bool:
     """True if this module is DIFF-only by hardware design.
 
-    Module type strings are normalized: "NI-9215" / "ni-9215" / "9215"
-    all match.
+    Module type strings are normalized to handle every variant produced by
+    different parts of the system:
+      - "NI-9215" (canonical, used by _DIFFERENTIAL_ONLY_MODULES)
+      - "NI 9215" (used by device_discovery.py NI_MODULE_DATABASE)
+      - "ni-9215", "ni 9215" (lowercase variants)
+      - "9215"   (bare model number)
     """
     if not module_type:
         return False
     normalized = module_type.strip().upper()
+    # Normalize whitespace and underscores to hyphens so "NI 9207" → "NI-9207"
+    normalized = normalized.replace(" ", "-").replace("_", "-")
+    # Collapse double hyphens that can result from "NI - 9207" etc
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
     if normalized in _DIFFERENTIAL_ONLY_MODULES:
         return True
     # Also accept bare model number (e.g., "9215" → "NI-9215")

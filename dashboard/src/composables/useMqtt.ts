@@ -689,7 +689,15 @@ export function useMqtt(prefix: string = 'nisystem') {
         }
 
         try {
-          if (restOfTopic.startsWith('alarms/') && !restOfTopic.endsWith('/status')) {
+          // Only route ACTUAL alarm events to handleAlarm. Other alarms/* topics
+          // (config/sync, configure/response, status, cleared) are control-plane,
+          // not alarm instances — routing them was producing phantom "ALARM: TRIGGERED sync"
+          // log spam at boot.
+          const isAlarmEvent = (
+            restOfTopic.startsWith('alarms/active/') ||
+            restOfTopic === 'alarms/event'
+          )
+          if (isAlarmEvent) {
             handleAlarm(topic, payload)
           }
         } catch (e) {

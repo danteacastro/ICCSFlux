@@ -265,6 +265,7 @@ class HardwareReader:
         self._recovery_attempts = 0
         self._max_recovery_attempts = 10  # More attempts before giving up on real hardware
         self._error_callback: Optional[callable] = None  # Callback when reader dies
+        self._logged_open_tc: set = set()  # Channels with open TC already logged (rate-limit warnings)
 
         # Software watchdog for output safety
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -394,13 +395,33 @@ class HardwareReader:
     def _lookup_module_type(self, module_name: str) -> Optional[str]:
         """Look up the module type (e.g., 'NI-9215') from the module name.
 
-        Returns None if the module isn't in the config — terminal_config
-        validation will fall back to channel-type rules.
+        Tries three sources in order:
+          1. config.modules dict (legacy ChannelConfig.module path)
+          2. NI-DAQmx live device query (works for direct-path channels
+             where channel.module is empty — covers auto-discovered channels)
+          3. Returns None — validator will fall back to channel-type rules
         """
-        if not module_name or not hasattr(self.config, 'modules'):
+        if not module_name:
             return None
-        mod = self.config.modules.get(module_name)
-        return getattr(mod, 'module_type', None) if mod else None
+        # Source 1: config.modules
+        if hasattr(self.config, 'modules'):
+            mod = self.config.modules.get(module_name)
+            if mod is not None:
+                t = getattr(mod, 'module_type', None)
+                if t:
+                    return t
+        # Source 2: query NI-DAQmx live for this device's product type
+        # (e.g., "cDAQ-9189-DHWSIMMod7" → "NI 9207")
+        if NIDAQMX_AVAILABLE:
+            try:
+                from nidaqmx.system import Device
+                d = Device(module_name)
+                product = getattr(d, 'product_type', None)
+                if product:
+                    return str(product)
+            except Exception:
+                pass
+        return None
 
     def _close_all_tasks_silently(self):
         """Close every task we've created so far. Used for rollback when
@@ -611,7 +632,7 @@ class HardwareReader:
                 elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
                     # Voltage input
                     v_range = channel.voltage_range or 10.0
-                    mod_type = self._lookup_module_type(channel.module)
+                    mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
                     term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                     task.ai_channels.add_ai_voltage_chan(
@@ -626,7 +647,7 @@ class HardwareReader:
                 elif channel.channel_type == ChannelType.CURRENT_INPUT:
                     # Current input (4-20mA) — REQUIRES DIFFERENTIAL terminal config
                     max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                    mod_type = self._lookup_module_type(channel.module)
+                    mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
                     term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                     shunt_loc_map = {
@@ -887,7 +908,7 @@ class HardwareReader:
             for channel in channels:
                 phys_chan = self._get_physical_channel_path(channel)
                 v_range = channel.voltage_range or 10.0
-                mod_type = self._lookup_module_type(channel.module)
+                mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
                 term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                 task.ai_channels.add_ai_voltage_chan(
@@ -939,7 +960,7 @@ class HardwareReader:
                 # NI current modules typically read in Amps, we want mA
                 # Most 4-20mA modules have 0-20mA or 0-25mA range
                 max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                mod_type = self._lookup_module_type(channel.module)
+                mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
                 term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                 # NI-9203 and similar modules have internal shunt resistors
@@ -1750,6 +1771,16 @@ class HardwareReader:
                                     if ch_type == ChannelType.CURRENT_INPUT:
                                         value = value * 1000.0
 
+                                    # NI-DAQmx open-TC sentinel: when ai_open_thrmcpl_detect_enable
+                                    # is True, an open thermocouple reads as a very large magnitude
+                                    # value (typically ~-1e10). Replace with NaN so the dashboard
+                                    # shows "OPEN"/"--" instead of -10000000000.
+                                    if ch_type == ChannelType.THERMOCOUPLE and abs(value) > 1e9:
+                                        if name not in self._logged_open_tc:
+                                            logger.warning(f"Open thermocouple detected on {name} (raw={value:.2e})")
+                                            self._logged_open_tc.add(name)
+                                        value = float('nan')
+
                                     self.latest_values[name] = value
                                     self.value_timestamps[name] = now
 
@@ -1855,6 +1886,7 @@ class HardwareReader:
                             self._create_tasks()
                             self._error_count = 0
                             self._reader_died = False
+                            self._logged_open_tc.clear()  # Re-warn on reconnected TCs
                             logger.info("Hardware reader recovery successful")
                             continue  # Resume reading
                         except Exception as recovery_err:
