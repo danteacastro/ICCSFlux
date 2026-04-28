@@ -1461,15 +1461,25 @@ function onColResizeStart(event: MouseEvent) {
   document.addEventListener('mouseup', onColResizeEnd)
 }
 
+function _findColElement(colKey: string, table: HTMLElement | null): HTMLElement | null {
+  if (!table || !colKey) return null
+  return table.querySelector(`colgroup col[data-col-key="${colKey}"]`)
+}
+
 function onColResizeMove(event: MouseEvent) {
   if (!_resizeCol) return
   const diff = event.clientX - _resizeStartX
   const newWidth = Math.max(40, _resizeStartW + diff)
   // Apply as percentage so it scales with table width
   const pct = (newWidth / _resizeTableW) * 100
-  _resizeCol.style.width = `${pct}%`
-  _resizeCol.style.minWidth = '40px'
-  _resizeCol.style.maxWidth = ''
+  const key = colKey(_resizeCol)
+  if (!key) return
+  // Update the reactive store — the <colgroup><col data-col-key="..."> elements
+  // bind their width to colWidthStyle(), so this single update flows to both
+  // the visual width AND the persisted state. No more JS-vs-Vue style fight.
+  const tab = activeTypeTab.value || 'all'
+  if (!columnWidths.value[tab]) columnWidths.value[tab] = {}
+  columnWidths.value[tab][key] = Math.round(pct * 100) / 100
 }
 
 function onColResizeEnd() {
@@ -1478,15 +1488,9 @@ function onColResizeEnd() {
     if (handle) handle.classList.remove('dragging')
     const row = _resizeCol.parentElement as HTMLElement | null
     if (row) row.classList.remove('resizing')
-    // Persist the new width AS PERCENTAGE per-tab + per-column
-    const key = colKey(_resizeCol)
-    if (key && _resizeTableW > 0) {
-      const pct = (_resizeCol.offsetWidth / _resizeTableW) * 100
-      const tab = activeTypeTab.value || 'all'
-      if (!columnWidths.value[tab]) columnWidths.value[tab] = {}
-      columnWidths.value[tab][key] = Math.round(pct * 100) / 100  // 2 decimal places
-      saveColumnWidths()
-    }
+    // Reactive store was updated during onColResizeMove on every frame —
+    // just persist it to localStorage now.
+    saveColumnWidths()
   }
   _resizeCol = null
   document.body.style.cursor = ''
@@ -1494,11 +1498,12 @@ function onColResizeEnd() {
   document.removeEventListener('mouseup', onColResizeEnd)
 }
 
+// Returns just the width value (e.g., "12.5%" or "150px") — used by <colgroup>
 function colWidthStyle(colKey: string, defaultWidth: string): string {
   const tab = activeTypeTab.value || 'all'
   const storedPct = columnWidths.value[tab]?.[colKey]
-  if (storedPct) return `width: ${storedPct}%; min-width: 40px;`
-  return `width: ${defaultWidth};`
+  if (storedPct) return `${storedPct}%`
+  return defaultWidth
 }
 
 // Handle tag rename from inline edit (wrapper for renameChannel)
@@ -4395,8 +4400,8 @@ const tableColumns = computed(() => {
     { key: 'enable', label: 'EN', width: '40px' },
     { key: 'type', label: 'TYPE', width: '50px' },
     { key: 'tag', label: 'TAG', width: '100px' },
-    { key: 'channel', label: 'CHANNEL', width: '150px' },
-    { key: 'description', label: 'DESCRIPTION', width: '200px' },
+    { key: 'channel', label: 'CHANNEL', width: '220px' },
+    { key: 'description', label: 'DESCRIPTION', width: '260px' },
   ]
 
   switch (activeTypeTab.value) {
@@ -4994,6 +4999,21 @@ watch(
 
       <div class="table-container" :class="{ 'with-panel': showConfigPanel }">
         <table class="channel-table">
+          <!-- colgroup controls column widths. Resize updates the col[data-col-key]
+               element directly, decoupling width from Vue's reactive :style on <th>
+               (which previously fought JS-set widths on every re-render). -->
+          <colgroup>
+            <col data-col-key="select" :style="{ width: '40px' }" />
+            <col
+              v-for="col in tableColumns"
+              :key="col.key"
+              :data-col-key="col.key"
+              :style="{ width: colWidthStyle(col.key, col.width) }"
+            />
+            <col data-col-key="alarm" :style="{ width: colWidthStyle('alarm', '70px') }" />
+            <col data-col-key="status" :style="{ width: '46px' }" />
+            <col data-col-key="config" :style="{ width: '70px' }" />
+          </colgroup>
           <thead>
             <!-- Signal Type Header Row -->
             <tr v-if="!['modbus', 'rest_api', 'opc_ua', 'ethernet_ip'].includes(activeTypeTab)" class="signal-type-row">
@@ -5015,12 +5035,12 @@ watch(
                 v-for="col in tableColumns"
                 :key="col.key"
                 :data-col-key="col.key"
-                :style="colWidthStyle(col.key, col.width) + ` text-align: ${col.align || 'left'}`"
+                :style="`text-align: ${col.align || 'left'}`"
               >
                 {{ col.label }}
                 <span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span>
               </th>
-              <th class="col-alarm" data-col-key="alarm" :style="colWidthStyle('alarm', 'auto')">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
+              <th class="col-alarm" data-col-key="alarm">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
               <th class="col-status-indicators" title="Configuration errors and warnings"></th>
               <th class="col-actions">CONFIG</th>
             </tr>
