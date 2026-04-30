@@ -561,7 +561,10 @@ def load_config(config_path: str) -> NISystemConfig:
         if scan_rate > 100.0 or publish_rate > 10.0:
             logger.warning(f"Scan/publish rates capped (requested: scan={scan_rate}Hz, publish={publish_rate}Hz)")
 
-        system.simulation_mode = parse_bool(sys_section.get('simulation_mode', 'true'))
+        # Default to FALSE so an .ini missing this key uses real hardware.
+        # Silently defaulting to simulator masks every hardware bug — we'd rather
+        # fail loudly with a DaqError than ship fake values to the dashboard.
+        system.simulation_mode = parse_bool(sys_section.get('simulation_mode', 'false'))
         system.log_directory = sys_section.get('log_directory', system.log_directory)
         system.config_reload_topic = sys_section.get('config_reload_topic', system.config_reload_topic)
         # Multi-node support

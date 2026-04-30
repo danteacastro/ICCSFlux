@@ -66,6 +66,8 @@ try:
         StrainGageBridgeType,
         BridgeConfiguration,
         BridgeUnits,
+        ADCTimingMode,
+        OverwriteMode,
     )
     from nidaqmx.stream_readers import (
         AnalogMultiChannelReader,
@@ -81,7 +83,35 @@ logger = logging.getLogger('HardwareReader')
 
 # Configuration for continuous acquisition
 DEFAULT_SAMPLE_RATE_HZ = 10  # Fallback if config doesn't specify scan_rate_hz
-BUFFER_SIZE = 100    # Hardware buffer size (samples per channel)
+MIN_BUFFER_SAMPLES = 1000   # Floor for samps_per_chan; actual buffer is max(this, rate*10)
+
+# Modules where the ADC defaults to a slow "high-resolution" mode (~1 S/s
+# aggregate). If the task sample-clock rate is set above the HR rate, the
+# chassis returns duplicate samples and the values appear stuck. Forcing
+# HIGH_SPEED is required for any task rate above ~1 Hz.
+# Source: NI KB kA00Z000000P8jtSAC, individual NI module specifications.
+_FORCE_HIGH_SPEED_ADC_MODULES = {
+    "NI-9211", "NI-9213", "NI-9214",   # Thermocouple modules
+    "NI-9217",                          # RTD module (4-Ch, 100/400 S/s)
+    "NI-9207",                          # Combined V/I module
+}
+
+
+def _module_needs_high_speed_adc(module_type):
+    """True if the module defaults to a slow ADC mode that must be overridden.
+
+    Normalizes whitespace, underscores, and missing 'NI-' prefix the same way
+    terminal_config.is_module_differential_only does, so any caller variant
+    (e.g. 'NI 9213', 'ni-9213', '9213') resolves correctly.
+    """
+    if not module_type:
+        return False
+    n = module_type.strip().upper().replace(" ", "-").replace("_", "-")
+    while "--" in n:
+        n = n.replace("--", "-")
+    if not n.startswith("NI-"):
+        n = f"NI-{n}"
+    return n in _FORCE_HIGH_SPEED_ADC_MODULES
 
 
 def _safe_create_task(task_name: str) -> Any:
@@ -243,6 +273,22 @@ class HardwareReader:
         else:
             self.sample_rate = DEFAULT_SAMPLE_RATE_HZ
         logger.info(f"HardwareReader sample rate: {self.sample_rate} Hz (from {'explicit param' if sample_rate is not None else 'config.system.scan_rate_hz'})")
+
+        # Hardware buffer hint (samps_per_chan in cfg_samp_clk_timing).
+        # IMPORTANT: this sizes the *PC software buffer* that DMA fills from
+        # the module's onboard FIFO. The onboard FIFO itself is fixed silicon
+        # (e.g. 127 samples on NI 9215, 1023 on NI 9220) and is NOT
+        # configurable. NI's auto-allocated default tier (KB kA00Z000000P9PkSAK):
+        #   0–100 S/s     -> 1,000 samples
+        #   101–10k S/s   -> 10,000
+        #   10k–1M S/s    -> 100,000
+        # so requesting < tier-default is a no-op (DAQmx clamps up). Our
+        # rate*10 multiplier is community wisdom, not NI guidance, and only
+        # exceeds the tier above ~100 Hz. Stage 2 will revisit this with
+        # `task.in_stream.input_buf_size` for finer control.
+        self._buffer_size = max(MIN_BUFFER_SAMPLES, int(self.sample_rate * 10))
+        logger.info(f"HardwareReader buffer size: {self._buffer_size} samples/channel")
+
         self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
         self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
@@ -462,9 +508,16 @@ class HardwareReader:
         """
         Create nidaqmx tasks for all input channels.
 
-        IMPORTANT: NI-DAQmx only allows ONE continuous acquisition task per module.
-        Therefore, we group ALL analog input channels on the same module into a
-        SINGLE task, regardless of channel type (voltage, current, thermocouple, etc.).
+        Topology: ALL analog input channels on the same module go into a SINGLE
+        task, regardless of channel type (voltage, current, thermocouple, etc.).
+        DAQmx supports multiple AI channel types per task via add_ai_voltage_chan,
+        add_ai_current_chan, add_ai_thrmcpl_chan, etc. on the same Task object.
+
+        Note: the *real* chassis-wide limit on a Gen II cDAQ (STC3 controller)
+        is 3 concurrent hardware-timed AI tasks total — not "one per module."
+        Adding a 4th AI task chassis-wide will fail at task reservation. Stage 3
+        rebuild will move topology decisions into a dedicated task_topology.py
+        that respects the 3-engine cap.
 
         This is valid because NI-DAQmx allows mixing different add_ai_*_chan methods
         in the same task.
@@ -611,6 +664,7 @@ class HardwareReader:
                         tc_type = getattr(NI_TCType, tc_type_str, NI_TCType.K)
                     cjc = get_cjc_source(channel.cjc_source)
                     cjc_val = getattr(channel, 'cjc_value', 25.0)
+                    mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
 
                     ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                         phys_chan,
@@ -619,6 +673,17 @@ class HardwareReader:
                         cjc_source=cjc,
                         cjc_val=cjc_val
                     )
+
+                    # NI 9213/9211/9214 default to HIGH_RESOLUTION ADC mode (~1 S/s
+                    # aggregate). At any task rate above ~1 Hz the chassis returns
+                    # duplicate samples — the dashboard sees frozen values. Force
+                    # HIGH_SPEED so the ADC actually keeps up with the sample clock.
+                    if _module_needs_high_speed_adc(mod_type):
+                        try:
+                            ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                            logger.info(f"  ADC timing: HIGH_SPEED ({mod_type})")
+                        except Exception as e:
+                            logger.warning(f"Could not set HIGH_SPEED ADC mode on {channel.name} ({mod_type}): {e}")
 
                     # Open thermocouple detection (configurable, default: enabled)
                     open_detect = getattr(channel, 'open_detect', True)
@@ -635,13 +700,21 @@ class HardwareReader:
                     mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
                     term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
-                    task.ai_channels.add_ai_voltage_chan(
+                    ai_chan = task.ai_channels.add_ai_voltage_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         terminal_config=term_config,
                         min_val=-v_range,
                         max_val=v_range
                     )
+                    # NI 9207 has multiplexed voltage+current ADC that defaults to
+                    # the slow HR mode. Force HIGH_SPEED so voltage channels in a
+                    # mixed-mode 9207 task actually convert at the requested rate.
+                    if _module_needs_high_speed_adc(mod_type):
+                        try:
+                            ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                        except Exception as e:
+                            logger.warning(f"Could not set HIGH_SPEED ADC mode on {channel.name} ({mod_type}): {e}")
                     logger.info(f"Added voltage input: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.CURRENT_INPUT:
@@ -659,7 +732,7 @@ class HardwareReader:
                         CurrentShuntResistorLocation.INTERNAL
                     )
 
-                    task.ai_channels.add_ai_current_chan(
+                    ai_chan = task.ai_channels.add_ai_current_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         terminal_config=term_config,
@@ -667,6 +740,11 @@ class HardwareReader:
                         max_val=max_current,
                         shunt_resistor_loc=shunt_loc
                     )
+                    if _module_needs_high_speed_adc(mod_type):
+                        try:
+                            ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                        except Exception as e:
+                            logger.warning(f"Could not set HIGH_SPEED ADC mode on {channel.name} ({mod_type}): {e}")
                     logger.info(f"Added current input: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.RTD:
@@ -688,8 +766,9 @@ class HardwareReader:
                     rtd_type = rtd_type_map.get(channel.rtd_type, RTDType.PT_3851)
                     wiring = wiring_map.get(channel.rtd_wiring,
                                            ResistanceConfiguration.FOUR_WIRE)
+                    mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
 
-                    task.ai_channels.add_ai_rtd_chan(
+                    ai_chan = task.ai_channels.add_ai_rtd_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
                         rtd_type=rtd_type,
@@ -698,6 +777,12 @@ class HardwareReader:
                         current_excit_val=channel.rtd_current or 0.001,
                         r_0=channel.rtd_resistance or 100.0
                     )
+                    # NI 9217 default ADC mode caps at 20 S/s; HIGH_SPEED → 400 S/s.
+                    if _module_needs_high_speed_adc(mod_type):
+                        try:
+                            ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                        except Exception as e:
+                            logger.warning(f"Could not set HIGH_SPEED ADC mode on {channel.name} ({mod_type}): {e}")
                     logger.info(f"Added RTD: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.BRIDGE_INPUT:
@@ -789,8 +874,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Check what rate the hardware actually accepted
             actual_rate = task.timing.samp_clk_rate
@@ -866,8 +956,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Check what rate the hardware actually accepted (NI-DAQmx coerces)
             actual_rate = task.timing.samp_clk_rate
@@ -925,8 +1020,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -980,8 +1080,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1056,8 +1161,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1116,8 +1226,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1169,8 +1284,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1225,8 +1345,13 @@ class HardwareReader:
             task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=BUFFER_SIZE
+                samps_per_chan=self._buffer_size,
             )
+            # Drop oldest samples if the consumer falls behind — without this,
+            # a brief stall raises DaqError -200279 ("samples no longer
+            # available"). For a dashboard/recorder we'd rather lose history
+            # than crash the reader.
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1726,6 +1851,16 @@ class HardwareReader:
         _diag_empty_polls = 0
         _diag_task_times: Dict[str, float] = {}  # task_name -> total ms
 
+        # Driver-lag tracking — under OverwriteMode.OVERWRITE_OLDEST the driver
+        # silently drops samples when we fall behind. Detect that condition by
+        # comparing the driver's total acquired count to our read cursor; warn
+        # when lag exceeds 75% of the buffer (rate-limited per task to avoid
+        # log spam) and surface peak lag in the periodic [READER DIAG] line.
+        _diag_max_lag: Dict[str, int] = {}            # task_name -> peak lag in window
+        _diag_lag_warn_ts: Dict[str, float] = {}      # task_name -> last warning time
+        _LAG_WARN_THRESHOLD = 0.75                    # fraction of buffer
+        _LAG_WARN_RATE_LIMIT_S = 5.0                  # at most one warning per 5s per task
+
         while self._running:
             try:
                 now = time.time()
@@ -1741,17 +1876,22 @@ class HardwareReader:
                         available = task_group.task.in_stream.avail_samp_per_chan
 
                         if available > 0:
-                            # Read all available samples, keep only the latest
+                            # Drain the entire on-board buffer each iteration.
+                            # OVERWRITE_OLDEST is set on the stream so the buffer
+                            # cannot grow beyond self._buffer_size; allocating a
+                            # numpy array of that size is bounded and cheap.
                             num_channels = len(task_group.channel_names)
-                            samples_to_read = min(available, BUFFER_SIZE)
+                            samples_to_read = available
                             buffer = np.zeros((num_channels, samples_to_read), dtype=np.float64)
 
-                            # Read using stream reader (more efficient than task.read())
+                            # Read using stream reader (more efficient than task.read()).
+                            # Timeout 2.0s — generous enough to absorb scheduler jitter
+                            # but still bounded so a hung DAQmx call surfaces in logs.
                             _t_read = time.time()
                             task_group.reader.read_many_sample(
                                 buffer,
                                 number_of_samples_per_channel=samples_to_read,
-                                timeout=0.1  # Short timeout since data should be ready
+                                timeout=2.0
                             )
                             _read_ms = (time.time() - _t_read) * 1000
                             _diag_read_count += 1
@@ -1789,6 +1929,30 @@ class HardwareReader:
                             # can return without leaving the scan loop reading nothing.
                             if hasattr(self, '_first_sample_event'):
                                 self._first_sample_event.set()
+
+                            # Driver-lag safety net (OVERWRITE_OLDEST silently
+                            # discards on overflow — make that visible).
+                            try:
+                                ins = task_group.task.in_stream
+                                lag = (ins.total_samp_per_chan_acquired
+                                       - ins.curr_read_pos)
+                                if lag > _diag_max_lag.get(task_name, 0):
+                                    _diag_max_lag[task_name] = lag
+                                if lag > _LAG_WARN_THRESHOLD * self._buffer_size:
+                                    last_warn = _diag_lag_warn_ts.get(task_name, 0.0)
+                                    if now - last_warn > _LAG_WARN_RATE_LIMIT_S:
+                                        logger.warning(
+                                            f"[{task_name}] driver lag {lag}/"
+                                            f"{self._buffer_size} samples "
+                                            f"(>{int(_LAG_WARN_THRESHOLD*100)}%) — "
+                                            f"approaching overflow; "
+                                            f"OVERWRITE_OLDEST will silently drop samples"
+                                        )
+                                        _diag_lag_warn_ts[task_name] = now
+                            except Exception:
+                                # in_stream lag attrs may be unavailable on
+                                # some nidaqmx versions / device types — best-effort.
+                                pass
                         else:
                             _diag_empty_polls += 1
 
@@ -1918,12 +2082,13 @@ class HardwareReader:
                     avg_ms = (_diag_total_read_ms / _diag_read_count) if _diag_read_count > 0 else 0
                     reads_per_sec = _diag_read_count / _diag_interval
                     task_summary = ', '.join(f"{tn}={ms:.1f}ms" for tn, ms in sorted(_diag_task_times.items()))
+                    lag_summary = ', '.join(f"{tn}={lag}" for tn, lag in sorted(_diag_max_lag.items())) or 'none'
                     logger.info(
                         f"[READER DIAG] {_diag_interval:.0f}s: "
                         f"loops={_diag_loop_count}, reads={_diag_read_count} ({reads_per_sec:.1f}/s), "
                         f"empty_polls={_diag_empty_polls}, "
                         f"avg_read={avg_ms:.2f}ms, max_read={_diag_max_read_ms:.2f}ms, "
-                        f"tasks: {task_summary}"
+                        f"tasks: {task_summary}, peak_lag: {lag_summary}"
                     )
                     _diag_next = now + _diag_interval
                     _diag_loop_count = 0
@@ -1932,6 +2097,7 @@ class HardwareReader:
                     _diag_max_read_ms = 0.0
                     _diag_empty_polls = 0
                     _diag_task_times.clear()
+                    _diag_max_lag.clear()
 
                 # Small sleep to prevent CPU spinning (20Hz effective poll rate)
                 time.sleep(0.05)
