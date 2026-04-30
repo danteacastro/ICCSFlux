@@ -302,6 +302,15 @@ class HardwareReader:
         self.latest_values: Dict[str, float] = {}
         self.value_timestamps: Dict[str, float] = {}  # When each value was last updated
 
+        # Stage 2: chunk callback for hardware-rate sample retention.
+        # When set, the reader thread emits each successfully-read chunk
+        # (full n_channels x n_samples buffer, post-transform) to the
+        # callback for downstream consumption (e.g. CSV recording at
+        # hardware rate, not scan rate). None = disabled (zero overhead).
+        # Set/cleared via set_chunk_callback().
+        self._chunk_callback: Optional[Any] = None
+        self._chunk_cb_error_count: int = 0
+
         # Background reader thread control
         self._running = False
         self._reader_thread: Optional[threading.Thread] = None
@@ -1900,28 +1909,34 @@ class HardwareReader:
                                 _diag_max_read_ms = _read_ms
                             _diag_task_times[task_name] = _diag_task_times.get(task_name, 0) + _read_ms
 
-                            # Update latest values (last sample from each channel)
+                            # Apply per-channel unit conversions and open-TC sentinel
+                            # handling IN PLACE on the buffer (Stage 2). Both the
+                            # dashboard cache (latest_values, last sample only) and
+                            # the chunk callback (full chunk, for hw-rate recording)
+                            # consume the transformed buffer, so they stay in sync
+                            # without duplicating transform logic.
+                            for i, name in enumerate(task_group.channel_names):
+                                ch_type = task_group.channel_types.get(name, task_group.channel_type)
+                                if ch_type == ChannelType.CURRENT_INPUT:
+                                    # NI-DAQmx returns current in Amps; we publish mA.
+                                    buffer[i, :] *= 1000.0
+                                elif ch_type == ChannelType.THERMOCOUPLE:
+                                    # Open-TC sentinel: with ai_open_thrmcpl_detect_enable
+                                    # enabled, open TCs read as very large magnitude
+                                    # (typically ~-1e10). Replace with NaN so the
+                                    # dashboard shows "OPEN"/"--" instead of -1e10.
+                                    mask = np.abs(buffer[i, :]) > 1e9
+                                    if mask.any():
+                                        if name not in self._logged_open_tc:
+                                            raw_sample = float(buffer[i, mask][0])
+                                            logger.warning(f"Open thermocouple detected on {name} (raw={raw_sample:.2e})")
+                                            self._logged_open_tc.add(name)
+                                        buffer[i, mask] = np.nan
+
+                            # Update dashboard cache (last sample of each channel).
                             with self.lock:
                                 for i, name in enumerate(task_group.channel_names):
-                                    value = buffer[i, -1]  # Last sample
-
-                                    # Convert current from Amps to mA
-                                    # Use per-channel type from channel_types dict if available
-                                    ch_type = task_group.channel_types.get(name, task_group.channel_type)
-                                    if ch_type == ChannelType.CURRENT_INPUT:
-                                        value = value * 1000.0
-
-                                    # NI-DAQmx open-TC sentinel: when ai_open_thrmcpl_detect_enable
-                                    # is True, an open thermocouple reads as a very large magnitude
-                                    # value (typically ~-1e10). Replace with NaN so the dashboard
-                                    # shows "OPEN"/"--" instead of -10000000000.
-                                    if ch_type == ChannelType.THERMOCOUPLE and abs(value) > 1e9:
-                                        if name not in self._logged_open_tc:
-                                            logger.warning(f"Open thermocouple detected on {name} (raw={value:.2e})")
-                                            self._logged_open_tc.add(name)
-                                        value = float('nan')
-
-                                    self.latest_values[name] = value
+                                    self.latest_values[name] = float(buffer[i, -1])
                                     self.value_timestamps[name] = now
 
                             self._error_count = 0  # Reset error count on success
@@ -1953,6 +1968,34 @@ class HardwareReader:
                                 # in_stream lag attrs may be unavailable on
                                 # some nidaqmx versions / device types — best-effort.
                                 pass
+
+                            # Stage 2: emit the full transformed chunk to the
+                            # recording layer if a consumer is subscribed.
+                            # Best-effort — exceptions in the callback are
+                            # caught so a slow/buggy consumer can't crash the
+                            # producer thread.
+                            cb = self._chunk_callback
+                            if cb is not None:
+                                try:
+                                    actual_rate = (
+                                        task_group.task.timing.samp_clk_rate
+                                        or self.sample_rate
+                                    )
+                                    t0 = now - (samples_to_read / max(actual_rate, 1.0))
+                                    cb(
+                                        task_name,
+                                        list(task_group.channel_names),
+                                        buffer.copy(),  # consumer owns the data
+                                        t0,
+                                        actual_rate,
+                                        dict(task_group.channel_types),
+                                    )
+                                except Exception as e:
+                                    self._chunk_cb_error_count += 1
+                                    if self._chunk_cb_error_count <= 3:
+                                        logger.warning(
+                                            f"chunk callback raised on {task_name}: {e}"
+                                        )
                         else:
                             _diag_empty_polls += 1
 
@@ -2117,6 +2160,46 @@ class HardwareReader:
     def set_error_callback(self, callback: callable):
         """Set callback for reader errors. Callback receives (event_type, details_dict)"""
         self._error_callback = callback
+
+    def set_chunk_callback(self, callback) -> None:
+        """Subscribe a consumer to every hardware sample chunk (Stage 2).
+
+        When set, the reader thread invokes ``callback`` once per successful
+        read, with the full chunk produced by that read — letting the
+        recording layer capture every hardware sample instead of one
+        last-sample-per-scan. Pass ``None`` to unsubscribe.
+
+        Callback signature::
+
+            cb(task_name: str,
+               channel_names: List[str],
+               samples: np.ndarray,        # shape (n_channels, n_samples), float64
+               t0_epoch: float,            # wall-clock of FIRST sample (sec since epoch)
+               rate_hz: float,             # actual sample-clock rate, post-coercion
+               channel_types: Dict[str, ChannelType])
+
+        The ``samples`` array is a *copy* owned by the consumer — it can be
+        retained, mutated, or queued without coordinating with the producer.
+        Per-channel unit conversions (Amps -> mA) and open-thermocouple
+        sentinel handling (large-magnitude -> NaN) are already applied, so
+        the values match what the dashboard sees.
+
+        ``t0_epoch`` is reconstructed from ``time.time()`` at the moment the
+        read returned, minus ``n_samples / rate``. It is approximate (does
+        not use the DAQmx hardware clock); good enough for alignment but
+        not for sub-millisecond claims.
+
+        Callback exceptions are caught and rate-limited in the producer's
+        log; they never propagate to the reader thread.
+        """
+        self._chunk_callback = callback
+        # Reset the error counter so a new subscriber gets a fresh budget
+        # of warnings before being silenced.
+        self._chunk_cb_error_count = 0
+
+    def has_chunk_callback(self) -> bool:
+        """True iff a chunk consumer is currently subscribed."""
+        return self._chunk_callback is not None
 
     def is_healthy(self) -> bool:
         """Check if the hardware reader is healthy and running"""

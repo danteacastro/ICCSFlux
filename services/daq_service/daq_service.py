@@ -1175,7 +1175,148 @@ class DAQService:
             default_path=self.config.system.log_directory
         )
         self.recording_manager.on_status_change = self._publish_system_status
+
+        # Stage 2: wire chunk-recording hooks. When recording starts we
+        # subscribe a chunk callback on HardwareReader so every hw sample
+        # reaches the recording layer (vs. the old scan-rate path that
+        # discarded ~99% of samples). When recording stops, we unsubscribe
+        # so the producer thread returns to zero-overhead steady state.
+        self._chunk_recording_active = False
+        self.recording_manager._on_record_start = self._enable_chunk_recording
+        self.recording_manager._on_record_stop = self._disable_chunk_recording
+
         logger.info("Recording manager initialized")
+
+    def _enable_chunk_recording(self):
+        """Hook fired when recording_manager.start() succeeds.
+
+        Subscribes the HardwareReader chunk callback so every hardware
+        sample reaches the recording layer at hw rate, not scan rate.
+        Falls back to the legacy scan-rate write_sample path if the
+        reader doesn't support chunk callbacks (e.g. simulator).
+        """
+        if self.hardware_reader is None or not hasattr(self.hardware_reader, 'set_chunk_callback'):
+            return
+        try:
+            self.hardware_reader.set_chunk_callback(self._on_chunk)
+            self._chunk_recording_active = True
+            logger.info("Chunk recording enabled — hw-rate sample retention active")
+        except Exception as e:
+            logger.warning(f"Could not enable chunk recording: {e}")
+
+    def _disable_chunk_recording(self):
+        """Hook fired when recording_manager.stop() succeeds.
+
+        Unsubscribes the chunk callback so the producer returns to the
+        zero-overhead steady state (no per-read copy, no callback cost).
+        """
+        if self.hardware_reader is not None and hasattr(self.hardware_reader, 'set_chunk_callback'):
+            try:
+                self.hardware_reader.set_chunk_callback(None)
+            except Exception as e:
+                logger.warning(f"Could not unsubscribe chunk callback: {e}")
+        self._chunk_recording_active = False
+        logger.info("Chunk recording disabled")
+
+    def _on_chunk(self, task_name, channel_names, samples, t0, rate, channel_types):
+        """HardwareReader -> RecordingManager bridge for hw-rate recording.
+
+        Called from the reader thread once per successful read with a full
+        chunk of samples for one task. Builds extra_row_values (sys.* + uv.*
+        + fx.* + other-task cached values) at chunk-emit time and forwards
+        the chunk to RecordingManager.write_chunk for per-sample row writing.
+
+        Best-effort: any exception is logged but does NOT propagate, because
+        an exception here would surface in the reader thread's catch-all and
+        could trip the recovery counter. The reader is more important than
+        a single chunk of recording.
+        """
+        try:
+            rm = self.recording_manager
+            if rm is None or not rm.recording:
+                return
+
+            chunk_set = set(channel_names)
+
+            # Snapshot other-task hardware values from the reader cache.
+            # Held lock is fine-grained — copy out and release.
+            other_hw: Dict[str, Any] = {}
+            try:
+                with self.hardware_reader.lock:
+                    for n, v in self.hardware_reader.latest_values.items():
+                        if n not in chunk_set:
+                            other_hw[n] = v
+            except Exception:
+                pass  # cache best-effort; chunk channels still get written
+
+            # sys.* metadata (mirrors scan-loop layout)
+            extras: Dict[str, Any] = {
+                'sys.acquiring': 1.0 if self.acquiring else 0.0,
+                'sys.session_active': 1.0 if getattr(self, 'session_active', False) else 0.0,
+                'sys.recording': 1.0,  # we only fire while recording
+            }
+
+            # uv.* and fx.* — only the variables flagged log=True, matching
+            # the scan-loop behavior so chunk-mode CSVs have the same columns
+            # as scan-mode CSVs.
+            if self.user_variables:
+                try:
+                    for var in self.user_variables.get_all_variables():
+                        if not getattr(var, 'log', False):
+                            continue
+                        extras[f"uv.{var.name}"] = var.value
+                    for _block_id, outputs in self.user_variables.get_formula_values_dict().items():
+                        for out_name, out_value in outputs.items():
+                            extras[f"fx.{out_name}"] = out_value
+                except Exception:
+                    pass  # uv/fx best-effort
+
+            # Merge other-task HW values (chunk channels remain authoritative
+            # since they're set later inside write_chunk per-sample).
+            for n, v in other_hw.items():
+                extras[n] = v
+
+            # Build channel_configs (units + description) for header generation.
+            channel_configs: Dict[str, Any] = {
+                name: {'units': ch.units, 'description': ch.description}
+                for name, ch in self.config.channels.items()
+            }
+            channel_configs['sys.acquiring'] = {'units': 'bool', 'description': 'Acquisition active'}
+            channel_configs['sys.session_active'] = {'units': 'bool', 'description': 'Test session active'}
+            channel_configs['sys.recording'] = {'units': 'bool', 'description': 'Recording active'}
+            if self.user_variables:
+                try:
+                    for var in self.user_variables.get_all_variables():
+                        if not getattr(var, 'log', False):
+                            continue
+                        channel_configs[f"uv.{var.name}"] = {
+                            'units': var.units,
+                            'description': var.description or var.variable_type,
+                        }
+                    for block_id, outputs in self.user_variables.get_formula_values_dict().items():
+                        block = self.user_variables.formula_blocks.get(block_id)
+                        for out_name in outputs:
+                            units = ''
+                            if block and out_name in block.outputs:
+                                units = block.outputs[out_name].get('units', '')
+                            channel_configs[f"fx.{out_name}"] = {
+                                'units': units,
+                                'description': f'Formula: {out_name}',
+                            }
+                except Exception:
+                    pass
+
+            rm.write_chunk(
+                task_name=task_name,
+                channel_names=channel_names,
+                samples=samples,
+                t0_epoch=t0,
+                rate_hz=rate,
+                channel_configs=channel_configs,
+                extra_row_values=extras,
+            )
+        except Exception as e:
+            logger.warning(f"_on_chunk error on {task_name}: {e}")
 
     def _init_historian(self):
         """Initialize the SQLite historian for continuous background data recording."""
@@ -17283,7 +17424,13 @@ Unit conversions:
                                         units = block.outputs[out_name].get('units', '')
                                     channel_configs[fx_name] = {'units': units, 'description': f'Formula: {out_name}'}
 
-                        self.recording_manager.write_sample(values, channel_configs)
+                        # Stage 2: skip scan-rate write_sample when chunk
+                        # recording is active. _on_chunk fires per hw read
+                        # and writes one row per hardware sample via
+                        # RecordingManager.write_chunk, so write_sample here
+                        # would duplicate rows with stale timestamps.
+                        if not getattr(self, '_chunk_recording_active', False):
+                            self.recording_manager.write_sample(values, channel_configs)
 
                     # Historian: silent 1 Hz write of ALL channels (unconditional)
                     if self.historian:

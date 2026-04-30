@@ -420,6 +420,13 @@ class RecordingManager:
         # Callback for status updates
         self.on_status_change: Optional[Callable] = None
 
+        # Stage 2 hooks: fired after start() / stop() succeed (post-lock-release).
+        # daq_service uses these to register/unregister the chunk callback on
+        # HardwareReader so hardware-rate sample retention is opt-in (zero
+        # producer-side cost when no consumer is listening).
+        self._on_record_start: Optional[Callable] = None
+        self._on_record_stop: Optional[Callable] = None
+
         # Lock for thread safety
         self.lock = threading.Lock()
 
@@ -566,6 +573,15 @@ class RecordingManager:
         if should_notify and self.on_status_change:
             self.on_status_change()
 
+        # Stage 2: fire start hook so daq_service can wire the chunk
+        # callback on HardwareReader for hw-rate sample retention.
+        # Errors here must not fail the start() call — log and continue.
+        if should_notify and self._on_record_start:
+            try:
+                self._on_record_start()
+            except Exception as e:
+                logger.warning(f"Recording start hook raised: {e}")
+
         return True
 
     def _get_output_directory(self) -> Path:
@@ -633,6 +649,14 @@ class RecordingManager:
         # Call callback AFTER releasing lock to avoid deadlock
         if should_notify and self.on_status_change:
             self.on_status_change()
+
+        # Stage 2: fire stop hook so daq_service can unregister the chunk
+        # callback on HardwareReader (returns producer to zero-overhead).
+        if should_notify and self._on_record_stop:
+            try:
+                self._on_record_stop()
+            except Exception as e:
+                logger.warning(f"Recording stop hook raised: {e}")
 
         return True
 
@@ -741,6 +765,145 @@ class RecordingManager:
         # Call callback AFTER releasing lock to avoid deadlock
         if should_notify and self.on_status_change:
             self.on_status_change()
+
+    def write_chunk(
+        self,
+        task_name: str,
+        channel_names: List[str],
+        samples,
+        t0_epoch: float,
+        rate_hz: float,
+        channel_configs: Dict[str, Any],
+        extra_row_values: Optional[Dict[str, Any]] = None,
+    ):
+        """Write a hardware-rate chunk as N rows (Stage 2).
+
+        Each column of ``samples`` (shape ``(n_channels, n_samples)``) becomes
+        one row in the recording. Per-row timestamps are reconstructed from
+        ``t0_epoch + i / rate_hz`` so they reflect the actual hardware sample
+        times, not wall-clock receipt times.
+
+        Decimation, sample-interval, and channel-selection filters apply
+        per-sample exactly the same way ``write_sample`` applies them
+        per-call — so an existing recording config like "every 100 ms"
+        produces identical row cadence whether fed at scan rate or hw rate.
+
+        Triggered-mode recording is OUT OF SCOPE for Stage 2: if the config
+        is in triggered mode, ``write_chunk`` no-ops (callers fall back to
+        ``write_sample`` via the scan loop).
+
+        Parameters
+        ----------
+        task_name : str
+            For diagnostics only.
+        channel_names : list of str
+            Channel names in row-order of ``samples``.
+        samples : np.ndarray
+            Shape ``(n_channels, n_samples)``, float64. Already
+            unit-converted (Amps -> mA) and sentinel-handled (open TC -> NaN)
+            by the producer.
+        t0_epoch : float
+            Wall-clock seconds since epoch of the FIRST sample in the chunk.
+        rate_hz : float
+            Actual sample-clock rate (post-NI coercion). Used to interpolate
+            per-row timestamps.
+        channel_configs : dict
+            ``{channel_name: {"units": str, "description": str}}`` — used by
+            ``_init_csv_writer`` for header units.
+        extra_row_values : dict, optional
+            Per-row constants merged into every row of this chunk: sys.*
+            metadata, script:* values, uv.* user variables, and other-task
+            hardware values cached at chunk-emit time. Treated as
+            invariants across the chunk (does not interpolate).
+        """
+        if not self.recording:
+            return
+
+        # Triggered mode: defer to write_sample via scan loop.
+        if self.config.mode == 'triggered':
+            return
+
+        # Validate shape.
+        try:
+            n_channels, n_samples = samples.shape
+        except (AttributeError, ValueError):
+            logger.warning(
+                f"write_chunk[{task_name}]: malformed samples shape "
+                f"(expected 2D ndarray, got {type(samples).__name__})"
+            )
+            return
+        if n_channels != len(channel_names):
+            logger.warning(
+                f"write_chunk[{task_name}]: channel_names length "
+                f"{len(channel_names)} != samples rows {n_channels}"
+            )
+            return
+        if n_samples == 0:
+            return
+
+        # Resolve sample-interval into seconds (units string in config).
+        interval_s = (
+            self.config.sample_interval / 1000.0
+            if self.config.sample_interval_unit == "milliseconds"
+            else self.config.sample_interval
+        )
+        rate_safe = rate_hz if rate_hz > 0 else 1.0
+        selected = self.config.selected_channels   # empty set => no filter
+        extras = extra_row_values or {}
+
+        with self.lock:
+            for i in range(n_samples):
+                # Per-sample decimation — counter advances even when filtered
+                # out, so a decimation=10 stream yields exactly every 10th
+                # hardware sample regardless of chunk boundaries.
+                self.decimation_counter += 1
+                if self.decimation_counter < self.config.decimation:
+                    continue
+                self.decimation_counter = 0
+
+                # Per-sample time-interval filter (uses reconstructed sample
+                # time so user-configured "every 5 s" works identically
+                # whether feed is scan-rate or hw-rate).
+                sample_ts = datetime.fromtimestamp(t0_epoch + i / rate_safe)
+                if self.last_sample_time is not None:
+                    if (sample_ts - self.last_sample_time).total_seconds() < interval_s:
+                        continue
+                self.last_sample_time = sample_ts
+
+                # Build the row: chunk channels at column i, plus extras.
+                row: Dict[str, Any] = {}
+                for j, ch_name in enumerate(channel_names):
+                    if selected and ch_name not in selected:
+                        continue
+                    row[ch_name] = float(samples[j, i])
+                for k, v in extras.items():
+                    if selected and k not in selected:
+                        continue
+                    row[k] = v
+
+                self._write_row(row, channel_configs)
+
+                # Periodic disk-space check (mirrors write_sample) — but
+                # cheaper here because n_samples writes happen per call, so
+                # the modulo fires inside this loop too.
+                if self.samples_written % DISK_CHECK_INTERVAL_SAMPLES == 0:
+                    try:
+                        usage = shutil.disk_usage(self._get_output_directory())
+                        if usage.free < CRITICAL_FREE_DISK_BYTES:
+                            logger.critical(
+                                f"Disk space critically low "
+                                f"({usage.free / (1024*1024):.1f} MB free) — "
+                                f"stopping recording mid-chunk"
+                            )
+                            # Mirror write_sample's stop-with-lock-release dance.
+                            self.lock.release()
+                            try:
+                                self.stop()
+                            finally:
+                                self.lock.acquire()
+                            return
+                    except OSError:
+                        pass
 
     def update_script_values(self, values: Dict[str, Any]):
         """Update script-computed values (calculated params, transforms)"""
