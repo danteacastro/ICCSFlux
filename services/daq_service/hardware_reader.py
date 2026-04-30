@@ -25,7 +25,8 @@ import time
 import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-from queue import Queue
+from queue import Queue, Empty, Full
+from dataclasses import replace as _dc_replace
 
 import terminal_config as tc_validator
 import cjc_source as cjc_validator
@@ -247,6 +248,498 @@ class TaskGroup:
     reader: Any = None  # Stream reader for continuous acquisition
     channel_types: Dict[str, Any] = field(default_factory=dict)  # Per-channel types for mixed tasks
 
+
+# =========================================================================
+# Stage 4: per-task producer threads + recording consumer + slow-poll
+# =========================================================================
+#
+# Replaces the pre-Stage-4 single _reader_thread_func with one thread per
+# CONTINUOUS AI task plus a single recording consumer plus one slow-poll
+# thread for DI/counter on-demand reads. Per-task isolation means a hung
+# read on one module doesn't block reads from others (the "one bad cable
+# kills all reads" failure mode).
+
+# Bounded chunk-queue depth per task. With OVERWRITE_OLDEST set on the
+# DAQmx in-stream and drop-oldest in the producer, this bounds Python-side
+# memory growth without backpressuring the driver.
+_TASK_READER_QUEUE_DEPTH = 8
+
+# Per-task error budget before triggering individual recovery (restart of
+# THIS task's nidaqmx Task only, not the whole reader).
+_TASK_READER_MAX_CONSECUTIVE_ERRORS = 10
+_TASK_READER_MAX_RECOVERY_ATTEMPTS = 5
+
+# DI / counter / idle polling cadence — same 20 Hz as the old reader thread.
+_SLOW_POLL_INTERVAL_S = 0.05
+
+# How often the recording consumer aggregates per-task stats and emits
+# the unified [READER DIAG] log line.
+_DIAG_INTERVAL_S = 30.0
+
+
+@dataclass
+class _TaskReaderStats:
+    """Per-task counters for diagnostic aggregation.
+
+    Updated by the producer thread under ``_TaskReader.stats_lock``; read
+    by the recording consumer for [READER DIAG] aggregation.
+    """
+    loops: int = 0
+    reads: int = 0
+    empty_polls: int = 0
+    total_read_ms: float = 0.0
+    max_read_ms: float = 0.0
+    max_lag: int = 0
+    samples_lost_queue_full: int = 0
+    consecutive_errors: int = 0
+    total_errors: int = 0
+    recovery_attempts: int = 0
+    last_read_ts: float = 0.0
+
+
+class _TaskReader:
+    """Per-task producer thread for one CONTINUOUS AI task.
+
+    Owns the read loop end-to-end for a single task — polls
+    ``avail_samp_per_chan``, reads samples, applies in-place transforms
+    (Amps -> mA, open-TC sentinel -> NaN), updates the parent's
+    ``latest_values`` cache, and pushes chunks onto its own bounded queue
+    for the recording consumer.
+
+    Failure isolation (Stage 4 main win): a hung read or driver hiccup on
+    THIS task does not block reads from other tasks in the chassis. On a
+    sustained error burst the reader restarts ITS OWN task only — it
+    doesn't touch sibling tasks.
+
+    Backpressure: when the chunk queue is full (consumer falling behind),
+    the producer drops the oldest unconsumed chunk and increments
+    ``samples_lost_queue_full``. This keeps the producer running at hw
+    rate so the DAQmx driver's input buffer doesn't overflow with -200279
+    or -200361 errors.
+    """
+
+    def __init__(self, parent: 'HardwareReader', task_name: str, task_group: TaskGroup):
+        self.parent = parent
+        self.task_name = task_name
+        self.task_group = task_group
+        self.chunk_q: Queue = Queue(maxsize=_TASK_READER_QUEUE_DEPTH)
+        self.stats = _TaskReaderStats()
+        self.stats_lock = threading.Lock()
+        self.first_sample_event = threading.Event()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._lag_warn_ts: float = 0.0   # rate-limit per-task lag warnings
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop,
+            daemon=True,
+            name=f"DAQ-Reader-{self.task_name}",
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def get_stats(self) -> _TaskReaderStats:
+        """Return a thread-safe snapshot of current stats."""
+        with self.stats_lock:
+            return _dc_replace(self.stats)
+
+    def reset_window_stats(self) -> None:
+        """Reset per-window counters (called by consumer after diag emit)."""
+        with self.stats_lock:
+            self.stats.loops = 0
+            self.stats.reads = 0
+            self.stats.empty_polls = 0
+            self.stats.total_read_ms = 0.0
+            self.stats.max_read_ms = 0.0
+            self.stats.max_lag = 0
+
+    def _loop(self) -> None:
+        """Main read loop scoped to this single task.
+
+        Adapted from the pre-Stage-4 _reader_thread_func, but only handles
+        the CONTINUOUS AI path for one task. DI / counter polling lives in
+        _SlowPollThread.
+        """
+        parent = self.parent
+        tg = self.task_group
+        n_channels = len(tg.channel_names)
+
+        while self._running:
+            try:
+                with self.stats_lock:
+                    self.stats.loops += 1
+                now = time.time()
+
+                if tg.reader is None:
+                    logger.warning(f"[{self.task_name}] reader is None; stopping task reader")
+                    return
+
+                try:
+                    available = tg.task.in_stream.avail_samp_per_chan
+                except Exception:
+                    available = 0
+
+                if available <= 0:
+                    with self.stats_lock:
+                        self.stats.empty_polls += 1
+                    time.sleep(_SLOW_POLL_INTERVAL_S)
+                    continue
+
+                # Read all available samples into a per-iteration buffer.
+                samples_to_read = available
+                buffer = np.zeros((n_channels, samples_to_read), dtype=np.float64)
+                _t = time.time()
+                tg.reader.read_many_sample(
+                    buffer,
+                    number_of_samples_per_channel=samples_to_read,
+                    timeout=2.0,
+                )
+                _read_ms = (time.time() - _t) * 1000
+
+                with self.stats_lock:
+                    self.stats.reads += 1
+                    self.stats.total_read_ms += _read_ms
+                    if _read_ms > self.stats.max_read_ms:
+                        self.stats.max_read_ms = _read_ms
+                    self.stats.last_read_ts = now
+                    self.stats.consecutive_errors = 0
+
+                # Apply per-channel transforms in place — both the
+                # dashboard cache (last sample) and the chunk emission
+                # (full chunk) consume the transformed buffer.
+                for i, name in enumerate(tg.channel_names):
+                    ch_type = tg.channel_types.get(name, tg.channel_type)
+                    if ch_type == ChannelType.CURRENT_INPUT:
+                        buffer[i, :] *= 1000.0
+                    elif ch_type == ChannelType.THERMOCOUPLE:
+                        mask = np.abs(buffer[i, :]) > 1e9
+                        if mask.any():
+                            if name not in parent._logged_open_tc:
+                                raw_sample = float(buffer[i, mask][0])
+                                logger.warning(
+                                    f"Open thermocouple detected on {name} (raw={raw_sample:.2e})"
+                                )
+                                parent._logged_open_tc.add(name)
+                            buffer[i, mask] = np.nan
+
+                # Update dashboard cache (last sample of each channel).
+                with parent.lock:
+                    for i, name in enumerate(tg.channel_names):
+                        parent.latest_values[name] = float(buffer[i, -1])
+                        parent.value_timestamps[name] = now
+
+                # Signal first-sample event (per-task and parent-wide).
+                self.first_sample_event.set()
+                if hasattr(parent, '_first_sample_event'):
+                    parent._first_sample_event.set()
+
+                # Driver-lag check (Stage 1 safety net, now per-task).
+                try:
+                    ins = tg.task.in_stream
+                    lag = ins.total_samp_per_chan_acquired - ins.curr_read_pos
+                    with self.stats_lock:
+                        if lag > self.stats.max_lag:
+                            self.stats.max_lag = lag
+                    if lag > 0.75 * parent._buffer_size:
+                        if now - self._lag_warn_ts > 5.0:
+                            logger.warning(
+                                f"[{self.task_name}] driver lag {lag}/"
+                                f"{parent._buffer_size} samples (>75%) — "
+                                f"approaching overflow; OVERWRITE_OLDEST will "
+                                f"silently drop samples"
+                            )
+                            self._lag_warn_ts = now
+                except Exception:
+                    pass
+
+                # Build chunk payload and push to queue (drop-oldest on full).
+                try:
+                    actual_rate = tg.task.timing.samp_clk_rate or parent.sample_rate
+                except Exception:
+                    actual_rate = parent.sample_rate
+                t0 = now - (samples_to_read / max(actual_rate, 1.0))
+                payload = (
+                    self.task_name,
+                    list(tg.channel_names),
+                    buffer.copy(),                 # consumer owns the data
+                    t0,
+                    actual_rate,
+                    dict(tg.channel_types),
+                )
+                try:
+                    self.chunk_q.put_nowait(payload)
+                except Full:
+                    # Consumer falling behind — drop oldest, retry.
+                    try:
+                        self.chunk_q.get_nowait()
+                    except Empty:
+                        pass
+                    try:
+                        self.chunk_q.put_nowait(payload)
+                    except Full:
+                        pass  # extremely rare; give up this chunk
+                    with self.stats_lock:
+                        self.stats.samples_lost_queue_full += samples_to_read
+
+            except Exception as e:
+                with self.stats_lock:
+                    self.stats.consecutive_errors += 1
+                    self.stats.total_errors += 1
+                    consecutive = self.stats.consecutive_errors
+                    recovery_attempts = self.stats.recovery_attempts
+
+                if consecutive <= 3:
+                    logger.warning(f"[{self.task_name}] read error: {e}")
+
+                # Set this task's channels to NaN so consumers see invalid.
+                with parent.lock:
+                    for name in tg.channel_names:
+                        parent.latest_values[name] = float('nan')
+
+                # Per-task recovery: on a sustained error burst, restart
+                # THIS task only (don't touch siblings).
+                if (consecutive >= _TASK_READER_MAX_CONSECUTIVE_ERRORS
+                        and recovery_attempts < _TASK_READER_MAX_RECOVERY_ATTEMPTS):
+                    with self.stats_lock:
+                        self.stats.recovery_attempts += 1
+                        attempt = self.stats.recovery_attempts
+                    logger.warning(
+                        f"[{self.task_name}] error burst — per-task recovery "
+                        f"attempt {attempt}/{_TASK_READER_MAX_RECOVERY_ATTEMPTS}"
+                    )
+                    try:
+                        tg.task.stop()
+                        time.sleep(0.5)
+                        tg.task.start()
+                        with self.stats_lock:
+                            self.stats.consecutive_errors = 0
+                        logger.info(f"[{self.task_name}] task restarted successfully")
+                    except Exception as recover_err:
+                        logger.error(
+                            f"[{self.task_name}] per-task recovery failed: {recover_err}"
+                        )
+                        time.sleep(1.0)
+
+                time.sleep(0.1)
+
+        logger.info(f"[{self.task_name}] task reader stopped")
+
+
+class _RecordingConsumer:
+    """Drains chunks from all _TaskReader queues and dispatches to the
+    HardwareReader.chunk_callback. Single thread; concurrent callback
+    invocations are serialized inside ``recording_manager.write_chunk``
+    via that manager's own lock.
+
+    Also emits the unified [READER DIAG] log line every 30 seconds,
+    aggregating per-task stats so operators see one summary line per
+    chassis instead of N (one per task).
+    """
+
+    def __init__(self, parent: 'HardwareReader'):
+        self.parent = parent
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._diag_next: float = 0.0
+
+    def start(self) -> None:
+        self._running = True
+        self._diag_next = time.time() + _DIAG_INTERVAL_S
+        self._thread = threading.Thread(
+            target=self._loop,
+            daemon=True,
+            name="DAQ-RecordingConsumer",
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _loop(self) -> None:
+        parent = self.parent
+        while self._running:
+            wrote_any = False
+            cb = parent._chunk_callback   # snapshot — may be None
+            for tr in list(parent._task_readers.values()):
+                try:
+                    payload = tr.chunk_q.get_nowait()
+                except Empty:
+                    continue
+                wrote_any = True
+                if cb is not None:
+                    try:
+                        cb(*payload)
+                    except Exception as e:
+                        parent._chunk_cb_error_count += 1
+                        if parent._chunk_cb_error_count <= 3:
+                            logger.warning(
+                                f"chunk callback raised on {payload[0]}: {e}"
+                            )
+
+            now = time.time()
+            if now >= self._diag_next:
+                self._emit_diag()
+                self._diag_next = now + _DIAG_INTERVAL_S
+
+            if not wrote_any:
+                time.sleep(0.01)
+
+        logger.info("Recording consumer stopped")
+
+    def _emit_diag(self) -> None:
+        """Aggregate per-task stats into the unified [READER DIAG] line.
+
+        Format matches the pre-Stage-4 reader thread for log compatibility
+        — operators have grep patterns built around ``[READER DIAG]``.
+        """
+        loops = 0
+        reads = 0
+        empty_polls = 0
+        total_read_ms = 0.0
+        max_read_ms = 0.0
+        task_times = []
+        max_lags = []
+
+        for task_name, tr in self.parent._task_readers.items():
+            s = tr.get_stats()
+            loops += s.loops
+            reads += s.reads
+            empty_polls += s.empty_polls
+            total_read_ms += s.total_read_ms
+            if s.max_read_ms > max_read_ms:
+                max_read_ms = s.max_read_ms
+            task_times.append(f"{task_name}={s.total_read_ms:.1f}ms")
+            max_lags.append(f"{task_name}={s.max_lag}")
+
+        avg_ms = (total_read_ms / reads) if reads > 0 else 0.0
+        reads_per_sec = reads / _DIAG_INTERVAL_S
+        task_summary = ', '.join(sorted(task_times))
+        lag_summary = ', '.join(sorted(max_lags)) or 'none'
+        logger.info(
+            f"[READER DIAG] {_DIAG_INTERVAL_S:.0f}s: "
+            f"loops={loops}, reads={reads} ({reads_per_sec:.1f}/s), "
+            f"empty_polls={empty_polls}, "
+            f"avg_read={avg_ms:.2f}ms, max_read={max_read_ms:.2f}ms, "
+            f"tasks: {task_summary}, peak_lag: {lag_summary}"
+        )
+
+        # Reset per-task window counters for the next interval.
+        for tr in self.parent._task_readers.values():
+            tr.reset_window_stats()
+
+
+class _SlowPollThread:
+    """Single thread polling DI tasks and counter tasks at ~20 Hz.
+
+    These reads are on-demand (not buffered/streaming) and don't benefit
+    from per-task threading — one shared thread keeps the poll cadence
+    consistent without spawning N more threads per chassis.
+    """
+
+    def __init__(self, parent: 'HardwareReader'):
+        self.parent = parent
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop,
+            daemon=True,
+            name="DAQ-SlowPoll",
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _loop(self) -> None:
+        parent = self.parent
+        while self._running:
+            try:
+                # Digital input tasks (on-demand)
+                for task_name, tg in parent.tasks.items():
+                    if tg.channel_type == ChannelType.DIGITAL_INPUT:
+                        try:
+                            raw_data = tg.task.read(timeout=0.1)
+                            with parent.lock:
+                                if isinstance(raw_data, list):
+                                    for i, name in enumerate(tg.channel_names):
+                                        value = 1.0 if raw_data[i] else 0.0
+                                        ch_config = parent.config.channels.get(name)
+                                        if ch_config and getattr(ch_config, 'invert', False):
+                                            value = 1.0 - value
+                                        parent.latest_values[name] = value
+                                else:
+                                    value = 1.0 if raw_data else 0.0
+                                    name = tg.channel_names[0]
+                                    ch_config = parent.config.channels.get(name)
+                                    if ch_config and getattr(ch_config, 'invert', False):
+                                        value = 1.0 - value
+                                    parent.latest_values[name] = value
+                        except Exception as e:
+                            logger.warning(f"Error reading digital inputs {task_name}: {e}")
+
+                # Counter tasks (on-demand, with rollover handling)
+                for name, task in parent.counter_tasks.items():
+                    try:
+                        value = task.read(timeout=0.1)
+                        actual_mode = getattr(parent, '_counter_actual_mode', {}).get(name)
+                        channel = parent.config.channels.get(name)
+                        mode = actual_mode or (channel.counter_mode if channel else "count")
+                        if mode == "period" and value > 0:
+                            value = 1.0 / value
+                        elif mode == "count":
+                            if name not in parent._counter_rollover:
+                                parent._counter_rollover[name] = {'prev': 0, 'offset': 0}
+                            state = parent._counter_rollover[name]
+                            raw = int(value)
+                            if raw < state['prev']:
+                                state['offset'] += 0x100000000
+                                logger.info(
+                                    f"Counter rollover detected on {name}: "
+                                    f"raw {state['prev']} -> {raw}, "
+                                    f"total offset now {state['offset']}"
+                                )
+                            state['prev'] = raw
+                            value = raw + state['offset']
+                        with parent.lock:
+                            parent.latest_values[name] = value
+                    except Exception as e:
+                        if not getattr(parent, '_counter_error_logged', {}).get(name):
+                            logger.warning(f"Counter read failed for {name}: {e}")
+                            if not hasattr(parent, '_counter_error_logged'):
+                                parent._counter_error_logged = {}
+                            parent._counter_error_logged[name] = True
+                        with parent.lock:
+                            parent.latest_values[name] = float('nan')
+            except Exception as e:
+                logger.error(f"SlowPoll thread error: {e}")
+
+            time.sleep(_SLOW_POLL_INTERVAL_S)
+
+        logger.info("Slow-poll thread stopped")
+
+
 class HardwareReader:
     """
     Reads from real NI hardware using nidaqmx with CONTINUOUS BUFFERED ACQUISITION.
@@ -319,6 +812,13 @@ class HardwareReader:
         self._reader_died = False  # Flag set when reader exits due to errors
         self._recovery_attempts = 0
         self._max_recovery_attempts = 10  # More attempts before giving up on real hardware
+
+        # Stage 4: per-task producer threads + recording consumer + slow-poll.
+        # Replaces the pre-Stage-4 single _reader_thread_func.
+        # Populated in _start_continuous_acquisition; cleared in close().
+        self._task_readers: Dict[str, _TaskReader] = {}
+        self._recording_consumer: Optional[_RecordingConsumer] = None
+        self._slow_poll_thread: Optional[_SlowPollThread] = None
         self._error_callback: Optional[callable] = None  # Callback when reader dies
         self._logged_open_tc: set = set()  # Channels with open TC already logged (rate-limit warnings)
 
@@ -1708,39 +2208,76 @@ class HardwareReader:
                 f"task(s) could not start: {failures}"
             )
 
-        # Start background reader thread with a "first sample acquired" event
-        # so we can synchronously wait for the first read to complete.
+        # Stage 4: spawn one _TaskReader per CONTINUOUS task + one
+        # recording consumer + one slow-poll thread (DI/counters).
+        # Per-task isolation means a hung read on one module doesn't block
+        # reads from other modules in the chassis.
         self._first_sample_event = threading.Event()
         self._running = True
-        self._reader_thread = threading.Thread(
-            target=self._reader_thread_func,
-            name="HardwareReader-Continuous",
-            daemon=True
-        )
-        self._reader_thread.start()
+        self._task_readers = {}
+        for task_name, task_group in self.tasks.items():
+            if task_group.is_continuous:
+                tr = _TaskReader(self, task_name, task_group)
+                self._task_readers[task_name] = tr
+                tr.start()
+                logger.info(f"Started task reader: {task_name}")
 
-        # Wait up to 2s for the reader thread to acquire the first sample.
-        # This prevents the race where the scan loop reads before any data
-        # is in latest_values, causing all channels to show as missing on
-        # the first scan cycle.
+        self._recording_consumer = _RecordingConsumer(self)
+        self._recording_consumer.start()
+
+        self._slow_poll_thread = _SlowPollThread(self)
+        self._slow_poll_thread.start()
+
+        # Wait up to 2s for ANY task reader to acquire its first sample.
+        # Prevents the race where the scan loop reads before any data is
+        # in latest_values; first scan cycle gets at least one task's data.
         if not self._first_sample_event.wait(timeout=2.0):
             logger.warning(
-                "Reader thread did not acquire first sample within 2s — "
+                "No task reader acquired first sample within 2s — "
                 "first scan cycle may show missing values"
             )
         else:
             logger.info("Continuous acquisition started — first sample acquired")
 
     def _stop_continuous_acquisition(self):
-        """Stop the background reader thread and all continuous tasks"""
+        """Stop all per-task readers, the recording consumer, the slow-poll
+        thread, and the underlying nidaqmx Tasks."""
         logger.info("Stopping continuous acquisition...")
         self._running = False
 
-        # Wait for reader thread to finish
+        # Stop per-task readers in parallel-ish (each .stop() blocks for join,
+        # but the tasks themselves run independently so total wait is bounded
+        # by the slowest one).
+        for task_name, tr in list(self._task_readers.items()):
+            try:
+                tr.stop(timeout=2.0)
+            except Exception as e:
+                logger.warning(f"Failed to stop task reader {task_name}: {e}")
+        self._task_readers = {}
+
+        # Stop recording consumer (drains remaining queued chunks once more
+        # before exiting its loop).
+        if self._recording_consumer is not None:
+            try:
+                self._recording_consumer.stop(timeout=2.0)
+            except Exception as e:
+                logger.warning(f"Failed to stop recording consumer: {e}")
+            self._recording_consumer = None
+
+        # Stop slow-poll thread.
+        if self._slow_poll_thread is not None:
+            try:
+                self._slow_poll_thread.stop(timeout=2.0)
+            except Exception as e:
+                logger.warning(f"Failed to stop slow-poll thread: {e}")
+            self._slow_poll_thread = None
+
+        # Legacy reader thread (only present if some other path created it;
+        # shouldn't happen post-Stage-4 but keep for safety).
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
 
-        # Stop all continuous tasks
+        # Stop the underlying nidaqmx Tasks.
         for task_name, task_group in self.tasks.items():
             if task_group.is_continuous:
                 try:
@@ -1784,10 +2321,18 @@ class HardwareReader:
 
             # Check reader thread health
             if not self.is_healthy() and not self._watchdog_triggered:
+                # Stage 4: report per-task alive state so the operator can
+                # tell which specific module is offline in a chassis with
+                # several. Each entry is "task_name=alive_bool".
+                task_health = ', '.join(
+                    f"{n}={tr.is_alive()}" for n, tr in self._task_readers.items()
+                ) or 'none'
                 logger.critical(
-                    "[WATCHDOG] Reader thread unhealthy! "
+                    "[WATCHDOG] Reader unhealthy! "
                     f"running={self._running}, died={self._reader_died}, "
-                    f"thread_alive={self._reader_thread.is_alive() if self._reader_thread else False}"
+                    f"tasks: {task_health}, "
+                    f"consumer_alive={self._recording_consumer.is_alive() if self._recording_consumer else False}, "
+                    f"slow_poll_alive={self._slow_poll_thread.is_alive() if self._slow_poll_thread else False}"
                 )
                 self._set_all_outputs_safe("watchdog_trip")
                 self._watchdog_triggered = True
@@ -1836,10 +2381,30 @@ class HardwareReader:
                     logger.error(f"[SAFE STATE] Failed to set {name}: {e}")
 
     def _reader_thread_func(self):
+        """[DEPRECATED in Stage 4 — replaced by _TaskReader threads]
+
+        The pre-Stage-4 single-thread reader was replaced by:
+          * one _TaskReader thread per CONTINUOUS AI task (per-task
+            isolation; bad cable on one module can't block reads from
+            other modules);
+          * one _RecordingConsumer thread that drains all task chunk
+            queues and dispatches to the chunk callback;
+          * one _SlowPollThread for DI / counter on-demand polling.
+
+        This function is no longer called from _start_continuous_acquisition
+        and is retained only as a defensive stub in case some external
+        code path attempts to invoke it. The dead body below is preserved
+        for git-blame archaeology; a follow-up commit will remove it.
         """
-        Background thread that continuously reads from hardware buffers.
-        Updates self.latest_values with the most recent samples.
-        """
+        logger.warning(
+            "_reader_thread_func is deprecated (Stage 4 uses per-task "
+            "_TaskReader threads). This call is a no-op."
+        )
+        return
+        # ============================================================
+        # The original Stage-1..3 single-thread implementation below is
+        # unreachable after Stage 4. Removed in a follow-up commit.
+        # ============================================================
         logger.info("Background reader thread started")
 
         # Pre-allocate numpy arrays for each task (for efficiency)
@@ -2202,25 +2767,68 @@ class HardwareReader:
         return self._chunk_callback is not None
 
     def is_healthy(self) -> bool:
-        """Check if the hardware reader is healthy and running"""
-        return (
-            self._running and
-            not self._reader_died and
-            self._reader_thread is not None and
-            self._reader_thread.is_alive()
-        )
+        """Check if the hardware reader is healthy and running.
+
+        Stage 4: healthy means EVERY per-task reader is alive AND the
+        recording consumer is alive AND the slow-poll thread is alive.
+        A single dead task reader makes the whole reader unhealthy from
+        the watchdog's perspective so it can take corrective action;
+        per-task internal recovery (restart of just that task) happens
+        first inside the failing _TaskReader before bubbling up.
+        """
+        if not self._running or self._reader_died:
+            return False
+        # If there are no continuous tasks (e.g. simulator with only DI/DO),
+        # only the slow-poll thread is required.
+        if self._task_readers:
+            for tr in self._task_readers.values():
+                if not tr.is_alive():
+                    return False
+        if self._recording_consumer is not None and not self._recording_consumer.is_alive():
+            return False
+        if self._slow_poll_thread is not None and not self._slow_poll_thread.is_alive():
+            return False
+        return True
 
     def get_health_status(self) -> Dict[str, Any]:
-        """Get detailed health status of the hardware reader"""
+        """Get detailed health status of the hardware reader.
+
+        Stage 4 adds per-task visibility: ``tasks`` is a dict of
+        ``{task_name: stats_snapshot}`` so the dashboard can show which
+        specific task is misbehaving in a chassis with several modules.
+        """
+        per_task: Dict[str, Dict[str, Any]] = {}
+        for task_name, tr in self._task_readers.items():
+            s = tr.get_stats()
+            per_task[task_name] = {
+                'alive': tr.is_alive(),
+                'reads': s.reads,
+                'empty_polls': s.empty_polls,
+                'consecutive_errors': s.consecutive_errors,
+                'total_errors': s.total_errors,
+                'recovery_attempts': s.recovery_attempts,
+                'samples_lost_queue_full': s.samples_lost_queue_full,
+                'max_lag': s.max_lag,
+                'last_read_ts': s.last_read_ts,
+            }
         return {
             'running': self._running,
-            'thread_alive': self._reader_thread.is_alive() if self._reader_thread else False,
             'reader_died': self._reader_died,
             'error_count': self._error_count,
             'recovery_attempts': self._recovery_attempts,
             'healthy': self.is_healthy(),
             'watchdog_triggered': self._watchdog_triggered,
             'watchdog_active': self._watchdog_thread.is_alive() if self._watchdog_thread else False,
+            'task_count': len(self._task_readers),
+            'consumer_alive': (
+                self._recording_consumer.is_alive()
+                if self._recording_consumer is not None else False
+            ),
+            'slow_poll_alive': (
+                self._slow_poll_thread.is_alive()
+                if self._slow_poll_thread is not None else False
+            ),
+            'tasks': per_task,
         }
 
     def read_channel(self, channel_name: str) -> Optional[float]:
