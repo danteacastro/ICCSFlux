@@ -29,6 +29,7 @@ from queue import Queue
 
 import terminal_config as tc_validator
 import cjc_source as cjc_validator
+import capabilities as _capabilities
 
 def _get_physical_channel_index(physical_channel: str) -> int:
     """
@@ -90,28 +91,27 @@ MIN_BUFFER_SAMPLES = 1000   # Floor for samps_per_chan; actual buffer is max(thi
 # chassis returns duplicate samples and the values appear stuck. Forcing
 # HIGH_SPEED is required for any task rate above ~1 Hz.
 # Source: NI KB kA00Z000000P8jtSAC, individual NI module specifications.
-_FORCE_HIGH_SPEED_ADC_MODULES = {
-    "NI-9211", "NI-9213", "NI-9214",   # Thermocouple modules
-    "NI-9217",                          # RTD module (4-Ch, 100/400 S/s)
-    "NI-9207",                          # Combined V/I module
-}
+#
+# Stage 3: derived from capabilities.STATIC_QUIRKS so there's a single
+# source of truth. The Stage 1 hand-curated set has been folded in there
+# along with 9208/9209/9212/9219 (NI's full slow-sampled list — Stage 1
+# missed these because we hadn't audited the full KB yet).
+_FORCE_HIGH_SPEED_ADC_MODULES = frozenset(
+    pt for pt, cap in _capabilities.STATIC_QUIRKS.items()
+    if cap.needs_high_speed_adc_override
+)
 
 
 def _module_needs_high_speed_adc(module_type):
     """True if the module defaults to a slow ADC mode that must be overridden.
 
-    Normalizes whitespace, underscores, and missing 'NI-' prefix the same way
-    terminal_config.is_module_differential_only does, so any caller variant
-    (e.g. 'NI 9213', 'ni-9213', '9213') resolves correctly.
+    Stage 3: delegates to capabilities.lookup() which normalizes the
+    module-type string ('NI-9213', 'NI 9213', 'ni-9213', '9213') and
+    consults STATIC_QUIRKS. Equivalent to the Stage 1 static-set check
+    but uses the unified capability layer that future stages will extend
+    with runtime device introspection (capabilities.from_device).
     """
-    if not module_type:
-        return False
-    n = module_type.strip().upper().replace(" ", "-").replace("_", "-")
-    while "--" in n:
-        n = n.replace("--", "-")
-    if not n.startswith("NI-"):
-        n = f"NI-{n}"
-    return n in _FORCE_HIGH_SPEED_ADC_MODULES
+    return _capabilities.lookup(module_type).needs_high_speed_adc_override
 
 
 def _safe_create_task(task_name: str) -> Any:

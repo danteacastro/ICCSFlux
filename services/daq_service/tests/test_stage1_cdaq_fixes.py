@@ -93,15 +93,25 @@ class TestModuleNeedsHighSpeedAdc:
 class TestForceHighSpeedAdcSet:
     """The modules that need ADCTimingMode.HIGH_SPEED override.
 
-    Source: NI KB kA00Z000000P8jtSAC. Adding/removing entries should be
-    a deliberate, reviewed change — this test exists to make accidents
-    obvious in the diff.
+    Source: NI KB kA00Z000000P8jtSAC. The set is now derived from
+    capabilities.STATIC_QUIRKS (Stage 3) — the Stage 1 hand-curated set
+    was a subset of NI's full slow-sampled list. Adding/removing entries
+    in STATIC_QUIRKS should be a deliberate, reviewed change.
     """
 
-    EXPECTED = {"NI-9211", "NI-9213", "NI-9214", "NI-9217", "NI-9207"}
+    # Stage 1 audit identified these as the minimum required set —
+    # empirically validated stuck-at-zero cases on real hardware.
+    # They MUST always remain in the set regardless of how it grows.
+    STAGE_1_REQUIRED = {"NI-9211", "NI-9213", "NI-9214", "NI-9217", "NI-9207"}
 
-    def test_set_matches_expected(self):
-        assert _FORCE_HIGH_SPEED_ADC_MODULES == self.EXPECTED
+    def test_set_contains_stage_1_required_members(self):
+        """The 5 modules that triggered the original stuck-at-zero fix
+        must always remain in the override set. Removing one would
+        re-introduce the symptom on that module type."""
+        assert self.STAGE_1_REQUIRED.issubset(_FORCE_HIGH_SPEED_ADC_MODULES), (
+            f"Stage 1 required members missing: "
+            f"{self.STAGE_1_REQUIRED - _FORCE_HIGH_SPEED_ADC_MODULES}"
+        )
 
     def test_no_simultaneous_modules(self):
         """Simultaneous-sampling modules (9215/9220/etc.) don't expose a
