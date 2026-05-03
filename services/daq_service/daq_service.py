@@ -798,6 +798,14 @@ class DAQService:
             channels_data = project_data.get("channels", {})
             channels: Dict[str, ChannelConfig] = {}
 
+            # We coerce terminal_config per (channel_type, module_type) so the
+            # JSON we load aligns with what DAQmx will actually use (e.g. RSE
+            # on a 9208's current channel rather than the JSON's "differential").
+            # Module type comes from the previous load's modules dict; on the
+            # first ever load it'll be None and coerce falls back to the
+            # channel-type-only rule (which now picks RSE for current).
+            import terminal_config as _tc
+
             for name, ch_data in channels_data.items():
                 # Determine channel type
                 ch_type_str = ch_data.get("channel_type", "voltage")
@@ -807,6 +815,15 @@ class DAQService:
                 tc_type = None
                 if ch_data.get("thermocouple_type"):
                     tc_type = ThermocoupleType(ch_data["thermocouple_type"])
+
+                _mod_name = ch_data.get("module", "")
+                _mod_cfg = self.config.modules.get(_mod_name) if (self.config and _mod_name) else None
+                _mod_type = getattr(_mod_cfg, 'module_type', None) if _mod_cfg else None
+                _terminal_coerced = _tc.coerce(
+                    channel_type,
+                    ch_data.get("terminal_config", ""),
+                    _mod_type,
+                )
 
                 channels[name] = ChannelConfig(
                     name=name,
@@ -829,7 +846,7 @@ class DAQService:
                     scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                     voltage_range=float(ch_data.get("voltage_range", 10.0)),
                     current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
-                    terminal_config=ch_data.get("terminal_config", "differential"),
+                    terminal_config=_terminal_coerced,
                     thermocouple_type=tc_type,
                     cjc_source=ch_data.get("cjc_source", "internal"),
                     cjc_value=float(ch_data.get("cjc_value", 25.0)),
@@ -8408,12 +8425,24 @@ Unit conversions:
         # Parse channels
         channels_data = project_data.get("channels", {})
         channels: Dict[str, ChannelConfig] = {}
+        # See companion loader above for rationale: coerce terminal_config per
+        # (channel_type, module_type) so JSON aligns with DAQmx expectations.
+        import terminal_config as _tc
         for name, ch_data in channels_data.items():
             ch_type_str = ch_data.get("channel_type", "voltage")
             channel_type = ChannelType(ch_type_str)
             tc_type = None
             if ch_data.get("thermocouple_type"):
                 tc_type = ThermocoupleType(ch_data["thermocouple_type"])
+
+            _mod_name = ch_data.get("module", "")
+            _mod_cfg = self.config.modules.get(_mod_name) if (self.config and _mod_name) else None
+            _mod_type = getattr(_mod_cfg, 'module_type', None) if _mod_cfg else None
+            _terminal_coerced = _tc.coerce(
+                channel_type,
+                ch_data.get("terminal_config", ""),
+                _mod_type,
+            )
 
             channels[name] = ChannelConfig(
                 name=name,
@@ -8436,7 +8465,7 @@ Unit conversions:
                 scaled_max=float(ch_data["scaled_max"]) if ch_data.get("scaled_max") is not None else None,
                 voltage_range=float(ch_data.get("voltage_range", 10.0)),
                 current_range_ma=float(ch_data.get("current_range_ma", 20.0)),
-                terminal_config=ch_data.get("terminal_config", "differential"),
+                terminal_config=_terminal_coerced,
                 thermocouple_type=tc_type,
                 cjc_source=ch_data.get("cjc_source", "internal"),
                 cjc_value=float(ch_data.get("cjc_value", 25.0)),
@@ -14100,6 +14129,19 @@ Unit conversions:
                 from config_parser import ThermocoupleType
                 tc_type = ThermocoupleType(config_data['thermocouple_type'])
 
+            # Coerce terminal_config per (channel_type, module_type) so the
+            # stored value aligns with what DAQmx will accept. Same pattern
+            # as bulk_create / JSON loaders.
+            import terminal_config as _tc
+            _mod_name = config_data.get('module', '')
+            _mod_cfg = self.config.modules.get(_mod_name) if _mod_name else None
+            _mod_type = getattr(_mod_cfg, 'module_type', None) if _mod_cfg else None
+            _terminal_coerced = _tc.coerce(
+                channel_type,
+                config_data.get('terminal_config', ''),
+                _mod_type,
+            )
+
             # Create the channel config
             channel = ChannelConfig(
                 name=channel_name,
@@ -14108,6 +14150,7 @@ Unit conversions:
                 channel_type=channel_type,
                 description=config_data.get('description', ''),
                 units=config_data.get('units', ''),
+                terminal_config=_terminal_coerced,
                 visible=config_data.get('visible', True),
                 group=config_data.get('group', ''),
                 scale_slope=float(config_data.get('scale_slope', 1.0)),
@@ -14395,6 +14438,23 @@ Unit conversions:
                     source_type = 'local'  # Local DAQ (cDAQ/PXI/USB)
                     source_node_id = ''
 
+                # Coerce terminal_config so the JSON we save matches what
+                # DAQmx will actually use. e.g. for current channels on a
+                # 9208 we store 'rse' rather than 'differential' — runtime
+                # is unaffected (hardware_reader doesn't pass terminal_config
+                # to add_ai_current_chan) but the saved config no longer
+                # contradicts the driver. Mirrors the logic in the
+                # _handle_channel_update handler.
+                import terminal_config as _tc
+                _mod = ch_config.get('module', '')
+                _mod_cfg = self.config.modules.get(_mod) if _mod else None
+                _mod_type = getattr(_mod_cfg, 'module_type', None) if _mod_cfg else None
+                _terminal_coerced = _tc.coerce(
+                    channel_type,
+                    ch_config.get('terminal_config', ''),
+                    _mod_type,
+                )
+
                 channel = ChannelConfig(
                     name=channel_name,
                     module=ch_config.get('module', ''),
@@ -14409,7 +14469,7 @@ Unit conversions:
                     cjc_value=float(ch_config.get('cjc_value', 25.0)),
                     voltage_range=float(ch_config.get('voltage_range', 10.0)),
                     current_range_ma=float(ch_config.get('current_range_ma', 20.0)),
-                    terminal_config=ch_config.get('terminal_config', 'differential'),
+                    terminal_config=_terminal_coerced,
                     # RTD
                     rtd_type=ch_config.get('rtd_type', 'Pt100'),
                     rtd_wiring=ch_config.get('rtd_wiring', ch_config.get('resistance_config', '4-wire')),

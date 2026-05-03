@@ -48,7 +48,7 @@ def make_test_config(num_channels=3, scan_rate=4.0) -> NISystemConfig:
             physical_channel=f"cDAQ1Mod1/ai{i}",
             channel_type=ChannelType.CURRENT_INPUT,
             current_range_ma=20.0,
-            terminal_config="differential",
+            terminal_config="rse",  # NI current modules require RSE (DIFF raises -200077)
             scale_type="map",
             pre_scaled_min=4.0,
             pre_scaled_max=20.0,

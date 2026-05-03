@@ -23,7 +23,7 @@ import logging
 import threading
 import time
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
 from queue import Queue, Empty, Full
 from dataclasses import replace as _dc_replace
@@ -70,6 +70,7 @@ try:
         BridgeUnits,
         ADCTimingMode,
         OverwriteMode,
+        AutoZeroType,
     )
     from nidaqmx.stream_readers import (
         AnalogMultiChannelReader,
@@ -259,7 +260,7 @@ class TaskGroup:
 # read on one module doesn't block reads from others (the "one bad cable
 # kills all reads" failure mode).
 
-# Bounded chunk-queue depth per task. With OVERWRITE_OLDEST set on the
+# Bounded chunk-queue depth per task. With OVERWRITE_UNREAD_SAMPLES set on the
 # DAQmx in-stream and drop-oldest in the producer, this bounds Python-side
 # memory growth without backpressuring the driver.
 _TASK_READER_QUEUE_DEPTH = 8
@@ -454,7 +455,7 @@ class _TaskReader:
                             logger.warning(
                                 f"[{self.task_name}] driver lag {lag}/"
                                 f"{parent._buffer_size} samples (>75%) — "
-                                f"approaching overflow; OVERWRITE_OLDEST will "
+                                f"approaching overflow; OVERWRITE_UNREAD_SAMPLES will "
                                 f"silently drop samples"
                             )
                             self._lag_warn_ts = now
@@ -790,6 +791,13 @@ class HardwareReader:
 
         # Output state cache (for read-back) - preserve values across reinit
         self.output_values: Dict[str, float] = initial_output_values.copy() if initial_output_values else {}
+
+        # Channels whose AO/DO module has no hardware sense return (e.g.
+        # NI 9266 — task.read() raises DaqError "no channels in this task
+        # from which data can be read"). Populated lazily by
+        # _try_output_readback the first time it fails, so subsequent writes
+        # skip the call rather than throwing-and-catching every time.
+        self._no_readback_outputs: Set[str] = set()
 
         # CONTINUOUS ACQUISITION: Latest values from background thread
         self.latest_values: Dict[str, float] = {}
@@ -1201,7 +1209,18 @@ class HardwareReader:
                             ai_chan.ai_open_thrmcpl_detect_enable = True
                         except Exception as e:
                             logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
-                    logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (cjc={channel.cjc_source}, open_detect={open_detect})")
+
+                    # Auto-zero (NI 9213 supports this; significant accuracy
+                    # improvement at slow rates). Opportunistically set it
+                    # when channel.auto_zero is True; modules that don't
+                    # support the property raise on assignment, which we log
+                    # and continue past.
+                    if getattr(channel, 'auto_zero', False):
+                        try:
+                            ai_chan.ai_auto_zero_mode = AutoZeroType.ONCE
+                        except Exception as e:
+                            logger.warning(f"Auto-zero not supported on {channel.name} ({mod_type}): {e}")
+                    logger.info(f"Added thermocouple: {channel.name} -> {phys_chan} (cjc={channel.cjc_source}, open_detect={open_detect}, auto_zero={getattr(channel, 'auto_zero', False)})")
 
                 elif channel.channel_type == ChannelType.VOLTAGE_INPUT:
                     # Voltage input
@@ -1227,10 +1246,15 @@ class HardwareReader:
                     logger.info(f"Added voltage input: {channel.name} -> {phys_chan}")
 
                 elif channel.channel_type == ChannelType.CURRENT_INPUT:
-                    # Current input (4-20mA) — REQUIRES DIFFERENTIAL terminal config
-                    max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
+                    # Current input (4-20mA). Don't pass terminal_config: NI's
+                    # current modules (9203/9207-current/9208/9227/9246/9247/9253)
+                    # require RSE in the DAQmx API even though the measurement
+                    # is physically differential through the built-in shunt.
+                    # Passing DIFF here yields DaqError -200077 ("Possible
+                    # Values: DAQmx_Val_RSE"). Letting DAQmx pick uses the
+                    # module-correct default.
+                    max_current = (channel.current_range_ma or 20.0) / 1000.0
                     mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
-                    term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
 
                     shunt_loc_map = {
                         'internal': CurrentShuntResistorLocation.INTERNAL,
@@ -1244,7 +1268,6 @@ class HardwareReader:
                     ai_chan = task.ai_channels.add_ai_current_chan(
                         phys_chan,
                         name_to_assign_to_channel=channel.name,
-                        terminal_config=term_config,
                         min_val=0.0,
                         max_val=max_current,
                         shunt_resistor_loc=shunt_loc
@@ -1389,7 +1412,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Check what rate the hardware actually accepted
             actual_rate = task.timing.samp_clk_rate
@@ -1440,6 +1463,9 @@ class HardwareReader:
                 # Map CJC source from config
                 cjc = get_cjc_source(channel.cjc_source)
                 cjc_val = getattr(channel, 'cjc_value', 25.0)
+                mod_type = self._lookup_module_type(
+                    channel.module
+                    or self._extract_module_from_path(channel.physical_channel))
 
                 ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                     phys_chan,
@@ -1450,15 +1476,42 @@ class HardwareReader:
                 )
                 channel_names.append(channel.name)
 
-                # Enable open thermocouple detection
-                try:
-                    ai_chan.ai_open_thrmcpl_detect_enable = True
-                    logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
-                               f"(type={tc_type_str}, cjc={channel.cjc_source}, open TC detection enabled)")
-                except Exception as e:
-                    logger.warning(f"Could not enable open TC detection for {channel.name}: {e}")
-                    logger.info(f"Added thermocouple channel: {channel.name} -> {phys_chan} "
-                               f"(type={tc_type_str}, cjc={channel.cjc_source})")
+                # NI 9213/9211/9214 default to HIGH_RESOLUTION ADC mode
+                # (~1 S/s aggregate). Above ~1 Hz the chassis returns
+                # duplicate samples and the dashboard sees frozen values.
+                # Force HIGH_SPEED so the ADC keeps up. Mirrors the
+                # combined-task path.
+                if _module_needs_high_speed_adc(mod_type):
+                    try:
+                        ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                        logger.info(f"  ADC timing: HIGH_SPEED ({mod_type})")
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not set HIGH_SPEED ADC on {channel.name} ({mod_type}): {e}")
+
+                # Open-thermocouple detection respects channel.open_detect
+                # (default True). Wrapped because some modules raise on
+                # property set.
+                open_detect = getattr(channel, 'open_detect', True)
+                if open_detect is not False:
+                    try:
+                        ai_chan.ai_open_thrmcpl_detect_enable = True
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not enable open TC detection for {channel.name}: {e}")
+
+                # Auto-zero (NI 9213 in particular). Opportunistic — modules
+                # that don't support it raise on property set; we log and move on.
+                if getattr(channel, 'auto_zero', False):
+                    try:
+                        ai_chan.ai_auto_zero_mode = AutoZeroType.ONCE
+                    except Exception as e:
+                        logger.warning(
+                            f"Auto-zero not supported on {channel.name} ({mod_type}): {e}")
+                logger.info(
+                    f"Added thermocouple channel: {channel.name} -> {phys_chan} "
+                    f"(type={tc_type_str}, cjc={channel.cjc_source}, "
+                    f"open_detect={open_detect}, auto_zero={getattr(channel, 'auto_zero', False)})")
 
             # Configure CONTINUOUS acquisition with hardware timing
             # Note: TC modules may have lower max sample rates (check NI specs)
@@ -1471,7 +1524,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Check what rate the hardware actually accepted (NI-DAQmx coerces)
             actual_rate = task.timing.samp_clk_rate
@@ -1535,7 +1588,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1566,24 +1619,20 @@ class HardwareReader:
         try:
             for channel in channels:
                 phys_chan = self._get_physical_channel_path(channel)
-                # NI current modules typically read in Amps, we want mA
-                # Most 4-20mA modules have 0-20mA or 0-25mA range
-                max_current = (channel.current_range_ma or 20.0) / 1000.0  # Convert to Amps
-                mod_type = self._lookup_module_type(channel.module or self._extract_module_from_path(channel.physical_channel))
-                term_config = get_terminal_config(channel.terminal_config, channel.channel_type, mod_type)
+                max_current = (channel.current_range_ma or 20.0) / 1000.0
 
-                # NI-9203 and similar modules have internal shunt resistors
+                # See _create_combined_analog_task: NI current modules require
+                # RSE per DAQmx API. Omit terminal_config and let DAQmx pick.
                 task.ai_channels.add_ai_current_chan(
                     phys_chan,
                     name_to_assign_to_channel=channel.name,
-                    terminal_config=term_config,
                     min_val=0.0,
                     max_val=max_current,
                     shunt_resistor_loc=CurrentShuntResistorLocation.INTERNAL
                 )
                 channel_names.append(channel.name)
                 logger.info(f"Added current channel: {channel.name} -> {phys_chan} "
-                           f"(terminal={channel.terminal_config}, range=0-{channel.current_range_ma}mA)")
+                           f"(range=0-{channel.current_range_ma}mA)")
 
             # Configure CONTINUOUS acquisition with hardware timing
             task.timing.cfg_samp_clk_timing(
@@ -1595,7 +1644,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1676,7 +1725,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1741,7 +1790,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1799,7 +1848,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -1860,7 +1909,7 @@ class HardwareReader:
             # a brief stall raises DaqError -200279 ("samples no longer
             # available"). For a dashboard/recorder we'd rather lose history
             # than crash the reader.
-            task.in_stream.over_write = OverwriteMode.OVERWRITE_OLDEST
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             # Create stream reader for efficient buffer reading
             reader = AnalogMultiChannelReader(task.in_stream)
@@ -2425,7 +2474,7 @@ class HardwareReader:
         _diag_empty_polls = 0
         _diag_task_times: Dict[str, float] = {}  # task_name -> total ms
 
-        # Driver-lag tracking — under OverwriteMode.OVERWRITE_OLDEST the driver
+        # Driver-lag tracking — under OverwriteMode.OVERWRITE_UNREAD_SAMPLES the driver
         # silently drops samples when we fall behind. Detect that condition by
         # comparing the driver's total acquired count to our read cursor; warn
         # when lag exceeds 75% of the buffer (rate-limited per task to avoid
@@ -2451,7 +2500,7 @@ class HardwareReader:
 
                         if available > 0:
                             # Drain the entire on-board buffer each iteration.
-                            # OVERWRITE_OLDEST is set on the stream so the buffer
+                            # OVERWRITE_UNREAD_SAMPLES is set on the stream so the buffer
                             # cannot grow beyond self._buffer_size; allocating a
                             # numpy array of that size is bounded and cheap.
                             num_channels = len(task_group.channel_names)
@@ -2510,7 +2559,7 @@ class HardwareReader:
                             if hasattr(self, '_first_sample_event'):
                                 self._first_sample_event.set()
 
-                            # Driver-lag safety net (OVERWRITE_OLDEST silently
+                            # Driver-lag safety net (OVERWRITE_UNREAD_SAMPLES silently
                             # discards on overflow — make that visible).
                             try:
                                 ins = task_group.task.in_stream
@@ -2526,7 +2575,7 @@ class HardwareReader:
                                             f"{self._buffer_size} samples "
                                             f"(>{int(_LAG_WARN_THRESHOLD*100)}%) — "
                                             f"approaching overflow; "
-                                            f"OVERWRITE_OLDEST will silently drop samples"
+                                            f"OVERWRITE_UNREAD_SAMPLES will silently drop samples"
                                         )
                                         _diag_lag_warn_ts[task_name] = now
                             except Exception:
@@ -2859,13 +2908,38 @@ class HardwareReader:
 
         return values
 
+    def _try_output_readback(self, channel_name: str, task) -> Optional[Any]:
+        """Try to read back the actual output state.
+
+        Returns None when the module has no hardware sense channel (NI 9266
+        and similar — task.read() raises DaqError -200460). On the first
+        failure for a given channel we record it in _no_readback_outputs and
+        log once at INFO; subsequent calls short-circuit without throwing.
+
+        Callers must fall back to the commanded value when this returns None.
+        Drift detection is not possible on these modules.
+        """
+        if channel_name in self._no_readback_outputs:
+            return None
+        try:
+            return task.read()
+        except Exception as e:
+            self._no_readback_outputs.add(channel_name)
+            logger.info(
+                f"{channel_name}: output readback not supported by this "
+                f"module — using commanded values (task.read() raised: {e})"
+            )
+            return None
+
     def write_channel(self, channel_name: str, value: Any) -> bool:
         """
         Write a value to an output channel with hardware readback verification.
         Matches HardwareSimulator.write_channel() interface.
 
-        Industrial-grade: After writing, we read back the actual hardware state
-        to verify the write succeeded. This ensures displayed values match reality.
+        Modules with a hardware sense channel get a real readback + drift
+        check on every write. Modules without one (e.g. NI 9266) trust the
+        commanded value after the first task.read() failure is detected and
+        cached by _try_output_readback.
         """
         if channel_name not in self.output_tasks:
             logger.warning(f"Channel {channel_name} is not a writable output")
@@ -2886,18 +2960,16 @@ class HardwareReader:
                         bool_value = not bool_value
                     task.write(bool_value)
 
-                    # READBACK: Verify actual hardware state
-                    try:
-                        actual_state = task.read()
+                    actual_state = self._try_output_readback(channel_name, task)
+                    if actual_state is None:
+                        # Module has no readback; trust the commanded value.
+                        self.output_values[channel_name] = 1.0 if bool_value else 0.0
+                    else:
                         # Apply invert for display (show logical state, not physical)
                         if channel.invert:
                             actual_state = not actual_state
                         self.output_values[channel_name] = 1.0 if actual_state else 0.0
                         logger.debug(f"DO {channel_name}: wrote={bool_value}, readback={actual_state}")
-                    except Exception as rb_err:
-                        # Readback failed - use commanded value as fallback
-                        logger.warning(f"DO readback failed for {channel_name}: {rb_err}")
-                        self.output_values[channel_name] = 1.0 if bool_value else 0.0
 
                     # Momentary pulse: auto-revert after delay (relay feature)
                     momentary_ms = getattr(channel, 'momentary_pulse_ms', 0)
@@ -2928,20 +3000,13 @@ class HardwareReader:
 
                     logger.debug(f"VO {channel_name}: eng={eng_value} → raw={raw_value:.4f}V")
 
-                    # READBACK: Verify actual hardware state
-                    try:
-                        actual_raw = task.read()
-                        # Store engineering value for display (what user sees)
-                        self.output_values[channel_name] = eng_value
-                        # Check for significant mismatch (tolerance for DAC precision)
+                    actual_raw = self._try_output_readback(channel_name, task)
+                    self.output_values[channel_name] = eng_value
+                    if actual_raw is not None:
                         if abs(actual_raw - raw_value) > 0.01:
                             logger.warning(f"VO mismatch {channel_name}: commanded={raw_value:.4f}V, actual={actual_raw:.4f}V")
                         else:
                             logger.debug(f"VO {channel_name}: wrote={raw_value:.4f}V, readback={actual_raw:.4f}V")
-                    except Exception as rb_err:
-                        # Readback failed - use commanded engineering value as fallback
-                        logger.warning(f"VO readback failed for {channel_name}: {rb_err}")
-                        self.output_values[channel_name] = eng_value
 
                 elif channel.channel_type == ChannelType.CURRENT_OUTPUT:
                     eng_value = float(value)  # Engineering units from user (%, RPM, PSI, etc.)
@@ -2957,21 +3022,14 @@ class HardwareReader:
 
                     logger.debug(f"CO {channel_name}: eng={eng_value} → raw={raw_ma:.3f}mA")
 
-                    # READBACK: Verify actual hardware state
-                    try:
-                        actual_amps = task.read()
+                    actual_amps = self._try_output_readback(channel_name, task)
+                    self.output_values[channel_name] = eng_value
+                    if actual_amps is not None:
                         actual_ma = actual_amps * 1000.0
-                        # Store engineering value for display (what user sees)
-                        self.output_values[channel_name] = eng_value
-                        # Check for significant mismatch (tolerance for DAC precision)
                         if abs(actual_ma - raw_ma) > 0.05:  # 0.05mA tolerance
                             logger.warning(f"CO mismatch {channel_name}: commanded={raw_ma:.3f}mA, actual={actual_ma:.3f}mA")
                         else:
                             logger.debug(f"CO {channel_name}: wrote={raw_ma:.3f}mA, readback={actual_ma:.3f}mA")
-                    except Exception as rb_err:
-                        # Readback failed - use commanded engineering value as fallback
-                        logger.warning(f"CO readback failed for {channel_name}: {rb_err}")
-                        self.output_values[channel_name] = eng_value
 
                 elif channel.channel_type in (ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT):
                     # Pulse/counter output: update frequency
@@ -3013,39 +3071,34 @@ class HardwareReader:
                 if not channel:
                     continue
 
-                try:
-                    actual_value = task.read()
-
-                    if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
-                        # Apply invert for logical display
-                        if channel.invert:
-                            actual_value = not actual_value
-                        refreshed[channel_name] = 1.0 if actual_value else 0.0
-
-                    elif channel.channel_type == ChannelType.VOLTAGE_OUTPUT:
-                        refreshed[channel_name] = float(actual_value)
-
-                    elif channel.channel_type == ChannelType.CURRENT_OUTPUT:
-                        # Convert Amps to mA for display
-                        refreshed[channel_name] = float(actual_value) * 1000.0
-
-                    # Check for drift from cached value
-                    cached = self.output_values.get(channel_name)
-                    if cached is not None:
-                        if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
-                            if (cached > 0.5) != (refreshed[channel_name] > 0.5):
-                                logger.warning(f"DO state drift detected: {channel_name} cached={cached}, actual={refreshed[channel_name]}")
-                        elif abs(cached - refreshed[channel_name]) > 0.1:
-                            logger.warning(f"AO drift detected: {channel_name} cached={cached:.3f}, actual={refreshed[channel_name]:.3f}")
-
-                    # Update cache with actual value
-                    self.output_values[channel_name] = refreshed[channel_name]
-
-                except Exception as e:
-                    logger.error(f"Failed to read back {channel_name}: {e}")
-                    # Keep cached value on error
+                actual_value = self._try_output_readback(channel_name, task)
+                if actual_value is None:
+                    # Module has no readback (or already known unsupported).
+                    # Surface the cached commanded value so callers see *some*
+                    # state for the channel; drift detection is unavailable.
                     if channel_name in self.output_values:
                         refreshed[channel_name] = self.output_values[channel_name]
+                    continue
+
+                if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                    if channel.invert:
+                        actual_value = not actual_value
+                    refreshed[channel_name] = 1.0 if actual_value else 0.0
+                elif channel.channel_type == ChannelType.VOLTAGE_OUTPUT:
+                    refreshed[channel_name] = float(actual_value)
+                elif channel.channel_type == ChannelType.CURRENT_OUTPUT:
+                    refreshed[channel_name] = float(actual_value) * 1000.0  # A → mA
+
+                # Drift detection: only meaningful when we have a real readback.
+                cached = self.output_values.get(channel_name)
+                if cached is not None:
+                    if channel.channel_type == ChannelType.DIGITAL_OUTPUT:
+                        if (cached > 0.5) != (refreshed[channel_name] > 0.5):
+                            logger.warning(f"DO state drift detected: {channel_name} cached={cached}, actual={refreshed[channel_name]}")
+                    elif abs(cached - refreshed[channel_name]) > 0.1:
+                        logger.warning(f"AO drift detected: {channel_name} cached={cached:.3f}, actual={refreshed[channel_name]:.3f}")
+
+                self.output_values[channel_name] = refreshed[channel_name]
 
         return refreshed
 

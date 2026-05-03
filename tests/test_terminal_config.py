@@ -78,7 +78,6 @@ class TestNormalize:
 class TestAllowedFor:
 
     @pytest.mark.parametrize("ct", [
-        ChannelType.CURRENT_INPUT,
         ChannelType.CURRENT_OUTPUT,
         ChannelType.THERMOCOUPLE,
         ChannelType.RTD,
@@ -91,9 +90,30 @@ class TestAllowedFor:
         ChannelType.IEPE_INPUT,
     ])
     def test_differential_only_types(self, ct):
-        """These types only support DIFFERENTIAL — anything else causes wrong readings."""
+        """These types only support DIFFERENTIAL — anything else causes wrong readings.
+
+        CURRENT_INPUT is intentionally NOT in this set: see
+        test_current_input_rse_required_modules below for the per-module rule.
+        """
         allowed = tc.allowed_for(ct)
         assert allowed == {tc.DIFFERENTIAL}
+
+    def test_current_input_unknown_module(self):
+        """Without a module hint, CURRENT_INPUT is permissive — caller may
+        not know which module their physical_channel resolves to. The
+        coerce() helper picks RSE as the safe default in this branch."""
+        allowed = tc.allowed_for(ChannelType.CURRENT_INPUT)
+        assert allowed == tc.ALL_TERMINAL_CONFIGS
+
+    @pytest.mark.parametrize("module_type", [
+        "NI-9203", "NI-9207", "NI 9208", "NI-9227", "NI-9246",
+        "NI-9247", "NI-9253",
+    ])
+    def test_current_input_rse_required_modules(self, module_type):
+        """add_ai_current_chan(terminal_config=DIFF) on these modules raises
+        DaqError -200077. The validator must restrict to RSE."""
+        allowed = tc.allowed_for(ChannelType.CURRENT_INPUT, module_type)
+        assert allowed == {tc.RSE}
 
     @pytest.mark.parametrize("ct", [
         ChannelType.VOLTAGE_INPUT,
@@ -131,27 +151,26 @@ class TestAllowedFor:
 
 class TestValidate:
 
-    def test_valid_current_input_differential(self):
-        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "differential")
-        assert valid
-        assert err == ""
+    def test_current_input_valid_without_module(self):
+        """Without a module hint, the validator is permissive — caller may
+        not know which physical module the channel maps to yet."""
+        for cfg in ["differential", "rse", "nrse", "pseudodifferential"]:
+            valid, err = tc.validate(ChannelType.CURRENT_INPUT, cfg)
+            assert valid, f"{cfg} should be valid for CURRENT_INPUT without module: {err}"
 
-    def test_invalid_current_input_rse(self):
-        """The exact bug Mike hit: RSE on current input."""
-        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "RSE")
+    def test_current_input_diff_rejected_on_rse_required_module(self):
+        """The real bug — DIFF on a 9208's current channel raises DaqError
+        -200077. Validator must reject and explain why."""
+        valid, err = tc.validate(
+            ChannelType.CURRENT_INPUT, "differential", "NI 9208")
         assert not valid
-        assert "current_input" in err.lower()
-        assert "differential" in err.lower()
-        assert "incorrect readings" in err.lower()
-        assert "shunt voltage" in err.lower()
+        assert "rse" in err.lower()
+        assert "200077" in err
 
-    def test_invalid_current_input_nrse(self):
-        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "NRSE")
-        assert not valid
-
-    def test_invalid_current_input_pseudodifferential(self):
-        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "pseudodifferential")
-        assert not valid
+    def test_current_input_rse_accepted_on_rse_required_module(self):
+        valid, err = tc.validate(
+            ChannelType.CURRENT_INPUT, "rse", "NI 9208")
+        assert valid, err
 
     def test_voltage_input_all_valid(self):
         for cfg in ["differential", "rse", "nrse", "pseudodifferential"]:
@@ -207,15 +226,22 @@ class TestValidate:
 
 class TestCoerce:
 
-    def test_current_input_always_differential(self):
-        """No matter what's passed, current_input always gets 'differential'."""
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "RSE") == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "NRSE") == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "pseudodifferential") == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "DEFAULT") == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "garbage") == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, None) == "differential"
-        assert tc.coerce(ChannelType.CURRENT_INPUT, "") == "differential"
+    def test_current_input_rse_module_always_rse(self):
+        """For RSE-required modules (9203/9207-current/9208/9227/9246/9247/
+        9253), coerce must return 'rse' regardless of caller input — DAQmx
+        rejects DIFF with -200077."""
+        for raw in ["differential", "DIFFERENTIAL", "rse", "RSE", "garbage",
+                    None, "", "DEFAULT"]:
+            assert tc.coerce(ChannelType.CURRENT_INPUT, raw, "NI 9208") == "rse"
+
+    def test_current_input_unknown_module_defaults_rse(self):
+        """Without a module hint we default to 'rse' (the most common DAQmx
+        requirement for current modules) but still respect a valid caller
+        choice if they provide one."""
+        assert tc.coerce(ChannelType.CURRENT_INPUT, None) == "rse"
+        assert tc.coerce(ChannelType.CURRENT_INPUT, "") == "rse"
+        # Caller's valid choice is preserved when module is unknown
+        assert tc.coerce(ChannelType.CURRENT_INPUT, "differential") == "differential"
 
     def test_voltage_input_preserves_valid(self):
         """Voltage input keeps whatever valid value the user picked."""
@@ -251,53 +277,63 @@ class TestCoerce:
 
 
 # ===================================================================
-# 5. The 126 mA bug — Mike's exact scenario
+# 5. NI 9208 / 9203 / 9207-current — DAQmx-required RSE rule
 # ===================================================================
 
-class TestMike126mABug:
-    """Reproduce and verify fix for Mike's exact bug.
+class TestCurrentInputModuleRSERule:
+    """The reverse of what an earlier diagnosis assumed.
 
-    Before fix: terminal_config='DEFAULT' was passed to NI-DAQmx, which
-    chose RSE/NRSE for the NI-9203 current input. This caused the ADC to
-    read the shunt voltage (~0.127V) instead of the current. The hardware
-    reader multiplied by 1000 (Amps→mA conversion) producing ~127 "mA"
-    on a 4-20 mA loop.
+    For NI's current-input modules (9203/9207-current/9208/9227/9246/9247/
+    9253), the DAQmx software API requires terminal_config=RSE on
+    add_ai_current_chan. Passing DIFF raises DaqError -200077 with
+    "Possible Values: DAQmx_Val_RSE". Confirmed against real NI 9208
+    hardware in this session.
+
+    The "127 mA on a 4-20 mA loop" symptom an earlier note attributed to
+    "RSE reads shunt voltage" was actually caused by passing DIFF and
+    the task creation failing silently — the dashboard kept showing the
+    last cached value (or scaled garbage from a partially-built task).
     """
 
-    def test_default_coerces_to_differential_for_current(self):
-        """The exact bug: 'DEFAULT' must NOT pass through unchanged."""
-        result = tc.coerce(ChannelType.CURRENT_INPUT, "DEFAULT")
-        assert result == "differential"
+    @pytest.mark.parametrize("module_type", [
+        "NI-9203", "NI-9207", "NI 9208", "NI-9227", "NI-9246",
+        "NI-9247", "NI-9253",
+    ])
+    def test_coerce_picks_rse_regardless_of_caller(self, module_type):
+        """For RSE-required modules, coerce must return 'rse' even if the
+        caller passes 'differential' / 'DEFAULT' / garbage."""
+        for raw in ["differential", "DIFFERENTIAL", "DEFAULT", "garbage",
+                    "rse", None, "", "  ", "????"]:
+            assert tc.coerce(ChannelType.CURRENT_INPUT, raw, module_type) == "rse", \
+                f"raw={raw!r} on {module_type} did not coerce to 'rse'"
 
-    def test_validation_rejects_default_misuse(self):
-        """If someone tries to set RSE on a current input, validation must reject."""
-        # Even though 'DEFAULT' normalizes to 'differential' (and is accepted),
-        # explicit RSE on a current input must be rejected.
-        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "RSE")
+    @pytest.mark.parametrize("module_type", [
+        "NI-9208", "NI 9208", "ni-9208", "ni 9208", "9208",
+    ])
+    def test_validate_rejects_diff_on_9208(self, module_type):
+        """The exact bug we fixed — DIFF on a 9208 current channel must be
+        rejected by the validator before it reaches DAQmx."""
+        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "differential", module_type)
         assert not valid
-        assert "incorrect readings" in err.lower()
+        assert "rse" in err.lower()
+        assert "200077" in err
 
-    def test_no_legacy_default_value_survives(self):
-        """For ANY input that means 'auto/default/anything', current_input
-        must always end up with 'differential' to avoid the 126 bug."""
-        problematic_values = ["DEFAULT", "default", "Default", "auto", "AUTO",
-                              "any", "", None, "  ", "????"]
-        for val in problematic_values:
-            assert tc.coerce(ChannelType.CURRENT_INPUT, val) == "differential", \
-                f"Value {val!r} did not coerce to 'differential'"
+    def test_validate_accepts_rse_on_rse_required_modules(self):
+        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "rse", "NI 9208")
+        assert valid, err
+        valid, err = tc.validate(ChannelType.CURRENT_INPUT, "RSE", "NI-9203")
+        assert valid, err
 
-    def test_voltage_can_keep_rse(self):
-        """RSE is fine for voltage inputs — only current/TC/RTD/strain need DIFF."""
+    def test_voltage_section_of_9207_still_diff(self):
+        """The 9207 has a voltage section (ai0..ai7) that IS DIFF-only by
+        hardware. Per-channel-type rule must keep that intact."""
+        assert tc.coerce(ChannelType.VOLTAGE_INPUT, "rse", "NI 9207") == "differential"
+        valid, _ = tc.validate(ChannelType.VOLTAGE_INPUT, "differential", "NI 9207")
+        assert valid
+
+    def test_voltage_can_keep_rse_on_regular_module(self):
+        """RSE is fine for voltage inputs on non-DIFF-only modules."""
         assert tc.coerce(ChannelType.VOLTAGE_INPUT, "RSE") == "rse"
-
-    def test_no_silent_passthrough_for_current_modules(self):
-        """The original bug had 'DEFAULT' silently passed to NI-DAQmx.
-        Now it should always be coerced to a known good value."""
-        for bad in ["DEFAULT", "rse", "RSE", "nrse", "NRSE", "pseudodifferential"]:
-            coerced = tc.coerce(ChannelType.CURRENT_INPUT, bad)
-            assert coerced == "differential"
-            # And it's a known canonical value
-            assert coerced in tc.ALL_TERMINAL_CONFIGS
 
 
 # ===================================================================
@@ -344,8 +380,9 @@ class TestChannelConfigDefaults:
 class TestChannelUpdateFlow:
     """Simulate what happens when the frontend sends a terminal_config update."""
 
-    def test_user_sets_rse_on_current_gets_coerced(self):
-        """User selects RSE on current input → backend coerces to differential."""
+    def test_user_sets_diff_on_current_9208_gets_coerced_to_rse(self):
+        """User selects DIFFERENTIAL on a 9208 current channel — backend
+        knows DAQmx will reject DIFF (-200077) and coerces to RSE."""
         ch = ChannelConfig(
             name="mA_sensor",
             module="cDAQ1Mod1",
@@ -353,12 +390,13 @@ class TestChannelUpdateFlow:
             channel_type=ChannelType.CURRENT_INPUT,
         )
 
-        # Simulate the channel update handler logic
-        requested = "RSE"
-        coerced = tc.coerce(ch.channel_type, requested)
+        # Simulate the channel update handler logic with the module type
+        # known (the real handler looks it up from self.config.modules).
+        requested = "differential"
+        coerced = tc.coerce(ch.channel_type, requested, module_type="NI 9208")
         ch.terminal_config = coerced
 
-        assert ch.terminal_config == "differential"
+        assert ch.terminal_config == "rse"
 
     def test_user_sets_rse_on_voltage_preserved(self):
         """User selects RSE on voltage input → preserved as-is."""
@@ -496,9 +534,11 @@ class TestPerModuleOverride:
         """When module is unknown, fall back to channel-type rules."""
         allowed = tc.allowed_for(ChannelType.VOLTAGE_INPUT, None)
         assert allowed == tc.ALL_TERMINAL_CONFIGS
-        # Current input still DIFF-only via channel-type rule
+        # CURRENT_INPUT without module: permissive (we don't yet know
+        # whether the channel resolves to an RSE-required module). The
+        # coerce() helper picks RSE when the caller doesn't specify.
         allowed = tc.allowed_for(ChannelType.CURRENT_INPUT, None)
-        assert allowed == {"differential"}
+        assert allowed == tc.ALL_TERMINAL_CONFIGS
 
 
 if __name__ == "__main__":

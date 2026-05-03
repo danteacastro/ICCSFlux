@@ -15,7 +15,7 @@ Coverage:
     Stage 1 — silent simulator was masking every hardware bug).
   - MIN_BUFFER_SAMPLES is at or above NI's auto-allocated tier floor.
   - Source-level invariants: the load-bearing one-liners in
-    hardware_reader.py (HIGH_SPEED setter, OVERWRITE_OLDEST setter,
+    hardware_reader.py (HIGH_SPEED setter, OVERWRITE_UNREAD_SAMPLES setter,
     rate-driven buffer) are still present. These are blunt regression
     catchers for "someone refactored and forgot."
 """
@@ -214,11 +214,12 @@ class TestStage1SourceInvariants:
         )
 
     def test_overwrite_oldest_setter_present(self, src):
-        """OVERWRITE_OLDEST after every cfg_samp_clk_timing prevents
-        -200279 errors when the consumer briefly stalls."""
-        count = src.count("over_write = OverwriteMode.OVERWRITE_OLDEST")
+        """OVERWRITE_UNREAD_SAMPLES (drop-oldest semantics) after every
+        cfg_samp_clk_timing prevents -200279 errors when the consumer
+        briefly stalls."""
+        count = src.count("over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES")
         assert count >= 1, (
-            "task.in_stream.over_write = OVERWRITE_OLDEST is missing — "
+            "task.in_stream.over_write = OVERWRITE_UNREAD_SAMPLES is missing — "
             "consumer stalls will crash the reader with -200279."
         )
 
@@ -246,9 +247,9 @@ class TestStage1SourceInvariants:
 
     def test_lag_safety_net_present(self, src):
         """Driver-lag check is the only signal we have that
-        OVERWRITE_OLDEST is silently dropping samples."""
+        OVERWRITE_UNREAD_SAMPLES is silently dropping samples."""
         assert "total_samp_per_chan_acquired" in src, (
-            "Driver-lag detection is missing — under OVERWRITE_OLDEST "
+            "Driver-lag detection is missing — under OVERWRITE_UNREAD_SAMPLES "
             "samples can drop silently with no log entry."
         )
         assert "approaching overflow" in src, (

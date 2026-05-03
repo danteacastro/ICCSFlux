@@ -199,6 +199,23 @@ python -m pytest tests/test_system_validation.py -v   # 9-layer, 34 tests
 python -m pytest tests/test_hardware_hil.py -v         # Hardware-in-the-loop, 4 tiers
 ```
 
+### Hardware probe (real-hardware regression check)
+
+`tools/hwreader_probe.py` is a standalone exerciser that drives `HardwareReader` directly against a real cDAQ chassis with no MQTT, no project loader, no dashboard — just the reader plus a watchdog. Useful for:
+
+- Verifying NI-DAQmx / module configuration (per-module `terminal_config`, ADC timing, buffer mode) is producing valid task creation.
+- Confirming reads/writes work end-to-end on every channel of every module before bringing up the full service.
+- Catching driver hangs (Ctrl-Break dumps live thread stacks even if the process is wedged inside DAQmx).
+- Smoke-testing changes to `services/daq_service/hardware_reader.py` without standing up the rest of the stack.
+
+```bash
+# Edit the CHANNELS / MODULES block at the top of tools/hwreader_probe.py
+# to match your chassis device name (NI MAX) and slot layout.
+python tools/hwreader_probe.py
+```
+
+Reports per-task health (reads, errors, recoveries, dropped samples, max lag), per-channel staleness, real readings on every AI/AO, and a final pass/fail summary including output write-and-readback verification. Auto-exits after the configured `MAX_DURATION_S` (default 12 s).
+
 ## MQTT Topics
 
 | Topic Pattern | Description |

@@ -327,17 +327,28 @@ class TestModuleTypeLookupDirectPath:
 
         assert instance._lookup_module_type('Mod7') == 'NI 9207'
 
-    def test_current_input_always_DIFF_when_mod_type_None(self):
-        """For current_input, terminal config is always DIFF regardless
-        of module — this is the safety net when _lookup_module_type
-        returns None for direct-path channels."""
+    def test_current_input_default_RSE_when_mod_type_None(self):
+        """For current_input with no module hint, empty/None coerce to RSE
+        — the safe default for NI's current modules (9203/9207-current/
+        9208/9227/9246/9247/9253). Earlier code defaulted to DIFF, which
+        DAQmx rejects with -200077 on those modules.
+
+        Caller-supplied valid values are preserved (we trust the caller
+        when they explicitly specify); the fallback only applies on empty
+        input.
+        """
         import terminal_config as tc
 
-        result = tc.coerce(ChannelType.CURRENT_INPUT, 'default', module_type=None)
-        assert result == tc.DIFFERENTIAL
+        # Empty / None → RSE default
+        assert tc.coerce(ChannelType.CURRENT_INPUT, '', module_type=None) == tc.RSE
+        assert tc.coerce(ChannelType.CURRENT_INPUT, None, module_type=None) == tc.RSE
 
-        result = tc.coerce(ChannelType.CURRENT_INPUT, 'rse', module_type=None)
-        assert result == tc.DIFFERENTIAL, "CI must coerce 'rse' to DIFF"
+        # Caller-supplied valid values are preserved when module is unknown.
+        # 'default' is a legacy alias for 'differential' (TERMINAL_ALIASES);
+        # we treat it as an explicit caller choice, not an empty fallback.
+        assert tc.coerce(ChannelType.CURRENT_INPUT, 'default', module_type=None) == tc.DIFFERENTIAL
+        assert tc.coerce(ChannelType.CURRENT_INPUT, 'rse', module_type=None) == tc.RSE
+        assert tc.coerce(ChannelType.CURRENT_INPUT, 'differential', module_type=None) == tc.DIFFERENTIAL
 
     def test_voltage_input_with_None_mod_type_honors_user_choice(self):
         """Voltage input respects user choice when mod_type is None.

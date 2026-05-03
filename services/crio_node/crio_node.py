@@ -57,7 +57,8 @@ try:
     import nidaqmx
     from nidaqmx.constants import (
         TerminalConfiguration, ThermocoupleType as NI_TCType,
-        AcquisitionType
+        AcquisitionType, OverwriteMode, CJCSource, ADCTimingMode,
+        AutoZeroType,
     )
     from nidaqmx.stream_readers import AnalogMultiChannelReader
     import numpy as np
@@ -345,8 +346,11 @@ class ChannelConfig:
     thermocouple_type: str = 'K'
     voltage_range: float = 10.0
     current_range_ma: float = 20.0
-    terminal_config: str = 'DIFF'  # Safest default — required for current/TC/RTD/strain
+    terminal_config: str = 'DIFF'  # Default for V/TC/RTD/strain. Current channels should use 'RSE' (DAQmx requires RSE on 9203/9207-current/9208/9227/9246/9247/9253).
     cjc_source: str = 'BUILT_IN'
+    cjc_value: float = 25.0     # CJC temperature in °C when cjc_source='CONSTANT_USER_VALUE'
+    open_detect: bool = True    # Open-thermocouple detection (silently no-op on modules that don't support it)
+    auto_zero: bool = False     # ai_auto_zero_mode = ONCE; matters mainly on NI 9213
 
     # Output settings
     default_state: bool = False
@@ -5287,7 +5291,14 @@ Time functions:
             logger.info("Scan loop resumed")
 
     def _create_thermocouple_task(self, channels: List[ChannelConfig]):
-        """Create thermocouple input task"""
+        """Create thermocouple input task.
+
+        Mirrors the cDAQ-side hardware_reader.py TC path: pass cjc_source/
+        cjc_val from config, opportunistically set HIGH_SPEED ADC mode (NI
+        9211/9213/9214 default to slow HR mode and return frozen samples
+        above ~1 Hz), enable open-TC detection, and try auto-zero when
+        requested.
+        """
         task = nidaqmx.Task('TC_Input')
         channel_names = []
 
@@ -5300,15 +5311,54 @@ Time functions:
                 }
                 tc_type = tc_type_map.get(ch.thermocouple_type.upper(), NI_TCType.K)
 
+                cjc_source_map = {
+                    'BUILT_IN': CJCSource.BUILT_IN,
+                    'INTERNAL': CJCSource.BUILT_IN,
+                    'CONSTANT_USER_VALUE': CJCSource.CONSTANT_USER_VALUE,
+                    'CONSTANT': CJCSource.CONSTANT_USER_VALUE,
+                    'SCANNABLE_CHANNEL': CJCSource.SCANNABLE_CHANNEL,
+                    'CHANNEL': CJCSource.SCANNABLE_CHANNEL,
+                }
+                cjc_src = cjc_source_map.get(
+                    (ch.cjc_source or 'BUILT_IN').upper(), CJCSource.BUILT_IN)
+
                 # Sanitize channel name - NI-DAQmx doesn't allow / in names
                 safe_name = ch.name.replace('/', '_')
-                task.ai_channels.add_ai_thrmcpl_chan(
+                ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                     ch.physical_channel,
                     name_to_assign_to_channel=safe_name,
-                    thermocouple_type=tc_type
+                    thermocouple_type=tc_type,
+                    cjc_source=cjc_src,
+                    cjc_val=ch.cjc_value,
                 )
                 channel_names.append(ch.name)  # Keep original name for our tracking
-                logger.info(f"Added TC channel: {ch.name} -> {ch.physical_channel}")
+
+                # HIGH_SPEED override — required on 9211/9213/9214 for any
+                # task rate above ~1 Hz. Opportunistic; silently a no-op on
+                # modules that don't expose the property.
+                try:
+                    ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+                except Exception:
+                    pass
+
+                # Open-thermocouple detection.
+                if ch.open_detect:
+                    try:
+                        ai_chan.ai_open_thrmcpl_detect_enable = True
+                    except Exception as e:
+                        logger.debug(f"open_thrmcpl_detect not supported on {ch.name}: {e}")
+
+                # Auto-zero (NI 9213 in particular).
+                if ch.auto_zero:
+                    try:
+                        ai_chan.ai_auto_zero_mode = AutoZeroType.ONCE
+                    except Exception as e:
+                        logger.debug(f"auto_zero not supported on {ch.name}: {e}")
+
+                logger.info(
+                    f"Added TC channel: {ch.name} -> {ch.physical_channel} "
+                    f"(type={ch.thermocouple_type}, cjc={ch.cjc_source}, "
+                    f"open_detect={ch.open_detect}, auto_zero={ch.auto_zero})")
 
             # Configure continuous acquisition
             task.timing.cfg_samp_clk_timing(
@@ -5316,6 +5366,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['thermocouple'] = {
@@ -5376,6 +5427,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['voltage'] = {
@@ -5416,6 +5468,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['current'] = {
@@ -5533,6 +5586,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['rtd'] = {
@@ -5664,6 +5718,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['strain'] = {
@@ -5714,6 +5769,7 @@ Time functions:
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=BUFFER_SIZE
             )
+            task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
             reader = AnalogMultiChannelReader(task.in_stream)
             self.input_tasks['iepe'] = {
@@ -6159,9 +6215,21 @@ Time functions:
             return None
 
     def _build_thermocouple_task(self, channels: List['ChannelConfig']) -> Dict[str, Any]:
-        """Build thermocouple task (internal helper for rebuild)"""
+        """Build thermocouple task (internal helper for rebuild).
+
+        See _create_thermocouple_task for the full design — same pattern.
+        """
         task = nidaqmx.Task(f'TC_Input_{int(time.time()*1000)}')
         channel_names = []
+
+        cjc_source_map = {
+            'BUILT_IN': CJCSource.BUILT_IN,
+            'INTERNAL': CJCSource.BUILT_IN,
+            'CONSTANT_USER_VALUE': CJCSource.CONSTANT_USER_VALUE,
+            'CONSTANT': CJCSource.CONSTANT_USER_VALUE,
+            'SCANNABLE_CHANNEL': CJCSource.SCANNABLE_CHANNEL,
+            'CHANNEL': CJCSource.SCANNABLE_CHANNEL,
+        }
 
         for ch in channels:
             tc_type_map = {
@@ -6170,19 +6238,38 @@ Time functions:
                 'S': NI_TCType.S, 'B': NI_TCType.B
             }
             tc_type = tc_type_map.get(ch.thermocouple_type.upper(), NI_TCType.K)
+            cjc_src = cjc_source_map.get(
+                (ch.cjc_source or 'BUILT_IN').upper(), CJCSource.BUILT_IN)
             safe_name = ch.name.replace('/', '_')
-            task.ai_channels.add_ai_thrmcpl_chan(
+            ai_chan = task.ai_channels.add_ai_thrmcpl_chan(
                 ch.physical_channel,
                 name_to_assign_to_channel=safe_name,
-                thermocouple_type=tc_type
+                thermocouple_type=tc_type,
+                cjc_source=cjc_src,
+                cjc_val=ch.cjc_value,
             )
             channel_names.append(ch.name)
+            try:
+                ai_chan.ai_adc_timing_mode = ADCTimingMode.HIGH_SPEED
+            except Exception:
+                pass
+            if ch.open_detect:
+                try:
+                    ai_chan.ai_open_thrmcpl_detect_enable = True
+                except Exception:
+                    pass
+            if ch.auto_zero:
+                try:
+                    ai_chan.ai_auto_zero_mode = AutoZeroType.ONCE
+                except Exception:
+                    pass
 
         task.timing.cfg_samp_clk_timing(
             rate=self.config.scan_rate_hz,
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -6223,6 +6310,7 @@ Time functions:
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -6249,6 +6337,7 @@ Time functions:
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -6313,6 +6402,7 @@ Time functions:
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -6359,6 +6449,7 @@ Time functions:
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -6392,6 +6483,7 @@ Time functions:
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=BUFFER_SIZE
         )
+        task.in_stream.over_write = OverwriteMode.OVERWRITE_UNREAD_SAMPLES
 
         reader = AnalogMultiChannelReader(task.in_stream)
         return {'task': task, 'reader': reader, 'channels': channel_names}
@@ -7443,14 +7535,22 @@ Time functions:
                 else:
                     channel_type = 'voltage'  # Default for analog inputs
 
-                # Create channel config
+                # Create channel config.
+                # terminal_config: NI's current modules (9203/9207-current/
+                # 9208/9227/9246/9247/9253) require 'RSE' in the DAQmx API.
+                # Everything else uses DIFF (the safest default for V/TC/RTD/
+                # strain and irrelevant for digital). The cRIO runtime does
+                # not pass terminal_config to add_ai_current_chan, so this
+                # is JSON-cosmetic, but consistent with what DAQmx accepts.
                 tc_type = 'K' if channel_type == 'thermocouple' else 'K'
+                term_cfg = 'RSE' if channel_type == 'current' else 'DIFF'
 
                 channel_config = ChannelConfig(
                     name=local_name,  # Use local path as name (e.g., "Mod1/ai0")
                     physical_channel=local_name,
                     channel_type=channel_type,
                     thermocouple_type=tc_type,
+                    terminal_config=term_cfg,
                 )
 
                 self.config.channels[local_name] = channel_config

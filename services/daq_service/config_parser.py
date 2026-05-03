@@ -644,7 +644,12 @@ def load_config(config_path: str) -> NISystemConfig:
                 enabled=parse_bool(sec.get('enabled', 'true'))
             )
 
-    # Parse channel configs
+    # Parse channel configs.
+    # We coerce terminal_config per (channel_type, module_type) so the value
+    # we store aligns with what DAQmx will actually use. Modules are parsed
+    # above so the lookup below is reliable.
+    import terminal_config as _tc
+
     channels = {}
     for section in parser.sections():
         if section.startswith('channel:'):
@@ -656,6 +661,15 @@ def load_config(config_path: str) -> NISystemConfig:
             tc_type = None
             if 'thermocouple_type' in sec:
                 tc_type = ThermocoupleType(sec['thermocouple_type'])
+
+            _mod_name = sec.get('module', '')
+            _mod_type = (getattr(modules.get(_mod_name), 'module_type', None)
+                         if _mod_name else None)
+            _terminal_coerced = _tc.coerce(
+                channel_type,
+                sec.get('terminal_config', ''),
+                _mod_type,
+            )
 
             channels[name] = ChannelConfig(
                 name=name,
@@ -678,9 +692,12 @@ def load_config(config_path: str) -> NISystemConfig:
                 scaled_max=float(sec['scaled_max']) if 'scaled_max' in sec else None,
                 voltage_range=float(sec.get('voltage_range', 10.0)),
                 current_range_ma=float(sec.get('current_range_ma', 20.0)),
-                terminal_config=sec.get('terminal_config', 'differential'),
+                terminal_config=_terminal_coerced,
                 thermocouple_type=tc_type,
                 cjc_source=sec.get('cjc_source', 'internal'),
+                cjc_value=float(sec.get('cjc_value', 25.0)),
+                open_detect=parse_bool(sec.get('open_detect', 'true')),
+                auto_zero=parse_bool(sec.get('auto_zero', 'false')),
                 # RTD
                 rtd_type=sec.get('rtd_type', 'Pt100'),
                 rtd_resistance=float(sec.get('rtd_resistance', 100.0)),

@@ -2,14 +2,26 @@
 Terminal Configuration Validation and Compatibility
 
 Different NI module types support different terminal configurations.
-Picking the wrong one causes incorrect readings — for example, a current
-input module (NI-9203) with terminal_config=RSE will read the shunt
-voltage instead of the current, producing garbage values like 127 mA
-on a 4-20 mA loop.
+The validator picks the right value per (channel_type, module) so the
+saved JSON matches what DAQmx will actually use.
+
+A subtle case worth flagging: NI's current-input modules (NI-9203,
+NI-9207's current section, NI-9208, NI-9227, NI-9246, NI-9247, NI-9253)
+are PHYSICALLY differential — they read the voltage across an internal
+shunt. But the DAQmx software API exposes them as RSE; calling
+``add_ai_current_chan(terminal_config=DIFF)`` on these modules raises
+DaqError -200077 ("Possible Values: RSE"). Older docstrings here claimed
+"RSE on a current input module reads the shunt voltage instead of the
+current" — that is correct for ``add_ai_voltage_chan`` (where the caller
+measures the shunt manually) but wrong for ``add_ai_current_chan``
+(where DAQmx handles the shunt internally). For add_ai_current_chan,
+RSE is the only DAQmx-accepted value on these modules.
 
 This module provides:
 - Canonical terminal config values
 - Per-channel-type compatibility rules
+- Per-module overrides — DIFF-only voltage modules AND RSE-required
+  current modules
 - Normalization (case-insensitive, alias handling)
 - Validation that returns clear error messages
 """
@@ -41,10 +53,14 @@ TERMINAL_ALIASES = {
 }
 
 
-# Channel types that REQUIRE differential mode (current shunt measurement,
-# bridge measurement, thermocouple cold-junction reference, etc.)
+# Channel types that REQUIRE differential mode (TC cold-junction reference,
+# bridge measurement, strain, IEPE, RTD, resistance — all physically
+# differential by sensor design and exposed as DIFF in the DAQmx API).
+#
+# CURRENT_INPUT is INTENTIONALLY NOT in this set — see
+# _CURRENT_INPUT_RSE_MODULES below. CURRENT_OUTPUT stays for legacy
+# completeness but the DAQmx ao path doesn't accept terminal_config anyway.
 _DIFFERENTIAL_ONLY_TYPES: Set[ChannelType] = {
-    ChannelType.CURRENT_INPUT,
     ChannelType.CURRENT_OUTPUT,
     ChannelType.THERMOCOUPLE,
     ChannelType.RTD,
@@ -55,6 +71,22 @@ _DIFFERENTIAL_ONLY_TYPES: Set[ChannelType] = {
     ChannelType.RESISTANCE_INPUT,
     ChannelType.IEPE,
     ChannelType.IEPE_INPUT,
+}
+
+# Modules where add_ai_current_chan REQUIRES terminal_config=RSE — DAQmx
+# rejects DIFF with -200077. The measurement is physically differential
+# through a built-in shunt, but the DAQmx software API treats each channel
+# as the shunt voltage referenced to ground (RSE).
+# Confirmed against real hardware (NI 9208) returning -200077 with
+# "Possible Values: DAQmx_Val_RSE".
+_CURRENT_INPUT_RSE_MODULES: Set[str] = {
+    "NI-9203",   # 8-Ch ±20mA Current
+    "NI-9207",   # 16-Ch — current section ai8..ai15 (voltage section is DIFF-only)
+    "NI-9208",   # 16-Ch ±20mA, 24-bit
+    "NI-9227",   # 4-Ch ±5A RMS Current
+    "NI-9246",   # 3-Ch ±50A RMS Current
+    "NI-9247",   # 3-Ch ±20A RMS Current
+    "NI-9253",   # 8-Ch ±20mA Current
 }
 
 # Channel types where terminal_config is configurable (voltage inputs)
@@ -121,30 +153,40 @@ _DIFFERENTIAL_ONLY_MODULES: Set[str] = {
 }
 
 
-def is_module_differential_only(module_type: Optional[str]) -> bool:
-    """True if this module is DIFF-only by hardware design.
+def _normalize_module_key(module_type: Optional[str]) -> Optional[str]:
+    """Normalize "NI 9208" / "NI-9208" / "ni 9208" / "9208" → "NI-9208".
 
-    Module type strings are normalized to handle every variant produced by
-    different parts of the system:
-      - "NI-9215" (canonical, used by _DIFFERENTIAL_ONLY_MODULES)
-      - "NI 9215" (used by device_discovery.py NI_MODULE_DATABASE)
-      - "ni-9215", "ni 9215" (lowercase variants)
-      - "9215"   (bare model number)
+    Returns None for empty/None input.
     """
     if not module_type:
-        return False
-    normalized = module_type.strip().upper()
-    # Normalize whitespace and underscores to hyphens so "NI 9207" → "NI-9207"
-    normalized = normalized.replace(" ", "-").replace("_", "-")
-    # Collapse double hyphens that can result from "NI - 9207" etc
-    while "--" in normalized:
-        normalized = normalized.replace("--", "-")
-    if normalized in _DIFFERENTIAL_ONLY_MODULES:
-        return True
-    # Also accept bare model number (e.g., "9215" → "NI-9215")
-    if not normalized.startswith("NI-"):
-        return f"NI-{normalized}" in _DIFFERENTIAL_ONLY_MODULES
-    return False
+        return None
+    n = module_type.strip().upper().replace(" ", "-").replace("_", "-")
+    while "--" in n:
+        n = n.replace("--", "-")
+    if not n.startswith("NI-"):
+        n = f"NI-{n}"
+    return n
+
+
+def is_module_differential_only(module_type: Optional[str]) -> bool:
+    """True if this module's voltage channels are DIFF-only by hardware.
+
+    Note: this only governs voltage-type channels. For current channels on
+    the same module (e.g., NI-9207's current section), the per-module RSE
+    rule in is_module_current_rse takes precedence.
+    """
+    n = _normalize_module_key(module_type)
+    return bool(n) and n in _DIFFERENTIAL_ONLY_MODULES
+
+
+def is_module_current_rse(module_type: Optional[str]) -> bool:
+    """True if add_ai_current_chan on this module requires terminal_config=RSE.
+
+    DAQmx rejects DIFF with -200077 on these modules. Confirmed against
+    real NI 9208 hardware.
+    """
+    n = _normalize_module_key(module_type)
+    return bool(n) and n in _CURRENT_INPUT_RSE_MODULES
 
 
 def normalize(value: Optional[str]) -> str:
@@ -159,22 +201,33 @@ def normalize(value: Optional[str]) -> str:
 
 
 def allowed_for(channel_type: ChannelType, module_type: Optional[str] = None) -> Set[str]:
-    """Return the set of terminal configs that are valid for a channel type.
+    """Return the set of terminal configs that are valid for a (channel_type, module).
 
-    If module_type is given and that specific module is DIFF-only by design
-    (e.g., NI-9215), restricts to {differential} regardless of channel type.
+    Rule order (current is checked BEFORE the diff-only-module rule because
+    a single module like NI-9207 needs DIFF for its voltage section AND RSE
+    for its current section):
+    - NO_TERMINAL types (digital, modbus, counter): empty (ignored).
+    - CURRENT_INPUT on a known RSE-required module: {rse}.
+    - CURRENT_INPUT on an unknown module: all (let DAQmx default).
+    - Any other type on a DIFF-only voltage module (NI-9215 etc.): {differential}.
+    - DIFF-only channel types (TC/RTD/strain/IEPE/...): {differential}.
+    - VOLTAGE types on a regular module: all four configs.
     """
-    # Per-module override: some voltage modules are DIFF-only by hardware design
+    if channel_type in _NO_TERMINAL_TYPES:
+        return set()
+
+    if channel_type == ChannelType.CURRENT_INPUT:
+        if is_module_current_rse(module_type):
+            return {RSE}
+        return ALL_TERMINAL_CONFIGS  # unknown current module — be permissive
+
     if is_module_differential_only(module_type):
         return {DIFFERENTIAL}
     if channel_type in _DIFFERENTIAL_ONLY_TYPES:
         return {DIFFERENTIAL}
     if channel_type in _VOLTAGE_TYPES:
         return ALL_TERMINAL_CONFIGS
-    if channel_type in _NO_TERMINAL_TYPES:
-        return set()  # Empty: terminal_config is ignored for these types
-    # Unknown type: allow all (be lenient)
-    return ALL_TERMINAL_CONFIGS
+    return ALL_TERMINAL_CONFIGS  # unknown type — be permissive
 
 
 def validate(channel_type: ChannelType, value: Optional[str],
@@ -197,17 +250,20 @@ def validate(channel_type: ChannelType, value: Optional[str],
 
     if normalized not in allowed:
         reason = ""
-        if is_module_differential_only(module_type):
+        if (channel_type == ChannelType.CURRENT_INPUT
+                and is_module_current_rse(module_type)):
+            reason = (
+                f" Module {module_type}'s current channels REQUIRE RSE in "
+                f"the DAQmx API (DIFF raises -200077)."
+            )
+        elif is_module_differential_only(module_type):
             reason = (
                 f" Module {module_type} is differential-only by hardware "
                 f"design — RSE/NRSE are not selectable."
             )
         return False, (
             f"Terminal config '{value}' is not supported for "
-            f"{channel_type.value} channels. Allowed: {sorted(allowed)}.{reason} "
-            f"Using the wrong terminal configuration causes incorrect readings — "
-            f"for example, RSE on a current input module reads the shunt voltage "
-            f"instead of the current."
+            f"{channel_type.value} channels. Allowed: {sorted(allowed)}.{reason}"
         )
 
     return True, ""
@@ -215,19 +271,27 @@ def validate(channel_type: ChannelType, value: Optional[str],
 
 def coerce(channel_type: ChannelType, value: Optional[str],
            module_type: Optional[str] = None) -> str:
-    """Coerce a terminal config value to a valid one for the channel type and module.
+    """Coerce a terminal config value to one valid for (channel_type, module_type).
 
-    - DIFFERENTIAL_ONLY channel types or modules: always returns 'differential'
-    - VOLTAGE types on regular modules: normalizes and returns (or 'differential')
-    - NO_TERMINAL types: returns 'differential' (won't be used anyway)
+    Returns the canonical string we want stored in JSON / passed to DAQmx.
+    Order of rules matches allowed_for so JSON round-trips cleanly.
     """
+    if channel_type in _NO_TERMINAL_TYPES:
+        return DIFFERENTIAL  # value is ignored; pick something canonical
+
+    if channel_type == ChannelType.CURRENT_INPUT:
+        if is_module_current_rse(module_type):
+            return RSE
+        # Unknown current module: trust the caller's value if it's a known
+        # config; else default to RSE (the most common DAQmx requirement
+        # for current modules — safer than DIFF, which fails on -200077
+        # modules).
+        normalized = normalize(value) if value else RSE
+        return normalized if normalized in ALL_TERMINAL_CONFIGS else RSE
+
     if is_module_differential_only(module_type):
         return DIFFERENTIAL
     if channel_type in _DIFFERENTIAL_ONLY_TYPES:
         return DIFFERENTIAL
-    if channel_type in _NO_TERMINAL_TYPES:
-        return DIFFERENTIAL
     normalized = normalize(value)
-    if normalized in ALL_TERMINAL_CONFIGS:
-        return normalized
-    return DIFFERENTIAL
+    return normalized if normalized in ALL_TERMINAL_CONFIGS else DIFFERENTIAL
