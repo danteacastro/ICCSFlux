@@ -7918,9 +7918,30 @@ Unit conversions:
         return self.projects_dir
 
     def _get_settings_path(self) -> Path:
-        """Get path to settings file that stores last project path etc."""
+        """Path to nisystem_settings.json (last project, system mode,
+        security settings).
+
+        The live file is gitignored — it's runtime user state that gets
+        rewritten on every project switch. Fresh clones get a tracked
+        nisystem_settings.json.template alongside it; on first access we
+        copy the template into place so subsequent reads/writes work
+        normally and the user gets sensible defaults.
+        """
         config_dir = Path(self.config_path).parent
-        return config_dir / "nisystem_settings.json"
+        live = config_dir / "nisystem_settings.json"
+        if not live.exists():
+            template = config_dir / "nisystem_settings.json.template"
+            if template.exists():
+                try:
+                    live.write_text(
+                        template.read_text(encoding='utf-8'),
+                        encoding='utf-8')
+                    logger.info(
+                        f"Initialized {live.name} from template (fresh install)")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not initialize {live.name} from template: {e}")
+        return live
 
     def _save_last_project_path(self, project_path: Optional[Path]):
         """Save the last loaded project path to settings"""

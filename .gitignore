@@ -104,6 +104,12 @@ audit_reports/
 .claude/
 audit_reports/
 
+# Runtime user state — gets rewritten on every project switch / system mode
+# change. A nisystem_settings.json.template is committed alongside it; on
+# first launch _get_settings_path() in daq_service.py copies the template
+# into place. So fresh clones still work, just don't track the live file.
+config/nisystem_settings.json
+
 # Mike's VIP machine — local sandboxes and personal scratch files.
 # Listed explicitly so future project files with different names are
 # still tracked normally.
