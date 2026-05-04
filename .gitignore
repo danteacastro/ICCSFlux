@@ -40,6 +40,8 @@ data/*.parquet
 data/*.tdms
 data/*.txt
 data/audit/*.jsonl
+data/**/*.jsonl
+data/logs/
 !data/.gitkeep
 
 # Logs
@@ -101,3 +103,18 @@ audit_reports/
 # Open-source exclusions
 .claude/
 audit_reports/
+
+# Mike's VIP machine — local sandboxes and personal scratch files.
+# Listed explicitly so future project files with different names are
+# still tracked normally.
+mike.py
+config/projects/ICCSFlux_export_*.json
+config/projects/beef5.json
+config/projects/bingpot2.json
+config/projects/bingpot6.json
+config/projects/bm.json
+config/projects/bob.json
+config/projects/bobo1.json
+config/projects/bunghole1.json
+config/projects/jok.json
+config/projects/nnn.json

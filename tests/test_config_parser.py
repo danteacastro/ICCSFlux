@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"
 from config_parser import (
     ChannelType, ThermocoupleType, HardwareSource, ProjectMode,
     SystemConfig, ChassisConfig, ModuleConfig, ChannelConfig, SafetyActionConfig,
+    DataViewerConfig,
     NISystemConfig, ConfigValidationError, ValidationResult,
     parse_bool, parse_actions, load_config, validate_config, load_config_safe,
     get_channels_by_module, get_channels_by_type, get_input_channels, get_output_channels,
@@ -198,7 +199,7 @@ class TestSystemConfig:
         assert config.mqtt_base_topic == "nisystem"
         assert config.scan_rate_hz == 4.0
         assert config.publish_rate_hz == 4.0
-        assert config.simulation_mode is True
+        assert config.simulation_mode is False
         assert config.node_id == "node-001"
         assert config.project_mode == ProjectMode.CDAQ
 
@@ -408,6 +409,7 @@ class TestValidateConfig:
         """Test validation of a valid config"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={'chassis1': ChassisConfig(name='chassis1', chassis_type='cDAQ')},
             modules={'mod1': ModuleConfig(name='mod1', module_type='NI-9213', chassis='chassis1', slot=1)},
             channels={
@@ -429,6 +431,7 @@ class TestValidateConfig:
         """Test detection of invalid chassis reference in module"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},  # Empty - no chassis defined
             modules={'mod1': ModuleConfig(name='mod1', module_type='NI-9213', chassis='missing_chassis', slot=1)},
             channels={},
@@ -443,6 +446,7 @@ class TestValidateConfig:
         """Test detection of missing safety action reference"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={},
             channels={
@@ -464,6 +468,7 @@ class TestValidateConfig:
         """Test detection of invalid limit values"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={},
             channels={
@@ -486,6 +491,7 @@ class TestValidateConfig:
         """Test validation of 4-20mA scaling configuration"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={},
             channels={
@@ -509,6 +515,7 @@ class TestValidateConfig:
         """Test that strict mode raises exception on errors"""
         config = NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={},
             channels={
@@ -536,6 +543,7 @@ class TestChannelFilters:
         """Create a sample config with various channel types"""
         return NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={'mod1': ModuleConfig(name='mod1', module_type='NI-9213', chassis='', slot=1)},
             channels={
@@ -584,6 +592,7 @@ class TestHardwareSourceFilters:
         """Create config with mixed hardware sources"""
         return NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={},
             modules={},
             channels={

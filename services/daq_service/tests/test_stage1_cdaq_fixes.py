@@ -233,6 +233,35 @@ class TestStage1SourceInvariants:
             f"(TC/V/I/RTD), found {count}."
         )
 
+    def test_no_terminal_config_kwarg_on_add_ai_current_chan(self, src):
+        """Regression guard: add_ai_current_chan must NOT receive a
+        terminal_config kwarg.
+
+        DAQmx -200077 rejects DIFF on NI 9203/9207-current/9208/9227/9246/
+        9247/9253 — the modules' current channels REQUIRE RSE in the API.
+        Letting DAQmx pick the module-correct default (no kwarg) is the
+        only path that works across the whole family. This test catches
+        anyone who later adds 'terminal_config=' back to that call site
+        thinking it's safe.
+        """
+        import re
+        # Find every add_ai_current_chan(...) call (multi-line) and check
+        # its argument list for 'terminal_config='. The non-greedy regex
+        # captures from the call name through its matching close paren.
+        offenders = []
+        for m in re.finditer(r"add_ai_current_chan\((.*?)\n\s*\)", src,
+                             re.DOTALL):
+            args = m.group(1)
+            if "terminal_config" in args:
+                # Find approximate line number for diagnostics
+                line_no = src[:m.start()].count("\n") + 1
+                offenders.append(line_no)
+        assert not offenders, (
+            f"add_ai_current_chan() at line(s) {offenders} passes "
+            f"terminal_config — DAQmx -200077 will reject DIFF on NI 9208 "
+            f"and similar. Remove the kwarg; let DAQmx pick the default."
+        )
+
     def test_dynamic_buffer_size(self, src):
         """samps_per_chan must come from self._buffer_size (rate-driven),
         not the old fixed BUFFER_SIZE constant."""

@@ -28,7 +28,7 @@ for m in _mocked:
 import hardware_reader
 from hardware_reader import (
     get_terminal_config, get_cjc_source, TC_TYPE_MAP,
-    DEFAULT_SAMPLE_RATE_HZ, BUFFER_SIZE
+    DEFAULT_SAMPLE_RATE_HZ, MIN_BUFFER_SAMPLES
 )
 
 # Restore all original modules (remove mocks)
@@ -49,9 +49,13 @@ class TestConstants:
         """Test default sample rate"""
         assert DEFAULT_SAMPLE_RATE_HZ == 10
 
-    def test_buffer_size(self):
-        """Test default buffer size"""
-        assert BUFFER_SIZE == 100
+    def test_buffer_size_floor(self):
+        """Test the buffer-size floor constant.
+
+        Stage 4 replaced the old fixed BUFFER_SIZE=100 with a rate-driven
+        max(MIN_BUFFER_SAMPLES, sample_rate * 10) computed in __init__.
+        MIN_BUFFER_SAMPLES is the only stable constant exposed."""
+        assert MIN_BUFFER_SAMPLES == 1000
 
 class TestTCTypeMap:
     """Tests for thermocouple type mapping"""
@@ -365,7 +369,7 @@ class TestHardwareReaderMocked:
         # 3. read_all() returns cached values instantly
 
         assert DEFAULT_SAMPLE_RATE_HZ == 10  # Hardware sample rate
-        assert BUFFER_SIZE == 100    # Buffer holds 10 seconds of data
+        assert MIN_BUFFER_SAMPLES == 1000  # Floor; actual buffer is max(this, rate*10)
 
     def test_thread_safety_design(self):
         """Test that thread safety design is in place"""
