@@ -971,11 +971,13 @@ export function useMqtt(prefix: string = 'nisystem') {
       }
 
       const isDisconnected = value === null || value === undefined
-      let scaledValue = isDisconnected ? NaN : value as number
-
-      if (!isDisconnected && config) {
-        scaledValue = applyScaling(scaledValue, config)
-      }
+      // Wire values are already in engineering units — the daq_service /
+      // cRIO / Opto22 publishers run apply_scaling() before publishing
+      // (services/daq_service/scaling.py:apply_scaling, around the scan
+      // loop's [SCALING] diag). Re-applying scaling here would double-scale
+      // (e.g. 4-20mA → eng → 4-20mA again), which is the bug that produced
+      // ~800 F readings on a 4-20 mA loop scaled to 32-212 F.
+      const scaledValue: number = isDisconnected ? NaN : value as number
 
       const quality: 'good' | 'bad' | 'stale' = badSet.has(rawName)
         ? 'bad'
@@ -1013,47 +1015,6 @@ export function useMqtt(prefix: string = 'nisystem') {
 
     // Notify Python scripts
     pythonScripts.onScanData()
-  }
-
-  /**
-   * Apply scaling transformation to a raw value based on channel config.
-   * Supports: linear scaling (slope/offset), 4-20mA scaling, and map scaling.
-   */
-  function applyScaling(rawValue: number, config: ChannelConfig): number {
-    // Handle NaN/null values
-    if (rawValue === null || rawValue === undefined || Number.isNaN(rawValue)) {
-      return NaN
-    }
-
-    // 4-20mA scaling: Convert current (4-20mA) to engineering units
-    if (config.four_twenty_scaling && config.eng_units_min !== undefined && config.eng_units_max !== undefined) {
-      // Assume rawValue is in mA (4-20 range)
-      const minCurrent = 4.0
-      const maxCurrent = 20.0
-      const normalized = (rawValue - minCurrent) / (maxCurrent - minCurrent)
-      return config.eng_units_min + normalized * (config.eng_units_max - config.eng_units_min)
-    }
-
-    // Map scaling: Linear interpolation between pre-scaled and scaled ranges
-    if (config.scale_type === 'map' &&
-        config.pre_scaled_min !== undefined && config.pre_scaled_max !== undefined &&
-        config.scaled_min !== undefined && config.scaled_max !== undefined) {
-      const preRange = config.pre_scaled_max - config.pre_scaled_min
-      if (preRange !== 0) {
-        const normalized = (rawValue - config.pre_scaled_min) / preRange
-        return config.scaled_min + normalized * (config.scaled_max - config.scaled_min)
-      }
-    }
-
-    // Linear scaling: y = mx + b
-    if (config.scale_slope !== undefined || config.scale_offset !== undefined) {
-      const slope = config.scale_slope ?? 1.0
-      const offset = config.scale_offset ?? 0.0
-      return rawValue * slope + offset
-    }
-
-    // No scaling - return raw value
-    return rawValue
   }
 
   function handleStatus(status: MqttStatusPayload, nodeId?: string) {
