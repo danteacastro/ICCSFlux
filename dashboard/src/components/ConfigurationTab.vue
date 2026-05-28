@@ -533,10 +533,13 @@ const newChannelForm = ref({
   // Modbus-specific (shown only when channel_type is modbus_register/modbus_coil)
   modbus_device: '',                  // chassis name of the Modbus device on the left
   modbus_slave_id: 1,                 // device/unit address (0-255)
-  modbus_function: 'holding' as 'coil' | 'discrete' | 'holding' | 'input',  // function code
+  modbus_function: 'holding' as 'coil' | 'discrete' | 'holding' | 'input' | 'write_register',  // function code (write_register = FC6)
   modbus_address: 0,                  // register/coil address (no offset)
   modbus_data_type: 'float32' as 'uint16' | 'int16' | 'uint32' | 'int32' | 'float32',
   modbus_byte_format: 'big' as 'big' | 'little' | 'byteswap' | 'wordswap',  // 32-bit byte/word order
+  // FC6 Write Single Register options (only when function = write_register)
+  modbus_write_mode: 'continuous' as 'continuous' | 'onetime',
+  modbus_write_value: 0,              // value to write (persisted as output_setpoint)
 })
 
 // True when the Add Channel modal is configuring a Modbus channel.
@@ -545,11 +548,17 @@ const isModbusChannel = computed(() =>
   newChannelForm.value.channel_type === 'modbus_coil'
 )
 
-// Register functions (holding/input) carry numeric data; coil/discrete are
-// boolean — only registers need a data type and byte-format selector.
+// Register READ functions (holding/input) carry numeric data spanning 1-2
+// registers — they need a data type AND a byte/word-order selector.
 const isModbusRegisterFn = computed(() =>
   newChannelForm.value.modbus_function === 'holding' ||
   newChannelForm.value.modbus_function === 'input'
+)
+
+// FC6 Write Single Register — a write channel. Single 16-bit register, so it
+// needs a data type (16-bit) and the write-mode options, but no byte/word order.
+const isModbusWriteFn = computed(() =>
+  newChannelForm.value.modbus_function === 'write_register'
 )
 
 // Modbus devices = the chassis the DAQ service broadcasts whose type is a
@@ -576,8 +585,15 @@ const modbusDevices = computed(() => {
 // fields stay visible and the data-type selector shows for registers only.
 function onModbusFunctionChange() {
   const fn = newChannelForm.value.modbus_function
+  // coil/discrete -> modbus_coil; holding/input/write_register -> modbus_register
   newChannelForm.value.channel_type =
     (fn === 'coil' || fn === 'discrete') ? 'modbus_coil' : 'modbus_register'
+  // FC6 single register is 16-bit; force a 16-bit data type if a wider one
+  // was left over from a read function.
+  if (fn === 'write_register' &&
+      !['uint16', 'int16'].includes(newChannelForm.value.modbus_data_type)) {
+    newChannelForm.value.modbus_data_type = 'uint16'
+  }
 }
 
 // Get physical channel placeholder based on source type
@@ -1315,6 +1331,54 @@ function onInlineBlurNumeric(channel: string, field: string) {
   inlineEditValue.value = ''
 }
 
+// Inline edit of a Modbus write channel's value. Editable only in Edit mode,
+// but persists even while acquiring (output_setpoint is an operational field
+// that bypasses the acquisition lockout). For continuous-write channels we
+// also push the new value live so the poller writes it immediately; one-time
+// channels only send via the trigger button.
+function onModbusWriteValueBlur(channel: string) {
+  const raw = inlineEditValue.value
+  inlineEditCell.value = null
+  inlineEditValue.value = ''
+  if (!editMode.value) return
+  if (raw.trim() === '') return
+  const val = parseFloat(raw)
+  if (isNaN(val)) {
+    showFeedback('error', `Invalid write value: "${raw}"`)
+    return
+  }
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  mqtt.updateChannelConfig(channel, { output_setpoint: val })
+  markDirty()
+  const cfg = store.channels[channel]
+  if (cfg?.modbus_write_mode === 'continuous' && store.isAcquiring) {
+    // Update what the continuous poller writes from now on.
+    mqtt.setOutput(channel, val)
+  }
+}
+
+// One-time Modbus write (FC6): send the channel's configured value to the
+// register once. Reuses the output-set path, which routes Modbus writes to
+// modbus_reader.write_channel. Visible only for onetime-write channels.
+function triggerModbusWrite(channel: string) {
+  const config = store.channels[channel]
+  if (!config) return
+  if (!store.isAcquiring) {
+    showFeedback('error', 'Start acquisition before sending a Modbus write')
+    return
+  }
+  const value = Number(config.output_setpoint ?? 0)
+  const result = mqtt.setOutput(channel, value)
+  if (result.success) {
+    showFeedback('success', `Wrote ${value} to ${channel}`)
+  } else if (result.error) {
+    showFeedback('error', result.error)
+  }
+}
+
 // OUTPUT column for analog outputs (mA-OUT / V-OUT). Persists output_setpoint
 // in the project config AND pushes the value live to hardware via setOutput
 // when acquisition is running. Clamped to the card's hardware range so a typo
@@ -1662,6 +1726,8 @@ function openAddChannelModal() {
     modbus_address: 0,
     modbus_data_type: 'float32',
     modbus_byte_format: 'big',
+    modbus_write_mode: 'continuous',
+    modbus_write_value: 0,
   }
 
   // Auto-select first available node for remote modes
@@ -1714,16 +1780,19 @@ function addNewChannel() {
       return
     }
     const fn = f.modbus_function
-    // Coil/discrete are boolean → modbus_coil; holding/input → modbus_register
+    const isWrite = fn === 'write_register'  // FC6 Write Single Register
+    // Register type: FC6 writes a holding register. coil/discrete/holding/input map 1:1.
+    const regType = isWrite ? 'holding' : fn
+    // Coil/discrete are boolean → modbus_coil; holding/input/write → modbus_register
     const channelType: ChannelType = (fn === 'coil' || fn === 'discrete') ? 'modbus_coil' : 'modbus_register'
-    const physical = `modbus:${fn}:${f.modbus_address}`
+    const physical = `modbus:${regType}:${f.modbus_address}`
 
     // Duplicate check: same device (slave) + same register address
     for (const [existingTag, ec] of Object.entries(store.channels)) {
       if (ec.physical_channel === physical &&
           (ec as any).module === f.modbus_device &&
           ((ec as any).modbus_slave_id ?? 1) === f.modbus_slave_id) {
-        showFeedback('error', `${fn} address ${f.modbus_address} on "${f.modbus_device}" (addr ${f.modbus_slave_id}) is already used by "${existingTag}"`)
+        showFeedback('error', `${regType} address ${f.modbus_address} on "${f.modbus_device}" (addr ${f.modbus_slave_id}) is already used by "${existingTag}"`)
         return
       }
     }
@@ -1749,13 +1818,20 @@ function addNewChannel() {
       // Device binding: module references the chassis (Modbus device) directly
       module: f.modbus_device,
       modbus_slave_id: f.modbus_slave_id,
-      modbus_register_type: fn,
+      modbus_register_type: regType,
       modbus_address: f.modbus_address,
       modbus_scale: 1.0,
       modbus_offset: 0.0,
     }
-    // Data type + byte order only meaningful for numeric registers
-    if (channelType === 'modbus_register') {
+    if (isWrite) {
+      // FC6 Write Single Register — 16-bit value, write mode, initial value
+      config.modbus_data_type = f.modbus_data_type
+      config.modbus_byte_order = 'big'
+      config.modbus_word_order = 'big'
+      config.modbus_write_mode = f.modbus_write_mode  // 'continuous' | 'onetime'
+      config.output_setpoint = f.modbus_write_value    // value to write
+    } else if (channelType === 'modbus_register') {
+      // Read register — data type + byte order
       config.modbus_data_type = f.modbus_data_type
       config.modbus_byte_order = order.byte
       config.modbus_word_order = order.word
@@ -4739,6 +4815,13 @@ const tableColumns = computed(() => {
         { key: 'direction', label: 'DIR', width: '60px', align: 'center' },
         { key: 'value', label: 'VALUE', width: '100px', align: 'right' },
       ]
+    case 'modbus':
+      // MIN/MAX are meaningless for Modbus register/coil values (read or write).
+      return [
+        ...baseColumns,
+        { key: 'units', label: 'UNITS', width: '60px', align: 'center' },
+        { key: 'value', label: 'VALUE', width: '140px', align: 'center' },
+      ]
     default:
       return [
         ...baseColumns,
@@ -6028,6 +6111,18 @@ watch(
                   <span class="value">{{ getCurrentValue(name) }}</span>
                 </td>
               </template>
+              <!-- Modbus: just UNITS (no MIN/MAX — meaningless for register/coil values) -->
+              <template v-else-if="activeTypeTab === 'modbus'">
+                <td class="editable-cell col-numeric" @click.stop>
+                  <input
+                    type="text"
+                    :value="config.unit || '-'"
+                    @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
+                    class="inline-input"
+                    :disabled="!canEdit"
+                  />
+                </td>
+              </template>
               <template v-else>
                 <td class="editable-cell col-numeric" @click.stop>
                   <input
@@ -6048,7 +6143,34 @@ watch(
                 class="col-value"
                 :class="getAlarmStatus(name)"
               >
-                <template v-if="config.channel_type === 'digital_input' || config.channel_type === 'digital_output'">
+                <!-- Modbus write channels (FC6): inline write value + (one-time) send button -->
+                <template v-if="config.modbus_write_mode === 'continuous' || config.modbus_write_mode === 'onetime'">
+                  <input
+                    type="number"
+                    step="any"
+                    :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onModbusWriteValueBlur(name)"
+                    @keyup.enter="($event.target as HTMLInputElement).blur()"
+                    @click.stop
+                    class="inline-input modbus-write-value"
+                    :disabled="!editMode"
+                    :title="editMode ? 'Value to write to the register' : 'Enable Edit mode to change the write value'"
+                  />
+                  <button
+                    v-if="config.modbus_write_mode === 'onetime'"
+                    class="trigger-btn"
+                    @click.stop="triggerModbusWrite(name)"
+                    :disabled="!store.isAcquiring"
+                    :title="!store.isAcquiring ? 'Start acquisition to send' : `Write ${config.output_setpoint ?? 0} to ${name} once`"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                  </button>
+                </template>
+                <template v-else-if="config.channel_type === 'digital_input' || config.channel_type === 'digital_output'">
                   <span class="digital-state" :class="{ on: store.values[name]?.value }">
                     {{ store.values[name]?.value ? 'ON' : 'OFF' }}
                   </span>
@@ -7672,6 +7794,7 @@ watch(
                     <option value="discrete">Discrete Input (x2)</option>
                     <option value="holding">Holding Register (x3)</option>
                     <option value="input">Input Register (x4)</option>
+                    <option value="write_register">Write Single Register (x6)</option>
                   </select>
                 </div>
               </div>
@@ -7688,27 +7811,56 @@ watch(
                 <span class="form-hint">Raw address (no 40001/30001 offset)</span>
               </div>
 
-              <!-- Data type + byte format apply to numeric registers only -->
-              <template v-if="isModbusRegisterFn">
-                <div class="form-row">
-                  <label>Register Length / Data Type</label>
-                  <select v-model="newChannelForm.modbus_data_type">
-                    <option value="uint16">Unsigned Int — 1 register (uint16)</option>
-                    <option value="int16">Signed Int — 1 register (int16)</option>
+              <!-- Data type: read registers (1-2 regs) and FC6 write (1 reg, 16-bit) -->
+              <div class="form-row" v-if="isModbusRegisterFn || isModbusWriteFn">
+                <label>Register Length / Data Type</label>
+                <select v-model="newChannelForm.modbus_data_type">
+                  <option value="uint16">Unsigned Int — 1 register (uint16)</option>
+                  <option value="int16">Signed Int — 1 register (int16)</option>
+                  <template v-if="!isModbusWriteFn">
                     <option value="uint32">Unsigned Long — 2 registers (uint32)</option>
                     <option value="int32">Signed Long — 2 registers (int32)</option>
                     <option value="float32">Float — 2 registers (float32)</option>
+                  </template>
+                </select>
+                <span class="form-hint" v-if="isModbusWriteFn">FC6 writes a single 16-bit register</span>
+              </div>
+
+              <!-- Byte format only for multi-register reads -->
+              <div class="form-row" v-if="isModbusRegisterFn">
+                <label>Byte Format</label>
+                <select v-model="newChannelForm.modbus_byte_format">
+                  <option value="big">Big Endian (ABCD)</option>
+                  <option value="little">Little Endian (DCBA)</option>
+                  <option value="byteswap">Byte Swap (BADC)</option>
+                  <option value="wordswap">Word Swap (CDAB)</option>
+                </select>
+                <span class="form-hint">Byte/word order for multi-register values</span>
+              </div>
+
+              <!-- FC6 Write Single Register: write mode + value -->
+              <template v-if="isModbusWriteFn">
+                <div class="form-row">
+                  <label>Write Mode</label>
+                  <select v-model="newChannelForm.modbus_write_mode">
+                    <option value="continuous">Continuous Write</option>
+                    <option value="onetime">One-Time Trigger</option>
                   </select>
+                  <span class="form-hint">
+                    {{ newChannelForm.modbus_write_mode === 'onetime'
+                      ? 'Written only when you press the trigger button on the channel row'
+                      : 'Re-written to the register every poll cycle' }}
+                  </span>
                 </div>
                 <div class="form-row">
-                  <label>Byte Format</label>
-                  <select v-model="newChannelForm.modbus_byte_format">
-                    <option value="big">Big Endian (ABCD)</option>
-                    <option value="little">Little Endian (DCBA)</option>
-                    <option value="byteswap">Byte Swap (BADC)</option>
-                    <option value="wordswap">Word Swap (CDAB)</option>
-                  </select>
-                  <span class="form-hint">Byte/word order for multi-register values</span>
+                  <label>Write Value</label>
+                  <input
+                    type="number"
+                    v-model.number="newChannelForm.modbus_write_value"
+                    step="any"
+                    placeholder="0"
+                  />
+                  <span class="form-hint">Value sent to the register (editable later)</span>
                 </div>
               </template>
             </template>
@@ -9472,6 +9624,33 @@ watch(
 .config-btn:hover {
   background: var(--border-color);
   color: var(--text-primary);
+}
+
+/* Inline Modbus write-value input in the actions cell */
+.modbus-write-value {
+  width: 64px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* One-time Modbus write (FC6) trigger button */
+.trigger-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-accent, #4a9eff);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.trigger-btn:hover:not(:disabled) {
+  background: var(--color-accent, #4a9eff);
+  color: #fff;
+}
+
+.trigger-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Inline Editable Cells */

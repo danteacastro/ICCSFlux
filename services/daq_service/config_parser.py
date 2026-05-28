@@ -340,6 +340,10 @@ class ChannelConfig:
     # Batch reading: read multiple registers at once, extract value at specific index
     modbus_register_count: Optional[int] = None  # Registers to read (None = auto from data_type)
     modbus_register_index: int = 0               # Index within batch to extract value from
+    # Write channels (FC6 Write Single Register). Empty = read channel.
+    #   "continuous" = re-write output_setpoint to the register every poll cycle
+    #   "onetime"    = write only when the user triggers it (button on the row)
+    modbus_write_mode: str = ""                  # "", "continuous", or "onetime"
 
     # Digital specific
     invert: bool = False
@@ -757,6 +761,7 @@ def load_config(config_path: str) -> NISystemConfig:
                 modbus_slave_id=int(sec['modbus_slave_id']) if 'modbus_slave_id' in sec else None,
                 modbus_register_count=int(sec['modbus_register_count']) if 'modbus_register_count' in sec else None,
                 modbus_register_index=int(sec.get('modbus_register_index', 0)),
+                modbus_write_mode=sec.get('modbus_write_mode', ''),
                 invert=parse_bool(sec.get('invert', 'false')),
                 default_state=parse_bool(sec.get('default_state', 'false')),
                 default_value=float(sec.get('default_value', 0.0)),

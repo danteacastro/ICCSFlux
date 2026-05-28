@@ -93,6 +93,9 @@ class ModbusChannelConfig:
     # Batch reading support
     register_count: Optional[int] = None  # Registers to read (None = auto from data_type)
     register_index: int = 0               # Index within batch to extract value from
+    # Write channels (FC6). "" = read channel; "continuous" = auto-write each
+    # poll cycle; "onetime" = write only on user trigger.
+    write_mode: str = ""
 
 class ModbusConnection:
     """Manages a single Modbus TCP or RTU connection"""
@@ -370,6 +373,10 @@ class ModbusReader:
         self._latest_values: Dict[str, float] = {}
         self._latest_lock = threading.Lock()
         self._last_poll_duration = 0.0
+        # Continuous-write channels only auto-write while acquiring (so the
+        # device isn't driven when the system is stopped). Set by the DAQ
+        # service on acquire start/stop. Reads poll regardless.
+        self.acquiring = False
 
         self._initialize_connections()
         self._initialize_channels()
@@ -432,9 +439,12 @@ class ModbusReader:
             ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT
         ):
             return True
-        # Traditional Modbus holding register outputs (writable registers)
+        # Traditional Modbus holding register outputs (writable registers).
+        # A non-empty modbus_write_mode ("continuous"/"onetime") marks this as
+        # an FC6 write channel; legacy modbus_is_output is also honored.
         if channel.channel_type == ChannelType.MODBUS_REGISTER and reg_type == ModbusRegisterType.HOLDING:
-            # Holding registers can be read/write — mark as output if explicitly configured
+            if getattr(channel, 'modbus_write_mode', ''):
+                return True
             return getattr(channel, 'modbus_is_output', False)
         return False
 
@@ -527,14 +537,20 @@ class ModbusReader:
                 offset=getattr(channel, 'modbus_offset', 0.0),
                 is_output=self._is_output_channel(channel, reg_type),
                 register_count=register_count,
-                register_index=register_index
+                register_index=register_index,
+                write_mode=getattr(channel, 'modbus_write_mode', '') or ''
             )
 
             self.channel_configs[name] = modbus_config
             self.channel_values[name] = 0.0
 
             if modbus_config.is_output:
-                self.output_values[name] = 0.0
+                # Seed the write value from the configured setpoint so continuous
+                # writes start at the intended value and the one-time trigger has
+                # something to send before the user changes it.
+                initial = float(getattr(channel, 'output_setpoint', 0.0) or 0.0)
+                self.output_values[name] = initial
+                self.channel_values[name] = initial
 
             logger.info(f"Configured Modbus channel: {name} -> {chassis_name}/{reg_type_str}:{address}")
 
@@ -580,6 +596,10 @@ class ModbusReader:
         while self._poll_running:
             start = time.time()
             try:
+                # Continuous-write channels (FC6): re-assert the commanded value
+                # each cycle. One-time channels are written only on user trigger.
+                self._write_continuous_channels()
+
                 live_values = self.read_all()
                 with self._latest_lock:
                     self._latest_values = live_values
@@ -588,6 +608,24 @@ class ModbusReader:
                 time.sleep(1.0)  # Back off on error to avoid spin
 
             self._last_poll_duration = time.time() - start
+
+    def _write_continuous_channels(self):
+        """Write the commanded value to every continuous-write channel.
+
+        The value is output_values[name], seeded from output_setpoint at init
+        and updated whenever the user changes it via setOutput → write_channel.
+        Only runs while acquiring — the device isn't driven when stopped.
+        """
+        if not self.acquiring:
+            return
+        for name, config in list(self.channel_configs.items()):
+            if config.write_mode != 'continuous':
+                continue
+            value = self.output_values.get(name, 0.0)
+            try:
+                self.write_channel(name, value)
+            except Exception as e:
+                logger.debug(f"Continuous Modbus write failed for {name}: {e}")
 
     def get_latest_values(self) -> Dict[str, float]:
         """Return the most recent values from background polling.
@@ -633,6 +671,10 @@ class ModbusReader:
             individual_channels: List[ModbusChannelConfig] = []
 
             for name, config in self.channel_configs.items():
+                # Write channels (FC6) are outputs — don't read them. Their
+                # displayed value is the last value written.
+                if config.is_output:
+                    continue
                 if config.register_count is not None and config.register_count > 0:
                     # Batch mode: group by device/slave/type/address/count
                     key = (config.device_name, config.slave_id, config.register_type,

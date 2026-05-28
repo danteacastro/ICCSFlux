@@ -106,6 +106,7 @@ export interface ChannelConfig {
   // display_name removed - use name (TAG) everywhere
   channel_type: ChannelType
   physical_channel?: string  // NI-DAQmx hardware address (e.g., cDAQ1Mod1/ai0)
+  module?: string            // Module/chassis ref; for Modbus channels = device (chassis) name
   unit: string
   group: string
   description?: string
@@ -223,6 +224,9 @@ export interface ChannelConfig {
   // Batch reading: read multiple registers, extract value at specific index
   modbus_register_count?: number       // Total registers to read (for batch reading)
   modbus_register_index?: number       // Index within batch to extract value from
+  // Write Single Register (FC6). '' = read channel; 'continuous' = write every
+  // poll cycle; 'onetime' = write only when triggered from the channel row.
+  modbus_write_mode?: '' | 'continuous' | 'onetime'
 
   // Digital I/O
   logic_level?: '5V' | '24V'

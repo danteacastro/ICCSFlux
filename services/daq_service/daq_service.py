@@ -879,6 +879,18 @@ class DAQService:
                     counter_reset_on_read=bool(ch_data.get("counter_reset_on_read", False)),
                     pullup_enabled=bool(ch_data.get("pullup_enabled", False)),
                     voltage_threshold=max(1.0, min(4.0, float(ch_data.get("voltage_threshold", 1.5)))),
+                    # Modbus
+                    modbus_register_type=ch_data.get("modbus_register_type", "holding"),
+                    modbus_address=int(ch_data.get("modbus_address", 0)),
+                    modbus_data_type=ch_data.get("modbus_data_type", "float32"),
+                    modbus_byte_order=ch_data.get("modbus_byte_order", "big"),
+                    modbus_word_order=ch_data.get("modbus_word_order", "big"),
+                    modbus_scale=float(ch_data.get("modbus_scale", 1.0)),
+                    modbus_offset=float(ch_data.get("modbus_offset", 0.0)),
+                    modbus_slave_id=int(ch_data["modbus_slave_id"]) if ch_data.get("modbus_slave_id") is not None else None,
+                    modbus_register_count=int(ch_data["modbus_register_count"]) if ch_data.get("modbus_register_count") is not None else None,
+                    modbus_register_index=int(ch_data.get("modbus_register_index", 0)),
+                    modbus_write_mode=ch_data.get("modbus_write_mode", ""),
                     # Digital
                     invert=ch_data.get("invert", False),
                     default_state=ch_data.get("default_state", False),
@@ -1110,6 +1122,8 @@ class DAQService:
                     logger.warning(f"Error closing old Modbus reader: {e}")
 
             self.modbus_reader = ModbusReader(self.config)
+            # Continuous-write channels only drive the device while acquiring.
+            self.modbus_reader.acquiring = self.acquiring
             connection_results = self.modbus_reader.connect_all()
 
             connected = sum(1 for v in connection_results.values() if v)
@@ -5541,6 +5555,10 @@ Unit conversions:
             self._state_machine.to(DAQState.RUNNING)
             logger.info(f"[STATE] Acquisition started successfully (state={self._state_machine.state.name})")
 
+            # Enable Modbus continuous-write channels now that we're acquiring.
+            if self.modbus_reader:
+                self.modbus_reader.acquiring = True
+
             # Industrial-grade: Capture initial output states from hardware
             # This ensures displayed values match actual hardware state from the start
             if self.hardware_reader and not self.config.system.simulation_mode:
@@ -5731,6 +5749,10 @@ Unit conversions:
             # 7. STATE TRANSITION: stopping → stopped
             self._state_machine.to(DAQState.STOPPED)
             logger.info(f"[STATE] Acquisition stopped successfully (state={self._state_machine.state.name})")
+
+            # Stop Modbus continuous writes when not acquiring.
+            if self.modbus_reader:
+                self.modbus_reader.acquiring = False
 
             # 8. CLEANUP & AUDIT
             if self.project_manager:
@@ -8568,6 +8590,18 @@ Unit conversions:
                 counter_reset_on_read=bool(ch_data.get("counter_reset_on_read", False)),
                 pullup_enabled=bool(ch_data.get("pullup_enabled", False)),
                 voltage_threshold=max(1.0, min(4.0, float(ch_data.get("voltage_threshold", 1.5)))),
+                # Modbus
+                modbus_register_type=ch_data.get("modbus_register_type", "holding"),
+                modbus_address=int(ch_data.get("modbus_address", 0)),
+                modbus_data_type=ch_data.get("modbus_data_type", "float32"),
+                modbus_byte_order=ch_data.get("modbus_byte_order", "big"),
+                modbus_word_order=ch_data.get("modbus_word_order", "big"),
+                modbus_scale=float(ch_data.get("modbus_scale", 1.0)),
+                modbus_offset=float(ch_data.get("modbus_offset", 0.0)),
+                modbus_slave_id=int(ch_data["modbus_slave_id"]) if ch_data.get("modbus_slave_id") is not None else None,
+                modbus_register_count=int(ch_data["modbus_register_count"]) if ch_data.get("modbus_register_count") is not None else None,
+                modbus_register_index=int(ch_data.get("modbus_register_index", 0)),
+                modbus_write_mode=ch_data.get("modbus_write_mode", ""),
                 low_limit=float(ch_data["low_limit"]) if ch_data.get("low_limit") is not None else None,
                 high_limit=float(ch_data["high_limit"]) if ch_data.get("high_limit") is not None else None,
                 low_warning=float(ch_data["low_warning"]) if ch_data.get("low_warning") is not None else None,
@@ -14074,6 +14108,8 @@ Unit conversions:
             channel.modbus_register_count = int(config_data['modbus_register_count']) if config_data['modbus_register_count'] is not None else None
         if 'modbus_register_index' in config_data:
             channel.modbus_register_index = int(config_data['modbus_register_index'])
+        if 'modbus_write_mode' in config_data:
+            channel.modbus_write_mode = config_data['modbus_write_mode'] or ''
 
         # ISA-18.2 Alarm Configuration
         alarm_config_changed = False
@@ -14319,6 +14355,7 @@ Unit conversions:
                 modbus_slave_id=int(config_data['modbus_slave_id']) if config_data.get('modbus_slave_id') is not None else None,
                 modbus_register_count=int(config_data['modbus_register_count']) if config_data.get('modbus_register_count') is not None else None,
                 modbus_register_index=int(config_data.get('modbus_register_index', 0)),
+                modbus_write_mode=config_data.get('modbus_write_mode', ''),
                 invert=bool(config_data.get('invert', False)),
                 default_state=bool(config_data.get('default_state', False)),
                 default_value=float(config_data.get('default_value', 0.0)),
@@ -14640,6 +14677,18 @@ Unit conversions:
                     counter_reset_on_read=bool(ch_config.get('counter_reset_on_read', False)),
                     pullup_enabled=bool(ch_config.get('pullup_enabled', False)),
                     voltage_threshold=max(1.0, min(4.0, float(ch_config.get('voltage_threshold', 1.5)))),
+                    # Modbus
+                    modbus_register_type=ch_config.get('modbus_register_type', 'holding'),
+                    modbus_address=int(ch_config.get('modbus_address', 0)),
+                    modbus_data_type=ch_config.get('modbus_data_type', 'float32'),
+                    modbus_byte_order=ch_config.get('modbus_byte_order', 'big'),
+                    modbus_word_order=ch_config.get('modbus_word_order', 'big'),
+                    modbus_scale=float(ch_config.get('modbus_scale', 1.0)),
+                    modbus_offset=float(ch_config.get('modbus_offset', 0.0)),
+                    modbus_slave_id=int(ch_config['modbus_slave_id']) if ch_config.get('modbus_slave_id') is not None else None,
+                    modbus_register_count=int(ch_config['modbus_register_count']) if ch_config.get('modbus_register_count') is not None else None,
+                    modbus_register_index=int(ch_config.get('modbus_register_index', 0)),
+                    modbus_write_mode=ch_config.get('modbus_write_mode', ''),
                     # Logging
                     log=ch_config.get('log', True),
                     log_interval_ms=int(ch_config.get('log_interval_ms', 1000)),
@@ -15820,6 +15869,7 @@ Unit conversions:
                 "modbus_slave_id": channel.modbus_slave_id,
                 "modbus_register_count": channel.modbus_register_count,
                 "modbus_register_index": channel.modbus_register_index,
+                "modbus_write_mode": getattr(channel, 'modbus_write_mode', ''),
                 "source_node_id": channel.source_node_id,
                 "safety_can_run_locally": channel.safety_can_run_locally
             }
@@ -16926,9 +16976,15 @@ Unit conversions:
 
         channel = self.config.channels[channel_name]
 
-        # Check if this is an output channel
+        # Check if this is an output channel. Modbus register/coil channels are
+        # writable when configured with a write mode (FC6 Write Single Register /
+        # coil writes) — treat those as outputs too.
+        is_modbus_write = (
+            channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            and bool(getattr(channel, 'modbus_write_mode', ''))
+        )
         if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
-                                        ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
+                                        ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT) and not is_modbus_write:
             self._publish_output_response(False, channel=channel_name,
                                           error=f"Channel {channel_name} is not an output channel (type: {channel.channel_type.value})")
             return

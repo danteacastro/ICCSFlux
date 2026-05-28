@@ -1181,6 +1181,18 @@ export function useMqtt(prefix: string = 'nisystem') {
           // CTR input conditioning (NI 9361): pull-up + comparator threshold
           pullup_enabled: ch.pullup_enabled,
           voltage_threshold: ch.voltage_threshold,
+          // Modbus channel config (MODBUS tab)
+          modbus_register_type: ch.modbus_register_type,
+          modbus_address: ch.modbus_address,
+          modbus_data_type: ch.modbus_data_type,
+          modbus_byte_order: ch.modbus_byte_order,
+          modbus_word_order: ch.modbus_word_order,
+          modbus_scale: ch.modbus_scale,
+          modbus_offset: ch.modbus_offset,
+          modbus_slave_id: ch.modbus_slave_id,
+          modbus_register_count: ch.modbus_register_count,
+          modbus_register_index: ch.modbus_register_index,
+          modbus_write_mode: ch.modbus_write_mode,
           // Safety
           safety_action: ch.safety_action,
           safety_interlock: ch.safety_interlock,
@@ -1193,6 +1205,8 @@ export function useMqtt(prefix: string = 'nisystem') {
           source_type: ch.is_crio ? 'crio' : (ch.is_local_daq ? 'cdaq' : (ch.source_type || 'local')),
           node_id: ch.source_node_id || ch.node_id,
           chassis_name: ch.hardware_source_display || ch.chassis_name || '',
+          // Module/chassis ref — for Modbus channels this is the device (chassis) name
+          module: ch.module,
         }
       })
     }
