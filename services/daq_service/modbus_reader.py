@@ -447,15 +447,20 @@ class ModbusReader:
             if not is_modbus_type and not is_cfp:
                 continue
 
-            # Get module and chassis
+            # Resolve the chassis (connection) this channel belongs to.
+            # Traditional path: channel.module -> ModuleConfig -> chassis.
+            # Modbus devices added via "Add Device" are bare chassis with no
+            # ModuleConfig, so channel.module references the chassis directly.
             module = self.config.modules.get(channel.module)
-            if not module:
-                logger.warning(f"Module not found for Modbus channel {name}")
-                continue
-
-            chassis_name = module.chassis
+            if module:
+                chassis_name = module.chassis
+            else:
+                chassis_name = channel.module  # chassis name directly
             if chassis_name not in self.connections:
-                logger.warning(f"No Modbus connection for chassis {chassis_name}")
+                logger.warning(
+                    f"No Modbus connection for chassis '{chassis_name}' "
+                    f"(channel {name}, module field='{channel.module}')"
+                )
                 continue
 
             # Parse physical_channel to get register info

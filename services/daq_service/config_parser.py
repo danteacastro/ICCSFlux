@@ -300,12 +300,20 @@ class ChannelConfig:
     resistance_wiring: str = "4-wire"  # 2-wire, 4-wire
 
     # Counter specific
-    counter_mode: str = "frequency"  # frequency, count, period, position (encoder)
+    # Default to edge counting — it's the intuitive default for a counter
+    # input and matches what the dashboard shows when the field is unset.
+    counter_mode: str = "count"  # count, frequency, period, position (encoder)
     pulses_per_unit: float = 1.0     # e.g., 100 pulses = 1 gallon → pulses_per_unit = 100
     counter_edge: str = "rising"     # rising, falling, both
     counter_reset_on_read: bool = False  # For totalizer mode
     counter_min_freq: float = 0.1    # Minimum expected frequency in Hz
     counter_max_freq: float = 1000.0 # Maximum expected frequency in Hz
+    # Input conditioning (NI 9361 etc.) — pull-up resistor for open-collector /
+    # open-drain sensors, and the comparator threshold that decides whether an
+    # input is logic-high or logic-low. Threshold is clamped to 1.0–4.0 V at
+    # load time to stay within the module's supported range.
+    pullup_enabled: bool = False
+    voltage_threshold: float = 1.5   # Logic-high threshold in volts (range 1.0–4.0)
     # Encoder-specific (position mode)
     decoding_type: str = "X4"        # X1, X2, X4, two_pulse
     pulses_per_revolution: int = 1024  # Encoder resolution
@@ -337,6 +345,13 @@ class ChannelConfig:
     invert: bool = False
     default_state: bool = False
     default_value: float = 0.0
+
+    # Analog output user setpoint — value the user wants written to a
+    # voltage_output / current_output channel. Persisted in the project so
+    # the channel comes back to the same setpoint across restarts. 0.0 means
+    # "no user setpoint" → the channel starts at 0 (safe rest state for mA/V).
+    # Distinct from default_value, which is the safe-state fallback.
+    output_setpoint: float = 0.0
 
     # Limits and warnings (legacy - use ISA-18.2 fields below)
     low_limit: Optional[float] = None
@@ -716,12 +731,14 @@ def load_config(config_path: str) -> NISystemConfig:
                 resistance_range=float(sec.get('resistance_range', 1000.0)),
                 resistance_wiring=sec.get('resistance_wiring', '4-wire'),
                 counter_mode={'count_edges': 'count', 'edge_count': 'count'}.get(
-                    sec.get('counter_mode', 'frequency'), sec.get('counter_mode', 'frequency')),
+                    sec.get('counter_mode', 'count'), sec.get('counter_mode', 'count')),
                 pulses_per_unit=float(sec.get('pulses_per_unit', 1.0)),
                 counter_edge=sec.get('counter_edge', 'rising'),
                 counter_reset_on_read=parse_bool(sec.get('counter_reset_on_read', 'false')),
                 counter_min_freq=float(sec.get('counter_min_freq', 0.1)),
                 counter_max_freq=float(sec.get('counter_max_freq', 1000.0)),
+                pullup_enabled=parse_bool(sec.get('pullup_enabled', 'false')),
+                voltage_threshold=max(1.0, min(4.0, float(sec.get('voltage_threshold', 1.5)))),
                 # Pulse/Counter output
                 pulse_frequency=float(sec.get('pulse_frequency', 1000.0)),
                 pulse_duty_cycle=float(sec.get('pulse_duty_cycle', 50.0)),
@@ -743,6 +760,7 @@ def load_config(config_path: str) -> NISystemConfig:
                 invert=parse_bool(sec.get('invert', 'false')),
                 default_state=parse_bool(sec.get('default_state', 'false')),
                 default_value=float(sec.get('default_value', 0.0)),
+                output_setpoint=float(sec.get('output_setpoint', 0.0)),
                 low_limit=float(sec['low_limit']) if 'low_limit' in sec else None,
                 high_limit=float(sec['high_limit']) if 'high_limit' in sec else None,
                 low_warning=float(sec['low_warning']) if 'low_warning' in sec else None,

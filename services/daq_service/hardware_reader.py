@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 import re
+import itertools
 from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
 from queue import Queue, Empty, Full
@@ -71,6 +72,7 @@ try:
         ADCTimingMode,
         OverwriteMode,
         AutoZeroType,
+        LogicLvlBehavior,
     )
     from nidaqmx.stream_readers import (
         AnalogMultiChannelReader,
@@ -116,51 +118,70 @@ def _module_needs_high_speed_adc(module_type):
     return _capabilities.lookup(module_type).needs_high_speed_adc_override
 
 
+# Process-unique base + monotonic counter for NI-DAQmx task names. Reusing a
+# task name across HardwareReader rebuilds is the root cause of -200089 ("task
+# name conflicts") and -88709 ("resource reserved"): when a reader is rebuilt
+# (stop → edit config → start), NI-DAQmx hasn't finished releasing the previous
+# generation's task names, so recreating "CO_tag_3" etc. collides. Appending a
+# guaranteed-unique suffix sidesteps the collision entirely. The time-based base
+# also avoids colliding with names left registered by a previously crashed
+# process. The CHANNEL names inside each task (name_to_assign_to_channel) are
+# unchanged — only the task's NI name gets the suffix, so reads/lookups that key
+# off channel name are unaffected.
+_TASK_NAME_BASE = int(time.time()) & 0xFFFFFF
+_task_name_counter = itertools.count()
+
+
 def _safe_create_task(task_name: str) -> Any:
-    """Create an nidaqmx.Task, clearing any orphaned task with the same name first.
+    """Create an nidaqmx.Task with a process-unique name.
 
-    NI-DAQmx reserves a task name globally.  If a previous HardwareReader was not
-    closed cleanly (e.g. an exception during close(), or the process was killed),
-    the old task may still be registered.  Attempting ``nidaqmx.Task(task_name)``
-    in that state raises DaqError "resource already reserved".
+    The caller's ``task_name`` is used only for its own bookkeeping (dict keys,
+    logs); the actual NI-DAQmx task name gets a unique suffix so a freshly-built
+    reader can never collide with a prior generation's not-yet-released names.
 
-    This helper catches that error, forcibly clears the orphan, and retries once.
+    As a fallback (e.g. a name left registered by a crashed process), this also
+    catches name/resource-conflict errors, clears the orphan, and retries once.
     """
+    unique_name = f"{task_name}__{_TASK_NAME_BASE}_{next(_task_name_counter)}"
     try:
-        return nidaqmx.Task(task_name)
+        return nidaqmx.Task(unique_name)
     except Exception as first_err:
         err_str = str(first_err)
         # NI error -88709 / -50103: "resource is reserved" or "name already exists"
-        if 'reserved' in err_str.lower() or 'already' in err_str.lower() or '-88709' in err_str or '-50103' in err_str:
-            logger.warning(f"Orphaned task '{task_name}' detected – clearing before retry: {first_err}")
-            cleaned = False
+        # NI error -200089: "Task name specified conflicts with an existing task
+        #   name" — happens when a prior HardwareReader's task with the same name
+        #   hasn't been fully released yet (close() releases names asynchronously).
+        # All three resolve the same way: find the lingering task by name, close
+        # it, and retry once.
+        _conflict = (
+            'reserved' in err_str.lower()
+            or 'already' in err_str.lower()
+            or 'conflicts with an existing' in err_str.lower()
+            or '-88709' in err_str
+            or '-50103' in err_str
+            or '-200089' in err_str
+        )
+        if _conflict:
+            logger.warning(f"Task name conflict on '{unique_name}' – clearing orphans before retry: {first_err}")
             try:
                 orphan = nidaqmx.system.System.local()
-                for t in orphan.tasks:
-                    if t.name == task_name:
-                        t.close()
-                        cleaned = True
-                        logger.info(f"Closed orphaned task: {task_name}")
-                        break
+                for t in list(orphan.tasks):
+                    # Close any lingering task that shares our logical base name
+                    # (e.g. a prior generation 'CO_tag_3__<base>_<n>' still held
+                    # by NI from a not-fully-released reader or a crashed run).
+                    if t.name.startswith(f"{task_name}__"):
+                        try:
+                            t.close()
+                            logger.info(f"Closed orphaned task: {t.name}")
+                        except Exception:
+                            pass
             except Exception as cleanup_err:
-                # Cleanup itself failed — re-raise with descriptive context
-                # so the caller doesn't blindly retry into the same error.
-                raise RuntimeError(
-                    f"Could not create task '{task_name}' (resource reserved) "
-                    f"AND could not clean up the orphan: {cleanup_err}. "
-                    f"Restart the service or reboot the machine to release "
-                    f"the NI-DAQmx task lock."
-                ) from first_err
-            if not cleaned:
-                # The task name conflict exists but we didn't find an orphan
-                # we could close (might be reserved by a different process).
-                raise RuntimeError(
-                    f"Task name '{task_name}' is reserved but no orphan was "
-                    f"found in this process. Another DAQ Service or NI MAX "
-                    f"session may be holding the resource."
-                ) from first_err
-            # Retry once now that the orphan is closed
-            return nidaqmx.Task(task_name)
+                logger.warning(f"Orphan cleanup for '{task_name}' failed: {cleanup_err}")
+            # Retry once with a brand-new unique name. Brief pause so NI-DAQmx
+            # finishes releasing the physical channel from the closed orphan.
+            time.sleep(0.1)
+            retry_name = f"{task_name}__{_TASK_NAME_BASE}_{next(_task_name_counter)}"
+            return nidaqmx.Task(retry_name)
         else:
             raise
 
@@ -2016,10 +2037,11 @@ class HardwareReader:
                     task.write(preserved_value)
                     logger.info(f"Added voltage output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value})")
                 else:
-                    # First time - use default value
-                    self.output_values[channel.name] = channel.default_value or 0.0
-                    task.write(channel.default_value or 0.0)
-                    logger.info(f"Added voltage output channel: {channel.name} -> {phys_chan} (default: {channel.default_value or 0.0})")
+                    # First time - use user setpoint, falling back to safe-state default, then 0
+                    initial_v = getattr(channel, 'output_setpoint', 0.0) or channel.default_value or 0.0
+                    self.output_values[channel.name] = initial_v
+                    task.write(initial_v)
+                    logger.info(f"Added voltage output channel: {channel.name} -> {phys_chan} (setpoint: {initial_v}V)")
 
             except Exception as e:
                 logger.error(f"Failed to create voltage output task for {channel.name}: {e}")
@@ -2050,11 +2072,11 @@ class HardwareReader:
                     task.write(preserved_value / 1000.0)  # Convert mA to Amps for hardware
                     logger.info(f"Added current output channel: {channel.name} -> {phys_chan} (preserved value: {preserved_value}mA)")
                 else:
-                    # First time - use default value
-                    default_ma = channel.default_value or 0.0
-                    self.output_values[channel.name] = default_ma
-                    task.write(default_ma / 1000.0)  # Convert mA to Amps for hardware
-                    logger.info(f"Added current output channel: {channel.name} -> {phys_chan} (default: {default_ma}mA)")
+                    # First time - use user setpoint, falling back to safe-state default, then 0
+                    initial_ma = getattr(channel, 'output_setpoint', 0.0) or channel.default_value or 0.0
+                    self.output_values[channel.name] = initial_ma
+                    task.write(initial_ma / 1000.0)  # Convert mA to Amps for hardware
+                    logger.info(f"Added current output channel: {channel.name} -> {phys_chan} (setpoint: {initial_ma}mA)")
 
             except Exception as e:
                 logger.error(f"Failed to create current output task for {channel.name}: {e}")
@@ -2164,6 +2186,67 @@ class HardwareReader:
                         count_direction=CountDirection.COUNT_UP
                     )
                     actual_mode = "count"
+
+                # Apply NI 9361 input conditioning (pull-up + threshold). These
+                # are channel properties exposed by DAQmx after the channel is
+                # added to the task. Best-effort: silently skip if the property
+                # isn't available on this module (older NI modules, simulators,
+                # etc.) — the channel still works at the module's default level.
+                try:
+                    ci_chan = task.ci_channels[channel.name]
+                    threshold_v = max(1.0, min(4.0, getattr(channel, 'voltage_threshold', 1.5)))
+                    pullup = bool(getattr(channel, 'pullup_enabled', False))
+                    # NI 9361 / 9421 / 9423 logic-level threshold
+                    if hasattr(ci_chan, 'ci_thresh_voltage'):
+                        ci_chan.ci_thresh_voltage = threshold_v
+                    # Internal pull-up resistor: DAQmx exposes the setting per
+                    # CI channel type — count_edges, freq, and period each have
+                    # their own `..._logic_lvl_behavior` property. We only added
+                    # one CI channel above (the active mode), so only one of
+                    # these attrs will exist on `ci_chan`; the others get
+                    # skipped silently. PULL_UP = enabled, NONE = disabled.
+                    pullup_val = LogicLvlBehavior.PULL_UP if pullup else LogicLvlBehavior.NONE
+                    pullup_applied = False
+                    for prop_name in ('ci_count_edges_logic_lvl_behavior',
+                                      'ci_freq_logic_lvl_behavior',
+                                      'ci_period_logic_lvl_behavior'):
+                        if hasattr(ci_chan, prop_name):
+                            try:
+                                setattr(ci_chan, prop_name, pullup_val)
+                                pullup_applied = True
+                                logger.debug(f"Counter {channel.name}: set {prop_name}={pullup_val}")
+                                break
+                            except Exception as set_err:
+                                logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
+                                continue
+                    if not pullup_applied:
+                        logger.debug(f"Counter {channel.name}: no logic_lvl_behavior property available for mode={actual_mode}")
+
+                    # Terminal configuration: CI channels accept RSE or DIFF.
+                    # Property is mode-specific like logic_lvl_behavior above.
+                    term_str = (getattr(channel, 'terminal_config', 'rse') or 'rse').strip().lower()
+                    term_val = TerminalConfiguration.RSE if term_str == 'rse' else TerminalConfiguration.DIFF
+                    term_applied = False
+                    for prop_name in ('ci_count_edges_term_cfg',
+                                      'ci_freq_term_cfg',
+                                      'ci_period_term_cfg'):
+                        if hasattr(ci_chan, prop_name):
+                            try:
+                                setattr(ci_chan, prop_name, term_val)
+                                term_applied = True
+                                logger.debug(f"Counter {channel.name}: set {prop_name}={term_val}")
+                                break
+                            except Exception as set_err:
+                                logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
+                                continue
+                    if not term_applied:
+                        logger.debug(f"Counter {channel.name}: no term_cfg property available for mode={actual_mode}")
+
+                    logger.info(f"Counter {channel.name}: threshold={threshold_v}V, pullup={pullup}, term={term_val.name}")
+                except Exception as cond_err:
+                    # Don't fail task creation if the module doesn't expose
+                    # these properties — fall back to hardware defaults.
+                    logger.debug(f"Counter {channel.name}: input conditioning not applied ({cond_err})")
 
                 # Start the task — required before read() will return valid data
                 task.start()

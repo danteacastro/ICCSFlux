@@ -61,6 +61,7 @@ type MqttStatusPayload = Partial<SystemStatus> & {
 /** Channel config payload from backend — dynamic fields, typed at point of use */
 interface MqttChannelConfigPayload {
   channels: Record<string, Record<string, any>>
+  chassis?: Record<string, Record<string, any>>  // Modbus TCP/RTU devices, cDAQ/cRIO chassis
 }
 
 /** Alarm payload from backend */
@@ -187,6 +188,10 @@ const lastMessageTime = ref<number>(0)
 const channelValues = shallowRef<Record<string, ChannelValue>>({})
 const systemStatus = ref<SystemStatus | null>(null)
 const channelConfigs = ref<Record<string, ChannelConfig>>({})
+// Chassis configs from the backend's config/channels broadcast. Includes
+// Modbus devices (TCP + RTU), which have no channels of their own, so the
+// Modbus device list must come from here rather than by scanning channels.
+const chassisConfigs = ref<Record<string, Record<string, any>>>({})
 
 // Channel ownership tracking - prevents value collision between nodes
 // Maps channel name -> nodeId that owns/updates this channel
@@ -1162,6 +1167,20 @@ export function useMqtt(prefix: string = 'nisystem') {
           invert: ch.invert,
           default_state: ch.default_state,
           default_value: ch.default_value,
+          // Analog output user setpoint (mA-OUT / V-OUT)
+          output_setpoint: ch.output_setpoint,
+          // Input terminal configuration (AI + CI channels)
+          terminal_config: ch.terminal_config,
+          // Counter / frequency input config (CTR tab)
+          counter_mode: ch.counter_mode,
+          counter_edge: ch.counter_edge,
+          pulses_per_unit: ch.pulses_per_unit,
+          counter_min_freq: ch.counter_min_freq,
+          counter_max_freq: ch.counter_max_freq,
+          counter_reset_on_read: ch.counter_reset_on_read,
+          // CTR input conditioning (NI 9361): pull-up + comparator threshold
+          pullup_enabled: ch.pullup_enabled,
+          voltage_threshold: ch.voltage_threshold,
           // Safety
           safety_action: ch.safety_action,
           safety_interlock: ch.safety_interlock,
@@ -1180,6 +1199,10 @@ export function useMqtt(prefix: string = 'nisystem') {
 
     channelConfigs.value = configs
     console.debug('Channel configs loaded:', Object.keys(configs).length)
+
+    // Capture chassis configs (Modbus TCP/RTU devices live here, not in channels).
+    // The Modbus device list is built from this in ModbusDeviceConfig.vue.
+    chassisConfigs.value = payload.chassis || {}
   }
 
   function handleAlarm(topic: string, payload: MqttAlarmPayload) {
@@ -2699,6 +2722,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     channelValues,
     systemStatus,
     channelConfigs,
+    chassisConfigs,
 
     // Network health
     dataIsStale,

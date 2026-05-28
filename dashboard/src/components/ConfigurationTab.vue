@@ -233,6 +233,12 @@ const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
 const editMode = ref(false)
 const canEdit = computed(() => editMode.value && hasEditPermission.value && !store.isAcquiring)
 
+// Output setpoint column for analog outputs is operational, not structural —
+// allow writes whenever the user has edit permission (no editMode toggle, no
+// acquiring lockout). When stopped, the value is staged as the startup
+// setpoint; when running, it is also live-written to hardware.
+const canSetOutput = computed(() => hasEditPermission.value)
+
 // cRIO node IDs actually referenced by channels in this project
 const referencedCrioNodeIds = computed(() => {
   const ids = new Set<string>()
@@ -523,8 +529,56 @@ const newChannelForm = ref({
   group: '',
   description: '',  // For tooltips/documentation only
   source_type: 'cdaq' as 'cdaq' | 'crio' | 'opto22',
-  node_id: ''  // For cRIO/Opto22: which remote node
+  node_id: '',  // For cRIO/Opto22: which remote node
+  // Modbus-specific (shown only when channel_type is modbus_register/modbus_coil)
+  modbus_device: '',                  // chassis name of the Modbus device on the left
+  modbus_slave_id: 1,                 // device/unit address (0-255)
+  modbus_function: 'holding' as 'coil' | 'discrete' | 'holding' | 'input',  // function code
+  modbus_address: 0,                  // register/coil address (no offset)
+  modbus_data_type: 'float32' as 'uint16' | 'int16' | 'uint32' | 'int32' | 'float32',
+  modbus_byte_format: 'big' as 'big' | 'little' | 'byteswap' | 'wordswap',  // 32-bit byte/word order
 })
+
+// True when the Add Channel modal is configuring a Modbus channel.
+const isModbusChannel = computed(() =>
+  newChannelForm.value.channel_type === 'modbus_register' ||
+  newChannelForm.value.channel_type === 'modbus_coil'
+)
+
+// Register functions (holding/input) carry numeric data; coil/discrete are
+// boolean — only registers need a data type and byte-format selector.
+const isModbusRegisterFn = computed(() =>
+  newChannelForm.value.modbus_function === 'holding' ||
+  newChannelForm.value.modbus_function === 'input'
+)
+
+// Modbus devices = the chassis the DAQ service broadcasts whose type is a
+// Modbus connection. These are the devices shown in the left panel.
+const modbusDevices = computed(() => {
+  const chassis = mqtt.chassisConfigs.value || {}
+  return Object.entries(chassis)
+    .filter(([, cfg]: [string, any]) => {
+      const type = String(cfg?.type || '').toLowerCase()
+      const conn = String(cfg?.connection || '').toUpperCase()
+      return type.includes('modbus') || conn === 'RTU' || conn === 'MODBUS_RTU' || conn === 'MODBUS_TCP'
+    })
+    .map(([name, cfg]: [string, any]) => {
+      const conn = String(cfg?.connection || '').toUpperCase()
+      const isRtu = conn.includes('RTU') || String(cfg?.type || '').toLowerCase().includes('rtu')
+      const detail = isRtu
+        ? `${cfg?.serial || '?'} @ ${cfg?.modbus_baudrate ?? '?'}`
+        : `${cfg?.ip_address || '?'}:${cfg?.modbus_port ?? 502}`
+      return { name, label: `${name} (${isRtu ? 'RTU' : 'TCP'} ${detail})` }
+    })
+})
+
+// Keep channel_type in sync with the chosen Modbus function code so the modbus
+// fields stay visible and the data-type selector shows for registers only.
+function onModbusFunctionChange() {
+  const fn = newChannelForm.value.modbus_function
+  newChannelForm.value.channel_type =
+    (fn === 'coil' || fn === 'discrete') ? 'modbus_coil' : 'modbus_register'
+}
 
 // Get physical channel placeholder based on source type
 function getPhysicalChannelHint(sourceType: string): string {
@@ -1222,7 +1276,7 @@ const NUMERIC_CHANNEL_FIELDS = new Set([
   'modbus_address', 'modbus_slave_id', 'scale_slope', 'scale_offset',
   'voltage_range', 'current_range_ma', 'pulse_frequency', 'pulse_duty_cycle',
   'eng_units_min', 'eng_units_max', 'pre_scaled_min', 'pre_scaled_max',
-  'scaled_min', 'scaled_max',
+  'scaled_min', 'scaled_max', 'output_setpoint', 'voltage_threshold',
 ])
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1313,51 @@ function onInlineBlurNumeric(channel: string, field: string) {
   updateChannelField(channel, field, parseFloat(inlineEditValue.value))
   inlineEditCell.value = null
   inlineEditValue.value = ''
+}
+
+// OUTPUT column for analog outputs (mA-OUT / V-OUT). Persists output_setpoint
+// in the project config AND pushes the value live to hardware via setOutput
+// when acquisition is running. Clamped to the card's hardware range so a typo
+// can't drive the channel out of spec. Bypasses updateChannelField on purpose
+// because that helper is gated by editMode/!isAcquiring; the OUTPUT column is
+// operational and must work in both states.
+function onInlineBlurOutputSetpoint(channel: string) {
+  const raw = inlineEditValue.value
+  inlineEditCell.value = null
+  inlineEditValue.value = ''
+  if (!canSetOutput.value) return
+  if (raw.trim() === '') return  // empty = no change
+  const val = parseFloat(raw)
+  if (isNaN(val)) {
+    showFeedback('error', `Invalid output value: "${raw}"`)
+    return
+  }
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  const config = store.channels[channel]
+  let min = 0
+  let max = 20
+  if (config?.channel_type === 'voltage_output' || config?.channel_type === 'analog_output') {
+    const vr = Number(config.voltage_range ?? 10)
+    const ao = (config.ao_range || '').toLowerCase()
+    // Bipolar ranges (±5V, ±10V) start at -vr; unipolar (0-5V, 0-10V) at 0
+    min = (ao.includes('pm') || ao.includes('+-') || ao.includes('±') || ao.includes('-')) ? -vr : 0
+    max = vr
+  } else if (config?.channel_type === 'current_output') {
+    min = 0
+    max = Number(config.current_range_ma ?? 20)
+  }
+  const clamped = Math.max(min, Math.min(max, val))
+  mqtt.updateChannelConfig(channel, { output_setpoint: clamped })
+  markDirty()
+  if (store.isAcquiring) {
+    const result = mqtt.setOutput(channel, clamped)
+    if (!result.success && result.error) {
+      showFeedback('error', result.error)
+    }
+  }
 }
 
 /** Return the display value for an inline input.
@@ -1555,7 +1654,14 @@ function openAddChannelModal() {
     group: '',
     description: '',
     source_type: projectMode as 'cdaq' | 'crio' | 'opto22',
-    node_id: ''
+    node_id: '',
+    // Modbus defaults — preselect first device + function matching the type
+    modbus_device: modbusDevices.value[0]?.name || '',
+    modbus_slave_id: 1,
+    modbus_function: defaultChannelType === 'modbus_coil' ? 'coil' : 'holding',
+    modbus_address: 0,
+    modbus_data_type: 'float32',
+    modbus_byte_format: 'big',
   }
 
   // Auto-select first available node for remote modes
@@ -1600,6 +1706,74 @@ function addNewChannel() {
     return
   }
 
+  // ===== Modbus channels: build config from the Modbus-specific fields =====
+  if (isModbusChannel.value) {
+    const f = newChannelForm.value
+    if (!f.modbus_device) {
+      showFeedback('error', 'Select a Modbus device')
+      return
+    }
+    const fn = f.modbus_function
+    // Coil/discrete are boolean → modbus_coil; holding/input → modbus_register
+    const channelType: ChannelType = (fn === 'coil' || fn === 'discrete') ? 'modbus_coil' : 'modbus_register'
+    const physical = `modbus:${fn}:${f.modbus_address}`
+
+    // Duplicate check: same device (slave) + same register address
+    for (const [existingTag, ec] of Object.entries(store.channels)) {
+      if (ec.physical_channel === physical &&
+          (ec as any).module === f.modbus_device &&
+          ((ec as any).modbus_slave_id ?? 1) === f.modbus_slave_id) {
+        showFeedback('error', `${fn} address ${f.modbus_address} on "${f.modbus_device}" (addr ${f.modbus_slave_id}) is already used by "${existingTag}"`)
+        return
+      }
+    }
+
+    // Byte format → byte_order + word_order (32-bit ordering conventions)
+    const byteFmt: Record<string, { byte: string; word: string }> = {
+      big:      { byte: 'big',    word: 'big'    },  // ABCD
+      little:   { byte: 'little', word: 'little' },  // DCBA
+      byteswap: { byte: 'little', word: 'big'    },  // BADC
+      wordswap: { byte: 'big',    word: 'little' },  // CDAB
+    }
+    const order = byteFmt[f.modbus_byte_format] || byteFmt.big
+
+    const config: Record<string, any> = {
+      name: tagName,
+      physical_channel: physical,
+      channel_type: channelType,
+      unit: f.unit || '',
+      group: f.group || 'Default',
+      description: f.description,
+      enabled: true,
+      source_type: 'local',
+      // Device binding: module references the chassis (Modbus device) directly
+      module: f.modbus_device,
+      modbus_slave_id: f.modbus_slave_id,
+      modbus_register_type: fn,
+      modbus_address: f.modbus_address,
+      modbus_scale: 1.0,
+      modbus_offset: 0.0,
+    }
+    // Data type + byte order only meaningful for numeric registers
+    if (channelType === 'modbus_register') {
+      config.modbus_data_type = f.modbus_data_type
+      config.modbus_byte_order = order.byte
+      config.modbus_word_order = order.word
+    } else {
+      config.modbus_data_type = 'bool'
+    }
+
+    // New channels go through the create path (config/channel/update rejects
+    // unknown channels).
+    mqtt.createChannel(tagName, config)
+    showFeedback('success', `Adding Modbus channel: ${tagName}`)
+    channelEnabled.value[tagName] = true
+    closeAddChannelModal()
+    markDirty()
+    return
+  }
+
+  // ===== Non-Modbus channels =====
   // Handle manual entry - use manualPhysicalChannel if "__manual__" was selected
   const physicalChannel = newChannelForm.value.physical_channel === '__manual__'
     ? manualPhysicalChannel.value
@@ -1636,29 +1810,9 @@ function addNewChannel() {
     config.node_id = newChannelForm.value.node_id || ''
   }
 
-  // Add Modbus defaults for new Modbus channels so backend can parse them
-  const ct = newChannelForm.value.channel_type
-  if (ct === 'modbus_register') {
-    config.modbus_register_type = 'holding'
-    config.modbus_data_type = 'float32'
-    config.modbus_byte_order = 'big'
-    config.modbus_word_order = 'big'
-    config.modbus_scale = 1.0
-    config.modbus_offset = 0.0
-    // Build physical_channel in modbus format if user entered a plain address
-    if (resolvedPhysical && !resolvedPhysical.startsWith('modbus:')) {
-      config.physical_channel = `modbus:holding:${resolvedPhysical}`
-    }
-  }
-  if (ct === 'modbus_coil') {
-    config.modbus_register_type = 'coil'
-    // Build physical_channel in modbus format if user entered a plain address
-    if (resolvedPhysical && !resolvedPhysical.startsWith('modbus:')) {
-      config.physical_channel = `modbus:coil:${resolvedPhysical}`
-    }
-  }
-
-  mqtt.updateChannelConfig(tagName, config)
+  // New channels go through the create path (config/channel/update rejects
+  // unknown channels).
+  mqtt.createChannel(tagName, config)
   showFeedback('success', `Adding channel: ${tagName}`)
   channelEnabled.value[tagName] = true
   closeAddChannelModal()
@@ -3208,6 +3362,17 @@ function getCurrentValue(channelName: string): string {
   const value = store.values[channelName]
   if (!value) return '--'
 
+  // Output channels keep their cached "last commanded" value across acquisition
+  // stops (safe-state publishes 0 on stop) — show "--" when not acquiring so
+  // the row matches inputs and the [Xs] age counter doesn't tick up forever.
+  // The persisted setpoint is still visible in the OUTPUT column.
+  if (!store.isAcquiring) {
+    const ct = store.channels[channelName]?.channel_type
+    if (ct === 'voltage_output' || ct === 'current_output' || ct === 'analog_output' || ct === 'digital_output') {
+      return '--'
+    }
+  }
+
   // Check for specific error conditions (from backend validation)
   if (value.status === 'open_thermocouple' || value.openThermocouple) {
     return value.valueString || 'Open TC'
@@ -3695,6 +3860,10 @@ function openChannelConfig(channelName: string) {
         max_freq: config.counter_max_freq ?? 1000,
         pulses_per_unit: config.pulses_per_unit ?? 1.0,
         reset_on_read: config.counter_reset_on_read ?? false,
+        // NI 9361 input conditioning
+        terminal_config: config.terminal_config || 'rse',
+        pullup_enabled: config.pullup_enabled ?? false,
+        voltage_threshold: config.voltage_threshold ?? 1.5,
       }
       break
     case 'resistance':
@@ -3829,6 +3998,13 @@ watch(() => activeTypeTab.value, () => {
 function saveChannelConfig() {
   if (!editingConfig.value) return
 
+  // Apply is gated by Edit mode (same gate as inline editing). Defense-in-depth
+  // in case the button is triggered while disabled (keyboard, etc.).
+  if (!canEdit.value) {
+    showFeedback('error', 'Enable Edit mode to apply changes')
+    return
+  }
+
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
@@ -3951,6 +4127,10 @@ function saveChannelConfig() {
     config.counter_max_freq = mc.max_freq ?? 1000
     config.pulses_per_unit = mc.pulses_per_unit ?? 1.0
     config.counter_reset_on_read = mc.reset_on_read ?? false
+    // NI 9361 input conditioning
+    config.terminal_config = mc.terminal_config ?? 'rse'
+    config.pullup_enabled = mc.pullup_enabled ?? false
+    config.voltage_threshold = Math.max(1.0, Math.min(4.0, mc.voltage_threshold ?? 1.5))
   }
 
   // Resistance types
@@ -4400,8 +4580,11 @@ const tableColumns = computed(() => {
     { key: 'enable', label: 'EN', width: '40px' },
     { key: 'type', label: 'TYPE', width: '50px' },
     { key: 'tag', label: 'TAG', width: '100px' },
-    { key: 'channel', label: 'CHANNEL', width: '220px' },
-    { key: 'description', label: 'DESCRIPTION', width: '260px' },
+    // CHANNEL/DESCRIPTION sized so wide tabs (CTR, mA-OUT, V-OUT) fit beside
+    // the 380px sidebar without clipping. Truncated text still tooltips on
+    // hover, and the per-column drag handle lets users widen as needed.
+    { key: 'channel', label: 'CHANNEL', width: '150px' },
+    { key: 'description', label: 'DESCRIPTION', width: '160px' },
   ]
 
   switch (activeTypeTab.value) {
@@ -4466,11 +4649,14 @@ const tableColumns = computed(() => {
     case 'counter_input':
       return [
         ...baseColumns,
+        { key: 'terminal_config', label: 'TERM', width: '70px' },
         { key: 'mode', label: 'MODE', width: '100px' },
         { key: 'edge', label: 'EDGE', width: '70px' },
         { key: 'pulses_per_unit', label: 'PULSES/UNIT', width: '90px' },
         { key: 'min_freq', label: 'MIN FREQ', width: '80px' },
         { key: 'max_freq', label: 'MAX FREQ', width: '80px' },
+        { key: 'pullup_enabled', label: 'PULLUP', width: '60px', align: 'center' },
+        { key: 'voltage_threshold', label: 'THRESH (V)', width: '80px' },
         { key: 'value', label: 'COUNT', width: '100px' },
         { key: 'reset', label: 'RESET', width: '60px' },
       ]
@@ -4506,6 +4692,7 @@ const tableColumns = computed(() => {
         { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
         { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
+        { key: 'output_setpoint', label: 'OUTPUT', width: '70px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'current_output':
@@ -4516,6 +4703,7 @@ const tableColumns = computed(() => {
         { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
         { key: 'scaled_max', label: 'SCALED MAX', width: '80px' },
         { key: 'unit', label: 'UNIT', width: '60px' },
+        { key: 'output_setpoint', label: 'OUTPUT', width: '70px' },
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'analog_output':
@@ -5430,6 +5618,19 @@ watch(
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'counter'">
+                <!-- TERM — CI channel terminal configuration. NI 9361 etc.
+                     accept RSE (single-ended) or DIFF (differential). -->
+                <td class="editable-cell" @click.stop>
+                  <select
+                    :value="config.terminal_config || 'rse'"
+                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
+                    :disabled="!canEdit"
+                    title="Input terminal configuration"
+                  >
+                    <option value="rse">RSE</option>
+                    <option value="differential">DIFF</option>
+                  </select>
+                </td>
                 <td class="editable-cell" @click.stop>
                   <select
                     :value="config.counter_mode || 'count'"
@@ -5454,8 +5655,11 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    :value="config.pulses_per_unit ?? 1.0"
-                    @change="updateChannelField(name, 'pulses_per_unit', parseFloat(($event.target as HTMLInputElement).value) || 1.0)"
+                    :value="inlineValue(name, 'pulses_per_unit', config.pulses_per_unit ?? 1.0)"
+                    @focus="onInlineFocus(name, 'pulses_per_unit', config.pulses_per_unit ?? 1.0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'pulses_per_unit')"
+                    @keyup.enter="($event.target as HTMLInputElement).blur()"
                     class="inline-input"
                     placeholder="1.0"
                     step="0.1"
@@ -5467,8 +5671,11 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    :value="config.counter_min_freq ?? 0.1"
-                    @change="updateChannelField(name, 'counter_min_freq', parseFloat(($event.target as HTMLInputElement).value) || 0.1)"
+                    :value="inlineValue(name, 'counter_min_freq', config.counter_min_freq ?? 0.1)"
+                    @focus="onInlineFocus(name, 'counter_min_freq', config.counter_min_freq ?? 0.1)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'counter_min_freq')"
+                    @keyup.enter="($event.target as HTMLInputElement).blur()"
                     class="inline-input"
                     placeholder="0.1"
                     step="0.1"
@@ -5480,14 +5687,47 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    :value="config.counter_max_freq ?? 1000"
-                    @change="updateChannelField(name, 'counter_max_freq', parseFloat(($event.target as HTMLInputElement).value) || 1000)"
+                    :value="inlineValue(name, 'counter_max_freq', config.counter_max_freq ?? 1000)"
+                    @focus="onInlineFocus(name, 'counter_max_freq', config.counter_max_freq ?? 1000)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'counter_max_freq')"
+                    @keyup.enter="($event.target as HTMLInputElement).blur()"
                     class="inline-input"
                     placeholder="1000"
                     step="1"
                     min="0"
                     :disabled="!canEdit || (config.counter_mode || 'count') === 'count'"
                     :title="(config.counter_mode || 'count') === 'count' ? 'Not used in count mode' : 'Maximum expected frequency (Hz)'"
+                  />
+                </td>
+                <!-- PULLUP — checkbox, enables the module's internal pull-up resistor for
+                     open-collector / open-drain sensors (e.g., NI 9361). -->
+                <td class="editable-cell" @click.stop style="text-align: center;">
+                  <input
+                    type="checkbox"
+                    :checked="!!config.pullup_enabled"
+                    @change="updateChannelField(name, 'pullup_enabled', ($event.target as HTMLInputElement).checked)"
+                    :disabled="!canEdit"
+                    title="Enable internal pull-up resistor (for open-collector inputs)"
+                  />
+                </td>
+                <!-- THRESHOLD — comparator voltage that decides logic-high vs logic-low
+                     on the counter input. NI 9361 supports 1.0–4.0 V. -->
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    :value="inlineValue(name, 'voltage_threshold', config.voltage_threshold ?? 1.5)"
+                    @focus="onInlineFocus(name, 'voltage_threshold', config.voltage_threshold ?? 1.5)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurNumeric(name, 'voltage_threshold')"
+                    @keyup.enter="($event.target as HTMLInputElement).blur()"
+                    class="inline-input"
+                    placeholder="1.5"
+                    step="0.1"
+                    min="1.0"
+                    max="4.0"
+                    :disabled="!canEdit"
+                    title="Logic-high threshold voltage (1.0–4.0 V, clamped on save). Below = LOW, above = HIGH."
                   />
                 </td>
               </template>
@@ -5630,6 +5870,20 @@ watch(
                     placeholder="unit"
                   />
                 </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    step="any"
+                    :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurOutputSetpoint(name)"
+                    @keydown.enter="($event.target as HTMLInputElement).blur()"
+                    class="inline-input narrow"
+                    :disabled="!canSetOutput"
+                    :title="`Write value to ${name} (range: ±${config.voltage_range ?? 10}V). Saved as startup setpoint and pushed live when running.`"
+                  />
+                </td>
                 <td class="col-value" :class="getAlarmStatus(name)">
                   <span class="value">{{ getCurrentValue(name) }}</span>
                 </td>
@@ -5690,6 +5944,22 @@ watch(
                     class="inline-input"
                     :disabled="!canEdit"
                     placeholder="unit"
+                  />
+                </td>
+                <td class="editable-cell" @click.stop>
+                  <input
+                    type="number"
+                    min="0"
+                    :max="config.current_range_ma ?? 20"
+                    step="any"
+                    :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurOutputSetpoint(name)"
+                    @keydown.enter="($event.target as HTMLInputElement).blur()"
+                    class="inline-input narrow"
+                    :disabled="!canSetOutput"
+                    :title="`Write value to ${name} (range: 0–${config.current_range_ma ?? 20} mA). Saved as startup setpoint and pushed live when running.`"
                   />
                 </td>
                 <td class="col-value" :class="getAlarmStatus(name)">
@@ -6555,6 +6825,33 @@ watch(
                     Reset on Read (totalizer mode)
                   </label>
                 </div>
+                <!-- NI 9361 input conditioning -->
+                <div class="form-row">
+                  <label>Terminal Configuration</label>
+                  <select v-model="editingConfig.moduleConfig.terminal_config">
+                    <option value="rse">RSE (single-ended)</option>
+                    <option value="differential">Differential</option>
+                  </select>
+                </div>
+                <div class="form-row checkbox-row">
+                  <label>
+                    <input type="checkbox" v-model="editingConfig.moduleConfig.pullup_enabled" />
+                    Enable Pull-Up Resistor
+                  </label>
+                  <span class="form-hint">For open-collector / open-drain sensors</span>
+                </div>
+                <div class="form-row">
+                  <label>Threshold Voltage (V)</label>
+                  <input
+                    type="number"
+                    v-model.number="editingConfig.moduleConfig.voltage_threshold"
+                    step="0.1"
+                    min="1.0"
+                    max="4.0"
+                    placeholder="1.5"
+                  />
+                  <span class="form-hint">Logic-high threshold (1.0–4.0 V, clamped on save)</span>
+                </div>
               </div>
             </template>
 
@@ -6825,7 +7122,12 @@ watch(
 
           <div class="panel-footer">
             <button class="btn btn-secondary" @click="closeConfigPanel">Cancel</button>
-            <button class="btn btn-primary" @click="saveChannelConfig">Apply</button>
+            <button
+              class="btn btn-primary"
+              @click="saveChannelConfig"
+              :disabled="!canEdit"
+              :title="canEdit ? 'Apply changes' : 'Enable Edit mode to apply changes'"
+            >Apply</button>
           </div>
         </template>
       </div>
@@ -7334,7 +7636,85 @@ watch(
               <span class="form-hint">Unique identifier (no spaces)</span>
             </div>
 
-            <div class="form-row">
+            <!-- ===== Modbus channel configuration ===== -->
+            <template v-if="isModbusChannel">
+              <div class="form-row">
+                <label>Modbus Device <span class="required">*</span></label>
+                <select v-model="newChannelForm.modbus_device" class="physical-channel-select">
+                  <option v-if="modbusDevices.length === 0" value="" disabled>
+                    No Modbus devices — add one with "Add Device" first
+                  </option>
+                  <option v-else value="" disabled>-- Select device --</option>
+                  <option v-for="dev in modbusDevices" :key="dev.name" :value="dev.name">
+                    {{ dev.label }}
+                  </option>
+                </select>
+                <span class="form-hint">The serial/TCP device this channel reads from</span>
+              </div>
+
+              <div class="form-row-group">
+                <div class="form-row half">
+                  <label>Device Address</label>
+                  <input
+                    type="number"
+                    v-model.number="newChannelForm.modbus_slave_id"
+                    min="0"
+                    max="255"
+                    step="1"
+                    placeholder="1"
+                  />
+                  <span class="form-hint">Modbus unit/slave ID (0–255)</span>
+                </div>
+                <div class="form-row half">
+                  <label>Function Code</label>
+                  <select v-model="newChannelForm.modbus_function" @change="onModbusFunctionChange">
+                    <option value="coil">Coil (x1)</option>
+                    <option value="discrete">Discrete Input (x2)</option>
+                    <option value="holding">Holding Register (x3)</option>
+                    <option value="input">Input Register (x4)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label>Register Address</label>
+                <input
+                  type="number"
+                  v-model.number="newChannelForm.modbus_address"
+                  min="0"
+                  step="1"
+                  placeholder="0"
+                />
+                <span class="form-hint">Raw address (no 40001/30001 offset)</span>
+              </div>
+
+              <!-- Data type + byte format apply to numeric registers only -->
+              <template v-if="isModbusRegisterFn">
+                <div class="form-row">
+                  <label>Register Length / Data Type</label>
+                  <select v-model="newChannelForm.modbus_data_type">
+                    <option value="uint16">Unsigned Int — 1 register (uint16)</option>
+                    <option value="int16">Signed Int — 1 register (int16)</option>
+                    <option value="uint32">Unsigned Long — 2 registers (uint32)</option>
+                    <option value="int32">Signed Long — 2 registers (int32)</option>
+                    <option value="float32">Float — 2 registers (float32)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Byte Format</label>
+                  <select v-model="newChannelForm.modbus_byte_format">
+                    <option value="big">Big Endian (ABCD)</option>
+                    <option value="little">Little Endian (DCBA)</option>
+                    <option value="byteswap">Byte Swap (BADC)</option>
+                    <option value="wordswap">Word Swap (CDAB)</option>
+                  </select>
+                  <span class="form-hint">Byte/word order for multi-register values</span>
+                </div>
+              </template>
+            </template>
+
+            <!-- ===== Non-Modbus: physical hardware channel ===== -->
+            <div class="form-row" v-else>
               <label>Physical Channel</label>
               <!-- Always show a dropdown for physical channel selection -->
               <select
@@ -8703,14 +9083,18 @@ watch(
 .main-content {
   display: flex;
   flex: 1;
+  width: 100%;
   overflow: hidden;
 }
 
 /* Table Container — scrollable wrapper with sticky header */
 .table-container {
   flex: 1;
+  min-width: 0;  /* allow shrinking so the sidebar gets its 380px on the right */
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;  /* horizontal scroll for wide tables (output/CTR tabs) when
+                       sidebar is open — silent clipping would otherwise hide
+                       ALARM/CONFIG columns behind the sidebar */
   padding: 0 16px;
   transition: flex 0.3s;
   scrollbar-width: thin;
@@ -8735,7 +9119,10 @@ watch(
 }
 
 .table-container.with-panel {
-  flex: 0.6;
+  /* Fill ALL space the fixed-width panel doesn't use. flex-grow must be >= 1
+   * here: a value < 1 (was 0.6) only claims that fraction of the free space,
+   * leaving a blank gap between the table and the docked panel. */
+  flex: 1;
 }
 
 .channel-table {
@@ -9241,9 +9628,15 @@ watch(
   color: var(--text-secondary);
 }
 
-/* Config Panel */
+/* Config Panel — always docked to the right edge of .main-content. The
+ * margin-left:auto + flex-shrink:0 combo guarantees the panel claims a
+ * 380px slot at the right regardless of any other siblings .main-content
+ * may render conditionally (Modbus/REST/OPC-UA device configs, batch
+ * action bar, etc.) on other type tabs. */
 .config-panel {
   width: 0;
+  flex-shrink: 0;
+  margin-left: auto;
   overflow: hidden;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-color);
@@ -9445,6 +9838,20 @@ watch(
 
 .btn-primary:hover {
   background: var(--color-accent-dark);
+}
+
+/* Disabled buttons (e.g. panel Apply when not in Edit mode) */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  background: var(--color-accent);  /* cancel the hover brighten while disabled */
+}
+
+.btn-secondary:disabled:hover {
+  background: var(--btn-secondary-bg);
 }
 
 /* Empty State */

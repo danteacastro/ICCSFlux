@@ -978,6 +978,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
         // Analog outputs → setpoint control
         case 'analog_output':
+        case 'voltage_output':
+        case 'current_output':
           return 'setpoint'
 
         // Default fallback
@@ -3714,6 +3716,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
       case 'digital_output':
         return 'toggle'
       case 'analog_output':
+      case 'voltage_output':
+      case 'current_output':
         return 'setpoint'
       default:
         return 'numeric'

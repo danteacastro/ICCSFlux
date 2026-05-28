@@ -77,35 +77,40 @@ onMounted(() => {
 })
 
 function loadDevices() {
-  // Get chassis config from channelConfigs (published by DAQ service)
-  const channelConfigs = mqtt.channelConfigs.value
-  // Look for modbus-related chassis in the configs
-  devices.value = []
+  // Modbus devices are chassis entries, not channels — a freshly-added device
+  // has no channels yet, so we read the chassis configs the DAQ service
+  // broadcasts (config/channels → payload.chassis), not the channel list.
+  const chassis = mqtt.chassisConfigs.value || {}
+  const loaded: ModbusDevice[] = []
 
-  // Scan channelConfigs for modbus devices based on module/chassis info
-  for (const [_channelName, config] of Object.entries(channelConfigs)) {
-    const chassis = config?.chassis || ''
-    const conn = config?.connection?.toUpperCase() || ''
-    if (conn === 'TCP' || conn === 'RTU' || conn === 'MODBUS_TCP' || conn === 'MODBUS_RTU') {
-      // Check if we already have this device
-      if (!devices.value.some(d => d.name === chassis)) {
-        devices.value.push({
-          name: chassis || 'modbus_device',
-          connection_type: conn.includes('RTU') ? 'rtu' : 'tcp',
-          enabled: true,
-          ip_address: config?.ip_address || '',
-          port: config?.modbus_port || 502,
-          serial_port: config?.serial || '',
-          baudrate: config?.modbus_baudrate || 9600,
-          parity: config?.modbus_parity || 'E',
-          stopbits: config?.modbus_stopbits || 1,
-          bytesize: config?.modbus_bytesize || 8,
-          timeout: config?.modbus_timeout || 1.0,
-          retries: config?.modbus_retries || 3
-        })
-      }
+  for (const [name, cfg] of Object.entries(chassis)) {
+    const conn = String((cfg as any)?.connection || '').toUpperCase()
+    const type = String((cfg as any)?.type || '').toLowerCase()
+    // Only Modbus chassis. Identify by chassis_type ('modbus_tcp'/'modbus_rtu')
+    // — filtering on `connection` alone is unsafe because a networked cDAQ
+    // chassis can also report connection='TCP'. cDAQ/cRIO chassis are managed
+    // elsewhere and must not appear in the Modbus device list.
+    const isModbus = type.includes('modbus') || conn === 'RTU' || conn === 'MODBUS_RTU' || conn === 'MODBUS_TCP'
+    if (!isModbus) {
+      continue
     }
+    loaded.push({
+      name,
+      connection_type: (conn.includes('RTU') || type.includes('rtu')) ? 'rtu' : 'tcp',
+      enabled: (cfg as any)?.enabled !== false,
+      ip_address: (cfg as any)?.ip_address || '',
+      port: (cfg as any)?.modbus_port ?? 502,
+      serial_port: (cfg as any)?.serial || '',
+      baudrate: (cfg as any)?.modbus_baudrate ?? 9600,
+      parity: (cfg as any)?.modbus_parity || 'E',
+      stopbits: (cfg as any)?.modbus_stopbits ?? 1,
+      bytesize: (cfg as any)?.modbus_bytesize ?? 8,
+      timeout: (cfg as any)?.modbus_timeout ?? 1.0,
+      retries: (cfg as any)?.modbus_retries ?? 3,
+    })
   }
+
+  devices.value = loaded
 }
 
 function subscribeToStatus() {
@@ -285,8 +290,9 @@ function showFeedback(type: 'success' | 'error', message: string) {
   }, 3000)
 }
 
-// Watch for config updates from backend
-watch(() => mqtt.channelConfigs.value, () => {
+// Watch for config updates from backend — rebuild the device list when the
+// DAQ service re-broadcasts chassis configs (e.g. after add/update/delete).
+watch(() => mqtt.chassisConfigs.value, () => {
   loadDevices()
 }, { deep: true })
 </script>

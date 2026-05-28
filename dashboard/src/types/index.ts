@@ -1,4 +1,4 @@
-// Channel and system types matching the Python backend
+ // Channel and system types matching the Python backend
 
 export type ChannelType =
   // Analog Inputs
@@ -186,6 +186,10 @@ export interface ChannelConfig {
   counter_reset_on_read?: boolean  // For totalizer mode
   counter_min_freq?: number    // Minimum expected frequency in Hz (for nidaqmx)
   counter_max_freq?: number    // Maximum expected frequency in Hz (for nidaqmx)
+  // Input conditioning (NI 9361): pull-up for open-collector sensors and
+  // comparator threshold (1.0–4.0 V) for the logic-high decision point.
+  pullup_enabled?: boolean
+  voltage_threshold?: number
 
   // Resistance-specific
   resistance_range?: number    // Maximum expected resistance in Ohms
@@ -241,6 +245,11 @@ export interface ChannelConfig {
   invert?: boolean
   default_value?: number
   default_state?: boolean
+
+  // Analog output user setpoint (voltage_output / current_output) — value to
+  // write to the channel; persisted in project config, applied on acquisition
+  // start, and pushed live when edited from the Config tab.
+  output_setpoint?: number
   digital_alarm_enabled?: boolean    // Enable DI state alarm
   digital_expected_state?: 'HIGH' | 'LOW'  // Expected normal state
   digital_debounce_ms?: number       // Debounce time in ms

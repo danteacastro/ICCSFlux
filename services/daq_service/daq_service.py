@@ -351,6 +351,21 @@ class DAQService:
         # Legacy: _stop_command_time removed — state sync now uses dedicated /state topic
         logger.info("Acquisition state initialized: STOPPED (safe startup)")
 
+        # Set when a structural channel edit (terminal_config, counter_mode,
+        # ranges, pull-up, threshold, etc.) is made while stopped. The next
+        # acquisition start rebuilds the hardware tasks so the change actually
+        # reaches the hardware instead of reusing the stale task. Cleared on
+        # hardware reinit. Avoids requiring an explicit "Apply" click.
+        self._hardware_config_dirty = False
+
+        # Serializes hardware-reader reinitialization. Multiple threads can ask
+        # for a reinit at once — e.g. a START-triggered rebuild on the command
+        # thread AND the scan loop's "reader unhealthy" auto-reinit (which fires
+        # precisely because the rebuild momentarily closed the reader). Without
+        # this lock the two build new readers concurrently and collide on the
+        # same physical channels (NI-DAQmx -200022 "resource already reserved").
+        self._reinit_lock = threading.Lock()
+
         # Command queue: decouples MQTT callback thread from message processing
         # Critical commands (acquire, recording, session, safe-state) use per-topic
         # callbacks and bypass this queue. All other messages go through here.
@@ -831,7 +846,7 @@ class DAQService:
                     physical_channel=ch_data.get("physical_channel", ""),
                     channel_type=channel_type,
                     description=ch_data.get("description", ""),  # For tooltips/documentation only
-                    units=ch_data.get("units", ""),
+                    units=ch_data.get("units", ch_data.get("unit", "")),  # frontend saves 'unit' (singular)
                     visible=ch_data.get("visible", True),
                     group=ch_data.get("group", ""),
                     scale_slope=float(ch_data.get("scale_slope", 1.0)),
@@ -855,10 +870,20 @@ class DAQService:
                     rtd_resistance=float(ch_data.get("rtd_resistance", 100.0)),
                     rtd_wiring=ch_data.get("rtd_wiring", ch_data.get("resistance_config", "4-wire")),
                     rtd_current=float(ch_data.get("rtd_current", ch_data.get("excitation_current", 0.001))),
+                    # Counter / frequency input
+                    counter_mode=ch_data.get("counter_mode", "count"),
+                    counter_edge=ch_data.get("counter_edge", "rising"),
+                    pulses_per_unit=float(ch_data.get("pulses_per_unit", 1.0)),
+                    counter_min_freq=float(ch_data.get("counter_min_freq", 0.1)),
+                    counter_max_freq=float(ch_data.get("counter_max_freq", 1000.0)),
+                    counter_reset_on_read=bool(ch_data.get("counter_reset_on_read", False)),
+                    pullup_enabled=bool(ch_data.get("pullup_enabled", False)),
+                    voltage_threshold=max(1.0, min(4.0, float(ch_data.get("voltage_threshold", 1.5)))),
                     # Digital
                     invert=ch_data.get("invert", False),
                     default_state=ch_data.get("default_state", False),
                     default_value=float(ch_data.get("default_value", 0.0)),
+                    output_setpoint=float(ch_data.get("output_setpoint", 0.0)),
                     # Legacy limits (for backward compatibility)
                     low_limit=float(ch_data["low_limit"]) if ch_data.get("low_limit") is not None else None,
                     high_limit=float(ch_data["high_limit"]) if ch_data.get("high_limit") is not None else None,
@@ -5493,6 +5518,17 @@ Unit conversions:
                 logger.info("No project or channels - reloading configuration from system.ini...")
                 self._load_config()
             logger.info(f"[TIMING] Config check: {(time.time()-_start_time)*1000:.1f}ms")
+
+            # If a structural channel edit was made while stopped, rebuild the
+            # hardware tasks now so the change actually reaches the hardware
+            # (e.g. counter_mode count↔frequency, terminal_config, ranges).
+            # Without this, START reuses the stale task built at project load.
+            if (self._hardware_config_dirty and self.hardware_reader is not None
+                    and not self.config.system.simulation_mode):
+                logger.info("Rebuilding hardware tasks — channel config changed since last build")
+                self._reinit_hardware_reader()
+                logger.info(f"[TIMING] Hardware rebuild: {(time.time()-_start_time)*1000:.1f}ms")
+
             self._publish_channel_config()
             self._publish_channel_claims()
             logger.info(f"[TIMING] Channel config publish: {(time.time()-_start_time)*1000:.1f}ms")
@@ -7860,12 +7896,32 @@ Unit conversions:
             logger.error(f"Failed to update system config: {e}")
             self._publish_config_response(False, f"System config update failed: {str(e)}")
 
-    def _reinit_hardware_reader(self):
-        """Reinitialize hardware reader with current in-memory config.
+    def _reinit_hardware_reader(self, skip_if_busy: bool = False):
+        """Reinitialize the hardware reader with current in-memory config.
 
-        This does NOT reload config from file - it uses self.config as-is.
-        Preserves output state (DO/AO) across reinitialization.
+        Serialized via _reinit_lock so two threads can never build readers
+        concurrently (which collides on physical channels — NI-DAQmx -200022).
+
+        skip_if_busy: when True (the scan-loop auto-reinit), return immediately
+        if another reinit already holds the lock — the in-progress rebuild will
+        restore a healthy reader, so a second concurrent attempt is both
+        unnecessary and harmful. Explicit callers (START rebuild, Apply, bulk
+        create) leave it False so they block and are guaranteed to run.
         """
+        acquired = self._reinit_lock.acquire(blocking=not skip_if_busy)
+        if not acquired:
+            logger.info("Hardware reinit already in progress — skipping duplicate request")
+            return
+        try:
+            self._reinit_hardware_reader_locked()
+        finally:
+            self._reinit_lock.release()
+
+    def _reinit_hardware_reader_locked(self):
+        """Actual reinit work. Must only be called while holding _reinit_lock."""
+        # Hardware is about to be rebuilt from current config — clear the dirty flag.
+        self._hardware_config_dirty = False
+
         # Preserve output values before closing old hardware reader
         preserved_output_values = {}
         if self.hardware_reader:
@@ -7876,6 +7932,11 @@ Unit conversions:
             except Exception as e:
                 logger.warning(f"Error closing hardware reader: {e}")
             self.hardware_reader = None
+            # NI-DAQmx releases task names asynchronously after close(). Without
+            # a settle pause, recreating tasks with the same names immediately
+            # raises -200089 ("Task name specified conflicts with an existing
+            # task name").
+            time.sleep(0.1)
 
         # Clean up existing simulator
         if self.simulator:
@@ -8471,7 +8532,7 @@ Unit conversions:
                 physical_channel=ch_data.get("physical_channel", ""),
                 channel_type=channel_type,
                 description=ch_data.get("description", ""),
-                units=ch_data.get("units", ""),
+                units=ch_data.get("units", ch_data.get("unit", "")),  # frontend saves 'unit' (singular)
                 visible=ch_data.get("visible", True),
                 group=ch_data.get("group", ""),
                 scale_slope=float(ch_data.get("scale_slope", 1.0)),
@@ -8497,6 +8558,16 @@ Unit conversions:
                 invert=ch_data.get("invert", False),
                 default_state=ch_data.get("default_state", False),
                 default_value=float(ch_data.get("default_value", 0.0)),
+                output_setpoint=float(ch_data.get("output_setpoint", 0.0)),
+                # Counter / frequency input
+                counter_mode=ch_data.get("counter_mode", "count"),
+                counter_edge=ch_data.get("counter_edge", "rising"),
+                pulses_per_unit=float(ch_data.get("pulses_per_unit", 1.0)),
+                counter_min_freq=float(ch_data.get("counter_min_freq", 0.1)),
+                counter_max_freq=float(ch_data.get("counter_max_freq", 1000.0)),
+                counter_reset_on_read=bool(ch_data.get("counter_reset_on_read", False)),
+                pullup_enabled=bool(ch_data.get("pullup_enabled", False)),
+                voltage_threshold=max(1.0, min(4.0, float(ch_data.get("voltage_threshold", 1.5)))),
                 low_limit=float(ch_data["low_limit"]) if ch_data.get("low_limit") is not None else None,
                 high_limit=float(ch_data["high_limit"]) if ch_data.get("high_limit") is not None else None,
                 low_warning=float(ch_data["low_warning"]) if ch_data.get("low_warning") is not None else None,
@@ -12531,7 +12602,8 @@ Unit conversions:
                         ch_dict[attr] = val
 
                 # Counter input params
-                for attr in ('counter_mode', 'counter_edge', 'counter_min_freq', 'counter_max_freq'):
+                for attr in ('counter_mode', 'counter_edge', 'counter_min_freq', 'counter_max_freq',
+                             'pullup_enabled', 'voltage_threshold'):
                     val = getattr(channel, attr, None)
                     if val is not None:
                         ch_dict[attr] = val
@@ -13708,11 +13780,6 @@ Unit conversions:
             self._publish_config_response(False, "Permission denied")
             return
 
-        if self.acquiring:
-            logger.warning("Channel update rejected - acquisition running")
-            self._publish_config_response(False, "Stop acquisition before updating channels")
-            return
-
         if not isinstance(payload, dict):
             self._publish_config_response(False, "Invalid payload")
             return
@@ -13724,6 +13791,17 @@ Unit conversions:
 
         # Get the config sub-object (for structured payloads from dashboard)
         config_data = payload.get('config', payload)
+
+        # Operational fields are runtime controls, not structural config —
+        # allow them through during acquisition. Structural changes (raw/scaled
+        # ranges, terminal config, alarms, etc) still require a stop.
+        OPERATIONAL_FIELDS = {'output_setpoint'}
+        if self.acquiring:
+            structural = set(config_data.keys()) - OPERATIONAL_FIELDS - {'channel', 'new_name'}
+            if structural:
+                logger.warning("Channel update rejected - acquisition running")
+                self._publish_config_response(False, "Stop acquisition before updating channels")
+                return
 
         # IEC 61511: Check if safety-related fields are being modified during acquisition
         if self.project_manager:
@@ -13876,6 +13954,15 @@ Unit conversions:
             channel.default_state = bool(config_data['default_state'])
         if 'default_value' in config_data:
             channel.default_value = float(config_data['default_value'])
+        if 'output_setpoint' in config_data:
+            channel.output_setpoint = float(config_data['output_setpoint'])
+            # Sync hardware_reader's preserved-value cache so the next acquisition
+            # start writes this setpoint rather than a stale cached value.
+            try:
+                if getattr(self, 'hardware_reader', None) is not None:
+                    self.hardware_reader.output_values[channel_name] = channel.output_setpoint
+            except Exception:
+                pass
 
         # Safety parameters
         if 'safety_action' in config_data:
@@ -13960,6 +14047,11 @@ Unit conversions:
             channel.counter_min_freq = float(config_data['counter_min_freq'])
         if 'counter_max_freq' in config_data:
             channel.counter_max_freq = float(config_data['counter_max_freq'])
+        if 'pullup_enabled' in config_data:
+            channel.pullup_enabled = bool(config_data['pullup_enabled'])
+        if 'voltage_threshold' in config_data:
+            # Clamp to NI 9361 supported range
+            channel.voltage_threshold = max(1.0, min(4.0, float(config_data['voltage_threshold'])))
 
         # Modbus-specific parameters
         if 'modbus_register_type' in config_data:
@@ -14041,6 +14133,22 @@ Unit conversions:
             logger.warning(f"Scaling validation warning for {channel_name}: {error_msg}")
 
         logger.info(f"Updated channel {channel_name} (type: {channel.channel_type.value})")
+
+        # Mark hardware dirty if a field that affects how the DAQmx task is
+        # built was changed. These only take effect when the task is rebuilt,
+        # so the next acquisition start will reinitialize the hardware reader.
+        _HARDWARE_AFFECTING_FIELDS = {
+            'physical_channel', 'channel_type', 'terminal_config',
+            'voltage_range', 'current_range_ma', 'ao_range',
+            'counter_mode', 'counter_edge', 'counter_min_freq', 'counter_max_freq',
+            'pullup_enabled', 'voltage_threshold',
+            'thermocouple_type', 'cjc_source', 'rtd_type', 'rtd_wiring', 'rtd_current',
+            'strain_config', 'iepe_coupling', 'resistance_wiring',
+            'pulse_frequency', 'pulse_duty_cycle', 'pulse_idle_state',
+        }
+        if _HARDWARE_AFFECTING_FIELDS.intersection(config_data.keys()):
+            self._hardware_config_dirty = True
+            logger.debug(f"Channel {channel_name}: hardware-affecting change — will rebuild tasks on next start")
 
         # Audit trail: Log channel configuration change
         if self.audit_trail:
@@ -14170,7 +14278,7 @@ Unit conversions:
                 physical_channel=config_data.get('physical_channel', ''),
                 channel_type=channel_type,
                 description=config_data.get('description', ''),
-                units=config_data.get('units', ''),
+                units=config_data.get('units', config_data.get('unit', '')),  # frontend saves 'unit' (singular)
                 terminal_config=_terminal_coerced,
                 visible=config_data.get('visible', True),
                 group=config_data.get('group', ''),
@@ -14192,10 +14300,14 @@ Unit conversions:
                 rtd_type=config_data.get('rtd_type', 'Pt100'),
                 rtd_wiring=config_data.get('rtd_wiring', config_data.get('resistance_config', '4-wire')),
                 rtd_current=float(config_data.get('rtd_current', 0.001)),
-                counter_mode=config_data.get('counter_mode', 'frequency'),
+                counter_mode=config_data.get('counter_mode', 'count'),
                 pulses_per_unit=float(config_data.get('pulses_per_unit', 1.0)),
                 counter_edge=config_data.get('counter_edge', 'rising'),
+                counter_min_freq=float(config_data.get('counter_min_freq', 0.1)),
+                counter_max_freq=float(config_data.get('counter_max_freq', 1000.0)),
                 counter_reset_on_read=bool(config_data.get('counter_reset_on_read', False)),
+                pullup_enabled=bool(config_data.get('pullup_enabled', False)),
+                voltage_threshold=max(1.0, min(4.0, float(config_data.get('voltage_threshold', 1.5)))),
                 # Modbus-specific parameters
                 modbus_register_type=config_data.get('modbus_register_type', 'holding'),
                 modbus_address=int(config_data.get('modbus_address', 0)),
@@ -14210,6 +14322,7 @@ Unit conversions:
                 invert=bool(config_data.get('invert', False)),
                 default_state=bool(config_data.get('default_state', False)),
                 default_value=float(config_data.get('default_value', 0.0)),
+                output_setpoint=float(config_data.get('output_setpoint', 0.0)),
                 low_limit=float(config_data['low_limit']) if config_data.get('low_limit') is not None else None,
                 high_limit=float(config_data['high_limit']) if config_data.get('high_limit') is not None else None,
                 low_warning=float(config_data['low_warning']) if config_data.get('low_warning') is not None else None,
@@ -14238,6 +14351,12 @@ Unit conversions:
             # Update dependency tracker
             if self.dependency_tracker:
                 self.dependency_tracker.refresh(self.config)
+
+            # Modbus channels are polled by the Modbus reader, which scans the
+            # channel list at init time — re-init so the new channel starts
+            # being polled (it was created after the reader was last built).
+            if channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+                self._init_modbus_reader()
 
             logger.info(f"Created channel {channel_name} (type: {channel_type.value})")
             self._publish_channel_config()
@@ -14511,6 +14630,16 @@ Unit conversions:
                     invert=ch_config.get('invert', False),
                     default_state=ch_config.get('default_state', False),
                     default_value=float(ch_config.get('default_value', 0.0)),
+                    output_setpoint=float(ch_config.get('output_setpoint', 0.0)),
+                    # Counter / frequency input
+                    counter_mode=ch_config.get('counter_mode', 'count'),
+                    counter_edge=ch_config.get('counter_edge', 'rising'),
+                    pulses_per_unit=float(ch_config.get('pulses_per_unit', 1.0)),
+                    counter_min_freq=float(ch_config.get('counter_min_freq', 0.1)),
+                    counter_max_freq=float(ch_config.get('counter_max_freq', 1000.0)),
+                    counter_reset_on_read=bool(ch_config.get('counter_reset_on_read', False)),
+                    pullup_enabled=bool(ch_config.get('pullup_enabled', False)),
+                    voltage_threshold=max(1.0, min(4.0, float(ch_config.get('voltage_threshold', 1.5)))),
                     # Logging
                     log=ch_config.get('log', True),
                     log_interval_ms=int(ch_config.get('log_interval_ms', 1000)),
@@ -15384,6 +15513,7 @@ Unit conversions:
                     "invert": ch.invert,
                     "default_state": ch.default_state,
                     "default_value": ch.default_value,
+                    "output_setpoint": getattr(ch, 'output_setpoint', 0.0),
                     # Safety
                     "safety_action": ch.safety_action,
                     "safety_interlock": ch.safety_interlock,
@@ -15527,6 +15657,8 @@ Unit conversions:
                 section['default_state'] = 'true'
             if ch.default_value != 0.0:
                 section['default_value'] = str(ch.default_value)
+            if getattr(ch, 'output_setpoint', 0.0) != 0.0:
+                section['output_setpoint'] = str(ch.output_setpoint)
 
             # Logging interval (only save if not default)
             if ch.log_interval_ms != 1000:
@@ -15583,6 +15715,10 @@ Unit conversions:
                 section['counter_min_freq'] = str(ch.counter_min_freq)
             if ch.counter_max_freq != 1000.0:
                 section['counter_max_freq'] = str(ch.counter_max_freq)
+            if getattr(ch, 'pullup_enabled', False):
+                section['pullup_enabled'] = 'true'
+            if getattr(ch, 'voltage_threshold', 1.5) != 1.5:
+                section['voltage_threshold'] = str(ch.voltage_threshold)
 
             config[f'channel:{name}'] = section
 
@@ -15645,6 +15781,17 @@ Unit conversions:
                 "invert": channel.invert,
                 "default_state": channel.default_state,
                 "default_value": channel.default_value,
+                "output_setpoint": getattr(channel, 'output_setpoint', 0.0),
+                "terminal_config": getattr(channel, 'terminal_config', 'differential'),
+                # Counter / frequency input config (CTR tab)
+                "counter_mode": getattr(channel, 'counter_mode', 'count'),
+                "counter_edge": getattr(channel, 'counter_edge', 'rising'),
+                "pulses_per_unit": getattr(channel, 'pulses_per_unit', 1.0),
+                "counter_min_freq": getattr(channel, 'counter_min_freq', 0.1),
+                "counter_max_freq": getattr(channel, 'counter_max_freq', 1000.0),
+                "pullup_enabled": getattr(channel, 'pullup_enabled', False),
+                "voltage_threshold": getattr(channel, 'voltage_threshold', 1.5),
+                "counter_reset_on_read": getattr(channel, 'counter_reset_on_read', False),
                 "safety_action": channel.safety_action,
                 "safety_interlock": channel.safety_interlock,
                 "thermocouple_type": channel.thermocouple_type.value if channel.thermocouple_type else None,
@@ -17134,9 +17281,12 @@ Unit conversions:
                                         'health': self.hardware_reader.get_health_status(),
                                         'timestamp': datetime.now().isoformat(),
                                     }), qos=1)
-                                # Auto-reinit: try to recreate the hardware reader
+                                # Auto-reinit: try to recreate the hardware reader.
+                                # skip_if_busy — if a deliberate rebuild (START/Apply)
+                                # is already running, that closed the reader on purpose;
+                                # don't race it with a second concurrent reinit.
                                 try:
-                                    self._reinit_hardware_reader()
+                                    self._reinit_hardware_reader(skip_if_busy=True)
                                     logger.info("[SCAN] Hardware reader auto-reinit successful")
                                 except Exception as reinit_err:
                                     logger.error(f"[SCAN] Hardware reader auto-reinit failed: {reinit_err}")

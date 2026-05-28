@@ -41,6 +41,8 @@ describe('Auto-Widget Generation - Channel Type Mapping', () => {
       // ANALOG OUTPUTS → SETPOINT CONTROL
       // ========================================
       'AO_01': { channel_type: 'analog_output', expectedWidget: 'setpoint' },
+      'VO_01': { channel_type: 'voltage_output', expectedWidget: 'setpoint' },
+      'CO_01': { channel_type: 'current_output', expectedWidget: 'setpoint' },
     }
 
     // Set up channels in store
@@ -256,10 +258,12 @@ describe('Auto-Widget Generation - Complete Channel Type Coverage', () => {
     setActivePinia(createPinia())
   })
 
-  it('should have explicit mapping for all 13 ChannelType enum values', () => {
+  it('should have explicit mapping for all ChannelType enum values', () => {
     const store = useDashboardStore()
 
-    // ALL 13 channel types from types/index.ts
+    // ALL channel types from types/index.ts (analog outputs split into
+    // voltage_output / current_output; legacy 'analog_output' kept for
+    // backwards-compat with older project files).
     const allChannelTypes: ChannelType[] = [
       'thermocouple',
       'voltage',
@@ -272,6 +276,8 @@ describe('Auto-Widget Generation - Complete Channel Type Coverage', () => {
       'digital_input',
       'digital_output',
       'analog_output',
+      'voltage_output',
+      'current_output',
       'modbus_register',
       'modbus_coil',
     ]

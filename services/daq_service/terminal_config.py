@@ -101,10 +101,16 @@ _NO_TERMINAL_TYPES: Set[ChannelType] = {
     ChannelType.DIGITAL_OUTPUT,
     ChannelType.MODBUS_REGISTER,
     ChannelType.MODBUS_COIL,
-    ChannelType.COUNTER,
-    ChannelType.COUNTER_INPUT,
     ChannelType.COUNTER_OUTPUT,
     ChannelType.PULSE_OUTPUT,
+}
+
+# Counter / frequency input channels (NI 9361 etc.) accept exactly two
+# terminal configurations: RSE (single-ended) and DIFFERENTIAL. NRSE and
+# pseudodifferential aren't valid for CI channels.
+_COUNTER_TYPES: Set[ChannelType] = {
+    ChannelType.COUNTER,
+    ChannelType.COUNTER_INPUT,
     ChannelType.FREQUENCY_INPUT,
 }
 
@@ -216,6 +222,9 @@ def allowed_for(channel_type: ChannelType, module_type: Optional[str] = None) ->
     if channel_type in _NO_TERMINAL_TYPES:
         return set()
 
+    if channel_type in _COUNTER_TYPES:
+        return {RSE, DIFFERENTIAL}
+
     if channel_type == ChannelType.CURRENT_INPUT:
         if is_module_current_rse(module_type):
             return {RSE}
@@ -278,6 +287,12 @@ def coerce(channel_type: ChannelType, value: Optional[str],
     """
     if channel_type in _NO_TERMINAL_TYPES:
         return DIFFERENTIAL  # value is ignored; pick something canonical
+
+    if channel_type in _COUNTER_TYPES:
+        # CI channels accept only RSE or DIFFERENTIAL. Default to RSE
+        # (single-ended is the common case for open-collector pulse sources).
+        normalized = normalize(value) if value else RSE
+        return normalized if normalized in (RSE, DIFFERENTIAL) else RSE
 
     if channel_type == ChannelType.CURRENT_INPUT:
         if is_module_current_rse(module_type):
