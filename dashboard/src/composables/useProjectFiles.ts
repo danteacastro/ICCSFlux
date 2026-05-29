@@ -118,6 +118,8 @@ export interface ProjectData {
   system?: ProjectSystemConfig
   // Embedded channel definitions (v2.0+)
   channels?: Record<string, ProjectChannelConfig>
+  // Chassis / devices (Modbus TCP/RTU, cDAQ, cRIO) keyed by name
+  chassis?: Record<string, Record<string, any>>
   // User variables
   variables?: any
   layout: {
@@ -631,6 +633,11 @@ export function useProjectFiles() {
     // Backend will overwrite with live pid_engine state during save
     const pidLoops = currentProjectData.value?.pidLoops
 
+    // Chassis (Modbus TCP/RTU devices, cDAQ/cRIO chassis) — live values from
+    // the backend's config/channels broadcast. Saved so Modbus devices survive
+    // project export/import (channels reference these by name via `module`).
+    const chassis = { ...(mqtt.chassisConfigs.value || {}) }
+
     return {
       // Preserve system config (mqtt, scan_rate, etc.) from loaded project
       ...(system ? { system } : {}),
@@ -640,6 +647,8 @@ export function useProjectFiles() {
       ...(topLevelSchedules ? { schedules: topLevelSchedules } : {}),
       // Preserve PID loops (backend-authoritative, will be overwritten with live state during save)
       ...(pidLoops ? { pidLoops } : {}),
+      // Modbus/cDAQ/cRIO devices so they round-trip through export/import
+      ...(Object.keys(chassis).length > 0 ? { chassis } : {}),
       channels,  // Include channels so they're saved!
       layout: {
         widgets: layout.widgets,

@@ -23,6 +23,7 @@ import paho.mqtt.client as mqtt
 
 from config_parser import (
     load_config, load_config_safe, validate_config, NISystemConfig, ChannelConfig, ChannelType,
+    ChassisConfig,
     get_input_channels, get_output_channels, ConfigValidationError, ValidationResult,
     SystemConfig, ThermocoupleType, HardwareSource, ProjectMode, DataViewerConfig,
     get_crio_channels, get_local_daq_channels, get_modbus_channels, get_hardware_source_summary
@@ -101,6 +102,41 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('DAQService')
+
+
+def _parse_project_chassis(project_data: dict) -> dict:
+    """Build a {name: ChassisConfig} dict from a project's 'chassis' section.
+
+    The frontend saves chassis from the config/channels broadcast, which uses
+    the key 'type' for the chassis type — accept both 'chassis_type' and 'type'.
+    Returns {} when the project has no chassis section.
+    """
+    chassis_data = (project_data or {}).get("chassis", {}) or {}
+    result: dict = {}
+    for name, ch in chassis_data.items():
+        if not isinstance(ch, dict):
+            continue
+        try:
+            result[name] = ChassisConfig(
+                name=name,
+                chassis_type=ch.get("chassis_type", ch.get("type", "")),
+                serial=ch.get("serial", ""),
+                connection=ch.get("connection", "USB"),
+                ip_address=ch.get("ip_address", ""),
+                description=ch.get("description", ""),
+                enabled=ch.get("enabled", True),
+                modbus_port=int(ch.get("modbus_port", 502)),
+                modbus_baudrate=int(ch.get("modbus_baudrate", 9600)),
+                modbus_parity=ch.get("modbus_parity", "E"),
+                modbus_stopbits=int(ch.get("modbus_stopbits", 1)),
+                modbus_bytesize=int(ch.get("modbus_bytesize", 8)),
+                modbus_timeout=float(ch.get("modbus_timeout", 1.0)),
+                modbus_retries=int(ch.get("modbus_retries", 3)),
+            )
+        except Exception as e:
+            logger.warning(f"Skipping invalid chassis '{name}' in project: {e}")
+    return result
+
 
 class TokenBucketRateLimiter:
     """Simple token bucket rate limiter for MQTT command topics.
@@ -927,12 +963,18 @@ class DAQService:
                     source_node_id=ch_data.get("source_node_id") or ch_data.get("node_id", "")
                 )
 
+            # Parse chassis (Modbus TCP/RTU devices, etc.) from the project so
+            # they survive export/import. Fall back to existing chassis when the
+            # project has none (e.g. older project files).
+            parsed_chassis = _parse_project_chassis(project_data)
+            chassis = parsed_chassis if parsed_chassis else (self.config.chassis if self.config else {})
+
             # Create new config with parsed data
-            # Keep existing chassis/modules/safety_actions if available
+            # Keep existing modules/safety_actions if available
             self.config = NISystemConfig(
                 system=system,
                 dataviewer=self.config.dataviewer if self.config else DataViewerConfig(),
-                chassis=self.config.chassis if self.config else {},
+                chassis=chassis,
                 modules=self.config.modules if self.config else {},
                 channels=channels,
                 safety_actions=self.config.safety_actions if self.config else {}
@@ -5129,9 +5171,17 @@ Unit conversions:
 
         channel = self.config.channels[channel_name]
 
-        # Check if this is an output channel
-        if channel.channel_type not in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
-                                        ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
+        # Check if this is an output channel. Modbus write channels (FC5/FC6) are
+        # outputs too — they're MODBUS_REGISTER/MODBUS_COIL with a non-empty
+        # modbus_write_mode (set when the user picks a write function code), so
+        # they must pass this guard or the one-time/continuous write is dropped.
+        _output_types = (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
+                         ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT)
+        _is_modbus_write = (
+            channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+            and bool(getattr(channel, 'modbus_write_mode', ''))
+        )
+        if channel.channel_type not in _output_types and not _is_modbus_write:
             logger.warning(f"Cannot write to input channel: {channel_name}")
             return
 
@@ -8626,10 +8676,12 @@ Unit conversions:
                 source_node_id=ch_data.get("source_node_id") or ch_data.get("node_id", "")
             )
 
+        # Chassis (Modbus devices, etc.) from the project so they round-trip.
+        _proj_chassis = _parse_project_chassis(project_data)
         config = NISystemConfig(
             system=system,
             dataviewer=self.config.dataviewer if self.config else DataViewerConfig(),
-            chassis=self.config.chassis if self.config else {},
+            chassis=_proj_chassis if _proj_chassis else (self.config.chassis if self.config else {}),
             modules=self.config.modules if self.config else {},
             channels=channels,
             safety_actions=self.config.safety_actions if self.config else {}
@@ -14088,6 +14140,9 @@ Unit conversions:
             channel.voltage_threshold = max(1.0, min(4.0, float(config_data['voltage_threshold'])))
 
         # Modbus-specific parameters
+        if 'module' in config_data:
+            # For Modbus channels this is the device (chassis) the channel binds to.
+            channel.module = config_data['module'] or ''
         if 'modbus_register_type' in config_data:
             channel.modbus_register_type = config_data['modbus_register_type']
         if 'modbus_address' in config_data:
@@ -14185,6 +14240,18 @@ Unit conversions:
         if _HARDWARE_AFFECTING_FIELDS.intersection(config_data.keys()):
             self._hardware_config_dirty = True
             logger.debug(f"Channel {channel_name}: hardware-affecting change — will rebuild tasks on next start")
+
+        # Modbus channels are polled by the Modbus reader, which reads the channel
+        # configs at init time. If a Modbus channel's binding/register changed,
+        # re-init so the reader picks it up (the reader is separate from the NI
+        # hardware reader's dirty-flag rebuild path).
+        _MODBUS_FIELDS = {'module', 'modbus_register_type', 'modbus_address', 'modbus_data_type',
+                          'modbus_byte_order', 'modbus_word_order', 'modbus_scale', 'modbus_offset',
+                          'modbus_slave_id', 'modbus_register_count', 'modbus_register_index',
+                          'modbus_write_mode'}
+        if (channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+                and _MODBUS_FIELDS.intersection(config_data.keys())):
+            self._init_modbus_reader()
 
         # Audit trail: Log channel configuration change
         if self.audit_trail:
@@ -14389,11 +14456,18 @@ Unit conversions:
             if self.dependency_tracker:
                 self.dependency_tracker.refresh(self.config)
 
-            # Modbus channels are polled by the Modbus reader, which scans the
-            # channel list at init time — re-init so the new channel starts
-            # being polled (it was created after the reader was last built).
+            # A brand-new NI channel needs the DAQmx task rebuilt to include it.
+            # Mark the hardware dirty so the next acquisition start reinitializes
+            # the reader — without this, a freshly-added channel read nothing
+            # until some other hardware-affecting edit flipped this flag.
+            # (Modbus channels are handled by the reader re-init below instead.)
             if channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL):
+                # Modbus channels are polled by the Modbus reader, which scans the
+                # channel list at init time — re-init so the new channel starts
+                # being polled (it was created after the reader was last built).
                 self._init_modbus_reader()
+            else:
+                self._hardware_config_dirty = True
 
             logger.info(f"Created channel {channel_name} (type: {channel_type.value})")
             self._publish_channel_config()
@@ -14440,10 +14514,20 @@ Unit conversions:
             self._publish_config_response(False, f"Channel '{channel_name}' not found")
             return
 
-        # Check dependencies using dependency tracker
-        if self.dependency_tracker:
-            deps = self.dependency_tracker.get_dependencies(EntityType.CHANNEL, channel_name)
-            if deps.dependents and not payload.get('force', False):
+        # Check dependencies using dependency tracker. The result only gates the
+        # confirmation prompt, so skip it entirely when force=true. Guard against
+        # the tracker raising (it throws ValueError if the channel isn't in its
+        # graph — e.g. created after the last refresh): that previously aborted
+        # the handler before the delete below, leaving a "ghost" channel that
+        # reappeared on the next rebuild/START.
+        force = bool(payload.get('force', False))
+        if self.dependency_tracker and not force:
+            try:
+                deps = self.dependency_tracker.get_dependencies(EntityType.CHANNEL, channel_name)
+            except Exception as e:
+                logger.warning(f"Dependency check failed for {channel_name} (proceeding): {e}")
+                deps = None
+            if deps and deps.dependents:
                 # Return dependency info so frontend can show confirmation
                 self.mqtt_client.publish(
                     f"{self.get_topic_base()}/config/channel/delete/confirm",

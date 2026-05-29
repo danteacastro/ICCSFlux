@@ -473,17 +473,21 @@ class ModbusReader:
                 )
                 continue
 
-            # Parse physical_channel to get register info
-            # Format: "modbus:holding:100" or "modbus:coil:50"
+            # Resolve register type + address. Two physical_channel formats exist:
+            #   legacy: "modbus:<reg_type>:<addr>"
+            #   new:    "[device]:[slave]:[FC]:[addr]" (FC distinguishes read/write)
+            # For anything but the legacy form the structured fields
+            # (modbus_register_type / modbus_address) are authoritative. The
+            # parts[2] digit check keeps a device literally named "modbus" from
+            # being mistaken for the legacy positional format.
             try:
-                parts = channel.physical_channel.split(':')
-                if len(parts) >= 3 and parts[0].lower() == 'modbus':
+                parts = (channel.physical_channel or '').split(':')
+                if len(parts) >= 3 and parts[0].lower() == 'modbus' and parts[2].lstrip('-').isdigit():
                     reg_type_str = parts[1].lower()
                     address = int(parts[2])
                 else:
-                    # Fallback: assume holding register at address in physical_channel
-                    reg_type_str = getattr(channel, 'modbus_register_type', 'holding')
-                    address = getattr(channel, 'modbus_address', int(channel.physical_channel))
+                    reg_type_str = str(getattr(channel, 'modbus_register_type', 'holding') or 'holding').lower()
+                    address = int(getattr(channel, 'modbus_address', 0) or 0)
             except (ValueError, AttributeError):
                 logger.error(f"Invalid Modbus channel config for {name}: {channel.physical_channel}")
                 continue
@@ -594,6 +598,14 @@ class ModbusReader:
         Polls as fast as the serial/TCP links allow — no artificial rate cap.
         RTU at 9600 baud naturally limits to ~1-2 Hz, TCP to ~5-10 Hz."""
         while self._poll_running:
+            # No Modbus bus traffic until acquisition starts. Reads and writes
+            # both stay silent when stopped — matching NI channels, which don't
+            # touch hardware until the user hits acquire. The thread idles here
+            # rather than being torn down so start/stop is cheap.
+            if not self.acquiring:
+                time.sleep(0.2)
+                continue
+
             start = time.time()
             try:
                 # Continuous-write channels (FC6): re-assert the commanded value
@@ -977,15 +989,17 @@ class ModbusReader:
             logger.warning(f"add_channel: no Modbus connection for chassis {chassis_name}")
             return
 
-        # Parse physical_channel for register info
+        # Parse physical_channel for register info. Legacy "modbus:<type>:<addr>"
+        # is positional; the new "[device]:[slave]:[FC]:[addr]" form relies on the
+        # structured modbus_register_type / modbus_address fields.
         try:
-            parts = channel.physical_channel.split(':')
-            if len(parts) >= 3 and parts[0].lower() == 'modbus':
+            parts = (channel.physical_channel or '').split(':')
+            if len(parts) >= 3 and parts[0].lower() == 'modbus' and parts[2].lstrip('-').isdigit():
                 reg_type_str = parts[1].lower()
                 address = int(parts[2])
             else:
-                reg_type_str = getattr(channel, 'modbus_register_type', 'holding')
-                address = getattr(channel, 'modbus_address', int(channel.physical_channel))
+                reg_type_str = str(getattr(channel, 'modbus_register_type', 'holding') or 'holding').lower()
+                address = int(getattr(channel, 'modbus_address', 0) or 0)
         except (ValueError, AttributeError):
             logger.error(f"add_channel: invalid config for {name}: {channel.physical_channel}")
             return

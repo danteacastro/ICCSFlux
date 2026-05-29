@@ -233,6 +233,12 @@ const showLoginDialog = inject<() => void>('showLoginDialog', () => {})
 const editMode = ref(false)
 const canEdit = computed(() => editMode.value && hasEditPermission.value && !store.isAcquiring)
 
+// Starting acquisition exits Edit mode — structural edits are locked out while
+// acquiring anyway, so leaving the toggle "on" was misleading.
+watch(() => store.isAcquiring, (acquiring) => {
+  if (acquiring) editMode.value = false
+})
+
 // Output setpoint column for analog outputs is operational, not structural —
 // allow writes whenever the user has edit permission (no editMode toggle, no
 // acquiring lockout). When stopped, the value is staged as the startup
@@ -548,6 +554,19 @@ const isModbusChannel = computed(() =>
   newChannelForm.value.channel_type === 'modbus_coil'
 )
 
+// Gate the "Add Channel" button: require Channel Type, Channel Name, and a
+// target (a Modbus device for Modbus channels, otherwise a physical channel —
+// with manual entry filled in if "Enter manually" was picked).
+const canAddChannel = computed(() => {
+  const f = newChannelForm.value
+  if (!f.channel_type) return false
+  if (!f.name || !f.name.trim()) return false
+  if (isModbusChannel.value) return !!f.modbus_device
+  if (!f.physical_channel) return false
+  if (f.physical_channel === '__manual__' && !manualPhysicalChannel.value.trim()) return false
+  return true
+})
+
 // Register READ functions (holding/input) carry numeric data spanning 1-2
 // registers — they need a data type AND a byte/word-order selector.
 const isModbusRegisterFn = computed(() =>
@@ -579,6 +598,125 @@ const modbusDevices = computed(() => {
         : `${cfg?.ip_address || '?'}:${cfg?.modbus_port ?? 502}`
       return { name, label: `${name} (${isRtu ? 'RTU' : 'TCP'} ${detail})` }
     })
+})
+
+// True when the sidebar config panel is editing a Modbus channel.
+const editingModbus = computed(() => {
+  const t = editingConfig.value?.config?.channel_type
+  return t === 'modbus_register' || t === 'modbus_coil'
+})
+
+// Map a Modbus register type + write mode to its function code. The FC — not the
+// register-type name — is what distinguishes a read from a write on the same
+// register, so it anchors the channel path.
+//   holding read = FC3 / write = FC6 (write single register)
+//   input  = FC4 (read only)   discrete = FC2 (read only)
+//   coil   read = FC1 / write = FC5 (write single coil)
+function modbusFunctionCode(registerType?: string | null, writeMode?: string | null): string {
+  const rt = String(registerType || 'holding').toLowerCase()
+  const isWrite = !!writeMode  // 'continuous' | 'onetime' => write channel
+  switch (rt) {
+    case 'holding':  return isWrite ? 'FC6' : 'FC3'
+    case 'input':    return 'FC4'
+    case 'coil':     return isWrite ? 'FC5' : 'FC1'
+    case 'discrete': return 'FC2'
+    default:         return isWrite ? 'FC6' : 'FC3'
+  }
+}
+
+// Derived Modbus channel path: [device]:[slave]:[FC]:[reg address].
+// The FC lets a read and a write to the same register coexist as distinct
+// channels; the slave address keeps the same register on different units apart.
+function deriveModbusPath(opts: {
+  device?: string | null
+  slave?: number | null
+  registerType?: string | null
+  address?: number | null
+  writeMode?: string | null
+}): string {
+  const device = opts.device || 'modbus'
+  const slave = opts.slave ?? 1
+  const fc = modbusFunctionCode(opts.registerType, opts.writeMode)
+  const addr = opts.address ?? 0
+  return `${device}:${slave}:${fc}:${addr}`
+}
+
+// Normalize a Modbus unit/slave ID to a valid number, defaulting to 1 (the
+// Modbus convention) when missing/invalid so it never persists as null/blank.
+function modbusSlaveId(raw: unknown): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 1
+}
+
+// Build the derived path from a stored channel config (uses module = device name).
+function modbusPathForChannel(config: any): string {
+  return deriveModbusPath({
+    device: config?.module,
+    slave: config?.modbus_slave_id,
+    registerType: config?.modbus_register_type,
+    address: config?.modbus_address,
+    writeMode: config?.modbus_write_mode,
+  })
+}
+
+// Derived Modbus channel path shown in the sidebar — mirrors the CHANNEL column.
+// Recomputes live as the device / slave / register type / address change.
+const editingModbusPath = computed(() => {
+  const c = editingConfig.value?.config
+  if (!c) return ''
+  return modbusPathForChannel(c)
+})
+
+// Function-code options for the sidebar selector. FC bundles register type +
+// read/write into one choice (it's what the path is keyed on).
+const MODBUS_FC_OPTIONS = [
+  { value: 'FC1', label: 'FC1 — Read Coils' },
+  { value: 'FC2', label: 'FC2 — Read Discrete Inputs' },
+  { value: 'FC3', label: 'FC3 — Read Holding Registers' },
+  { value: 'FC4', label: 'FC4 — Read Input Registers' },
+  { value: 'FC5', label: 'FC5 — Write Single Coil' },
+  { value: 'FC6', label: 'FC6 — Write Single Register' },
+]
+
+// FC <-> (register type + channel type + write flag) mapping.
+const MODBUS_FC_MAP: Record<string, { regType: string; chanType: ChannelType; write: boolean }> = {
+  FC1: { regType: 'coil',     chanType: 'modbus_coil',     write: false },
+  FC2: { regType: 'discrete', chanType: 'modbus_coil',     write: false },
+  FC3: { regType: 'holding',  chanType: 'modbus_register', write: false },
+  FC4: { regType: 'input',    chanType: 'modbus_register', write: false },
+  FC5: { regType: 'coil',     chanType: 'modbus_coil',     write: true  },
+  FC6: { regType: 'holding',  chanType: 'modbus_register', write: true  },
+}
+
+// Sidebar Function Code selector. Reads back from register type + write mode;
+// writing it updates the register type, channel type, and write mode together.
+const editingModbusFc = computed<string>({
+  get() {
+    const c = editingConfig.value?.config
+    if (!c) return 'FC3'
+    return modbusFunctionCode(c.modbus_register_type, c.modbus_write_mode)
+  },
+  set(fc: string) {
+    const c = editingConfig.value?.config
+    if (!c) return
+    const m = MODBUS_FC_MAP[fc] || MODBUS_FC_MAP.FC3
+    c.modbus_register_type = m.regType
+    c.channel_type = m.chanType
+    if (m.write) {
+      // Keep an existing sub-mode; default a freshly-switched write to continuous.
+      if (c.modbus_write_mode !== 'continuous' && c.modbus_write_mode !== 'onetime') {
+        c.modbus_write_mode = 'continuous'
+      }
+    } else {
+      c.modbus_write_mode = ''
+    }
+  },
+})
+
+// True when the sidebar's selected FC is a write (FC5/FC6) — gates the write-mode sub-select.
+const editingModbusIsWrite = computed(() => {
+  const fc = editingModbusFc.value
+  return fc === 'FC5' || fc === 'FC6'
 })
 
 // Keep channel_type in sync with the chosen Modbus function code so the modbus
@@ -1331,6 +1469,82 @@ function onInlineBlurNumeric(channel: string, field: string) {
   inlineEditValue.value = ''
 }
 
+// Current-input SCALED MIN/MAX edit the 4-20mA engineering range
+// (eng_units_min/max) — the SAME fields the side panel's "4-20mA Scaling"
+// section and the backend's scale_four_twenty() use. The table previously
+// edited scaled_min/scaled_max (map-scaling fields), which the side panel never
+// touches, so the two never matched. Writing a bound also enables
+// four_twenty_scaling so the value actually scales.
+function onCurrentScaledBlur(channel: string, which: 'min' | 'max') {
+  const raw = inlineEditValue.value
+  inlineEditCell.value = null
+  inlineEditValue.value = ''
+  if (!canEdit.value) return
+  if (raw.trim() === '') return
+  const val = parseFloat(raw)
+  if (isNaN(val)) {
+    showFeedback('error', `Invalid number: "${raw}"`)
+    return
+  }
+  const field = which === 'min' ? 'eng_units_min' : 'eng_units_max'
+  mqtt.updateChannelConfig(channel, { [field]: val, four_twenty_scaling: true })
+  markDirty()
+}
+
+// Current-input RAW range = the mA span (default 0-20, or 4-20 once 4-20mA
+// scaling is on). The SCALED range shows the engineering bounds (eng_units), but
+// falls back to the RAW range when no scaling is configured — so an unscaled
+// channel reads as a passthrough (e.g. 0-20) instead of an arbitrary 0-100.
+function currentRawMin(config: any): number {
+  return config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0)
+}
+function currentRawMax(config: any): number {
+  return config.pre_scaled_max ?? 20
+}
+function currentScaledMin(config: any): number {
+  return config.eng_units_min ?? config.scaled_min ?? currentRawMin(config)
+}
+function currentScaledMax(config: any): number {
+  return config.eng_units_max ?? config.scaled_max ?? currentRawMax(config)
+}
+
+// When the user turns on 4-20mA scaling, seed the alarm limits (low_limit /
+// high_limit — the bounds that turn the value red) to the engineering scale
+// range, so they default to something meaningful instead of the raw mA range.
+// This is a one-time initialization on activation: if the eng_units aren't
+// entered yet, defer until they are; once seeded we don't keep overwriting, so
+// the user can still customize the limits afterward.
+const pendingLimitInit = ref(false)
+
+function seedLimitsFromScale() {
+  const ec = editingConfig.value
+  if (!ec) return
+  const lo = ec.moduleConfig.eng_units_min
+  const hi = ec.moduleConfig.eng_units_max
+  if (lo == null || hi == null) return false
+  ec.config.low_limit = lo
+  ec.config.high_limit = hi
+  markDirty()
+  return true
+}
+
+function onFourTwentyToggle() {
+  const ec = editingConfig.value
+  if (!ec) return
+  if (ec.moduleConfig.four_twenty_scaling) {
+    // Seed now if the range is already known, otherwise wait for it.
+    pendingLimitInit.value = !seedLimitsFromScale()
+  } else {
+    pendingLimitInit.value = false
+  }
+}
+
+function onScaleRangeChange() {
+  if (pendingLimitInit.value && seedLimitsFromScale()) {
+    pendingLimitInit.value = false
+  }
+}
+
 // Inline edit of a Modbus write channel's value. Editable only in Edit mode,
 // but persists even while acquiring (output_setpoint is an operational field
 // that bypasses the acquisition lockout). For continuous-write channels we
@@ -1340,7 +1554,7 @@ function onModbusWriteValueBlur(channel: string) {
   const raw = inlineEditValue.value
   inlineEditCell.value = null
   inlineEditValue.value = ''
-  if (!editMode.value) return
+  // Operational field — persist regardless of Edit mode / acquisition state.
   if (raw.trim() === '') return
   const val = parseFloat(raw)
   if (isNaN(val)) {
@@ -1366,10 +1580,9 @@ function onModbusWriteValueBlur(channel: string) {
 function triggerModbusWrite(channel: string) {
   const config = store.channels[channel]
   if (!config) return
-  if (!store.isAcquiring) {
-    showFeedback('error', 'Start acquisition before sending a Modbus write')
-    return
-  }
+  // One-time write is an operational action — allowed regardless of Edit mode
+  // or acquisition state (the Modbus connection is open once the device is
+  // configured; the write goes straight to the register via FC6).
   const value = Number(config.output_setpoint ?? 0)
   const result = mqtt.setOutput(channel, value)
   if (result.success) {
@@ -1785,14 +1998,20 @@ function addNewChannel() {
     const regType = isWrite ? 'holding' : fn
     // Coil/discrete are boolean → modbus_coil; holding/input/write → modbus_register
     const channelType: ChannelType = (fn === 'coil' || fn === 'discrete') ? 'modbus_coil' : 'modbus_register'
-    const physical = `modbus:${regType}:${f.modbus_address}`
+    const writeMode = isWrite ? f.modbus_write_mode : ''
+    const physical = deriveModbusPath({
+      device: f.modbus_device,
+      slave: f.modbus_slave_id,
+      registerType: regType,
+      address: f.modbus_address,
+      writeMode,
+    })
 
-    // Duplicate check: same device (slave) + same register address
+    // Duplicate check on the derived path. Because the path includes the FC, a
+    // read and a write to the same register are distinct and both allowed.
     for (const [existingTag, ec] of Object.entries(store.channels)) {
-      if (ec.physical_channel === physical &&
-          (ec as any).module === f.modbus_device &&
-          ((ec as any).modbus_slave_id ?? 1) === f.modbus_slave_id) {
-        showFeedback('error', `${regType} address ${f.modbus_address} on "${f.modbus_device}" (addr ${f.modbus_slave_id}) is already used by "${existingTag}"`)
+      if (modbusPathForChannel(ec) === physical) {
+        showFeedback('error', `"${physical}" is already used by "${existingTag}"`)
         return
       }
     }
@@ -1817,9 +2036,9 @@ function addNewChannel() {
       source_type: 'local',
       // Device binding: module references the chassis (Modbus device) directly
       module: f.modbus_device,
-      modbus_slave_id: f.modbus_slave_id,
+      modbus_slave_id: modbusSlaveId(f.modbus_slave_id),
       modbus_register_type: regType,
-      modbus_address: f.modbus_address,
+      modbus_address: Number(f.modbus_address) || 0,
       modbus_scale: 1.0,
       modbus_offset: 0.0,
     }
@@ -1884,6 +2103,20 @@ function addNewChannel() {
   // Add node_id for remote sources
   if (newChannelForm.value.source_type !== 'cdaq') {
     config.node_id = newChannelForm.value.node_id || ''
+  }
+
+  // Default the terminal configuration to the (first) allowed option for this
+  // channel/module so the TERM column isn't blank on creation. Current input is
+  // intentionally excluded: NI current modules are RSE-only in DAQmx and the
+  // field isn't user-configurable, so we let the backend coerce it to RSE.
+  const TERMINAL_RELEVANT_TYPES = new Set([
+    'thermocouple', 'rtd', 'voltage_input', 'voltage',
+    'strain', 'strain_input', 'bridge_input', 'iepe', 'iepe_input',
+    'resistance', 'resistance_input', 'counter', 'counter_input', 'frequency_input',
+  ])
+  if (TERMINAL_RELEVANT_TYPES.has(newChannelForm.value.channel_type)) {
+    const allowedTerms = getAllowedTerminalConfigs(newChannelForm.value.channel_type, resolvedPhysical)
+    if (allowedTerms.length > 0) config.terminal_config = allowedTerms[0].value
   }
 
   // New channels go through the create path (config/channel/update rejects
@@ -1955,8 +2188,21 @@ function deleteChannel(channelName: string, event?: Event) {
     return
   }
 
-  // Send delete command to backend
-  mqtt.sendNodeCommand('config/channel/delete', { channel: channelName })
+  // The backend blocks channel deletion during acquisition. Surface that
+  // immediately instead of sending a command that gets silently rejected.
+  if (store.isAcquiring) {
+    showFeedback('error', 'Stop acquisition before deleting channels')
+    return
+  }
+
+  // force: true — the user has already confirmed in the warning dialog above.
+  // Without it, the backend's dependency tracker replies on .../delete/confirm
+  // (which the frontend doesn't handle) and the channel never actually deletes.
+  mqtt.sendNodeCommand('config/channel/delete', { channel: channelName, force: true })
+  // Optimistically drop it from the local config now so the row disappears
+  // immediately and a debounced autosave can't re-send it. The backend's
+  // config/channel/deleted broadcast does the same thing idempotently.
+  mqtt.removeChannelLocal(channelName)
   showFeedback('info', `Deleting channel: ${channelName}...`)
 
   // Cascade cleanup — these used to be the user's responsibility, leaving
@@ -2607,11 +2853,22 @@ function isModulePartiallySelected(module: any): boolean {
 
 // Feedback messages
 const feedbackMessage = ref<{ type: 'success' | 'error' | 'info' | 'warning', text: string } | null>(null)
+// Active = currently showing color+text. When it flips false the banner fades
+// its color/text back to the page background (CSS transition) but stays in the
+// DOM, so the always-present banner row never collapses or shifts layout.
+const feedbackActive = ref(false)
+let feedbackTimer: ReturnType<typeof setTimeout> | null = null
 
 function showFeedback(type: 'success' | 'error' | 'info' | 'warning', text: string, duration = 3000) {
+  if (feedbackTimer) { clearTimeout(feedbackTimer); feedbackTimer = null }
   feedbackMessage.value = { type, text }
-  setTimeout(() => {
-    feedbackMessage.value = null
+  feedbackActive.value = true
+  feedbackTimer = setTimeout(() => {
+    // Begin fade-out. Keep the text in feedbackMessage so it fades via the CSS
+    // color transition (rather than vanishing instantly); the next event
+    // overwrites it.
+    feedbackActive.value = false
+    feedbackTimer = null
   }, duration)
 }
 
@@ -4152,7 +4409,10 @@ function saveChannelConfig() {
     // Parse current range from string like "20mA" to number
     const rangeMatch = mc.range?.match(/^([\d.]+)/)
     config.current_range_ma = rangeMatch ? parseFloat(rangeMatch[1]) : 20
-    config.terminal_config = mc.terminal_config ?? 'differential'
+    // NI current modules (9208 etc.) are RSE-only in the DAQmx API and the
+    // reader doesn't pass terminal_config for them — store RSE so the metadata
+    // matches reality (it's not user-configurable; see the read-only sidebar note).
+    config.terminal_config = 'rse'
     config.shunt_resistor_loc = mc.shunt_location ?? 'internal'  // internal or external
     config.four_twenty_scaling = mc.four_twenty_scaling
     config.eng_units_min = mc.eng_units_min
@@ -4273,9 +4533,10 @@ function saveChannelConfig() {
   // Modbus register
   if (channelType === 'modbus_register') {
     const ec = editingConfig.value.config
+    config.module = ec.module || ''  // device (chassis) binding
     config.modbus_register_type = ec.modbus_register_type || 'holding'
-    config.modbus_slave_id = ec.modbus_slave_id || undefined
-    config.modbus_address = ec.modbus_address ?? 0
+    config.modbus_slave_id = modbusSlaveId(ec.modbus_slave_id)
+    config.modbus_address = Number(ec.modbus_address) || 0
     config.modbus_data_type = ec.modbus_data_type || 'float32'
     config.modbus_byte_order = ec.modbus_byte_order || 'big'
     config.modbus_word_order = ec.modbus_word_order || 'big'
@@ -4283,19 +4544,34 @@ function saveChannelConfig() {
     config.modbus_offset = ec.modbus_offset ?? 0.0
     config.modbus_register_count = ec.modbus_register_count || undefined
     config.modbus_register_index = ec.modbus_register_index ?? 0
-    // Build physical_channel from Modbus fields so backend can parse it
-    config.physical_channel = `modbus:${config.modbus_register_type}:${config.modbus_address}`
+    config.modbus_write_mode = ec.modbus_write_mode || ''  // preserve FC6 write mode
+    // Derived path: [device]:[slave]:[FC]:[reg]. Structured fields above stay
+    // authoritative for the backend; this is the human-readable channel name.
+    config.physical_channel = deriveModbusPath({
+      device: config.module,
+      slave: config.modbus_slave_id,
+      registerType: config.modbus_register_type,
+      address: config.modbus_address,
+      writeMode: config.modbus_write_mode,
+    })
   }
 
   // Modbus coil
   if (channelType === 'modbus_coil') {
     const ec = editingConfig.value.config
+    config.module = ec.module || ''  // device (chassis) binding
     config.modbus_register_type = ec.modbus_register_type || 'coil'
-    config.modbus_slave_id = ec.modbus_slave_id || undefined
-    config.modbus_address = ec.modbus_address ?? 0
+    config.modbus_slave_id = modbusSlaveId(ec.modbus_slave_id)
+    config.modbus_address = Number(ec.modbus_address) || 0
     config.invert = ec.invert ?? false
-    // Build physical_channel from Modbus fields
-    config.physical_channel = `modbus:${config.modbus_register_type}:${config.modbus_address}`
+    config.modbus_write_mode = ec.modbus_write_mode || ''
+    config.physical_channel = deriveModbusPath({
+      device: config.module,
+      slave: config.modbus_slave_id,
+      registerType: config.modbus_register_type,
+      address: config.modbus_address,
+      writeMode: config.modbus_write_mode,
+    })
   }
 
   // Include new_name if renaming the channel
@@ -4692,9 +4968,11 @@ const tableColumns = computed(() => {
         { key: 'value', label: 'VALUE', width: '100px' },
       ]
     case 'current_input':
+      // No TERM column: NI current modules (9208 etc.) are RSE-only in the
+      // DAQmx API and the reader doesn't pass terminal_config for them, so the
+      // field isn't user-configurable.
       return [
         ...baseColumns,
-        { key: 'terminal_config', label: 'TERM', width: '70px' },
         { key: 'raw_min', label: 'RAW MIN', width: '70px' },
         { key: 'raw_max', label: 'RAW MAX', width: '70px' },
         { key: 'scaled_min', label: 'SCALED MIN', width: '80px' },
@@ -4945,39 +5223,19 @@ function suggestChannelName(physicalChannel: string, channelType: string): strin
   return name
 }
 
-// Watch for physical channel selection to auto-set channel type and suggest name
+// Watch for physical channel selection to auto-suggest a name. Deliberately
+// does NOT change channel_type: the physical-channel dropdown is already
+// filtered to types compatible with the chosen Channel Type, so selecting a
+// channel must not clobber the user's (or the tab's) selection. (It also used
+// to write the raw discovery type — e.g. "ai" — which isn't a dropdown option
+// and blanked the Channel Type field.)
 watch(
   () => newChannelForm.value.physical_channel,
   (physicalChannel) => {
     if (!physicalChannel || physicalChannel === '__manual__') return
 
-    // Look up the channel type from discovery data
     const availableChannels = getAvailablePhysicalChannels()
     const selectedChannel = availableChannels.find(ch => ch.value === physicalChannel)
-
-    if (selectedChannel?.type) {
-      // Map discovery types to form types
-      const typeMapping: Record<string, string> = {
-        'analog_input': 'voltage',
-        'voltage_input': 'voltage',
-        'current_input': 'current',
-        'thermocouple': 'thermocouple',
-        'rtd': 'rtd',
-        'analog_output': 'voltage_output',
-        'voltage_output': 'voltage_output',
-        'current_output': 'current_output',
-        'digital_input': 'digital_input',
-        'digital_output': 'digital_output',
-        'counter': 'counter',
-        'strain': 'strain',
-        'iepe': 'iepe',
-        'resistance': 'resistance',
-      }
-      const mappedType = typeMapping[selectedChannel.type] || selectedChannel.type
-      if (mappedType && mappedType !== newChannelForm.value.channel_type) {
-        newChannelForm.value.channel_type = mappedType as ChannelType
-      }
-    }
 
     // Auto-suggest a name if the name field is empty or still has a previous auto-suggestion
     const currentName = newChannelForm.value.name
@@ -5192,12 +5450,15 @@ watch(
       </div>
     </div>
 
-    <!-- Feedback Message -->
-    <Transition name="fade">
-      <div v-if="feedbackMessage" class="feedback-message" :class="feedbackMessage.type">
-        {{ feedbackMessage.text }}
-      </div>
-    </Transition>
+    <!-- Feedback Banner — always present (reserves its row so events don't shift
+         layout); fades to a blank background when idle. -->
+    <div
+      class="feedback-message"
+      :class="feedbackActive && feedbackMessage ? feedbackMessage.type : ''"
+      aria-live="polite"
+    >
+      {{ feedbackMessage?.text || '' }}
+    </div>
 
     <!-- Populating Channels Indicator -->
     <Transition name="fade">
@@ -5360,8 +5621,17 @@ watch(
               </td>
               <!-- CHANNEL - physical channel with dropdown when discovery available -->
               <td class="col-channel editable-cell" @click.stop>
+                <!-- Modbus: path is fully derived ([device]:[slave]:[FC]:[reg]),
+                     so it's shown read-only; edit the parts in the sidebar. -->
+                <span
+                  v-if="config.channel_type === 'modbus_register' || config.channel_type === 'modbus_coil'"
+                  class="modbus-channel-path"
+                  :title="modbusPathForChannel(config)"
+                >
+                  {{ modbusPathForChannel(config) }}
+                </span>
                 <select
-                  v-if="getAvailablePhysicalChannelsForType(config).length > 0"
+                  v-else-if="getAvailablePhysicalChannelsForType(config).length > 0"
                   :value="config.physical_channel || ''"
                   @change="updateChannelField(name, 'physical_channel', ($event.target as HTMLSelectElement).value)"
                   class="inline-select channel-select"
@@ -5552,20 +5822,13 @@ watch(
                 </td>
               </template>
               <template v-else-if="activeTypeTab === 'current_input'">
-                <td class="editable-cell" @click.stop>
-                  <select
-                    :value="config.terminal_config || 'differential'"
-                    @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
-                    :disabled="!canEdit"
-                  >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
-                  </select>
-                </td>
+                <!-- No TERM cell: current modules are RSE-only in DAQmx and not
+                     user-configurable (see tableColumns). -->
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0))"
-                    @focus="onInlineFocus(name, 'pre_scaled_min', config.pre_scaled_min ?? (config.four_twenty_scaling ? 4 : 0))"
+                    :value="inlineValue(name, 'pre_scaled_min', currentRawMin(config))"
+                    @focus="onInlineFocus(name, 'pre_scaled_min', currentRawMin(config))"
                     @input="onInlineInput($event)"
                     @blur="onInlineBlurNumeric(name, 'pre_scaled_min')"
                     class="inline-input narrow"
@@ -5575,23 +5838,25 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
-                    @focus="onInlineFocus(name, 'pre_scaled_max', config.pre_scaled_max ?? 20)"
+                    :value="inlineValue(name, 'pre_scaled_max', currentRawMax(config))"
+                    @focus="onInlineFocus(name, 'pre_scaled_max', currentRawMax(config))"
                     @input="onInlineInput($event)"
                     @blur="onInlineBlurNumeric(name, 'pre_scaled_max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
                 </td>
-                <!-- Scaled Min/Max — same universal fields as voltage_input.
-                     Map scaling (pre_scaled→scaled) works for any raw range. -->
+                <!-- Scaled Min/Max = the 4-20mA engineering range (eng_units),
+                     the SAME fields as the side panel's 4-20mA Scaling. When no
+                     scaling is set it mirrors the RAW range (passthrough). Falls
+                     back to legacy scaled_min/max for older map-scaled channels. -->
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'scaled_min', config.scaled_min ?? 0)"
-                    @focus="onInlineFocus(name, 'scaled_min', config.scaled_min ?? 0)"
+                    :value="inlineValue(name, 'eng_units_min', currentScaledMin(config))"
+                    @focus="onInlineFocus(name, 'eng_units_min', currentScaledMin(config))"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'scaled_min')"
+                    @blur="onCurrentScaledBlur(name, 'min')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -5599,10 +5864,10 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="text"
-                    :value="inlineValue(name, 'scaled_max', config.scaled_max ?? 100)"
-                    @focus="onInlineFocus(name, 'scaled_max', config.scaled_max ?? 100)"
+                    :value="inlineValue(name, 'eng_units_max', currentScaledMax(config))"
+                    @focus="onInlineFocus(name, 'eng_units_max', currentScaledMax(config))"
                     @input="onInlineInput($event)"
-                    @blur="onInlineBlurNumeric(name, 'scaled_max')"
+                    @blur="onCurrentScaledBlur(name, 'max')"
                     class="inline-input narrow"
                     :disabled="!canEdit"
                   />
@@ -6145,6 +6410,9 @@ watch(
               >
                 <!-- Modbus write channels (FC6): inline write value + (one-time) send button -->
                 <template v-if="config.modbus_write_mode === 'continuous' || config.modbus_write_mode === 'onetime'">
+                  <!-- Modbus write value + one-time trigger are operational
+                       controls: always editable/pressable, independent of Edit
+                       mode and acquisition state. -->
                   <input
                     type="number"
                     step="any"
@@ -6155,15 +6423,13 @@ watch(
                     @keyup.enter="($event.target as HTMLInputElement).blur()"
                     @click.stop
                     class="inline-input modbus-write-value"
-                    :disabled="!editMode"
-                    :title="editMode ? 'Value to write to the register' : 'Enable Edit mode to change the write value'"
+                    title="Value to write to the register"
                   />
                   <button
                     v-if="config.modbus_write_mode === 'onetime'"
                     class="trigger-btn"
                     @click.stop="triggerModbusWrite(name)"
-                    :disabled="!store.isAcquiring"
-                    :title="!store.isAcquiring ? 'Start acquisition to send' : `Write ${config.output_setpoint ?? 0} to ${name} once`"
+                    :title="`Write ${config.output_setpoint ?? 0} to ${name} once`"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -6311,7 +6577,39 @@ watch(
                 <input type="text" v-model="editingConfig.newName" />
                 <span class="form-hint">Changing this will rename the channel</span>
               </div>
-              <div class="form-row">
+              <!-- Modbus channels bind to a device + derive their path; NI channels use a DAQmx address -->
+              <template v-if="editingModbus">
+                <div class="form-row">
+                  <label>Modbus Device</label>
+                  <select v-model="editingConfig.config.module">
+                    <option v-if="modbusDevices.length === 0" value="" disabled>Add a device first</option>
+                    <option v-else value="" disabled>-- Select device --</option>
+                    <option v-for="dev in modbusDevices" :key="dev.name" :value="dev.name">{{ dev.label }}</option>
+                  </select>
+                  <span class="form-hint">The Modbus device this channel reads/writes</span>
+                </div>
+                <div class="form-row">
+                  <label>Function Code</label>
+                  <select v-model="editingModbusFc">
+                    <option v-for="opt in MODBUS_FC_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <span class="form-hint">Read vs write & register vs coil</span>
+                </div>
+                <div class="form-row" v-if="editingModbusIsWrite">
+                  <label>Write Mode</label>
+                  <select v-model="editingConfig.config.modbus_write_mode">
+                    <option value="continuous">Continuous Write</option>
+                    <option value="onetime">One-Time Trigger</option>
+                  </select>
+                  <span class="form-hint">Continuous re-asserts each scan; one-time writes only on trigger</span>
+                </div>
+                <div class="form-row">
+                  <label>Channel Path</label>
+                  <input type="text" :value="editingModbusPath" readonly class="readonly-input" />
+                  <span class="form-hint">[device]:[slave]:[FC]:[register] — derived, read-only</span>
+                </div>
+              </template>
+              <div class="form-row" v-else>
                 <label>Physical Channel</label>
                 <input
                   type="text"
@@ -6704,11 +7002,8 @@ watch(
                 </div>
                 <div class="form-row">
                   <label>Terminal Configuration</label>
-                  <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
-                      {{ t.label }}
-                    </option>
-                  </select>
+                  <input type="text" value="RSE (fixed)" readonly class="readonly-input" />
+                  <span class="form-hint">NI current modules (e.g. 9208) are RSE-only in the DAQmx API — not configurable.</span>
                 </div>
                 <div class="form-row">
                   <label>Shunt Location</label>
@@ -6719,7 +7014,7 @@ watch(
                 </div>
                 <div class="form-row checkbox-row">
                   <label>
-                    <input type="checkbox" v-model="editingConfig.moduleConfig.four_twenty_scaling" />
+                    <input type="checkbox" v-model="editingConfig.moduleConfig.four_twenty_scaling" @change="onFourTwentyToggle" />
                     Enable 4-20mA Scaling
                   </label>
                 </div>
@@ -6730,11 +7025,11 @@ watch(
                   <div class="form-row-group">
                     <div class="form-row half">
                       <label>Min Value (at 4mA)</label>
-                      <input type="number" v-model.number="editingConfig.moduleConfig.eng_units_min" />
+                      <input type="number" v-model.number="editingConfig.moduleConfig.eng_units_min" @change="onScaleRangeChange" />
                     </div>
                     <div class="form-row half">
                       <label>Max Value (at 20mA)</label>
-                      <input type="number" v-model.number="editingConfig.moduleConfig.eng_units_max" />
+                      <input type="number" v-model.number="editingConfig.moduleConfig.eng_units_max" @change="onScaleRangeChange" />
                     </div>
                   </div>
                   <div class="form-row">
@@ -7107,22 +7402,25 @@ watch(
             <template v-if="editingConfig.config.channel_type === 'modbus_register' || editingConfig.config.source_type === 'cfp'">
               <div class="config-section">
                 <h4>Modbus Settings</h4>
+                <!-- CFP channels use Modbus transport but have no Function Code selector,
+                     so they keep an explicit register-type picker. -->
+                <div class="form-row" v-if="editingConfig.config.source_type === 'cfp'">
+                  <label>Register Type</label>
+                  <select v-model="editingConfig.config.modbus_register_type">
+                    <option value="holding">Holding Register (R/W)</option>
+                    <option value="input">Input Register (R)</option>
+                  </select>
+                </div>
+                <div class="form-hint" v-else style="margin-bottom: 8px;">Register type is set by the Function Code above.</div>
                 <div class="form-row-group">
                   <div class="form-row half">
-                    <label>Register Type</label>
-                    <select v-model="editingConfig.config.modbus_register_type">
-                      <option value="holding">Holding Register (R/W)</option>
-                      <option value="input">Input Register (R)</option>
-                    </select>
+                    <label>Slave/Unit ID</label>
+                    <input type="number" v-model.number="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
                   </div>
                   <div class="form-row half">
-                    <label>Slave/Unit ID</label>
-                    <input type="number" v-model="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
+                    <label>Register Address</label>
+                    <input type="number" v-model.number="editingConfig.config.modbus_address" min="0" max="65535" />
                   </div>
-                </div>
-                <div class="form-row">
-                  <label>Register Address</label>
-                  <input type="number" v-model="editingConfig.config.modbus_address" min="0" max="65535" />
                 </div>
                 <div class="form-row">
                   <label>Data Type</label>
@@ -7190,22 +7488,16 @@ watch(
             <template v-if="editingConfig.config.channel_type === 'modbus_coil'">
               <div class="config-section">
                 <h4>Modbus Coil Settings</h4>
+                <div class="form-hint" style="margin-bottom: 8px;">Coil/discrete type is set by the Function Code above.</div>
                 <div class="form-row-group">
                   <div class="form-row half">
-                    <label>Coil Type</label>
-                    <select v-model="editingConfig.config.modbus_register_type">
-                      <option value="coil">Coil (R/W)</option>
-                      <option value="discrete">Discrete Input (R)</option>
-                    </select>
+                    <label>Slave/Unit ID</label>
+                    <input type="number" v-model.number="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
                   </div>
                   <div class="form-row half">
-                    <label>Slave/Unit ID</label>
-                    <input type="number" v-model="editingConfig.config.modbus_slave_id" min="1" max="247" placeholder="From module" />
+                    <label>Coil Address</label>
+                    <input type="number" v-model.number="editingConfig.config.modbus_address" min="0" max="65535" />
                   </div>
-                </div>
-                <div class="form-row">
-                  <label>Coil Address</label>
-                  <input type="number" v-model="editingConfig.config.modbus_address" min="0" max="65535" />
                 </div>
                 <div class="form-row checkbox-row">
                   <label>
@@ -7216,29 +7508,34 @@ watch(
               </div>
             </template>
 
-            <!-- Alarm Settings -->
+            <!-- Signal Failures (red, low_limit/high_limit) = signal out of the
+                 expected range → sensor unplugged or misconfigured.
+                 Soft Warnings (yellow, low_warning/high_warning) = real values
+                 trending toward a problem. -->
             <div class="config-section">
-              <h4>Alarms & Limits</h4>
+              <h4>Signal Failures & Soft Warnings</h4>
               <div class="form-row-group">
                 <div class="form-row half">
-                  <label>Low Alarm</label>
+                  <label>Low Signal Failure</label>
                   <input type="number" v-model="editingConfig.config.low_limit" :class="{ 'input-error': editingConfig.config.low_limit != null && editingConfig.config.high_limit != null && Number(editingConfig.config.low_limit) > Number(editingConfig.config.high_limit) }" />
                 </div>
                 <div class="form-row half">
-                  <label>High Alarm</label>
+                  <label>High Signal Failure</label>
                   <input type="number" v-model="editingConfig.config.high_limit" :class="{ 'input-error': editingConfig.config.low_limit != null && editingConfig.config.high_limit != null && Number(editingConfig.config.low_limit) > Number(editingConfig.config.high_limit) }" />
                 </div>
               </div>
+              <div class="form-hint">Out-of-range signal — sensor not connected or misconfigured. Value shown red.</div>
               <div class="form-row-group">
                 <div class="form-row half">
-                  <label>Low Warning</label>
+                  <label>Low Soft Warning</label>
                   <input type="number" v-model="editingConfig.config.low_warning" />
                 </div>
                 <div class="form-row half">
-                  <label>High Warning</label>
+                  <label>High Soft Warning</label>
                   <input type="number" v-model="editingConfig.config.high_warning" />
                 </div>
               </div>
+              <div class="form-hint">Real value trending toward a problem. Value shown yellow.</div>
             </div>
           </div>
 
@@ -7707,11 +8004,11 @@ watch(
               <select v-model="newChannelForm.channel_type">
                 <option value="thermocouple">Thermocouple</option>
                 <option value="rtd">RTD</option>
-                <option value="voltage">Voltage Input</option>
-                <option value="current">Current Input</option>
-                <option value="strain">Strain/Bridge</option>
-                <option value="iepe">IEPE/Accelerometer</option>
-                <option value="counter">Counter</option>
+                <option value="voltage_input">Voltage Input</option>
+                <option value="current_input">Current Input</option>
+                <option value="strain_input">Strain/Bridge</option>
+                <option value="iepe_input">IEPE/Accelerometer</option>
+                <option value="counter_input">Counter</option>
                 <option value="pulse_output">Pulse Output</option>
                 <option value="resistance">Resistance</option>
                 <option value="digital_input">Digital Input</option>
@@ -7867,7 +8164,7 @@ watch(
 
             <!-- ===== Non-Modbus: physical hardware channel ===== -->
             <div class="form-row" v-else>
-              <label>Physical Channel</label>
+              <label>Physical Channel <span class="required">*</span></label>
               <!-- Always show a dropdown for physical channel selection -->
               <select
                 v-model="newChannelForm.physical_channel"
@@ -7957,7 +8254,7 @@ watch(
             <button
               class="btn btn-primary"
               @click="addNewChannel"
-              :disabled="!newChannelForm.name"
+              :disabled="!canAddChannel"
             >
               Add Channel
             </button>
@@ -9408,22 +9705,31 @@ watch(
 }
 
 /* Batch action bar */
+/* Compact vertical toolbar — sits to the left of the table as a flex item in
+   .main-content (a row). align-self: flex-start keeps it hugging its content
+   instead of stretching to the full table height; flex: 0 0 auto stops it from
+   growing/shrinking. Buttons stack vertically and fill the narrow box. */
 .batch-action-bar {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: flex-start;
+  flex: 0 0 auto;
+  width: 140px;
+  gap: 6px;
+  padding: 8px;
+  margin: 0 12px 0 16px;
   background: var(--bg-surface);
   border: 1px solid var(--border, #334155);
   border-radius: 6px;
-  margin-bottom: 8px;
 }
 
 .batch-count {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--color-accent-light);
-  margin-right: 8px;
+  text-align: center;
+  margin-bottom: 4px;
 }
 
 .btn-sm {
@@ -9767,6 +10073,17 @@ watch(
   font-size: 0.7rem;
 }
 
+/* Read-only derived Modbus path ([device]:[slave]:[FC]:[reg]) */
+.modbus-channel-path {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--text-secondary, #94a3b8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Description input - full width */
 .col-description .inline-input {
   min-width: 280px;
@@ -9899,6 +10216,14 @@ watch(
 .form-row select:focus {
   outline: none;
   border-color: var(--color-accent);
+}
+
+/* Read-only derived field (e.g. Modbus channel path) */
+.form-row input.readonly-input {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  cursor: default;
 }
 
 .input-disabled {
@@ -10352,6 +10677,14 @@ input[type="checkbox"] {
   font-size: 0.8rem;
   font-weight: 500;
   text-align: center;
+  /* Always reserve this row so showing/hiding a message never shifts the table.
+     Idle = blank: transparent background + text. When a type class is applied
+     the colored styles below win; removing it fades back to blank over 0.6s. */
+  min-height: 1.2rem;
+  line-height: 1.2rem;
+  background: transparent;
+  color: transparent;
+  transition: background-color 0.6s ease, color 0.6s ease;
 }
 
 .feedback-message.success {

@@ -1189,7 +1189,13 @@ export function useMqtt(prefix: string = 'nisystem') {
           modbus_word_order: ch.modbus_word_order,
           modbus_scale: ch.modbus_scale,
           modbus_offset: ch.modbus_offset,
-          modbus_slave_id: ch.modbus_slave_id,
+          // Modbus unit ID defaults to 1 (the Modbus convention) when the backend
+          // sends null — older configs saved it as null, which left the sidebar
+          // Slave ID blank on import. Only defaulted for Modbus channels.
+          modbus_slave_id: (ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil'
+                            || ch.type === 'modbus_register' || ch.type === 'modbus_coil')
+            ? (ch.modbus_slave_id ?? 1)
+            : ch.modbus_slave_id,
           modbus_register_count: ch.modbus_register_count,
           modbus_register_index: ch.modbus_register_index,
           modbus_write_mode: ch.modbus_write_mode,
@@ -1416,19 +1422,30 @@ export function useMqtt(prefix: string = 'nisystem') {
     fullConfigCallbacks.forEach(cb => cb(payload))
   }
 
+  // Remove a channel from the local config map by REASSIGNING the ref (not a
+  // property delete). The store syncs from this ref via a non-deep watch, which
+  // only fires on identity change — a bare `delete channelConfigs.value[name]`
+  // mutated the object in place and never reached the table, so a deleted
+  // channel stayed visible. Reassigning also means any autosave reading the
+  // synced store won't re-send the deleted channel back to the backend.
+  function removeChannelLocal(channelName: string) {
+    if (channelConfigs.value[channelName]) {
+      const next = { ...channelConfigs.value }
+      delete next[channelName]
+      channelConfigs.value = next
+    }
+    if (channelValues.value[channelName]) {
+      delete channelValues.value[channelName]
+    }
+    // Drop the ownership entry too — over a long session of repeated
+    // channel create/delete the Map would grow unbounded, never collected.
+    channelOwners.delete(channelName)
+  }
+
   function handleChannelDeleted(payload: MqttChannelDeletedPayload) {
     const channelName = payload.channel
     if (channelName) {
-      // Remove from local configs
-      if (channelConfigs.value[channelName]) {
-        delete channelConfigs.value[channelName]
-      }
-      if (channelValues.value[channelName]) {
-        delete channelValues.value[channelName]
-      }
-      // Drop the ownership entry too — over a long session of repeated
-      // channel create/delete the Map would grow unbounded, never collected.
-      channelOwners.delete(channelName)
+      removeChannelLocal(channelName)
       console.debug('Channel deleted:', channelName)
       channelDeletedCallbacks.forEach(cb => cb(channelName))
     }
@@ -2804,6 +2821,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     // Channel lifecycle
     createChannel,
     deleteChannel,
+    removeChannelLocal,
     bulkCreateChannels,
     onChannelDeleted,
     onChannelCreated,
