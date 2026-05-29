@@ -4328,6 +4328,14 @@ watch(() => activeTypeTab.value, () => {
   selectedTableChannels.value.clear()
 })
 
+// Coerce a form value (string from a number input, number, '', null) to a
+// number or null — limits must be sent as numbers, not "" or NaN.
+function numOrNull(v: any): number | null {
+  if (v === '' || v == null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
 function saveChannelConfig() {
   if (!editingConfig.value) return
 
@@ -4360,15 +4368,35 @@ function saveChannelConfig() {
     safety_action: mc.safety_action || null,
     safety_interlock: mc.safety_interlock || null,
 
-    // ISA-18.2 Alarm Configuration
-    alarm_enabled: mc.alarm_enabled ?? false,
-    hi_limit: mc.hi_limit,
-    lo_limit: mc.lo_limit,
-    hihi_limit: mc.hihi_limit,
-    lolo_limit: mc.lolo_limit,
     alarm_priority: mc.alarm_priority ?? 'medium',
     alarm_deadband: mc.alarm_deadband ?? 1.0,
     alarm_delay_sec: mc.alarm_delay_sec ?? 0,
+  }
+
+  // Limits. The side panel binds the inputs directly to editingConfig.config,
+  // so persist THOSE fields (previously the save sent a stale moduleConfig
+  // snapshot of hi/lo_limit, so edits — and the auto-seeded values — reverted).
+  //   Signal Failures (red)  -> low_limit/high_limit  (also drive LOLO/HIHI)
+  //   Soft Warnings (yellow) -> low_warning/high_warning (also drive LO/HI)
+  {
+    const cfg = editingConfig.value.config
+    const lowLim = numOrNull(cfg.low_limit)
+    const highLim = numOrNull(cfg.high_limit)
+    const lowWarn = numOrNull(cfg.low_warning)
+    const highWarn = numOrNull(cfg.high_warning)
+    config.low_limit = lowLim
+    config.high_limit = highLim
+    config.low_warning = lowWarn
+    config.high_warning = highWarn
+    // Mirror to the ISA-18.2 tiers so the backend's 4-tier evaluation matches.
+    config.hihi_limit = highLim
+    config.lolo_limit = lowLim
+    config.hi_limit = highWarn
+    config.lo_limit = lowWarn
+    // Any limit set => alarms active (otherwise keep whatever the channel had).
+    config.alarm_enabled = (lowLim ?? highLim ?? lowWarn ?? highWarn) != null
+      ? true
+      : (cfg.alarm_enabled ?? false)
   }
 
   // Add thermocouple-specific settings
