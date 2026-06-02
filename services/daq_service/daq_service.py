@@ -6661,16 +6661,23 @@ Unit conversions:
             except Exception:
                 hw_health = {'healthy': False, 'error': 'health_check_failed'}
 
-        # Channel stats
+        # Channel stats — track the offending channel names too so the
+        # diagnostics overlay can surface WHICH channel is NaN/stale.
         nan_count = 0
         stale_count = 0
+        nan_channels: list = []
+        stale_channels: list = []
         with self.values_lock:
             for name, val in self.channel_values.items():
                 if isinstance(val, float) and val != val:  # NaN check
                     nan_count += 1
+                    if len(nan_channels) < 10:
+                        nan_channels.append(name)
                 ts = self.channel_acquisition_ts_us.get(name, 0)
                 if ts > 0 and (now - ts / 1_000_000) > 10.0:
                     stale_count += 1
+                    if len(stale_channels) < 10:
+                        stale_channels.append(name)
 
         health = {
             'timestamp': datetime.now().isoformat(),
@@ -6690,7 +6697,9 @@ Unit conversions:
             'channels': {
                 'total': len(self.config.channels) if self.config else 0,
                 'nan_count': nan_count,
+                'nan_channels': nan_channels,    # first ~10 offenders by name
                 'stale_count': stale_count,
+                'stale_channels': stale_channels,
             },
         }
         try:
@@ -14236,6 +14245,9 @@ Unit conversions:
             'thermocouple_type', 'cjc_source', 'rtd_type', 'rtd_wiring', 'rtd_current',
             'strain_config', 'iepe_coupling', 'resistance_wiring',
             'pulse_frequency', 'pulse_duty_cycle', 'pulse_idle_state',
+            # TC/RTD task is created with a specific TemperatureUnits — a unit
+            # change must rebuild or the channel keeps reading in the old unit.
+            'units',
         }
         if _HARDWARE_AFFECTING_FIELDS.intersection(config_data.keys()):
             self._hardware_config_dirty = True
@@ -17435,14 +17447,19 @@ Unit conversions:
 
                     # Read from Modbus devices (if configured)
                     # Modbus polls on its own background thread — just grab latest values
-                    # Track expected vs received channels for COMM_FAIL detection
+                    # Track expected vs received channels for COMM_FAIL detection.
+                    # Output (FC5/FC6 write) channels are NOT read by read_all, so they
+                    # MUST be excluded from the "expected" set — otherwise every write
+                    # channel registers as NaN on every scan (a phantom COMM_FAIL).
                     try:
                         if self.modbus_reader:
                             modbus_values = self.modbus_reader.get_latest_values()
                             if modbus_values:
                                 raw_values.update(modbus_values)
-                            # Detect offline Modbus channels: expected but not returned
-                            expected_modbus = set(self.modbus_reader.channel_configs.keys())
+                            expected_modbus = {
+                                name for name, cfg in self.modbus_reader.channel_configs.items()
+                                if not cfg.is_output
+                            }
                             missing_modbus = expected_modbus - set(modbus_values.keys()) if modbus_values else expected_modbus
                             for ch_name in missing_modbus:
                                 raw_values.setdefault(ch_name, float('nan'))

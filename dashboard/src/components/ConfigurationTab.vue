@@ -1592,6 +1592,22 @@ function triggerModbusWrite(channel: string) {
   }
 }
 
+// Toggle a digital output ON/OFF immediately. Operational — bypasses Edit mode
+// so it's usable during acquisition. The visible state follows the live value
+// broadcast back from the device, not an optimistic flip.
+function toggleDigitalOutput(channel: string) {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  const current = !!store.values[channel]?.value
+  const next = current ? 0 : 1
+  const result = mqtt.setOutput(channel, next)
+  if (!result.success && result.error) {
+    showFeedback('error', result.error)
+  }
+}
+
 // OUTPUT column for analog outputs (mA-OUT / V-OUT). Persists output_setpoint
 // in the project config AND pushes the value live to hardware via setOutput
 // when acquisition is running. Clamped to the card's hardware range so a typo
@@ -6434,7 +6450,7 @@ watch(
               <td
                 v-if="!['voltage_input', 'current_input', 'voltage_output', 'current_output', 'analog_output'].includes(activeTypeTab)"
                 class="col-value"
-                :class="getAlarmStatus(name)"
+                :class="[getAlarmStatus(name), { 'col-value-digital': config.channel_type === 'digital_input' || config.channel_type === 'digital_output' }]"
               >
                 <!-- Modbus write channels (FC6): inline write value + (one-time) send button -->
                 <template v-if="config.modbus_write_mode === 'continuous' || config.modbus_write_mode === 'onetime'">
@@ -6465,6 +6481,19 @@ watch(
                   </button>
                 </template>
                 <template v-else-if="config.channel_type === 'digital_input' || config.channel_type === 'digital_output'">
+                  <!-- Digital output: light-bulb toggle. Bypasses Edit mode and
+                       fires immediately via setOutput — operational control. -->
+                  <button
+                    v-if="config.channel_type === 'digital_output'"
+                    class="do-toggle-btn"
+                    :class="{ on: store.values[name]?.value }"
+                    @click.stop="toggleDigitalOutput(name)"
+                    :title="store.values[name]?.value ? `${name} is ON — click to turn OFF` : `${name} is OFF — click to turn ON`"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                      <path d="M9 18h6M10 22h4M12 3a6 6 0 0 0-4 10.5c.5.7 1 1.5 1 2.5v2h6v-2c0-1 .5-1.8 1-2.5A6 6 0 0 0 12 3z"/>
+                    </svg>
+                  </button>
                   <span class="digital-state" :class="{ on: store.values[name]?.value }">
                     {{ store.values[name]?.value ? 'ON' : 'OFF' }}
                   </span>
@@ -6881,11 +6910,13 @@ watch(
                 </div>
                 <div class="form-row">
                   <label>Temperature Units</label>
-                  <select v-model="editingConfig.moduleConfig.units">
-                    <option value="C">Celsius (°C)</option>
-                    <option value="F">Fahrenheit (°F)</option>
+                  <!-- Same options + values as the row TEMP dropdown so they stay
+                       in sync (was a separate "C/F/K/R" set on moduleConfig.units
+                       that saveChannelConfig never even persisted). -->
+                  <select v-model="editingConfig.config.unit">
+                    <option value="degC">Celsius (°C)</option>
+                    <option value="degF">Fahrenheit (°F)</option>
                     <option value="K">Kelvin (K)</option>
-                    <option value="R">Rankine (°R)</option>
                   </select>
                 </div>
                 <div class="form-row">
@@ -7110,11 +7141,13 @@ watch(
                 </div>
                 <div class="form-row">
                   <label>Temperature Units</label>
-                  <select v-model="editingConfig.moduleConfig.units">
-                    <option value="C">Celsius (°C)</option>
-                    <option value="F">Fahrenheit (°F)</option>
+                  <!-- Same options + values as the row TEMP dropdown so they stay
+                       in sync (was a separate "C/F/K/R" set on moduleConfig.units
+                       that saveChannelConfig never even persisted). -->
+                  <select v-model="editingConfig.config.unit">
+                    <option value="degC">Celsius (°C)</option>
+                    <option value="degF">Fahrenheit (°F)</option>
                     <option value="K">Kelvin (K)</option>
-                    <option value="R">Rankine (°R)</option>
                   </select>
                 </div>
                 <div class="form-row">
@@ -9945,6 +9978,35 @@ watch(
   color: var(--color-success);
 }
 
+/* Digital-output toggle: outline bulb when OFF, glowing yellow bulb when ON. */
+.do-toggle-btn {
+  background: transparent;
+  border: 1px solid var(--border, #475569);
+  color: var(--text-muted, #64748b);
+  border-radius: 4px;
+  padding: 3px 5px;
+  margin-right: 6px;
+  cursor: pointer;
+  vertical-align: middle;
+  display: inline-flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.do-toggle-btn:hover { background: var(--bg-hover); }
+.do-toggle-btn.on {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.do-toggle-btn.on svg path {
+  fill: rgba(251, 191, 36, 0.25);
+}
+
+/* Digital state cell + ALARM column: left-justify so headers align with cells. */
+.channel-table td.col-value.col-value-digital {
+  text-align: left;
+}
+
 /* Config Button */
 .config-btn {
   background: transparent;
@@ -11451,9 +11513,10 @@ input[type="checkbox"] {
   color: var(--indicator-danger-text);
 }
 
-/* Alarm column styling */
+/* Alarm column styling — left-justified so the header lines up with the
+   bell icon and matches the rest of the column layout. */
 .col-alarm {
-  text-align: center;
+  text-align: left;
   width: 50px;
   min-width: 50px;
 }

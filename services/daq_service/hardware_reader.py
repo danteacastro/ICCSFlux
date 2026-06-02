@@ -58,6 +58,7 @@ try:
     from nidaqmx.constants import (
         TerminalConfiguration,
         ThermocoupleType as NI_TCType,
+        TemperatureUnits,
         AcquisitionType,
         Edge,
         Level,
@@ -258,6 +259,28 @@ def get_cjc_source(config_str: str):
         cjc_validator.CHANNEL: CJCSource.SCANNABLE_CHANNEL,
     }
     return config_map.get(canonical, CJCSource.BUILT_IN)
+
+
+def get_temperature_units(unit_str: Optional[str]):
+    """Map a unit string ('degC'/'degF'/'K', legacy 'C'/'F'/'R', '°C', etc.) to
+    the nidaqmx TemperatureUnits constant for add_ai_thrmcpl_chan / add_ai_rtd_chan.
+
+    Default DEG_C — matches DAQmx's own default when units isn't passed. Was the
+    silent default before this function existed: a channel configured °F still
+    came back in °C because the units kwarg was never set on the chan call.
+    """
+    if not NIDAQMX_AVAILABLE:
+        return None
+    # Strip 'deg' prefix / '°' so 'degF', '°F', 'F' all canonicalize to 'f'.
+    u = str(unit_str or '').strip().lower().lstrip('°').replace('deg', '').strip()
+    if u == 'f':
+        return TemperatureUnits.DEG_F
+    if u == 'k':
+        return TemperatureUnits.K
+    if u == 'r':
+        return TemperatureUnits.DEG_R
+    return TemperatureUnits.DEG_C  # 'c', '', or anything unrecognized
+
 
 @dataclass
 class TaskGroup:
@@ -1209,7 +1232,8 @@ class HardwareReader:
                         name_to_assign_to_channel=channel.name,
                         thermocouple_type=tc_type,
                         cjc_source=cjc,
-                        cjc_val=cjc_val
+                        cjc_val=cjc_val,
+                        units=get_temperature_units(channel.units),
                     )
 
                     # NI 9213/9211/9214 default to HIGH_RESOLUTION ADC mode (~1 S/s
@@ -1328,7 +1352,8 @@ class HardwareReader:
                         resistance_config=wiring,
                         current_excit_source=ExcitationSource.INTERNAL,
                         current_excit_val=channel.rtd_current or 0.001,
-                        r_0=channel.rtd_resistance or 100.0
+                        r_0=channel.rtd_resistance or 100.0,
+                        units=get_temperature_units(channel.units),
                     )
                     # NI 9217 default ADC mode caps at 20 S/s; HIGH_SPEED → 400 S/s.
                     if _module_needs_high_speed_adc(mod_type):
@@ -1493,7 +1518,8 @@ class HardwareReader:
                     name_to_assign_to_channel=channel.name,
                     thermocouple_type=tc_type,
                     cjc_source=cjc,
-                    cjc_val=cjc_val
+                    cjc_val=cjc_val,
+                    units=get_temperature_units(channel.units),
                 )
                 channel_names.append(channel.name)
 
@@ -1730,7 +1756,8 @@ class HardwareReader:
                     resistance_config=wiring,
                     current_excit_source=ExcitationSource.INTERNAL,
                     current_excit_val=channel.rtd_current,
-                    r_0=channel.rtd_resistance  # Note: r_0 not r0 in newer nidaqmx
+                    r_0=channel.rtd_resistance,  # Note: r_0 not r0 in newer nidaqmx
+                    units=get_temperature_units(channel.units),
                 )
                 channel_names.append(channel.name)
                 logger.info(f"Added RTD channel: {channel.name} -> {phys_chan} "

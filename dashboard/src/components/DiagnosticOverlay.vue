@@ -144,6 +144,12 @@ function healthDot(healthy: boolean | undefined) {
             Stale: {{ health.channels?.stale_count ?? 0 }}
           </span>
         </div>
+        <div v-if="(health.channels?.nan_channels?.length ?? 0) > 0" class="diag-channel-list">
+          NaN: {{ (health.channels?.nan_channels ?? []).join(', ') }}
+        </div>
+        <div v-if="(health.channels?.stale_channels?.length ?? 0) > 0" class="diag-channel-list">
+          Stale: {{ (health.channels?.stale_channels ?? []).join(', ') }}
+        </div>
       </div>
 
       <!-- Event Timeline -->
@@ -319,6 +325,14 @@ function healthDot(healthy: boolean | undefined) {
 .diag-stats {
   display: flex;
   gap: 12px;
+}
+
+.diag-channel-list {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #f59e0b;
+  word-break: break-word;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 .diag-badge-warn {
