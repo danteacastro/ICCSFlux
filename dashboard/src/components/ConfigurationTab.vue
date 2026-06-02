@@ -1565,8 +1565,11 @@ function onModbusWriteValueBlur(channel: string) {
     showFeedback('error', 'Not connected to MQTT broker')
     return
   }
+  // Operational value (the number written to the register) — NOT marked dirty.
+  // The next explicit Save still picks it up from store.channels via the
+  // updateChannelConfig round-trip, but it doesn't flag the project as
+  // modified just because the operator nudged a setpoint.
   mqtt.updateChannelConfig(channel, { output_setpoint: val })
-  markDirty()
   const cfg = store.channels[channel]
   if (cfg?.modbus_write_mode === 'continuous' && store.isAcquiring) {
     // Update what the continuous poller writes from now on.
@@ -1643,8 +1646,9 @@ function onInlineBlurOutputSetpoint(channel: string) {
     max = Number(config.current_range_ma ?? 20)
   }
   const clamped = Math.max(min, Math.min(max, val))
+  // Operational setpoint — NOT marked dirty (same rationale as Modbus write
+  // values). Explicit Save still persists the new setpoint to the project file.
   mqtt.updateChannelConfig(channel, { output_setpoint: clamped })
-  markDirty()
   if (store.isAcquiring) {
     const result = mqtt.setOutput(channel, clamped)
     if (!result.success && result.error) {
@@ -6265,7 +6269,7 @@ watch(
                 <td class="editable-cell" @click.stop>
                   <input
                     type="number"
-                    step="any"
+                    step="0.01"
                     :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
                     @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
                     @input="onInlineInput($event)"
@@ -6343,7 +6347,7 @@ watch(
                     type="number"
                     min="0"
                     :max="config.current_range_ma ?? 20"
-                    step="any"
+                    step="0.01"
                     :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
                     @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
                     @input="onInlineInput($event)"
@@ -6497,6 +6501,26 @@ watch(
                   <span class="digital-state" :class="{ on: store.values[name]?.value }">
                     {{ store.values[name]?.value ? 'ON' : 'OFF' }}
                   </span>
+                </template>
+                <template v-else-if="config.channel_type === 'voltage_output' || config.channel_type === 'current_output' || config.channel_type === 'analog_output'">
+                  <!-- Analog output: inline setpoint, operational. Editable during
+                       acquisition (only gated by edit-permission, not edit-mode),
+                       writes output_setpoint + pushes live via setOutput on blur.
+                       step="0.01" — fine decimal increments via the spinner. -->
+                  <input
+                    type="number"
+                    step="0.01"
+                    :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    @input="onInlineInput($event)"
+                    @blur="onInlineBlurOutputSetpoint(name)"
+                    @keydown.enter="($event.target as HTMLInputElement).blur()"
+                    @click.stop
+                    class="inline-input narrow ao-row-output"
+                    :disabled="!canSetOutput"
+                    :title="`Write value to ${name}`"
+                  />
+                  <span class="unit">{{ config.unit }}</span>
                 </template>
                 <template v-else>
                   <span class="value">{{ getCurrentValue(name) }}</span>
