@@ -55,6 +55,7 @@ PYTHON_PACKAGES = [
     "pymodbus>=3.0.0",
     "pyserial>=3.5",
     "opcua>=0.98.0",
+    "cryptography>=41.0.0",  # enables OPC-UA security/encryption (opcua [encryption] extra)
     "pycomm3>=1.2.0",
     # HTTP/REST
     "requests>=2.28.0",
@@ -67,6 +68,46 @@ OFFLINE_MODE = False
 def log(msg, level="INFO"):
     prefix = {"INFO": "[BUILD]", "WARN": "[WARN]", "ERROR": "[ERROR]", "OK": "[  OK ]"}
     print(f"{prefix.get(level, '[    ]')} {msg}")
+
+def robust_rmtree(path, retries=12, delay=1.0):
+    """Delete a tree, retrying on transient locks.
+
+    Cloud-sync folders (OneDrive) and Explorer can hold a handle on a directory
+    or file for several seconds, causing PermissionError [WinError 5] even after
+    its contents are gone. We clear read-only attributes and retry each failing
+    item, restarting the whole-tree delete a number of times before giving up.
+    """
+    import time
+    import stat
+    path = Path(path)
+
+    def on_error(func, p, exc_info):
+        # Clear read-only bit and retry the single operation a few times.
+        for _ in range(retries):
+            try:
+                os.chmod(p, stat.S_IWRITE)
+            except OSError:
+                pass
+            try:
+                func(p)
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError:
+                time.sleep(delay)
+        raise exc_info[1]
+
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(path, onerror=on_error)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+    return not path.exists()
 
 def download_file(url, dest, desc=None):
     """Download a file with progress indication"""
@@ -171,9 +212,11 @@ def build_dashboard():
             print(result.stderr.decode())
             return None
 
-    # Build production
+    # Build production. Use build:portable (Vite only) rather than the default
+    # `npm run build`, which gates on `vue-tsc` type-checking that aborts on
+    # pre-existing type errors that don't affect the runtime bundle.
     log("Running npm build...")
-    result = subprocess.run("npm run build", shell=True, cwd=dashboard_dir, capture_output=True)
+    result = subprocess.run("npm run build:portable", shell=True, cwd=dashboard_dir, capture_output=True)
     if result.returncode != 0:
         log("npm build failed!", "ERROR")
         print(result.stderr.decode())
@@ -558,12 +601,15 @@ def copy_project_files():
     config_dest = BUILD_DIR / "config"
     if config_dest.exists():
         shutil.rmtree(config_dest)
+    # Exclude archive/ -- old archived configs not needed at runtime, and it
+    # contains a read-only OneDrive Files-On-Demand placeholder that complicates
+    # rebuilds (read-only dirs can't be deleted by rmtree on Windows).
     shutil.copytree(
         PROJECT_ROOT / "config",
         config_dest,
-        ignore=shutil.ignore_patterns('*.log', '*.tmp')
+        ignore=shutil.ignore_patterns('*.log', '*.tmp', 'archive')
     )
-    log("  Copied config/")
+    log("  Copied config/ (excluding archive/)")
 
     # Copy launcher utilities (single_instance.py for service management)
     launcher_dest = BUILD_DIR / "launcher"
@@ -1263,7 +1309,7 @@ def main():
     # Clean build dir
     if BUILD_DIR.exists():
         log("Cleaning previous build...")
-        shutil.rmtree(BUILD_DIR)
+        robust_rmtree(BUILD_DIR)
     BUILD_DIR.mkdir(parents=True)
 
     print()

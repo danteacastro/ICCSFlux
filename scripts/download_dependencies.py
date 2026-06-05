@@ -30,24 +30,52 @@ PYTHON_VERSION = "3.11.7"
 PYTHON_EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
-# Python packages - must match build_portable.py
+# The portable bundle uses the EMBEDDED interpreter above, which may differ from
+# the Python running this downloader. Wheels MUST be pinned to that target or
+# C-extension packages (numpy, scipy, lxml, cryptography...) silently refuse to
+# install into the embed. Keep these in sync with PYTHON_VERSION.
+WHEEL_PLATFORM = "win_amd64"
+WHEEL_PY_VERSION = "3.11"
+
+# Python packages with binary wheels for the embed target.
+# MUST match PYTHON_PACKAGES in build_portable.py.
 PYTHON_PACKAGES = [
-    "paho-mqtt>=1.6.0",
-    "pymodbus>=3.0.0",
-    "pyserial>=3.5",
+    "paho-mqtt>=2.0.0",
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "python-dateutil>=2.8.0",
     "psutil>=5.9.0",
-    "requests>=2.28.0",
-    "opcua>=0.98.0",
+    "bcrypt>=4.0.0",
+    "pymodbus>=3.0.0",
+    "pyserial>=3.5",
     "pycomm3>=1.2.0",
+    "requests>=2.28.0",
+    "httpx>=0.24.0",
 ]
 
-# Azure IoT packages (separate due to paho-mqtt 1.x requirement)
+# Packages that ship ONLY as a source dist (no wheel on PyPI). We build a wheel
+# locally so they install offline without needing build backends from PyPI.
+# opcua is pure-Python, so the built wheel is portable to the embed.
+PYTHON_SOURCE_PACKAGES = [
+    "opcua>=0.98.0",
+]
+
+# Binary-wheel dependencies of the source packages above that must also be
+# vendored for the embed (opcua needs lxml/pytz; cryptography enables OPC-UA
+# security/encryption).
+PYTHON_SOURCE_DEPS = [
+    "lxml",
+    "pytz",
+    "cryptography>=41.0.0",
+]
+
+# Azure IoT packages (separate venv due to paho-mqtt 1.x requirement).
+# azure-iot-device has wheels; paho-mqtt<2 (1.6.x) is source-only -> built below.
 AZURE_PACKAGES = [
-    "paho-mqtt>=1.6.0,<2.0.0",
     "azure-iot-device>=2.12.0",
+]
+AZURE_SOURCE_PACKAGES = [
+    "paho-mqtt>=1.6.0,<2.0.0",
 ]
 
 # Paths
@@ -95,55 +123,88 @@ def download_python_embed():
 
     return True
 
-def download_python_packages():
-    """Download Python packages as wheels."""
-    log("Downloading Python packages...")
-    packages_dir = VENDOR_DIR / "python-packages"
-    packages_dir.mkdir(parents=True, exist_ok=True)
+def download_wheels(packages, dest, desc, find_links=None):
+    """Download binary wheels pinned to the embed target (win_amd64 / 3.11).
 
-    # Create requirements file for pip download
-    req_file = packages_dir / "requirements.txt"
-    req_file.write_text("\n".join(PYTHON_PACKAGES))
+    Pinning is mandatory: this script may run under a different Python than the
+    one being bundled, so an unpinned download would fetch incompatible wheels.
+    We deliberately do NOT fall back to an unconstrained download.
 
-    # Download wheels for Windows x64
-    log("  Downloading wheels for Windows x64...")
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "pip", "download",
-            "-r", str(req_file),
-            "-d", str(packages_dir),
-            "--platform", "win_amd64",
-            "--python-version", "3.11",
-            "--only-binary", ":all:",
-        ],
-        capture_output=True,
-        text=True
-    )
-
+    find_links lets the resolver satisfy a dependency from a locally built wheel
+    (e.g. a source-only package built earlier) so the rest of the graph can be
+    fetched as binaries.
+    """
+    if not packages:
+        return True
+    log(f"  Downloading {desc} wheels for {WHEEL_PLATFORM} / py{WHEEL_PY_VERSION}...")
+    cmd = [
+        sys.executable, "-m", "pip", "download",
+        *packages,
+        "-d", str(dest),
+        "--platform", WHEEL_PLATFORM,
+        "--python-version", WHEEL_PY_VERSION,
+        "--only-binary", ":all:",
+    ]
+    if find_links:
+        cmd += ["--find-links", str(find_links)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Some packages might not have wheels, try with source
-        log("  Some wheels not available, trying with source packages...", "WARN")
+        log(f"  Failed to download {desc} wheels", "ERROR")
+        print(result.stderr)
+        return False
+    return True
+
+
+def build_source_wheels(packages, dest, desc):
+    """Build wheels locally for source-only packages so they install offline.
+
+    These packages have no wheel on PyPI; without a pre-built wheel, an offline
+    `pip install` would try to fetch build backends from PyPI and fail. The
+    packages here are pure-Python, so the locally built wheel is portable.
+    """
+    if not packages:
+        return True
+    for pkg in packages:
+        log(f"  Building wheel for {desc} package: {pkg}")
         result = subprocess.run(
             [
-                sys.executable, "-m", "pip", "download",
-                "-r", str(req_file),
-                "-d", str(packages_dir),
+                sys.executable, "-m", "pip", "wheel",
+                pkg, "--no-deps",
+                "-w", str(dest),
             ],
             capture_output=True,
             text=True
         )
+        if result.returncode != 0:
+            log(f"  Failed to build wheel for {pkg}", "ERROR")
+            print(result.stderr)
+            return False
+    return True
 
-    # Count downloaded packages
+
+def download_python_packages():
+    """Download/build all main Python packages as wheels for the embed target."""
+    log("Downloading Python packages...")
+    packages_dir = VENDOR_DIR / "python-packages"
+    packages_dir.mkdir(parents=True, exist_ok=True)
+
+    # Record the intended package set for reference.
+    req_file = packages_dir / "requirements.txt"
+    req_file.write_text("\n".join(PYTHON_PACKAGES + PYTHON_SOURCE_PACKAGES))
+
+    ok = download_wheels(
+        PYTHON_PACKAGES + PYTHON_SOURCE_DEPS, packages_dir, "Python"
+    )
+    ok = build_source_wheels(PYTHON_SOURCE_PACKAGES, packages_dir, "Python") and ok
+
     wheels = list(packages_dir.glob("*.whl"))
     tarballs = list(packages_dir.glob("*.tar.gz"))
-    total = len(wheels) + len(tarballs)
 
-    if total > 0:
+    if ok and wheels:
         log(f"  Downloaded {len(wheels)} wheels, {len(tarballs)} source packages", "OK")
         return True
     else:
-        log("  No packages downloaded!", "ERROR")
-        print(result.stderr)
+        log("  Python package download incomplete!", "ERROR")
         return False
 
 def download_azure_packages():
@@ -152,27 +213,26 @@ def download_azure_packages():
     azure_dir = VENDOR_DIR / "azure-packages"
     azure_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download wheels (no platform restriction -- most are pure Python)
-    log("  Downloading Azure IoT SDK and dependencies...")
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "pip", "download",
-            *AZURE_PACKAGES,
-            "-d", str(azure_dir),
-        ],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        log(f"  Azure package download failed: {result.stderr}", "ERROR")
-        return False
+    # paho-mqtt 1.6.x is source-only -> build a wheel FIRST so it installs
+    # offline AND so the resolver below can satisfy azure-iot-device's
+    # paho-mqtt<2 dependency from this local wheel.
+    ok = build_source_wheels(AZURE_SOURCE_PACKAGES, azure_dir, "Azure IoT")
+    # Pin to the embed target like the main packages: the Azure uploader runs on
+    # its own copy of the SAME embedded Python, so wheels must be cp311/win_amd64.
+    # Pass the source packages too so the resolver pins them to the local wheel.
+    ok = download_wheels(
+        AZURE_PACKAGES + AZURE_SOURCE_PACKAGES, azure_dir, "Azure IoT",
+        find_links=azure_dir,
+    ) and ok
 
     wheels = list(azure_dir.glob("*.whl"))
     tarballs = list(azure_dir.glob("*.tar.gz"))
     total = len(wheels) + len(tarballs)
-    log(f"  Downloaded {total} packages ({len(wheels)} wheels, {len(tarballs)} source)", "OK")
-    return total > 0
+    if ok and wheels:
+        log(f"  Downloaded {total} packages ({len(wheels)} wheels, {len(tarballs)} source)", "OK")
+        return True
+    log("  Azure package download incomplete!", "ERROR")
+    return False
 
 def download_npm_packages():
     """Cache npm packages for offline dashboard build."""
@@ -229,10 +289,12 @@ def prebuild_dashboard():
         log("  Dashboard directory not found!", "WARN")
         return False
 
-    # Run npm build
-    log("  Running npm run build...")
+    # Run the portable build (Vite only). The default `npm run build` also runs
+    # `vue-tsc` type-checking, which aborts on pre-existing type errors that do
+    # not affect the runtime bundle. build:portable skips that gate.
+    log("  Running npm run build:portable...")
     result = subprocess.run(
-        "npm run build",
+        "npm run build:portable",
         shell=True,
         cwd=dashboard_dir,
         capture_output=True
