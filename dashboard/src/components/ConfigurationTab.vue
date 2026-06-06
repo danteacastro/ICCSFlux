@@ -3109,15 +3109,17 @@ function generateSmartChannelName(physicalChannel: string, channelType: string, 
 }
 
 // Get default limits based on channel type
-function getDefaultLimits(channelType: string): { low: number, high: number, lowWarn?: number, highWarn?: number } {
-  const limits: Record<string, { low: number, high: number, lowWarn?: number, highWarn?: number }> = {
+function getDefaultLimits(channelType: string): { low?: number, high?: number, lowWarn?: number, highWarn?: number } {
+  const limits: Record<string, { low?: number, high?: number, lowWarn?: number, highWarn?: number }> = {
     thermocouple: { low: 0, high: 500, lowWarn: 32, highWarn: 450 },
     rtd: { low: -50, high: 300, lowWarn: 0, highWarn: 250 },
     voltage: { low: -10, high: 10 },
     current: { low: 0, high: 20, lowWarn: 4, highWarn: 20 },
     strain: { low: -5000, high: 5000 },
     iepe: { low: -50, high: 50 },
-    counter: { low: 0, high: 4294967295 },
+    // Counters have no meaningful high bound — a monotonic count's only ceiling is
+    // the 32-bit rollover, which is alarm noise. Leave high unset so it isn't persisted.
+    counter: { low: 0 },
     digital_input: { low: 0, high: 1 },
     digital_output: { low: 0, high: 1 },
     voltage_output: { low: -10, high: 10 },
@@ -4400,10 +4402,14 @@ function saveChannelConfig() {
   //   Soft Warnings (yellow) -> low_warning/high_warning (also drive LO/HI)
   {
     const cfg = editingConfig.value.config
-    const lowLim = numOrNull(cfg.low_limit)
-    const highLim = numOrNull(cfg.high_limit)
-    const lowWarn = numOrNull(cfg.low_warning)
-    const highWarn = numOrNull(cfg.high_warning)
+    // Counters carry no meaningful signal-failure/soft-warning band (the section
+    // is hidden in the panel), so strip any stale limits — including the legacy
+    // 32-bit high_limit ceiling — so they don't persist or drive false alarms.
+    const isCounter = ['counter', 'counter_input'].includes(channelType)
+    const lowLim = isCounter ? null : numOrNull(cfg.low_limit)
+    const highLim = isCounter ? null : numOrNull(cfg.high_limit)
+    const lowWarn = isCounter ? null : numOrNull(cfg.low_warning)
+    const highWarn = isCounter ? null : numOrNull(cfg.high_warning)
     config.low_limit = lowLim
     config.high_limit = highLim
     config.low_warning = lowWarn
@@ -6447,7 +6453,8 @@ watch(
                   />
                 </td>
                 <td class="col-numeric" :class="{ 'limit-error': config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) }" :title="config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) ? 'Low limit is greater than high limit' : ''">{{ config.low_limit ?? '-' }}</td>
-                <td class="col-numeric" :class="{ 'limit-error': config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) }" :title="config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) ? 'High limit is less than low limit' : ''">{{ config.high_limit ?? '-' }}</td>
+                <!-- Counters have no meaningful upper limit (32-bit rollover ceiling is noise), so blank MAX for them -->
+                <td class="col-numeric" :class="{ 'limit-error': config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) }" :title="config.low_limit != null && config.high_limit != null && Number(config.low_limit) > Number(config.high_limit) ? 'High limit is less than low limit' : ''">{{ ['counter', 'counter_input'].includes(config.channel_type) ? '-' : (config.high_limit ?? '-') }}</td>
               </template>
 
               <!-- Value column - only for tabs that don't have built-in value display -->
@@ -7596,8 +7603,10 @@ watch(
             <!-- Signal Failures (red, low_limit/high_limit) = signal out of the
                  expected range → sensor unplugged or misconfigured.
                  Soft Warnings (yellow, low_warning/high_warning) = real values
-                 trending toward a problem. -->
-            <div class="config-section">
+                 trending toward a problem.
+                 Hidden for counters: a monotonically rising count has no meaningful
+                 out-of-range band, and the high default (32-bit ceiling) is noise. -->
+            <div v-if="!['counter', 'counter_input'].includes(editingConfig.config.channel_type)" class="config-section">
               <h4>Signal Failures & Soft Warnings</h4>
               <div class="form-row-group">
                 <div class="form-row half">

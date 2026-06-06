@@ -596,6 +596,24 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Actions
   function setChannels(channelConfigs: Record<string, ChannelConfig>) {
+    // Counters have no meaningful signal-failure / soft-warning band, so strip any
+    // stale limits on load — notably the legacy 32-bit `high_limit` ceiling that
+    // older configs seeded. Leaving them would resurface in the UI and could drive
+    // bogus alarm evaluation. The config panel hides this section for counters, so
+    // there's no way to re-add them by hand either.
+    for (const cfg of Object.values(channelConfigs)) {
+      if (cfg && (cfg.channel_type === 'counter' || cfg.channel_type === 'counter_input')) {
+        cfg.low_limit = undefined
+        cfg.high_limit = undefined
+        cfg.low_warning = undefined
+        cfg.high_warning = undefined
+        cfg.hihi_limit = undefined
+        cfg.hi_limit = undefined
+        cfg.lo_limit = undefined
+        cfg.lolo_limit = undefined
+        cfg.alarm_enabled = false
+      }
+    }
     channels.value = channelConfigs
   }
 

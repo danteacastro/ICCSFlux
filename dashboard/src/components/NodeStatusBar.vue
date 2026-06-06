@@ -185,8 +185,8 @@ function onMouseLeave() {
 }
 
 .node-pill.active {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 1px var(--accent-primary);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
   color: var(--text-primary);
 }
 

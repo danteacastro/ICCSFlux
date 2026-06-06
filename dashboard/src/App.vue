@@ -645,8 +645,18 @@ async function handleStop() {
 async function handleRecordStart() {
   console.log('[APP] handleRecordStart called, isAcquiring:', store.isAcquiring, 'isRecording:', store.isRecording)
   const result = await mqtt.startRecording()
-  if (!result.success) {
+  if (result.success) {
+    // Confirm to the operator that the header button actually started a file —
+    // no Data tab visit required. The filename arrives slightly after the ack via
+    // status, so fall back to a generic message if it isn't populated yet.
+    const fname = store.status?.recording_filename
+    safety.showSafetyFeedback('success', fname ? `Recording started → ${fname}` : 'Recording started', 4000)
+  } else {
+    // Previously this only console.error'd, so a failed start (e.g. a dropped
+    // first click) looked identical to "nothing happened" and the operator just
+    // clicked again. Surface the reason so it's diagnosable.
     console.error('[APP] Recording start failed:', result.error)
+    safety.showSafetyFeedback('error', `Recording failed to start: ${result.error || 'unknown error'}`, 8000)
   }
 }
 

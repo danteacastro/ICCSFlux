@@ -484,9 +484,18 @@ class RecordingManager:
                 logger.warning("Recording already active")
                 return False
 
-            # Build output directory based on directory structure
+            # Build output directory based on directory structure.
+            # mkdir must be guarded: if it raises (e.g. unwritable path), the
+            # exception would propagate out of start() to the command handler,
+            # which logs it but publishes NO ack — leaving the dashboard to time
+            # out after 10s with no error shown. Returning False instead lets the
+            # handler send a proper failure ack the operator can see.
             output_dir = self._get_output_directory()
-            output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.error(f"Failed to create recording directory {output_dir}: {e}")
+                return False
 
             # Check available disk space before opening file
             try:

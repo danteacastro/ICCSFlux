@@ -70,7 +70,7 @@ const activeSubTab = ref<'logs' | 'reports' | 'notes'>('logs')
 }
 
 .sub-tab-btn.active {
-  background: var(--accent-primary);
+  background: var(--color-accent);
   color: #fff;
 }
 

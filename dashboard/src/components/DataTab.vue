@@ -1100,6 +1100,9 @@ const scheduleDayLabels = [
 
       <!-- Center Panel: Recording Settings -->
       <div class="settings-panel" :class="{ locked: configLocked }">
+        <!-- Inner scroll wrapper: keeps the locked dim overlay (::after on
+             .settings-panel) fixed while the settings content scrolls beneath it. -->
+        <div class="settings-scroll">
         <div v-if="configLocked" class="locked-banner">
           <span class="lock-icon">🔒</span>
           <span>Configuration locked while recording - stop recording to edit</span>
@@ -1766,6 +1769,7 @@ const scheduleDayLabels = [
             Auto-saved
           </span>
         </div>
+        </div>
       </div>
 
       <!-- Right Panel: Quick Info -->
@@ -2293,7 +2297,11 @@ const scheduleDayLabels = [
 }
 
 .sub-tab-btn.active {
-  background: var(--accent-primary);
+  /* --accent-primary is not a defined theme var; use --color-accent so the
+     active tab actually gets its accent background. Without it the background
+     fell back to transparent, leaving white text on the light-mode panel
+     (invisible). */
+  background: var(--color-accent);
   color: #fff;
 }
 
@@ -2354,6 +2362,10 @@ const scheduleDayLabels = [
   z-index: 10;
   font-size: 0.8rem;
   color: var(--indicator-danger-text);
+  /* The badge floats over the tag list; without this, a mouse wheel over the
+     badge wouldn't reach the scrollable list. It stays put (anchored to the
+     non-scrolling panel) while the list scrolls beneath it. */
+  pointer-events: none;
 }
 
 .locked-overlay .lock-icon {
@@ -2567,6 +2579,11 @@ const scheduleDayLabels = [
   display: flex;
   flex: 1;
   overflow: hidden;
+  /* min-height:0 lets this flex child shrink to its allotted height so the inner
+     panels' own overflow-y:auto engages. Without it the layout grows to content
+     height and the whole tab scrolls instead — which scrolled the locked-overlay
+     out of view. Now the panel stays put and only the lists scroll under it. */
+  min-height: 0;
 }
 
 /* Channel Panel */
@@ -2749,10 +2766,21 @@ const scheduleDayLabels = [
   text-align: center;
 }
 
-/* Settings Panel */
+/* Settings Panel — non-scrolling positioned container so the locked dim
+   overlay (.settings-panel.locked::after) stays fixed. The inner
+   .settings-scroll holds the scrolling content. */
 .settings-panel {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.settings-scroll {
+  flex: 1;
   overflow-y: auto;
+  min-height: 0;
   padding: 20px;
 }
 

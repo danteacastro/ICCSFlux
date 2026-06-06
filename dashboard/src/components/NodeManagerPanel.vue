@@ -468,9 +468,9 @@ onUnmounted(() => {
 }
 
 .btn-primary {
-  background: var(--accent-primary);
+  background: var(--color-accent);
   color: #fff;
-  border-color: var(--accent-primary);
+  border-color: var(--color-accent);
 }
 
 .btn-primary:hover { filter: brightness(1.1); }
@@ -523,9 +523,9 @@ onUnmounted(() => {
 }
 
 .mode-btn.active {
-  background: var(--accent-primary);
+  background: var(--color-accent);
   color: #fff;
-  border-color: var(--accent-primary);
+  border-color: var(--color-accent);
 }
 
 .setup-instructions ol {
@@ -538,7 +538,7 @@ onUnmounted(() => {
 
 /* Bridge setup */
 .bridge-panel {
-  border-color: var(--accent-primary);
+  border-color: var(--color-accent);
 }
 
 .bridge-status-row {
@@ -587,7 +587,7 @@ onUnmounted(() => {
 
 .field-row input:focus {
   outline: none;
-  border-color: var(--accent-primary);
+  border-color: var(--color-accent);
 }
 
 .config-output {
@@ -783,7 +783,7 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 12px;
   color: var(--text-secondary);
-  border-left: 3px solid var(--accent-primary);
+  border-left: 3px solid var(--color-accent);
 }
 
 /* Create Instance form */

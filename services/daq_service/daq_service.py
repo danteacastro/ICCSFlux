@@ -1269,8 +1269,17 @@ class DAQService:
 
     def _init_recording_manager(self):
         """Initialize the recording manager"""
+        # Recordings are DATA, not logs. Default them to a "data" directory
+        # (sibling of the configured log directory) so a recording started
+        # WITHOUT a Data-tab config push — e.g. the header Record button, a
+        # script, or an alarm action — lands where the dashboard's file browser
+        # and the project's recording basePath ("./data") expect it, instead of
+        # silently going to ./logs. The Data tab still overrides this by pushing
+        # the project's basePath before it starts.
+        log_dir = Path(self.config.system.log_directory)
+        data_default = str(log_dir.parent / "data") if log_dir.name == "logs" else str(log_dir)
         self.recording_manager = RecordingManager(
-            default_path=self.config.system.log_directory
+            default_path=data_default
         )
         self.recording_manager.on_status_change = self._publish_system_status
 
@@ -8716,8 +8725,10 @@ Unit conversions:
         # Initialize per-project managers with callback closures
         # Each closure captures ctx to scope data access to this project
 
-        # Recording manager — separate directory per project
-        recording_dir = Path(config.system.log_directory) / project_id
+        # Recording manager — separate directory per project. Recordings are
+        # DATA, so default under the data directory (matching data_dir above and
+        # the project's "./data" basePath), not the log directory.
+        recording_dir = Path(getattr(config.system, 'data_directory', 'data')) / project_id
         recording_dir.mkdir(parents=True, exist_ok=True)
         ctx.recording_manager = RecordingManager(default_path=str(recording_dir))
         ctx.recording_manager.on_status_change = lambda: self._publish_project_status(project_id)
