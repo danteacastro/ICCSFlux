@@ -4107,7 +4107,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .sub-tab.active {
   background: #1e3a5f;
-  color: var(--text-primary);
+  /* The active pill is a fixed dark navy in both themes, so its label must be
+     light. var(--text-primary) is dark in light mode → dark-on-dark, unreadable. */
+  color: #fff;
 }
 
 .tab-icon {
