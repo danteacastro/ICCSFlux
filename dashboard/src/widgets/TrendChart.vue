@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, watch, computed, nextTick } from 'vue'
 import { useDashboardStore } from '../stores/dashboard'
 import { useHistoricalData, type RecordingFile, type HistoricalData } from '../composables/useHistoricalData'
 import uPlot, { type AlignedData } from 'uplot'
@@ -777,13 +777,21 @@ function updateData() {
     }
   }
 
-  // Update chart (guard against destroyed instance)
+  // Update chart. Self-heal: a prior chart.destroy() may have left us without a
+  // live chart if initChart() bailed because the container was unsized (e.g. the
+  // widget's tab was hidden during a reinit). Rebuild it here so the live loop
+  // recovers on its own instead of pushing into a buffer that never renders.
+  if (!chart && chartContainer.value) {
+    initChart()  // no-op until the container has a real size
+  }
   try {
     if (chart && buffer[0] && buffer[0].length > 0) {
       chart.setData(buffer as AlignedData)
     }
   } catch {
-    // Chart may have been destroyed between check and call
+    // setData threw — the instance is dead. Drop it so the next tick rebuilds
+    // rather than throwing into the void forever (the silent-freeze bug).
+    chart = null
   }
 }
 
@@ -1285,12 +1293,42 @@ function restartUpdateInterval() {
 // Re-sync interval when scan/publish rate changes
 watch(chartUpdateMs, () => restartUpdateInterval())
 
+// Watchdog — independent of the main update interval (and never torn down by a
+// rate-change restart). It detects a stalled live chart: fresh values are
+// arriving in the store but the chart's buffer hasn't advanced. That happens if
+// the main interval was disrupted or a reinit left the chart unbuilt. When
+// detected, it rebuilds the chart if needed and restarts the update loop, so a
+// stalled trend recovers on its own instead of requiring a manual reset/reload.
+let watchdog: number | null = null
+function startWatchdog() {
+  if (watchdog) clearInterval(watchdog)
+  watchdog = window.setInterval(() => {
+    if (isPaused.value || isHistoricalMode.value) return
+    if (props.channels.length === 0) return
+    // Only act when at least one bound channel is actually producing values.
+    const hasLiveData = props.channels.some(ch => {
+      const v = store.values[ch]
+      return v != null && typeof v.value === 'number' && !Number.isNaN(v.value)
+    })
+    if (!hasLiveData) return
+    const ts = dataBuffer.value[0]
+    const lastTs = ts && ts.length ? (ts[ts.length - 1] as number) : 0
+    const staleFor = (Date.now() / 1000) - lastTs
+    // > 2s without a new point while live data exists ⇒ the loop has stalled.
+    if (staleFor > 2) {
+      if (!chart && chartContainer.value) initChart()
+      restartUpdateInterval()
+    }
+  }, 2000)
+}
+
 onMounted(() => {
   nextTick(() => {
     initChart()
   })
 
   restartUpdateInterval()
+  startWatchdog()
 
   if (chartContainer.value) {
     resizeObserver = new ResizeObserver(handleResize)
@@ -1298,8 +1336,20 @@ onMounted(() => {
   }
 })
 
+// Kept-alive tabs (e.g. Overview) don't remount on return. If a reinit happened
+// while this tab was hidden — leaving the chart unbuilt because its container
+// was unsized — rebuild and re-engage the loop when the tab becomes visible.
+onActivated(() => {
+  if (!chart && chartContainer.value) {
+    nextTick(() => initChart())
+  }
+  restartUpdateInterval()
+  startWatchdog()
+})
+
 onUnmounted(() => {
   if (updateInterval) clearInterval(updateInterval)
+  if (watchdog) clearInterval(watchdog)
   if (resizeObserver) resizeObserver.disconnect()
   if (chart) chart.destroy()
 })
