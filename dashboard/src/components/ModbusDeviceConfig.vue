@@ -704,7 +704,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
 
 .tool-btn:hover {
   background: var(--btn-secondary-hover);
-  color: white;
+  color: var(--text-bright);
 }
 
 .add-btn {
@@ -768,12 +768,12 @@ watch(() => mqtt.chassisConfigs.value, () => {
 }
 
 .device-card:hover {
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .device-card.selected {
-  border-color: #3b82f6;
-  background: #1e293b;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .device-card.disabled {
@@ -874,7 +874,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
 .action-btn {
   padding: 0.4rem 0.8rem;
   background: var(--btn-secondary-bg);
-  color: white;
+  color: var(--text-bright);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -939,7 +939,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
 }
 
 .close-btn:hover {
-  color: white;
+  color: var(--text-primary);
 }
 
 .modal-body {
@@ -985,13 +985,14 @@ watch(() => mqtt.chassisConfigs.value, () => {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: white;
+  /* Was hardcoded `white` — invisible on the light-mode input background. */
+  color: var(--text-primary);
 }
 
 .form-row input:focus,
 .form-row select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-accent);
 }
 
 .form-row-group {
@@ -1038,7 +1039,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
 
 .btn.secondary {
   background: var(--btn-secondary-bg);
-  color: white;
+  color: var(--text-bright);
 }
 
 .btn.secondary:hover {
