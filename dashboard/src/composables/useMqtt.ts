@@ -1122,6 +1122,7 @@ export function useMqtt(prefix: string = 'nisystem') {
           group: ch.group || ch.module || 'Ungrouped',
           description: ch.description,  // Description is for tooltips/docs
           visible: ch.visible !== false, // Default to true if not specified
+          enabled: (ch as { enabled?: boolean }).enabled, // EN checkbox state (persisted by backend)
           // Legacy limits (backward compatibility)
           low_limit: ch.low_limit,
           high_limit: ch.high_limit,

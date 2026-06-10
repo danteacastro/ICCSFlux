@@ -9928,10 +9928,16 @@ Unit conversions:
                 continue
 
             try:
-                # Filter values to this project's channels
+                # Filter values to this project's channels, skipping disabled
+                # ones so a disabled channel stops updating here too (parity with
+                # the standard _publish_channels_batch path).
                 project_values = {}
+                proj_channels = ctx.config.channels if getattr(ctx, 'config', None) else {}
                 for ch_name in ctx.channel_names:
                     if ch_name in all_values:
+                        ch_cfg = proj_channels.get(ch_name)
+                        if ch_cfg is not None and not getattr(ch_cfg, 'enabled', True):
+                            continue
                         project_values[ch_name] = all_values[ch_name]
 
                 if not project_values:
@@ -13901,7 +13907,10 @@ Unit conversions:
         # Operational fields are runtime controls, not structural config —
         # allow them through during acquisition. Structural changes (raw/scaled
         # ranges, terminal config, alarms, etc) still require a stop.
-        OPERATIONAL_FIELDS = {'output_setpoint'}
+        # 'enabled' is operational: it only gates publishing (see
+        # _publish_channels_batch), not the hardware task, so it's safe to toggle
+        # a channel on/off while acquiring without forcing a stop.
+        OPERATIONAL_FIELDS = {'output_setpoint', 'enabled'}
         if self.acquiring:
             structural = set(config_data.keys()) - OPERATIONAL_FIELDS - {'channel', 'new_name'}
             if structural:
@@ -13978,6 +13987,25 @@ Unit conversions:
             channel.high_warning = config_data['high_warning']
         if 'log' in config_data:
             channel.log = config_data['log']
+        # Enable/disable a channel. A disabled channel stops publishing values
+        # (so the dashboard stops updating it) for every channel type.
+        if 'enabled' in config_data:
+            channel.enabled = bool(config_data['enabled'])
+            # Modbus channels can be added to / removed from the live poll set
+            # without a restart, so enable/disable takes effect immediately —
+            # the device stops/starts being queried within one poll cycle. NI
+            # channels are gated at task-build time (next acquisition start),
+            # which is why the dashboard only lets NI toggles happen in Edit mode.
+            is_modbus = (channel.channel_type in (ChannelType.MODBUS_REGISTER, ChannelType.MODBUS_COIL)
+                         or getattr(channel, 'source_type', '') == 'cfp')
+            if is_modbus and self.modbus_reader:
+                try:
+                    if channel.enabled:
+                        self.modbus_reader.add_channel(channel)
+                    else:
+                        self.modbus_reader.remove_channel(channel_name)
+                except Exception as e:
+                    logger.warning(f"Live Modbus poll-set update failed for {channel_name}: {e}")
 
         # Scaling parameters
         if 'scale_slope' in config_data:
@@ -15959,6 +15987,9 @@ Unit conversions:
                 "voltage_range": channel.voltage_range,
                 "current_range_ma": channel.current_range_ma,
                 "log_interval_ms": channel.log_interval_ms,
+                # Per-channel enable flag so the dashboard's EN checkbox reflects
+                # the persisted state on load (disabled channels stop publishing).
+                "enabled": getattr(channel, 'enabled', True),
                 # Hardware source info for cRIO vs cDAQ distinction
                 "hardware_source": channel.hardware_source.value,
                 "hardware_source_display": channel.hardware_source_display,
@@ -16336,6 +16367,13 @@ Unit conversions:
                 channel = self.config.channels[channel_name]
 
                 if getattr(channel, 'is_crio', False):
+                    continue
+
+                # Disabled channels publish nothing, so the dashboard stops
+                # updating them. Applies to every channel type flowing through
+                # this batch (NI + Modbus + local). Re-enabling resumes
+                # immediately, no acquisition restart needed.
+                if not getattr(channel, 'enabled', True):
                     continue
 
                 is_nan = isinstance(value, float) and math.isnan(value)

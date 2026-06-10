@@ -606,6 +606,17 @@ const editingModbus = computed(() => {
   return t === 'modbus_register' || t === 'modbus_coil'
 })
 
+// Modbus (and CFP, which is polled via the same Modbus reader) channels can be
+// enabled/disabled live during acquisition — the backend adds/removes them from
+// the poll set instantly. Every other channel type (NI, etc.) only applies its
+// enable state when tasks are rebuilt at the next acquisition start, so its EN
+// toggle is gated behind Edit mode (canEdit excludes acquisition).
+function isInstantToggleChannel(config: { channel_type?: string; source_type?: string }): boolean {
+  return config.channel_type === 'modbus_register'
+    || config.channel_type === 'modbus_coil'
+    || config.source_type === 'cfp'
+}
+
 // Map a Modbus register type + write mode to its function code. The FC — not the
 // register-type name — is what distinguishes a read from a write on the same
 // register, so it anchors the channel path.
@@ -1407,7 +1418,9 @@ const channelEnabled = ref<Record<string, boolean>>({})
 function initializeEnableStates() {
   Object.keys(store.channels).forEach(name => {
     if (channelEnabled.value[name] === undefined) {
-      channelEnabled.value[name] = true // Default to enabled
+      // Reflect the backend's persisted enabled flag so the checkbox survives a
+      // reload/project load (undefined → enabled, preserving prior behavior).
+      channelEnabled.value[name] = (store.channels[name] as { enabled?: boolean })?.enabled !== false
     }
   })
 }
@@ -5649,6 +5662,8 @@ watch(
                 <input
                   type="checkbox"
                   :checked="channelEnabled[name] !== false"
+                  :disabled="!isInstantToggleChannel(config) && !canEdit"
+                  :title="!isInstantToggleChannel(config) && !canEdit ? 'Enter Edit mode (and stop acquisition) to enable/disable this channel' : 'Enable/disable channel'"
                   @click.stop
                   @change="toggleChannelEnabled(name)"
                 />

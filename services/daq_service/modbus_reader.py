@@ -457,6 +457,12 @@ class ModbusReader:
             if not is_modbus_type and not is_cfp:
                 continue
 
+            # Skip channels the user has disabled — they are not added to the
+            # poll set, so no Modbus request is ever issued for them. Takes
+            # effect when the reader (re)initializes, i.e. at acquisition start.
+            if not getattr(channel, 'enabled', True):
+                continue
+
             # Resolve the chassis (connection) this channel belongs to.
             # Traditional path: channel.module -> ModuleConfig -> chassis.
             # Modbus devices added via "Add Device" are bare chassis with no

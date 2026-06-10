@@ -1123,6 +1123,13 @@ class HardwareReader:
                 logger.debug(f"Skipping cRIO channel {name}: physical_channel {channel.physical_channel} is remote")
                 continue
 
+            # Skip channels the user has disabled — they are not added to any
+            # DAQmx task, so the hardware is never read for them. Takes effect
+            # when tasks are (re)built, i.e. at acquisition start.
+            if not getattr(channel, 'enabled', True):
+                logger.debug(f"Skipping disabled channel: {name}")
+                continue
+
             # Determine the module key for grouping
             if '/' in channel.physical_channel:
                 # Direct path - extract module from physical_channel
