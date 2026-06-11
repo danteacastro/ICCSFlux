@@ -790,6 +790,7 @@ function saveSequence() {
     scripts.addSequence(sequenceForm.value as Omit<Sequence, 'id' | 'state' | 'currentStepIndex' | 'currentLoopIterations' | 'currentIfResults' | 'variables' | 'createdAt' | 'modifiedAt'>)
   }
   showSequenceEditor.value = false
+  selectedSequence.value = null  // closing the editor deselects the list row
   isSavingSequence.value = false
 }
 
@@ -802,6 +803,13 @@ function deleteSequence(id: string) {
       showSequenceEditor.value = false
     }
   }
+}
+
+// Close the editor AND clear the selection so the left-hand list no longer shows
+// a highlighted row once the editor is dismissed.
+function closeSequenceEditor() {
+  showSequenceEditor.value = false
+  selectedSequence.value = null
 }
 
 // Template creation
@@ -2161,10 +2169,17 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
         <button class="btn btn-secondary" @click="exportAllSequencesFile">
           <span class="icon">📤</span> Export All
         </button>
-        <!-- Pause/Abort are always present so the controls don't shift; they're
-             only enabled while a sequence is actually running. -->
+        <!-- Start/Pause/Abort are always present so the controls don't shift.
+             Start runs the selected sequence and needs acquisition running with
+             nothing already in progress; Pause/Abort are enabled only while a
+             sequence is actually running. -->
         <div class="sequence-controls">
-          <span class="running-label" v-if="scripts.runningSequence.value">Running: {{ scripts.runningSequence.value.name }}</span>
+          <button
+            class="btn btn-success"
+            :disabled="!selectedSequence || !store.isAcquiring || !!scripts.runningSequence.value"
+            :title="!store.isAcquiring ? 'Start acquisition before running a sequence' : (!selectedSequence ? 'Select a sequence to run' : (scripts.runningSequence.value ? 'A sequence is already running' : 'Run the selected sequence'))"
+            @click="selectedSequence && store.isAcquiring && !scripts.runningSequence.value && scripts.startSequence(selectedSequence)"
+          >▶ Start</button>
           <button
             class="btn btn-warning"
             :disabled="!scripts.runningSequence.value"
@@ -2175,6 +2190,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             :disabled="!scripts.runningSequence.value"
             @click="scripts.runningSequenceId.value && scripts.abortSequence(scripts.runningSequenceId.value)"
           >⏹ Abort</button>
+          <span class="running-label" v-if="scripts.runningSequence.value">Running: {{ scripts.runningSequence.value.name }}</span>
         </div>
         <div class="count">{{ scripts.sequences.value.length }} sequences</div>
       </div>
@@ -2231,8 +2247,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               <button
                 v-else
                 class="action-btn play"
-                @click.stop="scripts.startSequence(seq.id)"
-                title="Run"
+                :disabled="!store.isAcquiring"
+                @click.stop="store.isAcquiring && scripts.startSequence(seq.id)"
+                :title="store.isAcquiring ? 'Run' : 'Start acquisition before running a sequence'"
               >▶</button>
               <button
                 class="action-btn export"
@@ -2261,7 +2278,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
           <template v-if="showSequenceEditor">
           <div class="editor-header">
             <h3>{{ selectedSequence ? 'Edit' : 'New' }} Sequence</h3>
-            <button class="close-btn" @click="showSequenceEditor = false">✕</button>
+            <button class="close-btn" @click="closeSequenceEditor">✕</button>
           </div>
           <div class="editor-form">
             <div class="form-row">
@@ -2344,7 +2361,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
             </div>
           </div>
           <div class="editor-actions">
-            <button class="btn btn-secondary" @click="showSequenceEditor = false">Cancel</button>
+            <button class="btn btn-secondary" @click="closeSequenceEditor">Cancel</button>
             <button class="btn btn-primary" @click="saveSequence" :disabled="!sequenceForm.name">Save</button>
           </div>
           </template>
@@ -4323,6 +4340,26 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   color: var(--text-primary);
 }
 
+.btn-success {
+  background: var(--color-success, #16a34a);
+  color: #fff;
+}
+
+.btn-success:hover {
+  filter: brightness(1.1);
+}
+
+/* Generic disabled state so Start/Pause/Abort visibly grey out (only
+   .btn-primary had one before). */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  filter: none;
+}
+
 .btn-small {
   padding: 4px 10px;
   font-size: 0.75rem;
@@ -5194,6 +5231,17 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 .action-btn:hover {
   background: var(--btn-hover);
   color: var(--text-primary);
+}
+
+/* Disabled (e.g. Run while acquisition is stopped) — greyed and non-interactive. */
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.action-btn:disabled:hover {
+  background: var(--btn-bg);
+  color: var(--text-secondary);
 }
 
 .action-btn.play {
