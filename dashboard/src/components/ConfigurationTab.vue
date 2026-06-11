@@ -1740,6 +1740,17 @@ function inlineValue(channel: string, field: string, storeValue: any): any {
   return isEditingCell(channel, field) ? inlineEditValue.value : storeValue
 }
 
+// Value to show in an analog-output channel's inline setpoint cell. Prefers the
+// live value so external writes (sequences, scripts, safety actions) are
+// reflected — not just what the user last typed — and falls back to the
+// configured setpoint. The inline-edit guard still serves the user's own typed
+// value while the cell is focused, so live updates don't fight the keyboard.
+function outputCellValue(name: string, config: { output_setpoint?: number }): number {
+  const live = store.values[name]?.value
+  if (typeof live === 'number' && !Number.isNaN(live)) return live
+  return config.output_setpoint ?? 0
+}
+
 // Update a single channel field inline (for editable table cells)
 function updateChannelField(channelName: string, field: string, value: any) {
   if (!canEdit.value) return
@@ -6585,8 +6596,8 @@ watch(
                   <input
                     type="number"
                     step="0.01"
-                    :value="inlineValue(name, 'output_setpoint', config.output_setpoint ?? 0)"
-                    @focus="onInlineFocus(name, 'output_setpoint', config.output_setpoint ?? 0)"
+                    :value="inlineValue(name, 'output_setpoint', outputCellValue(name, config))"
+                    @focus="onInlineFocus(name, 'output_setpoint', outputCellValue(name, config))"
                     @input="onInlineInput($event)"
                     @blur="onInlineBlurOutputSetpoint(name)"
                     @keydown.enter="($event.target as HTMLInputElement).blur()"
