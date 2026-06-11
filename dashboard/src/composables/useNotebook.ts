@@ -248,6 +248,7 @@ export function useNotebook() {
     const idx = entries.value.findIndex(e => e.id === id)
     if (idx < 0) return false
     const entry = entries.value[idx]
+    if (!entry) return false
     const tombstone: Amendment = {
       timestamp: new Date().toISOString(),
       field: '__deleted__',
@@ -707,7 +708,7 @@ export function useNotebook() {
     let t = new Date(e.timestamp).getTime() || 0
     if (e.amendments && e.amendments.length > 0) {
       const last = e.amendments[e.amendments.length - 1]
-      const at = new Date(last.timestamp).getTime() || 0
+      const at = last ? new Date(last.timestamp).getTime() || 0 : 0
       if (at > t) t = at
     }
     return t

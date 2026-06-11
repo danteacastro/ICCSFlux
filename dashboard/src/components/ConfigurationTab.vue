@@ -690,7 +690,7 @@ const MODBUS_FC_OPTIONS = [
 ]
 
 // FC <-> (register type + channel type + write flag) mapping.
-const MODBUS_FC_MAP: Record<string, { regType: string; chanType: ChannelType; write: boolean }> = {
+const MODBUS_FC_MAP: Record<string, { regType: 'input' | 'holding' | 'coil' | 'discrete'; chanType: ChannelType; write: boolean }> = {
   FC1: { regType: 'coil',     chanType: 'modbus_coil',     write: false },
   FC2: { regType: 'discrete', chanType: 'modbus_coil',     write: false },
   FC3: { regType: 'holding',  chanType: 'modbus_register', write: false },
@@ -710,7 +710,7 @@ const editingModbusFc = computed<string>({
   set(fc: string) {
     const c = editingConfig.value?.config
     if (!c) return
-    const m = MODBUS_FC_MAP[fc] || MODBUS_FC_MAP.FC3
+    const m = MODBUS_FC_MAP[fc] ?? MODBUS_FC_MAP.FC3!
     c.modbus_register_type = m.regType
     c.channel_type = m.chanType
     if (m.write) {
@@ -2130,7 +2130,7 @@ function addNewChannel() {
       byteswap: { byte: 'little', word: 'big'    },  // BADC
       wordswap: { byte: 'big',    word: 'little' },  // CDAB
     }
-    const order = byteFmt[f.modbus_byte_format] || byteFmt.big
+    const order = byteFmt[f.modbus_byte_format] ?? byteFmt.big!
 
     const config: Record<string, any> = {
       name: tagName,
@@ -2223,7 +2223,7 @@ function addNewChannel() {
   ])
   if (TERMINAL_RELEVANT_TYPES.has(newChannelForm.value.channel_type)) {
     const allowedTerms = getAllowedTerminalConfigs(newChannelForm.value.channel_type, resolvedPhysical)
-    if (allowedTerms.length > 0) config.terminal_config = allowedTerms[0].value
+    if (allowedTerms.length > 0) config.terminal_config = allowedTerms[0]!.value
   }
 
   // New channels go through the create path (config/channel/update rejects

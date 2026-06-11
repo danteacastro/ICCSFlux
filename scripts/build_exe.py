@@ -66,6 +66,29 @@ def log(msg, level="INFO"):
     prefix = {"INFO": "[BUILD]", "WARN": "[WARN]", "ERROR": "[ERROR]", "OK": "[  OK ]"}
     print(f"{prefix.get(level, '[    ]')} {msg}")
 
+def _rm_onerror(func, path, _exc):
+    """rmtree error handler: clear the read-only bit and retry once.
+
+    Building into a OneDrive-synced tree leaves files marked read-only or as
+    cloud placeholders, so the next build's rmtree hits WinError 5 on them.
+    Clearing the attribute and retrying clears the common case; a genuine
+    open-handle lock still raises, which the caller can catch.
+    """
+    import stat
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        raise
+
+def robust_rmtree(path):
+    """shutil.rmtree that recovers from read-only files (Windows/OneDrive)."""
+    # Python 3.12 renamed the keyword onerror -> onexc; support both.
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=lambda func, p, exc: _rm_onerror(func, p, exc))
+    else:
+        shutil.rmtree(path, onerror=lambda func, p, exc: _rm_onerror(func, p, exc))
+
 def get_build_version() -> dict:
     """Capture build version info from git and system metadata."""
     version = {
@@ -196,7 +219,7 @@ def clean_build():
 
     if BUILD_DIR.exists():
         try:
-            shutil.rmtree(BUILD_DIR)
+            robust_rmtree(BUILD_DIR)
         except PermissionError as e:
             log(f"Could not fully clean build dir: {e}", "WARN")
             log("Trying to clean individual files...", "WARN")
@@ -560,7 +583,13 @@ def copy_config():
     config_dest = BUILD_DIR / "config"
 
     if config_dest.exists():
-        shutil.rmtree(config_dest)
+        try:
+            robust_rmtree(config_dest)
+        except PermissionError as e:
+            log(f"Could not remove old config dir: {e}", "ERROR")
+            log("A file is locked — pause OneDrive sync (or exclude dist\\ from "
+                "OneDrive) and rebuild.", "ERROR")
+            return False
 
     shutil.copytree(
         config_src,
@@ -598,7 +627,7 @@ def copy_dashboard():
 
     if dashboard_dest.exists():
         try:
-            shutil.rmtree(dashboard_dest)
+            robust_rmtree(dashboard_dest)
         except PermissionError:
             log("Dashboard folder locked, updating files in place...", "WARN")
             # Copy files over existing ones

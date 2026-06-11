@@ -288,6 +288,7 @@ export function useBackendScripts() {
       // console. A failed start/stop/save was previously indistinguishable
       // from a slow MQTT round-trip — operator just saw nothing happen.
       const action = data.action || 'operation'
+      const scriptsComposable = useScripts()
       scriptsComposable.addNotification(
         'error',
         `Script ${action} failed`,

@@ -1104,7 +1104,7 @@ function toggleInterlockBypass(id: string) {
   // Bypassing a safety interlock disables protection. Require explicit
   // confirmation + audit reason. Critical interlocks get an extra warning.
   if (goingToBypass) {
-    const criticalWarn = interlock.is_critical
+    const criticalWarn = interlock.isCritical
       ? '\n\n⚠ THIS IS A CRITICAL INTERLOCK ⚠\nBypassing disables a safety-rated protection.'
       : ''
     if (!confirm(

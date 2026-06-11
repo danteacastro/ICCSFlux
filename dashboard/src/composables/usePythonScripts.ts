@@ -592,11 +592,8 @@ export function usePythonScripts() {
         delete publishedValues.value[key]
       }
 
-      // Clear collision warning flags for this script's published names so
-      // a future restart doesn't think it's already conflicted.
-      for (const key of toRemove) {
-        scriptWarnings.delete(`publish_conflict_${key}`)
-      }
+      // Collision warning flags live in a per-run Set inside executeScript,
+      // so they reset automatically on the next run — no cleanup needed here.
 
       addScriptOutput(id, 'info', 'Script stopped')
     })

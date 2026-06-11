@@ -1718,11 +1718,13 @@ export interface AlarmConfig {
   // Severity level
   severity: AlarmSeverityLevel
 
-  // Thresholds (ISA-18.2 style: HH, H, L, LL)
-  high_high?: number       // Critical high (most severe)
-  high?: number            // High warning
-  low?: number             // Low warning
-  low_low?: number         // Critical low (most severe)
+  // Thresholds (ISA-18.2 style: HH, H, L, LL).
+  // null is an explicit "clear this threshold" sent to the backend; undefined
+  // means "not set" and would be dropped from the JSON payload.
+  high_high?: number | null       // Critical high (most severe)
+  high?: number | null             // High warning
+  low?: number | null              // Low warning
+  low_low?: number | null          // Critical low (most severe)
 
   // Legacy threshold names for backward compatibility
   high_alarm?: number      // Maps to high_high
@@ -2480,6 +2482,8 @@ export interface SystemHealth {
   channels: {
     total: number
     nan_count: number
+    nan_channels?: string[]      // first ~10 offenders by name
     stale_count: number
+    stale_channels?: string[]    // first ~10 offenders by name
   }
 }
