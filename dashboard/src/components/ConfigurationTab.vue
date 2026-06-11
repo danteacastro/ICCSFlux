@@ -1316,7 +1316,15 @@ function toggleSelectedChannelsEnabled(enable: boolean) {
 
   selectedTableChannels.value.forEach(name => {
     channelEnabled.value[name] = enable
+    // Mirror into the store and persist to the backend, matching the
+    // single-channel toggle — otherwise batch changes never reach the store
+    // and are lost on project save.
+    store.setChannelEnabled(name, enable)
+    if (mqtt.connected.value) {
+      mqtt.updateChannelConfig(name, { enabled: enable })
+    }
   })
+  if (mqtt.connected.value) markDirty()
 
   const action = enable ? 'enabled' : 'disabled'
   showFeedback('success', `${count} channel(s) ${action}`)
@@ -1490,12 +1498,15 @@ function initializeEnableStates() {
 
 // Toggle channel enable state
 function toggleChannelEnabled(channelName: string) {
-  channelEnabled.value[channelName] = !channelEnabled.value[channelName]
+  const enabled = !channelEnabled.value[channelName]
+  channelEnabled.value[channelName] = enabled
+  // Mirror into the store so a project save captures the disabled state — the
+  // backend's update response doesn't echo config back, so the store would
+  // otherwise keep the stale (enabled) value.
+  store.setChannelEnabled(channelName, enabled)
   // Send update to backend
   if (mqtt.connected.value) {
-    mqtt.updateChannelConfig(channelName, {
-      enabled: channelEnabled.value[channelName]
-    })
+    mqtt.updateChannelConfig(channelName, { enabled })
     markDirty()
   }
 }

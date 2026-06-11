@@ -617,6 +617,15 @@ export const useDashboardStore = defineStore('dashboard', () => {
     channels.value = channelConfigs
   }
 
+  // Keep the channel's persisted `enabled` flag in sync with the UI checkbox.
+  // The backend's config/channel/update response only returns {success}, so it
+  // never refreshes this object — without this, store.channels[name].enabled
+  // stays stale (default true) and project saves lose the disabled state.
+  function setChannelEnabled(name: string, enabled: boolean) {
+    const ch = channels.value[name]
+    if (ch) ch.enabled = enabled
+  }
+
   function getChannelRef(name: string): ShallowRef<ChannelValue | undefined> {
     let r = channelValueRefs.get(name)
     if (!r) {
@@ -4076,6 +4085,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
     // Actions
     setChannels,
+    setChannelEnabled,
     getChannelRef,
     updateValues,
     updateScriptValues,

@@ -239,6 +239,11 @@ class ChannelConfig:
     # Visibility - hidden channels still collect data but don't appear in UI
     visible: bool = True
 
+    # Enable/disable - a disabled channel stops publishing values (Modbus is
+    # also dropped from the live poll set). Persisted in project files so the
+    # operator's enable/disable choices survive save/load.
+    enabled: bool = True
+
     # Group for organization in UI
     group: str = ""
 

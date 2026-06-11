@@ -884,6 +884,7 @@ class DAQService:
                     description=ch_data.get("description", ""),  # For tooltips/documentation only
                     units=ch_data.get("units", ch_data.get("unit", "")),  # frontend saves 'unit' (singular)
                     visible=ch_data.get("visible", True),
+                    enabled=ch_data.get("enabled", True),  # preserve operator's enable/disable choice
                     group=ch_data.get("group", ""),
                     scale_slope=float(ch_data.get("scale_slope", 1.0)),
                     scale_offset=float(ch_data.get("scale_offset", 0.0)),
@@ -15673,6 +15674,9 @@ Unit conversions:
                     "channel_type": ch.channel_type.value,
                     "description": ch.description,
                     "units": ch.units,
+                    # Enable/disable state — without this the dashboard can't
+                    # restore the operator's choice after a reload/project load.
+                    "enabled": getattr(ch, 'enabled', True),
                     # Linear scaling
                     "scale_slope": ch.scale_slope,
                     "scale_offset": ch.scale_offset,
@@ -15957,6 +15961,9 @@ Unit conversions:
                 "units": channel.units,
                 "unit": channel.units,  # Frontend uses 'unit' (singular) — publish both
                 "visible": channel.visible,
+                # Enable/disable state — required so the dashboard checkbox and
+                # project saves reflect the operator's choice after reload.
+                "enabled": getattr(channel, 'enabled', True),
                 "group": channel.group or channel.module or "Ungrouped",
                 "low_limit": channel.low_limit,
                 "high_limit": channel.high_limit,
