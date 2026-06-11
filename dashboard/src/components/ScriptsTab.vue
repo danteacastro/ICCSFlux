@@ -2161,10 +2161,20 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
         <button class="btn btn-secondary" @click="exportAllSequencesFile">
           <span class="icon">📤</span> Export All
         </button>
-        <div class="sequence-controls" v-if="scripts.runningSequence.value">
-          <span class="running-label">Running: {{ scripts.runningSequence.value.name }}</span>
-          <button class="btn btn-warning" @click="scripts.pauseSequence(scripts.runningSequenceId.value!)">⏸ Pause</button>
-          <button class="btn btn-danger" @click="scripts.abortSequence(scripts.runningSequenceId.value!)">⏹ Abort</button>
+        <!-- Pause/Abort are always present so the controls don't shift; they're
+             only enabled while a sequence is actually running. -->
+        <div class="sequence-controls">
+          <span class="running-label" v-if="scripts.runningSequence.value">Running: {{ scripts.runningSequence.value.name }}</span>
+          <button
+            class="btn btn-warning"
+            :disabled="!scripts.runningSequence.value"
+            @click="scripts.runningSequenceId.value && scripts.pauseSequence(scripts.runningSequenceId.value)"
+          >⏸ Pause</button>
+          <button
+            class="btn btn-danger"
+            :disabled="!scripts.runningSequence.value"
+            @click="scripts.runningSequenceId.value && scripts.abortSequence(scripts.runningSequenceId.value)"
+          >⏹ Abort</button>
         </div>
         <div class="count">{{ scripts.sequences.value.length }} sequences</div>
       </div>
@@ -2203,12 +2213,15 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
             </div>
             <div class="item-actions">
+              <!-- Running → Pause, Paused → Resume, anything else (idle, completed,
+                   aborted, error) → Run, so a finished/aborted sequence can be
+                   re-run instead of losing its Run button. -->
               <button
-                v-if="seq.state === 'idle'"
-                class="action-btn play"
-                @click.stop="scripts.startSequence(seq.id)"
-                title="Run"
-              >▶</button>
+                v-if="seq.state === 'running'"
+                class="action-btn pause"
+                @click.stop="scripts.pauseSequence(seq.id)"
+                title="Pause"
+              >⏸</button>
               <button
                 v-else-if="seq.state === 'paused'"
                 class="action-btn play"
@@ -2216,11 +2229,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
                 title="Resume"
               >▶</button>
               <button
-                v-else-if="seq.state === 'running'"
-                class="action-btn pause"
-                @click.stop="scripts.pauseSequence(seq.id)"
-                title="Pause"
-              >⏸</button>
+                v-else
+                class="action-btn play"
+                @click.stop="scripts.startSequence(seq.id)"
+                title="Run"
+              >▶</button>
               <button
                 class="action-btn export"
                 @click.stop="exportSingleSequence(seq.id)"
@@ -4334,7 +4347,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 /* List Panel */
 .list-panel {
-  width: 400px;
+  /* Wider so a sequence's Run + Export + History + Delete actions all fit
+     alongside the name without crowding out the Run button. */
+  width: 460px;
   border-right: 1px solid var(--border-color);
   overflow-y: auto;
 }
@@ -4366,6 +4381,17 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .list-item.selected {
   background: #1e3a5f;
+}
+
+/* The selected row's background is a fixed dark navy in both themes, so its text
+   must be light — otherwise the name/sub use the dark light-mode text colors and
+   become unreadable (dark-on-dark). */
+.list-item.selected .item-name {
+  color: #fff;
+}
+
+.list-item.selected .item-sub {
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .list-item.disabled {
@@ -4424,6 +4450,7 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-shrink: 0; /* keep all action buttons visible; don't let the name squeeze them out */
 }
 
 /* Toggle Button */
