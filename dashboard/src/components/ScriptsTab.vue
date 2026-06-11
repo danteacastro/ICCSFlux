@@ -575,16 +575,48 @@ const channelVariables = computed(() => {
   }))
 })
 
+// A Modbus channel is writeable when it has a write mode (FC5/6/15/16); read
+// channels (FC1-4) have no write mode.
+function isWriteableModbus(config: { channel_type?: string; modbus_write_mode?: string }): boolean {
+  const t = config.channel_type
+  return (t === 'modbus_register' || t === 'modbus_coil') && !!config.modbus_write_mode
+}
+
+// Channels a sequence step can WRITE to: NI digital/analog outputs (legacy
+// analog_output plus modern voltage_output/current_output) and writeable Modbus
+// channels. Built from store.channels directly so the Modbus write flag is visible.
+const OUTPUT_CHANNEL_TYPES = new Set([
+  'digital_output', 'analog_output', 'voltage_output', 'current_output',
+])
 const outputChannels = computed(() => {
-  return channelVariables.value.filter(ch =>
-    ch.type === 'digital_output' || ch.type === 'analog_output'
-  )
+  return Object.entries(store.channels)
+    .filter(([_, config]) => OUTPUT_CHANNEL_TYPES.has(config.channel_type) || isWriteableModbus(config))
+    .map(([name, config]) => ({
+      name,
+      displayName: name,
+      variable: name.replace(/[^a-zA-Z0-9_]/g, '_'),
+      type: config.channel_type,
+      unit: config.unit,
+    }))
 })
 
+// Analog setpoint targets: analog outputs (legacy + modern) and writeable Modbus
+// registers. Excludes digital outputs / coils, which aren't continuous setpoints.
+const SETPOINT_CHANNEL_TYPES = new Set([
+  'analog_output', 'voltage_output', 'current_output',
+])
 const setpointChannels = computed(() => {
-  return channelVariables.value.filter(ch =>
-    ch.type === 'analog_output'
-  )
+  return Object.entries(store.channels)
+    .filter(([_, config]) =>
+      SETPOINT_CHANNEL_TYPES.has(config.channel_type) ||
+      (config.channel_type === 'modbus_register' && !!config.modbus_write_mode))
+    .map(([name, config]) => ({
+      name,
+      displayName: name,
+      variable: name.replace(/[^a-zA-Z0-9_]/g, '_'),
+      type: config.channel_type,
+      unit: config.unit,
+    }))
 })
 
 const inputChannels = computed(() => {
@@ -592,6 +624,52 @@ const inputChannels = computed(() => {
     ch.type !== 'digital_output' && ch.type !== 'analog_output'
   )
 })
+
+// Allowed output range for a channel, used to bound a setOutput value to the
+// channel's defined range. Prefers explicit engineering/scaled limits, then the
+// configured min/max, then sensible per-type defaults.
+function getChannelOutputRange(name: string): { min: number | null; max: number | null } {
+  const c = store.channels[name] as Record<string, unknown> | undefined
+  if (!c) return { min: null, max: null }
+  const t = c.channel_type as string
+  if (t === 'digital_output' || t === 'modbus_coil') return { min: 0, max: 1 }
+  const num = (v: unknown): number | null => {
+    if (v == null || v === '') return null
+    const n = Number(v)
+    return Number.isNaN(n) ? null : n
+  }
+  const firstNum = (...vals: unknown[]): number | null => {
+    for (const v of vals) { const n = num(v); if (n != null) return n }
+    return null
+  }
+  let min = firstNum(c.scaled_min, c.eng_units_min, c.low_limit)
+  let max = firstNum(c.scaled_max, c.eng_units_max, c.high_limit)
+  if (min == null && max == null) {
+    if (t === 'voltage_output') {
+      const r = firstNum(c.voltage_range) ?? 10
+      min = firstNum(c.voltage_range_min) ?? -Math.abs(r)
+      max = firstNum(c.voltage_range_max) ?? Math.abs(r)
+    } else if (t === 'current_output') {
+      min = 0; max = 20
+    }
+  }
+  return { min, max }
+}
+
+// Range of the channel currently selected in the setOutput step editor.
+const stepOutputRange = computed(() => {
+  const s = stepForm.value as Partial<SetOutputStep>
+  return s?.channel ? getChannelOutputRange(s.channel) : { min: null, max: null }
+})
+
+// Clamp the setOutput step's value to the selected channel's range.
+function clampStepOutputValue() {
+  const s = stepForm.value as Partial<SetOutputStep>
+  if (typeof s.value !== 'number') return
+  const { min, max } = stepOutputRange.value
+  if (min != null && s.value < min) s.value = min
+  if (max != null && s.value > max) s.value = max
+}
 
 // =============================================================================
 // FORMULA METHODS
@@ -920,6 +998,10 @@ function editStep(index: number) {
 }
 
 function saveStep() {
+  // Enforce the channel's output range even if the value wasn't blurred.
+  if ((stepForm.value as Partial<SetOutputStep>).type === 'setOutput') {
+    clampStepOutputValue()
+  }
   if (editingStepIndex.value !== null && sequenceForm.value.steps) {
     sequenceForm.value.steps[editingStepIndex.value] = stepForm.value as SequenceStep
   }
@@ -2159,8 +2241,11 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
           </div>
         </div>
 
-        <!-- Sequence Editor -->
-        <div class="editor-panel wide" :class="{ visible: showSequenceEditor }">
+        <!-- Sequence Editor. Always full-opacity; the content switches between the
+             form (while editing) and an empty-state prompt (nothing selected) so a
+             closed/deleted sequence no longer lingers as a greyed-out stale form. -->
+        <div class="editor-panel wide visible">
+          <template v-if="showSequenceEditor">
           <div class="editor-header">
             <h3>{{ selectedSequence ? 'Edit' : 'New' }} Sequence</h3>
             <button class="close-btn" @click="showSequenceEditor = false">✕</button>
@@ -2248,6 +2333,12 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
           <div class="editor-actions">
             <button class="btn btn-secondary" @click="showSequenceEditor = false">Cancel</button>
             <button class="btn btn-primary" @click="saveSequence" :disabled="!sequenceForm.name">Save</button>
+          </div>
+          </template>
+          <div v-else class="editor-empty">
+            <div class="editor-empty-icon">📋</div>
+            <p class="editor-empty-title">Please add a sequence to begin</p>
+            <p class="editor-empty-hint">Click "+ New Sequence" or choose a Template to start building.</p>
           </div>
         </div>
       </div>
@@ -2380,7 +2471,17 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
               </div>
               <div class="form-group">
                 <label>Value</label>
-                <input type="number" v-model.number="(stepForm as Partial<SetOutputStep>).value" />
+                <input
+                  type="number"
+                  step="any"
+                  v-model.number="(stepForm as Partial<SetOutputStep>).value"
+                  :min="stepOutputRange.min ?? undefined"
+                  :max="stepOutputRange.max ?? undefined"
+                  @blur="clampStepOutputValue"
+                />
+                <span class="form-hint" v-if="stepOutputRange.min != null || stepOutputRange.max != null">
+                  Allowed range: {{ stepOutputRange.min ?? '−∞' }} to {{ stepOutputRange.max ?? '∞' }}
+                </span>
               </div>
             </template>
 
@@ -4404,6 +4505,38 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
   min-width: 500px;
 }
 
+/* Empty-state shown when no sequence is being edited (replaces the old
+   greyed-out stale form). */
+.editor-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 40px;
+  text-align: center;
+}
+
+.editor-empty-icon {
+  font-size: 2.5rem;
+  opacity: 0.4;
+  margin-bottom: 4px;
+}
+
+.editor-empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.editor-empty-hint {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
 .editor-header {
   display: flex;
   justify-content: space-between;
@@ -5610,7 +5743,9 @@ function formatWatchdogCondition(condition: Watchdog['condition']): string {
 
 .template-card:hover {
   border-color: var(--color-accent);
-  background: #1e2a4a;
+  /* Was a fixed dark navy (#1e2a4a) — dark-on-dark with the light-mode text.
+     Use the themed accent tint so the card text stays readable in both modes. */
+  background: var(--color-accent-bg);
 }
 
 .template-icon {
