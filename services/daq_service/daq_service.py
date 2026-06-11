@@ -13969,6 +13969,18 @@ Unit conversions:
             logger.info(f"Renamed channel {channel_name} to {new_name}")
             channel_name = new_name
 
+        # Physical channel (hardware address) — reassigns the tag to a different
+        # input. Structural, so the acquiring guard above already blocks it during
+        # acquisition (matching the dashboard, which only allows it in Edit mode).
+        # Keep channel.module in sync with the path so module-type lookups
+        # (terminal config, etc.) resolve to the new module.
+        if 'physical_channel' in config_data:
+            new_phys = config_data['physical_channel']
+            if isinstance(new_phys, str) and new_phys.strip():
+                channel.physical_channel = new_phys.strip()
+                if '/' in channel.physical_channel:
+                    channel.module = channel.physical_channel.split('/')[0]
+
         # Update allowed fields (check both payload and config_data for backwards compatibility)
         if 'description' in config_data:
             channel.description = config_data['description']

@@ -779,9 +779,14 @@ function getAvailableNodes(sourceType: string): Array<{id: string, name: string,
 }
 
 // Get available physical channels from discovery for Add Channel dropdown
-function getAvailablePhysicalChannels(): Array<{value: string, label: string, type: string, inUse: boolean}> {
-  const sourceType = newChannelForm.value.source_type
-  const nodeId = newChannelForm.value.node_id
+function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string): Array<{value: string, label: string, type: string, inUse: boolean}> {
+  // Default to the Add-Channel form's source, but allow callers (inline row /
+  // side-panel editing) to pass the row's own source so the list reflects that
+  // channel's hardware, not whatever the add modal last had selected.
+  // 'local' NI channels read the same cDAQ discovery as 'cdaq'.
+  let sourceType = sourceTypeArg ?? newChannelForm.value.source_type
+  if (sourceType === 'local') sourceType = 'cdaq'
+  const nodeId = nodeIdArg ?? newChannelForm.value.node_id
   const channels: Array<{value: string, label: string, type: string, inUse: boolean}> = []
 
   // Build map of physical channels already assigned in current config
@@ -887,10 +892,49 @@ function getAvailablePhysicalChannels(): Array<{value: string, label: string, ty
   return channels
 }
 
+// Build a robust option list for a hardware channel's physical-channel dropdown:
+// the discovery-derived list, plus physical channels already assigned to OTHER
+// channels of the same type (so you can see/relocate within a type even when
+// discovery hasn't been re-run), plus the channel's own current value so the
+// select always has something to show. Other-tag assignments are marked inUse
+// (shown but not selectable, preventing accidental conflicts); the current value
+// is always selectable.
+function augmentPhysicalChannelOptions(
+  discovered: Array<{value: string, label: string, type: string, inUse: boolean}>,
+  config: any,
+): Array<{value: string, label: string, type: string, inUse: boolean}> {
+  if (!config || typeof config !== 'object') return discovered
+  const byValue = new Map(discovered.map(o => [o.value, { ...o }]))
+  const rowType = config.channel_type
+  const cur = config.physical_channel || ''
+
+  if (rowType) {
+    for (const [tag, c] of Object.entries(store.channels)) {
+      const pc = c.physical_channel
+      if (!pc || c.channel_type !== rowType || pc === cur) continue
+      if (!byValue.has(pc)) {
+        byValue.set(pc, { value: pc, label: `${pc} [USED BY: ${tag}]`, type: rowType, inUse: true })
+      }
+    }
+  }
+
+  // Always include the current value, and ensure it's selectable.
+  if (cur) {
+    const existing = byValue.get(cur)
+    if (existing) existing.inUse = false
+    else byValue.set(cur, { value: cur, label: cur, type: rowType || '', inUse: false })
+  }
+
+  return Array.from(byValue.values())
+}
+
 // Get available physical channels filtered by channel type (for inline editing and add modal)
 function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{value: string, label: string, type: string, inUse: boolean}> {
-  const allChannels = getAvailablePhysicalChannels()
-  if (allChannels.length === 0) return []
+  const isConfigObj = !!channelConfigOrType && typeof channelConfigOrType === 'object'
+  const allChannels = getAvailablePhysicalChannels(
+    isConfigObj ? channelConfigOrType.source_type : undefined,
+    isConfigObj ? channelConfigOrType.node_id : undefined,
+  )
 
   // Get channel type from config object or use as direct type string
   const channelType = typeof channelConfigOrType === 'string'
@@ -959,11 +1003,11 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       return []
     default:
       // Unknown type - show all channels
-      return allChannels
+      return augmentPhysicalChannelOptions(allChannels, channelConfigOrType)
   }
 
   // Filter channels by compatible types
-  return allChannels.filter(ch => {
+  const filtered = allChannels.filter(ch => {
     if (!ch.type) return false
     const chTypeLower = ch.type.toLowerCase()
     return compatibleTypes.some(type =>
@@ -971,7 +1015,26 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       type.toLowerCase().includes(chTypeLower)
     )
   })
+
+  return augmentPhysicalChannelOptions(filtered, channelConfigOrType)
 }
+
+// Physical-channel dropdown options for every (non-Modbus) channel, memoized so
+// the option lists are rebuilt only when the channel set or discovery data
+// changes — not on every table render. The template reads this map by tag
+// instead of calling getAvailablePhysicalChannelsForType() per row per render.
+const physicalChannelOptionsByName = computed(() => {
+  // Reactive deps (store.channels, discoveryResult, crioDiscoveryChannels) are
+  // tracked automatically through the getAvailablePhysicalChannelsForType calls
+  // below, so the cache invalidates when any of them change.
+  const map: Record<string, Array<{value: string, label: string, type: string, inUse: boolean}>> = {}
+  for (const [name, config] of Object.entries(store.channels)) {
+    const t = config.channel_type
+    if (t === 'modbus_register' || t === 'modbus_coil') continue
+    map[name] = getAvailablePhysicalChannelsForType(config)
+  }
+  return map
+})
 
 // Check if we have discovery data for the current source type
 function hasDiscoveryData(): boolean {
@@ -5699,17 +5762,20 @@ watch(
                 >
                   {{ modbusPathForChannel(config) }}
                 </span>
+                <!-- Hardware channels are a fixed physical address, so this is a
+                     type-restricted dropdown (only channels of the same type, from
+                     any card) rather than free text. Editable only in Edit mode. -->
                 <select
-                  v-else-if="getAvailablePhysicalChannelsForType(config).length > 0"
+                  v-else
                   :value="config.physical_channel || ''"
                   @change="updateChannelField(name, 'physical_channel', ($event.target as HTMLSelectElement).value)"
                   class="inline-select channel-select"
                   :disabled="!canEdit"
-                  :title="`${getAvailablePhysicalChannelsForType(config).length} compatible channels found`"
+                  :title="`${(physicalChannelOptionsByName[name] || []).length} compatible channels`"
                 >
                   <option value="">-- Select Channel --</option>
                   <option
-                    v-for="ch in getAvailablePhysicalChannelsForType(config)"
+                    v-for="ch in (physicalChannelOptionsByName[name] || [])"
                     :key="ch.value"
                     :value="ch.value"
                     :disabled="ch.inUse"
@@ -5718,19 +5784,6 @@ watch(
                     {{ ch.label }}
                   </option>
                 </select>
-                <input
-                  v-else
-                  type="text"
-                  :value="inlineValue(name, 'physical_channel', config.physical_channel || '')"
-                  @focus="onInlineFocus(name, 'physical_channel', config.physical_channel || '')"
-                  @input="onInlineInput($event)"
-                  @blur="onInlineBlurText(name, 'physical_channel')"
-                  @keyup.enter="($event.target as HTMLInputElement).blur()"
-                  class="inline-input channel-input"
-                  :placeholder="getPhysicalChannelHint(config.source_type || 'local')"
-                  :disabled="!canEdit"
-                  :title="getAvailablePhysicalChannels().length > 0 ? 'No compatible channels found - manual entry' : 'No discovery data - manual entry'"
-                />
               </td>
               <!-- DESCRIPTION - long text -->
               <td class="col-description editable-cell" @click.stop>
@@ -6714,12 +6767,26 @@ watch(
               </template>
               <div class="form-row" v-else>
                 <label>Physical Channel</label>
-                <input
-                  type="text"
-                  v-model="editingConfig.moduleConfig.physical_channel"
-                  placeholder="e.g., cDAQ1Mod1/ai0"
-                />
-                <span class="form-hint">NI-DAQmx hardware address</span>
+                <!-- Same type-restricted dropdown as the row's CHANNEL cell, bound
+                     to the same stored value so the two stay in sync. Real hardware
+                     address — only same-type channels, only editable in Edit mode. -->
+                <select
+                  :value="store.channels[editingConfig.name]?.physical_channel || ''"
+                  @change="updateChannelField(editingConfig.name, 'physical_channel', ($event.target as HTMLSelectElement).value)"
+                  :disabled="!canEdit"
+                >
+                  <option value="">-- Select Channel --</option>
+                  <option
+                    v-for="ch in (physicalChannelOptionsByName[editingConfig.name] || getAvailablePhysicalChannelsForType(editingConfig.config))"
+                    :key="ch.value"
+                    :value="ch.value"
+                    :disabled="ch.inUse"
+                    :class="{ 'option-in-use': ch.inUse }"
+                  >
+                    {{ ch.label }}
+                  </option>
+                </select>
+                <span class="form-hint">NI-DAQmx hardware address — same-type channels only</span>
               </div>
               <!-- display_name removed - TAG is the only identifier -->
               <div class="form-row-group">
