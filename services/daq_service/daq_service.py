@@ -14358,6 +14358,11 @@ Unit conversions:
                 reason=config_data.get('reason', '')
             )
 
+        # Keep the cached project data consistent with this live edit so a
+        # project re-apply / reload (project/current, config/reload) can't revert
+        # it — the same staleness that made disabled channels re-enable themselves.
+        self._sync_project_data_channel_fields(channel_name, config_data)
+
         self._publish_channel_config()
         self._publish_config_response(True, f"Updated {channel_name}")
 
@@ -14603,6 +14608,32 @@ Unit conversions:
                 if isinstance(entry, dict) and 'name' in entry:
                     entry['name'] = new
                 channels[new] = entry
+
+    def _sync_project_data_channel_fields(self, channel_name: str, config_data: dict):
+        """Mirror a live channel edit into the cached project data.
+
+        Channel updates (e.g. the EN enable/disable toggle) only mutate
+        self.config.channels. The project/current and config/reload paths rebuild
+        channels from self.current_project_data, so without this any live edit is
+        reverted the next time the project is re-applied — and a later save then
+        writes the stale value back to disk. Repro: disable a Modbus channel; it
+        re-enables itself / never persists to the project file.
+        """
+        pdata = getattr(self, 'current_project_data', None)
+        if not isinstance(pdata, dict) or not isinstance(config_data, dict):
+            return
+        channels = pdata.get('channels')
+        if not isinstance(channels, dict):
+            return
+        entry = channels.get(channel_name)
+        if not isinstance(entry, dict):
+            return
+        # 'channel'/'reason' are envelope fields, 'new_name' is handled by the
+        # rename sync (which already moved the dict key) — don't copy them in.
+        skip = {'channel', 'reason', 'new_name'}
+        for key, value in config_data.items():
+            if key not in skip:
+                entry[key] = value
 
     def _handle_channel_delete(self, payload: Any):
         """Delete a channel"""
