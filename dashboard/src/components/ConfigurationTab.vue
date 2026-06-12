@@ -975,14 +975,17 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       break
     case 'counter':
     case 'counter_input':
-      compatibleTypes.push('counter', 'counter_input', 'CTR')
+      // 'ci' is what cDAQ discovery reports for counter-input physical channels
+      // (device.ci_physical_chans); without it every counter except the one
+      // already assigned gets filtered out of the dropdown.
+      compatibleTypes.push('counter', 'counter_input', 'CTR', 'ci')
       break
     case 'pulse_output':
     case 'counter_output':
-      compatibleTypes.push('pulse_output', 'counter_output', 'CO', 'CTR')
+      compatibleTypes.push('pulse_output', 'counter_output', 'CO', 'CTR', 'ci')
       break
     case 'frequency_input':
-      compatibleTypes.push('frequency_input', 'counter', 'CTR')
+      compatibleTypes.push('frequency_input', 'counter', 'CTR', 'ci')
       break
     case 'strain':
     case 'strain_input':

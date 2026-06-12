@@ -609,11 +609,19 @@ async function handleStop() {
   // running session, so a misclick can wipe an hour of test data.
   const warnRecording = store.isRecording ? '\n  • End the current recording' : ''
   const warnSession = playground.isSessionActive.value ? '\n  • Stop the running test session and any sequence/scripts' : ''
+  // Surface active alarms/interlocks in THIS prompt so the operator makes one
+  // informed decision. Previously the backend's safety gate triggered a SECOND
+  // confirm dialog after they'd already agreed to stop — redundant clicks.
+  const activeAlarmN = safety.alarmCounts?.value?.active ?? 0
+  const warnSafety = activeAlarmN > 0
+    ? `\n  • Stop monitoring while ${activeAlarmN} alarm(s)/interlock(s) are active`
+    : ''
   if (!window.confirm(
     'Stop acquisition?\n\nThis will:' +
     '\n  • Stop reading from hardware' +
     warnRecording +
     warnSession +
+    warnSafety +
     '\n\nContinue?'
   )) {
     return
@@ -623,19 +631,19 @@ async function handleStop() {
     // Only clear values after backend confirms stop succeeded
     store.clearValues()
   } else if (result.error && result.error.includes('active safety conditions')) {
-    // Safety gate blocked the stop — ask user to confirm force-stop
-    const forceConfirm = window.confirm(
-      'Active alarms or interlocks detected.\n\n' +
-      result.error.replace('Cannot stop with active safety conditions: ', '') + '\n\n' +
-      'Force stop anyway? This will stop monitoring while conditions are active.'
-    )
-    if (forceConfirm) {
-      const forceResult = await mqtt.stopAcquisition(true)
-      if (forceResult.success) {
-        store.clearValues()
-      } else {
-        console.error('[APP] Force stop failed:', forceResult.error)
-      }
+    // The operator already confirmed the stop above; don't make them confirm
+    // again just because the safety gate blocked it. Force through it and
+    // surface a non-blocking warning for awareness / the audit trail.
+    const detail = result.error.replace('Cannot stop with active safety conditions: ', '')
+    const forceResult = await mqtt.stopAcquisition(true)
+    if (forceResult.success) {
+      store.clearValues()
+      safety.showSafetyFeedback('warning',
+        `Acquisition force-stopped while safety conditions were active: ${detail}`, 8000)
+    } else {
+      console.error('[APP] Force stop failed:', forceResult.error)
+      safety.showSafetyFeedback('error',
+        `Force stop failed: ${forceResult.error || 'unknown error'}`, 8000)
     }
   } else {
     console.error('[APP] Stop acquisition failed:', result.error)
