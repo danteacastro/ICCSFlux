@@ -78,6 +78,18 @@ AZURE_SOURCE_PACKAGES = [
     "paho-mqtt>=1.6.0,<2.0.0",
 ]
 
+# DLLs that mosquitto.exe (2.x) requires at startup. If any of these is absent
+# from the bundle the broker dies immediately with a "<dll> was not found"
+# system-error dialog. Used to validate the vendor copy and the final build.
+REQUIRED_MOSQUITTO_DLLS = [
+    "mosquitto.dll",
+    "libcrypto-3-x64.dll",
+    "libssl-3-x64.dll",
+    "cjson.dll",
+    "libmicrohttpd-dll.dll",
+    "pthreadVC3.dll",
+]
+
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 VENDOR_DIR = PROJECT_ROOT / "vendor"
@@ -330,24 +342,25 @@ def setup_mosquitto():
     if system_mosquitto.exists() and (system_mosquitto / "mosquitto.exe").exists():
         log("  Found system Mosquitto, copying...")
 
-        files_to_copy = [
-            "mosquitto.exe",
-            "mosquitto.dll",
-            "mosquitto_dynamic_security.dll",
-            "libcrypto-3-x64.dll",
-            "libssl-3-x64.dll",
-            "mosquitto_passwd.exe",
-        ]
-
+        # Copy EVERY .exe and .dll from the system install. Mosquitto 2.x links
+        # mosquitto.exe against a growing set of DLLs (cjson, libmicrohttpd,
+        # pthreadVC3, sqlite3, ...) that varies by version. A hardcoded file
+        # list silently drops the new ones and the broker fails to start with
+        # "<dll> was not found". Globbing is version-proof.
         copied = 0
-        for filename in files_to_copy:
-            src = system_mosquitto / filename
-            if src.exists():
-                shutil.copy(src, mosquitto_dir / filename)
-                copied += 1
+        for src in [*system_mosquitto.glob("*.exe"), *system_mosquitto.glob("*.dll")]:
+            shutil.copy(src, mosquitto_dir / src.name)
+            copied += 1
+
+        # Sanity-check that mosquitto.exe's critical runtime DLLs made it in.
+        missing = [d for d in REQUIRED_MOSQUITTO_DLLS
+                   if not (mosquitto_dir / d).exists()]
+        if missing:
+            log(f"  Mosquitto copied but missing critical DLLs: {', '.join(missing)}", "WARN")
+            log("  Update your system Mosquitto install or copy these manually.", "WARN")
 
         log(f"  Copied {copied} Mosquitto files", "OK")
-        return True
+        return not missing
     else:
         log("  System Mosquitto not found", "WARN")
         log("  Download from: https://mosquitto.org/download/", "WARN")

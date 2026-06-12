@@ -1294,17 +1294,42 @@ function deleteSelectedChannels() {
   const count = selectedTableChannels.value.size
   if (count === 0) return
 
-  const confirmed = window.confirm(
-    `Delete ${count} selected channel(s)?\n\nThis cannot be undone.`
-  )
-  if (!confirmed) return
+  // Guard once, up front. deleteChannel() bails on these too, but checking
+  // here means we don't clear the selection and then silently delete nothing
+  // (which would still pop the misleading "Deleted N" toast below).
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  if (store.isAcquiring) {
+    showFeedback('error', 'Stop acquisition before deleting channels')
+    return
+  }
+
+  const channelsToDelete = Array.from(selectedTableChannels.value)
+
+  // Tally broken references across the WHOLE batch so the user gets one
+  // summary in the single confirm below — instead of a separate popup for
+  // every alarm/interlock/widget that loses its tag. We assume "yes" for all
+  // of them and let cascadeChannelDelete() clean them up.
+  let refCount = 0
+  for (const name of channelsToDelete) {
+    refCount += tagDeps.getTagReferences(name).length
+  }
+
+  let confirmMessage = `Delete ${count} selected channel(s)?\n\nThis cannot be undone.`
+  if (refCount > 0) {
+    confirmMessage += `\n\n${refCount} reference(s) (alarms, interlocks, widgets) will be removed automatically.`
+  }
+  if (!window.confirm(confirmMessage)) return
 
   // Capture and clear selection immediately to prevent re-entrancy
-  const channelsToDelete = Array.from(selectedTableChannels.value)
   selectedTableChannels.value.clear()
 
+  // skipConfirm — the user already confirmed the whole batch (including the
+  // reference cleanup) above; don't re-prompt per channel.
   channelsToDelete.forEach(name => {
-    deleteChannel(name)
+    deleteChannel(name, undefined, { skipConfirm: true })
   })
   showFeedback('success', `Deleted ${count} channel(s)`)
 }
@@ -2285,20 +2310,25 @@ function getDefaultUnit(channelType: ChannelType): string {
 }
 
 // Delete channel with dependency checking
-function deleteChannel(channelName: string, event?: Event) {
+function deleteChannel(channelName: string, event?: Event, opts?: { skipConfirm?: boolean }) {
   event?.stopPropagation()
 
-  // Check for dependencies before deleting
-  const refs = tagDeps.getTagReferences(channelName)
-  let confirmMessage = `Delete channel "${channelName}"? This cannot be undone.`
+  // skipConfirm is set by batch delete, which already confirmed the whole set
+  // (including reference cleanup) in one dialog. Without it we'd pop a separate
+  // "referenced in N places" warning for every channel — the spam Mike hit.
+  if (!opts?.skipConfirm) {
+    // Check for dependencies before deleting
+    const refs = tagDeps.getTagReferences(channelName)
+    let confirmMessage = `Delete channel "${channelName}"? This cannot be undone.`
 
-  if (refs.length > 0) {
-    const refSummary = refs.map(r => `  - ${r.type}: ${r.name} (${r.location})`).join('\n')
-    confirmMessage = `WARNING: "${channelName}" is referenced in ${refs.length} place(s):\n\n${refSummary}\n\nDeleting this tag will break these references!\n\nDelete anyway?`
-  }
+    if (refs.length > 0) {
+      const refSummary = refs.map(r => `  - ${r.type}: ${r.name} (${r.location})`).join('\n')
+      confirmMessage = `WARNING: "${channelName}" is referenced in ${refs.length} place(s):\n\n${refSummary}\n\nDeleting this tag will break these references!\n\nDelete anyway?`
+    }
 
-  if (!confirm(confirmMessage)) {
-    return
+    if (!confirm(confirmMessage)) {
+      return
+    }
   }
 
   if (!mqtt.connected.value) {

@@ -981,6 +981,25 @@ class DAQService:
                 safety_actions=self.config.safety_actions if self.config else {}
             )
 
+            # Release the OLD hardware reader BEFORE building the new one.
+            # Skipping this leaves the previous tasks holding their cDAQ modules,
+            # so the rebuilt reader can't reserve them and NI-DAQmx raises -200022
+            # ("resource already reserved by a different task"), dropping the whole
+            # system into simulation mode. Repro: delete channels, then Reload-
+            # from-disk without saving. The START/Apply path already does this via
+            # _reinit_hardware_reader_locked(); the project-reload path skipped it.
+            if self.hardware_reader:
+                try:
+                    self.hardware_reader.close()
+                except Exception as e:
+                    logger.warning(f"Error closing previous hardware reader on reload: {e}")
+                self.hardware_reader = None
+                # NI-DAQmx frees task names/reservations asynchronously after
+                # close(); a short settle avoids -200089/-200022 on rebuild.
+                time.sleep(0.1)
+            if self.simulator:
+                self.simulator = None
+
             # Reinitialize hardware reader or simulator based on new config
             if self.config.system.simulation_mode:
                 logger.info("Simulation mode enabled - using hardware simulator")
@@ -9720,19 +9739,26 @@ Unit conversions:
                 self.simulator = self._create_simulator()
                 if self.hardware_reader:
                     try:
-                        self.hardware_reader.stop()
+                        # close(), not stop(): we're discarding the reader, so its
+                        # tasks must release their cDAQ reservations or a later
+                        # switch back to hardware hits NI-DAQmx -200022.
+                        self.hardware_reader.close()
                     except Exception:
                         pass
                     self.hardware_reader = None
                 logger.info(f"[STATION] Simulator created with {len(all_channels)} channels")
         elif HW_READER_AVAILABLE and (not self.hardware_reader or needs_rebuild):
             try:
-                # Stop existing reader before rebuilding
+                # Close (not just stop) the existing reader before rebuilding so
+                # its tasks release the cDAQ modules; otherwise the new reader
+                # can't reserve them and NI-DAQmx raises -200022.
                 if self.hardware_reader:
                     try:
-                        self.hardware_reader.stop()
+                        self.hardware_reader.close()
                     except Exception:
                         pass
+                    self.hardware_reader = None
+                    time.sleep(0.1)  # let NI-DAQmx free the reservations
                 self.hardware_reader = HardwareReader(self.config)
                 self.simulator = None
                 logger.info(f"[STATION] Hardware reader created with {len(all_channels)} channels "
@@ -13967,6 +13993,10 @@ Unit conversions:
                         for val in [act]  # trick to use act in condition
                     ]
 
+            # Mirror the rename into the cached project data so a project
+            # re-apply / reload doesn't bring the old tag back alongside the new.
+            self._sync_project_data_channels(renamed=(channel_name, new_name))
+
             logger.info(f"Renamed channel {channel_name} to {new_name}")
             channel_name = new_name
 
@@ -14547,6 +14577,33 @@ Unit conversions:
             logger.error(f"Failed to create channel {channel_name}: {e}")
             self._publish_config_response(False, f"Failed to create channel: {e}")
 
+    def _sync_project_data_channels(self, removed: str = None, renamed: tuple = None):
+        """Keep self.current_project_data['channels'] consistent with live config.
+
+        The project/current and project/loaded responses (and config/reload) are
+        served from self.current_project_data — the project as last loaded from
+        disk. Channel delete/rename only mutate self.config.channels, so without
+        this the dashboard's applyProjectData() resurrects deleted (or renamed)
+        channels the next time it re-applies the cached project (boot, node
+        switch, reload, or a routine project re-sync). Standalone repro: delete a
+        channel and it reappears within ~1s when the UI re-syncs the project.
+        """
+        pdata = getattr(self, 'current_project_data', None)
+        if not isinstance(pdata, dict):
+            return
+        channels = pdata.get('channels')
+        if not isinstance(channels, dict):
+            return
+        if removed and removed in channels:
+            del channels[removed]
+        if renamed:
+            old, new = renamed
+            if old in channels:
+                entry = channels.pop(old)
+                if isinstance(entry, dict) and 'name' in entry:
+                    entry['name'] = new
+                channels[new] = entry
+
     def _handle_channel_delete(self, payload: Any):
         """Delete a channel"""
         if not self.authenticated:
@@ -14606,6 +14663,11 @@ Unit conversions:
 
         # Delete the channel
         del self.config.channels[channel_name]
+
+        # Keep the cached project data in sync so a project re-apply / reload
+        # (project/current, project/loaded, config/reload) can't resurrect the
+        # channel — this is the "delete then it comes right back" bug.
+        self._sync_project_data_channels(removed=channel_name)
 
         # Remove from channel values
         if channel_name in self.channel_values:

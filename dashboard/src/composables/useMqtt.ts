@@ -235,6 +235,14 @@ const pendingOutputTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const channelDeletedCallbacks: ((channelName: string) => void)[] = []
 const channelCreatedCallbacks: ((channels: string[]) => void)[] = []
 
+// Tombstones for just-deleted channels (name -> expiry epoch ms). A config
+// broadcast or cached project re-apply can land milliseconds after a delete and
+// carry the channel we just removed, making deleted rows "come right back". We
+// suppress any channel that was deleted within this window. Cleared explicitly
+// on (re)creation so deleting then recreating the same tag still works.
+const DELETE_TOMBSTONE_MS = 4000
+const recentlyDeletedChannels = new Map<string, number>()
+
 // Recording state (shared)
 const recordingConfig = ref<Partial<BackendRecordingConfig>>({})
 const recordedFiles = ref<RecordedFile[]>([])
@@ -1218,6 +1226,19 @@ export function useMqtt(prefix: string = 'nisystem') {
       })
     }
 
+    // Drop any channel still under a delete tombstone — a config broadcast that
+    // raced the delete (or a cached project re-apply) must not bring it back.
+    if (recentlyDeletedChannels.size > 0) {
+      const now = Date.now()
+      for (const [name, expiry] of recentlyDeletedChannels) {
+        if (expiry <= now) {
+          recentlyDeletedChannels.delete(name)
+        } else if (configs[name]) {
+          delete configs[name]
+        }
+      }
+    }
+
     channelConfigs.value = configs
     console.debug('Channel configs loaded:', Object.keys(configs).length)
 
@@ -1430,6 +1451,9 @@ export function useMqtt(prefix: string = 'nisystem') {
   // channel stayed visible. Reassigning also means any autosave reading the
   // synced store won't re-send the deleted channel back to the backend.
   function removeChannelLocal(channelName: string) {
+    // Tombstone so a near-simultaneous config broadcast / project re-apply can't
+    // resurrect the row within the suppression window.
+    recentlyDeletedChannels.set(channelName, Date.now() + DELETE_TOMBSTONE_MS)
     if (channelConfigs.value[channelName]) {
       const next = { ...channelConfigs.value }
       delete next[channelName]
@@ -1455,6 +1479,8 @@ export function useMqtt(prefix: string = 'nisystem') {
   function handleBulkCreateResponse(payload: MqttBulkCreatePayload) {
     console.debug('Bulk create response:', payload)
     if (payload.created && payload.created.length > 0) {
+      // Clear tombstones for any recreated tags so the guard doesn't strip them.
+      payload.created.forEach(name => recentlyDeletedChannels.delete(name))
       channelCreatedCallbacks.forEach(cb => cb(payload.created!))
     }
     configUpdateCallbacks.forEach(cb => cb({ success: true, ...payload } as ConfigUpdateCallbackPayload))
@@ -2346,6 +2372,9 @@ export function useMqtt(prefix: string = 'nisystem') {
       console.error('MQTT not connected')
       return
     }
+    // Clear any delete tombstone so recreating a just-deleted tag isn't
+    // suppressed by the resurrection guard.
+    recentlyDeletedChannels.delete(name)
     const payload = {
       name,
       config

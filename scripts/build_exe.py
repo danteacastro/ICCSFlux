@@ -47,6 +47,20 @@ EXE_DIR = PROJECT_ROOT / "dist" / "exe"
 VENDOR_DIR = PROJECT_ROOT / "vendor"
 SPEC_DIR = PROJECT_ROOT / "scripts"
 AZURE_VENV_DIR = PROJECT_ROOT / "build" / "azure-venv"
+SYSTEM_MOSQUITTO_DIR = Path("C:/Program Files/mosquitto")
+
+# DLLs mosquitto.exe (2.x) requires at startup. Missing any one makes the broker
+# die immediately with a "<dll> was not found" dialog, which cascades into the
+# DAQ service failing to reach the MQTT broker. Verified after the copy so a
+# stale/incomplete vendor folder can never silently ship a broken broker.
+REQUIRED_MOSQUITTO_DLLS = [
+    "mosquitto.dll",
+    "libcrypto-3-x64.dll",
+    "libssl-3-x64.dll",
+    "cjson.dll",
+    "libmicrohttpd-dll.dll",
+    "pthreadVC3.dll",
+]
 
 # Spec files for PyInstaller (built from main venv)
 SPEC_FILES = {
@@ -497,6 +511,29 @@ def setup_mosquitto():
     # Copy required DLLs
     for dll in mosquitto_vendor.glob("*.dll"):
         shutil.copy2(dll, mosquitto_dest / dll.name)
+
+    # Self-heal: if the vendor folder is stale/incomplete (e.g. populated before
+    # Mosquitto gained the cjson/libmicrohttpd/pthread DLLs), top up any missing
+    # critical DLL from the system install so the build never ships a broker that
+    # dies with "<dll> was not found".
+    missing = [d for d in REQUIRED_MOSQUITTO_DLLS
+               if not (mosquitto_dest / d).exists()]
+    if missing and SYSTEM_MOSQUITTO_DIR.exists():
+        for src in [*SYSTEM_MOSQUITTO_DIR.glob("*.exe"),
+                    *SYSTEM_MOSQUITTO_DIR.glob("*.dll")]:
+            dst = mosquitto_dest / src.name
+            if not dst.exists():
+                shutil.copy2(src, dst)
+                log(f"  Topped up missing Mosquitto file from system: {src.name}")
+        missing = [d for d in REQUIRED_MOSQUITTO_DLLS
+                   if not (mosquitto_dest / d).exists()]
+
+    if missing:
+        log(f"Mosquitto bundle is missing required DLLs: {', '.join(missing)}", "ERROR")
+        log("The portable broker would fail to start. Re-run:", "ERROR")
+        log("  python scripts\\download_dependencies.py", "ERROR")
+        log("with Mosquitto 2.x installed at C:\\Program Files\\mosquitto", "ERROR")
+        return False
 
     log("Mosquitto ready", "OK")
     return True
