@@ -951,10 +951,13 @@ function getAvailablePhysicalChannelsForType(channelConfigOrType?: any): Array<{
       compatibleTypes.push('analog_input', 'voltage_input', 'voltage', 'AI')
       break
     case 'thermocouple':
-      compatibleTypes.push('thermocouple', 'TC', 'analog_input')
+      // TC/RTD module channels are discovered as channel_type 'ai' (they're
+      // analog inputs); without the 'AI' token they all get filtered out and
+      // only the already-assigned channel shows. Mirrors voltage/current/etc.
+      compatibleTypes.push('thermocouple', 'TC', 'analog_input', 'AI')
       break
     case 'rtd':
-      compatibleTypes.push('rtd', 'RTD', 'analog_input')
+      compatibleTypes.push('rtd', 'RTD', 'analog_input', 'AI')
       break
     case 'current_input':
     case 'current':
