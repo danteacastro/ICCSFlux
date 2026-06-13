@@ -1993,12 +1993,15 @@ function _findColElement(colKey: string, table: HTMLElement | null): HTMLElement
 
 function onColResizeMove(event: MouseEvent) {
   if (!_resizeCol) return
-  const diff = event.clientX - _resizeStartX
-  const newWidth = Math.max(40, _resizeStartW + diff)
-  // Apply as percentage so it scales with table width
-  const pct = (newWidth / _resizeTableW) * 100
   const key = colKey(_resizeCol)
   if (!key) return
+  const diff = event.clientX - _resizeStartX
+  // VALUE must never shrink below its 140px no-truncate floor; other columns
+  // bottom out at 40px.
+  const minW = key === 'value' ? 140 : 40
+  const newWidth = Math.max(minW, _resizeStartW + diff)
+  // Apply as percentage so it scales with table width
+  const pct = (newWidth / _resizeTableW) * 100
   // Update the reactive store — the <colgroup><col data-col-key="..."> elements
   // bind their width to colWidthStyle(), so this single update flows to both
   // the visual width AND the persisted state. No more JS-vs-Vue style fight.
@@ -2029,6 +2032,21 @@ function colWidthStyle(colKey: string, defaultWidth: string): string {
   const storedPct = columnWidths.value[tab]?.[colKey]
   if (storedPct) return `${storedPct}%`
   return defaultWidth
+}
+
+// Effective colgroup width per column. Centralizes two special cases so the
+// per-tab column defs stay simple:
+//  - 'description' is the single flexible column (absorbs leftover width so the
+//    fixed columns don't grow proportionally / shift per tab).
+//  - 'value' gets a 140px floor so "<number> [age] <unit>" doesn't truncate.
+function colWidthFor(col: { key: string; width: string }): string {
+  if (col.key === 'description') return 'auto'
+  // VALUE holds "<number> [age] <unit>" which clips below ~140px. Use a plain
+  // 140px default (a CSS max()/calc() here is NOT honored by fixed-table column
+  // sizing — the column silently falls back to auto and balloons). Still honors
+  // a manual resize via the stored percentage.
+  if (col.key === 'value') return colWidthStyle(col.key, '140px')
+  return colWidthStyle(col.key, col.width)
 }
 
 // Handle tag rename from inline edit (wrapper for renameChannel)
@@ -5117,14 +5135,21 @@ function handleConfigUpdateResponse(response: any) {
 // Get column headers based on active tab
 const tableColumns = computed(() => {
   const baseColumns: Array<{ key: string; label: string; width: string; align?: string }> = [
-    { key: 'enable', label: 'EN', width: '40px' },
+    // align center so the 'EN' header sits over the centered per-row checkbox
+    // (the header th's inline text-align beats the .col-enable stylesheet rule).
+    { key: 'enable', label: 'EN', width: '40px', align: 'center' },
     { key: 'type', label: 'TYPE', width: '50px' },
     { key: 'tag', label: 'TAG', width: '100px' },
     // CHANNEL/DESCRIPTION sized so wide tabs (CTR, mA-OUT, V-OUT) fit beside
     // the 380px sidebar without clipping. Truncated text still tooltips on
     // hover, and the per-column drag handle lets users widen as needed.
     { key: 'channel', label: 'CHANNEL', width: '150px' },
-    { key: 'description', label: 'DESCRIPTION', width: '160px' },
+    // 'auto' makes DESCRIPTION the single flexible column: in table-layout:fixed
+    // it soaks up all the leftover container width, so every other column (the
+    // select checkbox, EN, TYPE, ...) renders at its exact fixed width on every
+    // tab instead of growing by a per-tab proportional share. Description already
+    // truncates with a hover tooltip, so absorbing slack here is harmless.
+    { key: 'description', label: 'DESCRIPTION', width: 'auto' },
   ]
 
   switch (activeTypeTab.value) {
@@ -5444,50 +5469,8 @@ watch(
     <!-- Search and Actions Bar -->
     <div class="actions-bar">
       <div class="left-actions">
-        <!-- Auto Discovery button -->
-        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning || !hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-discover hardware devices'" :class="{ 'no-permission': !hasEditPermission }">
-          <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-            <path d="M8 11h6M11 8v6"/>
-          </svg>
-          <span v-else class="spinner"></span>
-          {{ isScanning ? 'Discovering...' : 'Auto Discovery' }}
-        </button>
-
-        <!-- Search -->
-        <div class="search-box">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-          </svg>
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search channels..."
-            class="search-input"
-          />
-        </div>
-
-        <div class="toolbar-divider"></div>
-
-        <!-- Group 2: View/Mode Toggles -->
-        <button v-if="isAdmin" class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-          </svg>
-          Settings
-        </button>
-        <button class="action-btn accent" @click="autoGenerateWidgets" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="7" height="7"/>
-            <rect x="14" y="3" width="7" height="7"/>
-            <rect x="14" y="14" width="7" height="7"/>
-            <rect x="3" y="14" width="7" height="7"/>
-          </svg>
-          Auto-Gen Widgets
-        </button>
         <button
-          class="action-btn"
+          class="action-btn edit-btn"
           :class="{ active: editMode, 'no-permission': !hasEditPermission }"
           @click="toggleEditMode"
           :disabled="store.isAcquiring"
@@ -5500,25 +5483,9 @@ watch(
           {{ editMode ? 'EDITING' : 'Edit' }}
           <span v-if="!hasEditPermission" class="lock-badge">🔒</span>
         </button>
+        <!-- Group 1: File Operations (save / reload / export / import / validate) -->
         <button
           class="action-btn"
-          :class="{ active: showLimitColors }"
-          @click="showLimitColors = !showLimitColors"
-          title="Toggle alarm/warning colors based on channel limits"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M12 8v4"/>
-            <path d="M12 16h.01"/>
-          </svg>
-          {{ showLimitColors ? 'Limits ON' : 'Limits' }}
-        </button>
-
-        <div class="toolbar-divider"></div>
-
-        <!-- Group 3: File Operations -->
-        <button
-          class="action-btn primary"
           :class="{ dirty: configDirty, 'no-permission': !hasEditPermission }"
           @click="saveToFile()"
           :disabled="isSaving || !hasEditPermission"
@@ -5572,15 +5539,73 @@ watch(
 
         <div class="toolbar-divider"></div>
 
-        <!-- Group 5: Apply/Push (blue - sends to hardware) -->
+        <!-- Auto Discovery button -->
+        <button class="action-btn primary" @click="scanDevices" :disabled="isScanning || !hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-discover hardware devices'" :class="{ 'no-permission': !hasEditPermission }">
+          <svg v-if="!isScanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+            <path d="M8 11h6M11 8v6"/>
+          </svg>
+          <span v-else class="spinner"></span>
+          {{ isScanning ? 'Discovering...' : 'Auto Discovery' }}
+        </button>
+
+        <!-- Search -->
+        <div class="search-box">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search channels..."
+            class="search-input"
+          />
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Group 2: View/Mode Toggles -->
+        <button v-if="isAdmin" class="action-btn" @click="openSystemSettings" title="System settings (scan rate, publish rate)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+          Settings
+        </button>
+        <button class="action-btn" @click="autoGenerateWidgets" :disabled="!hasEditPermission" :title="!hasEditPermission ? 'Requires Operator or higher' : 'Auto-generate widgets for all channels based on channel type'" :class="{ 'no-permission': !hasEditPermission }">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          Auto-Gen Widgets
+        </button>
+        <button
+          class="action-btn limits-btn"
+          :class="{ active: showLimitColors }"
+          @click="showLimitColors = !showLimitColors"
+          title="Toggle alarm/warning colors based on channel limits"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 8v4"/>
+            <path d="M12 16h.01"/>
+          </svg>
+          {{ showLimitColors ? 'Limits ON' : 'Limits OFF' }}
+        </button>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Group 5: Apply/Push (sends to hardware) -->
         <!-- cDAQ mode: "Apply" (reinit local tasks only) -->
         <!-- cRIO/Opto22 mode: "Push" (reinit + push to remote nodes) -->
         <button
-          class="action-btn accent"
+          class="action-btn"
           :class="{ 'out-of-sync': !isCdaqMode && hasCrioOutOfSync, 'no-permission': !hasEditPermission }"
           @click="applyConfigChanges"
           :disabled="!mqtt.connected.value || !hasEditPermission"
-          :title="!hasEditPermission ? 'Requires Operator or higher' : (isCdaqMode ? 'Apply channel config to local hardware' : (hasCrioOutOfSync ? 'Push config to hardware (out of sync!)' : 'Push channel config to remote nodes'))"
+          :title="!hasEditPermission ? 'Requires Operator or higher' : (isCdaqMode ? 'Apply channel config to local hardware. Note: this is only needed for cRIO hardware.' : (hasCrioOutOfSync ? 'Push config to hardware (out of sync!) — only needed for cRIO hardware' : 'Push channel config to remote nodes — only needed for cRIO hardware'))"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -5723,12 +5748,12 @@ watch(
                element directly, decoupling width from Vue's reactive :style on <th>
                (which previously fought JS-set widths on every re-render). -->
           <colgroup>
-            <col data-col-key="select" :style="{ width: '40px' }" />
+            <col data-col-key="select" :style="{ width: '26px' }" />
             <col
               v-for="col in tableColumns"
               :key="col.key"
               :data-col-key="col.key"
-              :style="{ width: colWidthStyle(col.key, col.width) }"
+              :style="{ width: colWidthFor(col) }"
             />
             <col data-col-key="alarm" :style="{ width: colWidthStyle('alarm', '70px') }" />
             <col data-col-key="status" :style="{ width: '46px' }" />
@@ -9924,7 +9949,19 @@ watch(
 }
 
 /* Column styling */
-.col-select { width: 32px; text-align: center; }
+/* Selection checkbox column: tight and identical header-to-row on every tab.
+   The combined th/td selector (0,2,1) outranks `.column-headers-row th` and
+   `.channel-table td` (both 0,1,1), so width, centering AND padding stay
+   consistent — otherwise the header kept text-align:left and 6px padding while
+   the rows were centered, and the 40px colgroup flexed differently per tab. */
+.channel-table th.col-select,
+.channel-table td.col-select {
+  width: 26px;
+  min-width: 26px;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
+}
 .col-enable { text-align: center; }
 .col-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 600; }
 .col-actions { width: 50px; text-align: center; }
@@ -10175,9 +10212,10 @@ watch(
   fill: rgba(251, 191, 36, 0.25);
 }
 
-/* Digital state cell + ALARM column: left-justify so headers align with cells. */
+/* Digital state cell: center the DI badge / DO toggle under the VALUE column,
+   matching the analog value cells (was left-justified). */
 .channel-table td.col-value.col-value-digital {
-  text-align: left;
+  text-align: center;
 }
 
 /* Config Button */
@@ -10763,7 +10801,9 @@ input[type="checkbox"] {
 .action-btn.primary {
   background: #166534;
   border-color: var(--color-success);
-  color: var(--text-primary);
+  /* These buttons have a dark fill in BOTH themes, so force light text.
+     var(--text-primary) flips to near-black in light mode and was unreadable. */
+  color: #fff;
 }
 
 .action-btn.primary:hover:not(:disabled) {
@@ -10771,7 +10811,8 @@ input[type="checkbox"] {
   border-color: #4ade80;
 }
 
-.action-btn.primary.dirty {
+.action-btn.primary.dirty,
+.action-btn.dirty {
   animation: pulse-dirty 1.5s ease-in-out infinite;
 }
 
@@ -10784,7 +10825,7 @@ input[type="checkbox"] {
 .action-btn.accent {
   background: #1e40af;
   border-color: var(--color-accent);
-  color: var(--text-primary);
+  color: #fff;  /* dark fill in both themes — keep text light for contrast */
 }
 
 .action-btn.accent:hover:not(:disabled) {
@@ -10837,12 +10878,41 @@ input[type="checkbox"] {
 /* Active state for toggle buttons */
 .action-btn.active {
   background: var(--color-accent);
-  color: var(--text-primary);
+  color: #fff;  /* solid accent fill — light text reads in both themes */
   border-color: var(--color-accent-light);
 }
 
 .action-btn.active:hover:not(:disabled) {
   background: var(--color-accent-dark);
+}
+
+/* Limits toggle: fixed width so swapping "Limits ON" / "Limits OFF" doesn't
+   resize the button (and shift the rest of the bar), and a dark-yellow fill
+   when active to read as a distinct "limits live" state instead of the generic
+   blue. The triple-class selector outranks .action-btn.active above. */
+.action-btn.limits-btn {
+  /* Must be >= the natural width of the WIDER label ("Limits OFF") so both
+     states render at the same width and the toolbar doesn't shift on toggle. */
+  min-width: 108px;
+  justify-content: center;
+}
+
+/* Same fixed-width trick for Edit: sized for the wider "EDITING" label so
+   toggling Edit -> EDITING doesn't push the rest of the toolbar right. */
+.action-btn.edit-btn {
+  min-width: 96px;
+  justify-content: center;
+}
+
+.action-btn.limits-btn.active {
+  background: #a16207;       /* amber-700 — dark yellow */
+  border-color: #ca8a04;     /* amber-600 */
+  color: #fff;
+}
+
+.action-btn.limits-btn.active:hover:not(:disabled) {
+  background: #854d0e;       /* amber-800 */
+  border-color: #eab308;     /* amber-500 */
 }
 
 /* No permission state */
