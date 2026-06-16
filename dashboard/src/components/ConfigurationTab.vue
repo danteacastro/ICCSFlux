@@ -3717,10 +3717,13 @@ interface ChannelTypeTab {
 
 const channelTypeTabs: ChannelTypeTab[] = [
   { id: 'all', label: 'ALL', icon: '⊞', fullName: 'All Channels' },
-  { id: 'thermocouple', label: 'TC', icon: '🌡', fullName: 'Thermocouple Analog Input' },
-  { id: 'rtd', label: 'RTD', icon: '🌡', fullName: 'RTD Temperature Input' },
+  // '︎' (text variation selector) forces monochrome presentation on the
+  // emoji glyphs so they respect the per-type CSS `color`; the arrow/# icons are
+  // already text symbols and take color directly.
+  { id: 'thermocouple', label: 'TC', icon: '🌡︎', fullName: 'Thermocouple Analog Input' },
+  { id: 'rtd', label: 'RTD', icon: '🌡︎', fullName: 'RTD Temperature Input' },
   { id: 'voltage_input', label: 'V-IN', icon: '⚡', fullName: 'Voltage Input' },
-  { id: 'current_input', label: 'mA-IN', icon: '〰', fullName: 'Current Input (4-20mA)' },
+  { id: 'current_input', label: 'mA-IN', icon: '〰︎', fullName: 'Current Input (4-20mA)' },
   { id: 'voltage_output', label: 'V-OUT', icon: '↗', fullName: 'Voltage Output' },
   { id: 'current_output', label: 'mA-OUT', icon: '↗', fullName: 'Current Output (4-20mA)' },
   { id: 'digital_input', label: 'DI', icon: '▢', fullName: 'Digital Input' },
@@ -3729,7 +3732,7 @@ const channelTypeTabs: ChannelTypeTab[] = [
   { id: 'pulse_output', label: 'PLS', icon: '⏱', fullName: 'Pulse/Counter Output' },
   { id: 'strain', label: 'STR', icon: '⚖', fullName: 'Strain Gauge / Bridge Input' },
   { id: 'iepe', label: 'IEPE', icon: '〰', fullName: 'IEPE Accelerometer Input' },
-  { id: 'modbus', label: 'MODBUS', icon: '🔌', fullName: 'Modbus TCP/RTU Device' },
+  { id: 'modbus', label: 'MODBUS', icon: '🔌︎', fullName: 'Modbus TCP/RTU Device' },
   { id: 'rest_api', label: 'REST', icon: '🌐', fullName: 'REST API Device' },
   { id: 'opc_ua', label: 'OPC-UA', icon: '🔗', fullName: 'OPC-UA Server' },
   { id: 'ethernet_ip', label: 'AB PLC', icon: '🏭', fullName: 'Allen Bradley EtherNet/IP', hidden: true },
@@ -3790,65 +3793,70 @@ function moduleSort(a: [string, any], b: [string, any]): number {
   return a[0].localeCompare(b[0])
 }
 
+// Predicate matching a channel to a type tab. Shared by the channel filter and
+// the per-tab usage counts so the two can never drift apart. Mirrors the legacy
+// type aliases each tab accepts.
+function channelMatchesType(ch: any, typeId: string): boolean {
+  switch (typeId) {
+    case 'cfp':
+      // CFP tab shows all channels with source_type 'cfp'
+      return ch.source_type === 'cfp'
+    case 'modbus':
+      // Modbus tab shows both modbus_register and modbus_coil types (excludes CFP channels)
+      return (ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil') && ch.source_type !== 'cfp'
+    case 'voltage_output':
+      // V-OUT: voltage_output channels (or legacy analog_output with voltage range)
+      return ch.channel_type === 'voltage_output' ||
+        (ch.channel_type === 'analog_output' && (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA')))
+    case 'current_output':
+      // mA-OUT: current_output channels (or legacy analog_output with current range)
+      return ch.channel_type === 'current_output' ||
+        (ch.channel_type === 'analog_output' && ch.ao_range?.includes('mA'))
+    case 'voltage_input':
+      // V-IN: voltage_input channels (or legacy 'voltage')
+      return ch.channel_type === 'voltage_input' || ch.channel_type === 'voltage'
+    case 'current_input':
+      // mA-IN: current_input channels (or legacy 'current')
+      return ch.channel_type === 'current_input' || ch.channel_type === 'current'
+    case 'counter':
+      // CTR: counter and counter_input are aliases
+      return ch.channel_type === 'counter' || ch.channel_type === 'counter_input'
+    case 'strain':
+      // STR: strain, strain_input, and bridge_input
+      return ch.channel_type === 'strain' || ch.channel_type === 'strain_input' || ch.channel_type === 'bridge_input'
+    case 'iepe':
+      // IEPE: iepe and iepe_input are aliases
+      return ch.channel_type === 'iepe' || ch.channel_type === 'iepe_input'
+    case 'pulse_output':
+      // PLS: pulse_output and frequency_input
+      return ch.channel_type === 'pulse_output' || ch.channel_type === 'frequency_input'
+    default:
+      return ch.channel_type === typeId
+  }
+}
+
+// Count of configured channels per type tab (keyed by tab id). Drives the
+// grayed-vs-colored icon treatment: 0 → muted, ≥1 → in use.
+const typeChannelCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const ch of Object.values(store.channels)) {
+    for (const tab of channelTypeTabs) {
+      if (tab.id === 'all') continue
+      if (channelMatchesType(ch, tab.id)) {
+        counts[tab.id] = (counts[tab.id] || 0) + 1
+      }
+    }
+  }
+  return counts
+})
+
 // Filtered channels based on active tab and search
 const filteredChannels = computed(() => {
   let channels = Object.entries(store.channels)
 
   // Filter by type
   if (activeTypeTab.value !== 'all') {
-    if (activeTypeTab.value === 'cfp') {
-      // CFP tab shows all channels with source_type 'cfp'
-      channels = channels.filter(([_, ch]) => ch.source_type === 'cfp')
-    } else if (activeTypeTab.value === 'modbus') {
-      // Modbus tab shows both modbus_register and modbus_coil types (excludes CFP channels)
-      channels = channels.filter(([_, ch]) =>
-        (ch.channel_type === 'modbus_register' || ch.channel_type === 'modbus_coil') && ch.source_type !== 'cfp'
-      )
-    } else if (activeTypeTab.value === 'voltage_output') {
-      // V-OUT: voltage_output channels (or legacy analog_output with voltage range)
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'voltage_output' ||
-        (ch.channel_type === 'analog_output' && (ch.ao_range?.includes('V') || !ch.ao_range?.includes('mA')))
-      )
-    } else if (activeTypeTab.value === 'current_output') {
-      // mA-OUT: current_output channels (or legacy analog_output with current range)
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'current_output' ||
-        (ch.channel_type === 'analog_output' && ch.ao_range?.includes('mA'))
-      )
-    } else if (activeTypeTab.value === 'voltage_input') {
-      // V-IN: voltage_input channels (or legacy 'voltage')
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'voltage_input' || ch.channel_type === 'voltage'
-      )
-    } else if (activeTypeTab.value === 'current_input') {
-      // mA-IN: current_input channels (or legacy 'current')
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'current_input' || ch.channel_type === 'current'
-      )
-    } else if (activeTypeTab.value === 'counter') {
-      // CTR: counter and counter_input are aliases
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'counter' || ch.channel_type === 'counter_input'
-      )
-    } else if (activeTypeTab.value === 'strain') {
-      // STR: strain, strain_input, and bridge_input
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'strain' || ch.channel_type === 'strain_input' || ch.channel_type === 'bridge_input'
-      )
-    } else if (activeTypeTab.value === 'iepe') {
-      // IEPE: iepe and iepe_input are aliases
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'iepe' || ch.channel_type === 'iepe_input'
-      )
-    } else if (activeTypeTab.value === 'pulse_output') {
-      // PLS: pulse_output and frequency_input
-      channels = channels.filter(([_, ch]) =>
-        ch.channel_type === 'pulse_output' || ch.channel_type === 'frequency_input'
-      )
-    } else {
-      channels = channels.filter(([_, ch]) => ch.channel_type === activeTypeTab.value)
-    }
+    channels = channels.filter(([_, ch]) => channelMatchesType(ch, activeTypeTab.value))
   }
 
   // Filter by search
@@ -5648,7 +5656,13 @@ watch(
           v-for="tab in visibleTypeTabs"
           :key="tab.id"
           class="type-tab"
-          :class="{ active: activeTypeTab === tab.id }"
+          :data-type="tab.id"
+          :class="{
+            active: activeTypeTab === tab.id,
+            'in-use': tab.id === 'all'
+              ? Object.keys(store.channels).length > 0
+              : (typeChannelCounts[tab.id] || 0) > 0
+          }"
           @click="activeTypeTab = tab.id"
         >
           <span class="tab-icon">{{ tab.icon }}</span>
@@ -9751,6 +9765,64 @@ watch(
 
 .tab-icon {
   font-size: 1rem;
+  /* Idle (no channels of this type): desaturated + dimmed so it reads as gray,
+     for both emoji glyphs (grayscale filter) and text-symbol glyphs (color). */
+  color: var(--text-muted);
+  filter: grayscale(1);
+  opacity: 0.5;
+  transition: filter 0.2s ease, opacity 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+/* In use (≥1 configured channel): bring the icon to life — full color emoji,
+   accent-tinted symbol glyphs, and a touch of lift. Per-type overrides below
+   give certain signal types their own color. Note: selecting an empty tab does
+   NOT colorize its icon — only actual usage does. */
+.type-tab.in-use .tab-icon {
+  color: var(--color-accent-light);
+  filter: none;
+  opacity: 1;
+}
+
+.type-tab.in-use:hover .tab-icon {
+  transform: scale(1.12);
+}
+
+/* Per-type icon colors (applied only when in use). These intentionally match
+   the TYPE-badge palette below so the toolbar and table read consistently. */
+.type-tab.in-use[data-type="thermocouple"] .tab-icon {
+  color: #ef4444; /* red — thermocouple */
+}
+
+.type-tab.in-use[data-type="rtd"] .tab-icon {
+  color: #ea580c; /* orange-red — RTD (warmer than TC) */
+}
+
+.type-tab.in-use[data-type="current_input"] .tab-icon {
+  color: #eab308; /* yellow — current in (mA-IN) */
+}
+
+.type-tab.in-use[data-type="current_output"] .tab-icon {
+  color: #ca8a04; /* darker yellow — current out (mA-OUT) */
+}
+
+.type-tab.in-use[data-type="voltage_output"] .tab-icon {
+  color: #a855f7; /* purple — voltage output */
+}
+
+.type-tab.in-use[data-type="counter"] .tab-icon {
+  color: #22c55e; /* green — counter */
+}
+
+.type-tab.in-use[data-type="modbus"] .tab-icon {
+  color: #64748b; /* slate — modbus */
+}
+
+.type-tab.in-use[data-type="digital_input"] .tab-icon {
+  color: #38bdf8; /* light blue — DI */
+}
+
+.type-tab.in-use[data-type="digital_output"] .tab-icon {
+  color: #1d4ed8; /* darker blue — DO */
 }
 
 /* Actions Bar */
@@ -10065,22 +10137,27 @@ watch(
   font-weight: 700;
 }
 
-.type-badge.thermocouple { background: #1e3a8a; color: #93c5fd; }  /* Blue */
-.type-badge.rtd { background: #134e4a; color: #5eead4; }            /* Teal */
-.type-badge.voltage { background: #312e81; color: #a5b4fc; }        /* Indigo */
-.type-badge.current { background: #4c1d95; color: #c4b5fd; }        /* Violet */
-.type-badge.strain { background: #701a75; color: #f0abfc; }         /* Fuchsia */
-.type-badge.iepe { background: #831843; color: #f9a8d4; }           /* Pink */
-.type-badge.counter { background: var(--bg-surface); color: var(--text-secondary); }        /* Slate */
-.type-badge.resistance { background: #3f3f46; color: #d4d4d8; }     /* Zinc */
-.type-badge.digital_input { background: var(--indicator-success-bg); color: var(--indicator-success-text); }  /* Green */
-.type-badge.digital_output { background: #064e3b; color: #6ee7b7; } /* Emerald */
-.type-badge.voltage_output { background: #0c4a6e; color: #7dd3fc; } /* Sky */
-.type-badge.current_output { background: #3b0764; color: #d8b4fe; } /* Purple */
-.type-badge.analog_output { background: #0c4a6e; color: #7dd3fc; }  /* Sky (legacy) */
-.type-badge.analog_input { background: #312e81; color: #a5b4fc; }   /* Indigo (same as voltage) */
-.type-badge.voltage_input { background: #312e81; color: #a5b4fc; }  /* Indigo (same as voltage) */
-.type-badge.current_input { background: #4c1d95; color: #c4b5fd; }  /* Violet (same as current) */
+/* Single source of truth for TYPE badge colors. Palette is aligned with the
+   toolbar type-tab icon colors so the table and toolbar read consistently.
+   Warm/light backgrounds (yellow, green) use dark text for legibility. */
+.type-badge.thermocouple { background: #ef4444; color: #fff; }             /* Red — TC */
+.type-badge.rtd { background: #ea580c; color: #fff; }                      /* Orange-red — RTD (warmer than TC) */
+.type-badge.voltage { background: #4f46e5; color: var(--text-primary); }   /* Indigo — V-IN */
+.type-badge.voltage_input { background: #4f46e5; color: var(--text-primary); }  /* Indigo (same as voltage) */
+.type-badge.analog_input { background: #4f46e5; color: var(--text-primary); }   /* Indigo (legacy = V-IN) */
+.type-badge.current { background: #eab308; color: #1c1917; }               /* Yellow — mA-IN */
+.type-badge.current_input { background: #eab308; color: #1c1917; }         /* Yellow (same as current) */
+.type-badge.current_output { background: #ca8a04; color: #1c1917; }        /* Darker yellow — mA-OUT */
+.type-badge.voltage_output { background: #a855f7; color: #fff; }           /* Purple — V-OUT */
+.type-badge.analog_output { background: #a855f7; color: #fff; }            /* Purple (legacy = V-OUT) */
+.type-badge.counter { background: #22c55e; color: #1c1917; }               /* Green — CTR */
+.type-badge.modbus_register { background: #64748b; color: #fff; }          /* Slate — Modbus */
+.type-badge.modbus_coil { background: #64748b; color: #fff; }              /* Slate — Modbus */
+.type-badge.strain { background: #c026d3; color: var(--text-primary); }    /* Fuchsia — STR */
+.type-badge.iepe { background: #db2777; color: var(--text-primary); }      /* Pink — IEPE */
+.type-badge.digital_input { background: #38bdf8; color: #1c1917; }         /* Light blue — DI */
+.type-badge.digital_output { background: #1d4ed8; color: #fff; }           /* Darker blue — DO */
+.type-badge.resistance { background: #3f3f46; color: #d4d4d8; }            /* Zinc — resistance */
 
 /* Numeric column centering (ALL tab) */
 .channel-table td.col-numeric {
@@ -11625,23 +11702,6 @@ input[type="checkbox"] {
   height: 14px;
   flex-shrink: 0;
 }
-
-/* Type badge colors by category */
-.type-badge.thermocouple { background: var(--color-accent-dark); color: var(--text-primary); }     /* Blue */
-.type-badge.rtd { background: #0d9488; color: var(--text-primary); }              /* Teal */
-.type-badge.voltage { background: #4f46e5; color: var(--text-primary); }          /* Indigo */
-.type-badge.current { background: #7c3aed; color: var(--text-primary); }          /* Violet */
-.type-badge.strain { background: #c026d3; color: var(--text-primary); }           /* Fuchsia */
-.type-badge.iepe { background: #db2777; color: var(--text-primary); }             /* Pink */
-.type-badge.digital_input { background: #16a34a; color: var(--text-primary); }    /* Green */
-.type-badge.digital_output { background: #059669; color: var(--text-primary); }   /* Emerald */
-.type-badge.voltage_output { background: #0284c7; color: var(--text-primary); }   /* Sky */
-.type-badge.current_output { background: #9333ea; color: var(--text-primary); }   /* Purple */
-.type-badge.analog_output { background: #0284c7; color: var(--text-primary); }    /* Sky (legacy) */
-.type-badge.counter { background: #475569; color: var(--text-primary); }          /* Slate */
-.type-badge.analog_input { background: #4f46e5; color: var(--text-primary); }     /* Indigo (same as voltage) */
-.type-badge.voltage_input { background: #4f46e5; color: var(--text-primary); }    /* Indigo (same as voltage) */
-.type-badge.current_input { background: #7c3aed; color: var(--text-primary); }    /* Violet (same as current) */
 
 /* Toolbar separator */
 .discovery-actions .separator {

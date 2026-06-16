@@ -318,8 +318,9 @@ watch(() => mqtt.chassisConfigs.value, () => {
           Address Changer
         </button>
         <button
-          v-if="editMode"
           class="add-btn"
+          :disabled="!editMode"
+          :title="editMode ? 'Add a Modbus device' : 'Enable Editing to add a device'"
           @click="openAddDevice"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -667,6 +668,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 1rem;
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--border-color);
@@ -678,6 +680,7 @@ watch(() => mqtt.chassisConfigs.value, () => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  white-space: nowrap;
 }
 
 .section-header .icon {
@@ -720,8 +723,15 @@ watch(() => mqtt.chassisConfigs.value, () => {
   font-size: 0.8rem;
 }
 
-.add-btn:hover {
+.add-btn:hover:not(:disabled) {
   background: var(--color-accent-dark);
+}
+
+.add-btn:disabled {
+  background: var(--color-border, #ccc);
+  color: var(--color-text-muted, #888);
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .feedback {
