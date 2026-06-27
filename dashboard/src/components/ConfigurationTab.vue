@@ -2003,7 +2003,7 @@ function terminalConfigForDisplay(channelType: string | undefined, physicalChann
   // 'rse' but the option value is 'RSE') and return the option's EXACT value so
   // the <select> highlights it instead of going blank.
   const match = allowed.find(t => t.value.toLowerCase() === String(current || '').toLowerCase())
-  return match ? match.value : allowed[0].value
+  return match ? match.value : (allowed[0]?.value ?? 'differential')
 }
 
 // Best-effort module type for a channel, in priority order: the backend-supplied
