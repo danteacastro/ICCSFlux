@@ -280,7 +280,7 @@ class ChannelConfig:
     cjc_source: str = "internal"
     cjc_value: float = 25.0          # Constant CJC temperature in °C (when cjc_source='constant')
     open_detect: bool = True         # Open thermocouple detection (default: enabled)
-    auto_zero: bool = False          # Auto-zero for improved accuracy
+    auto_zero: bool = False          # Auto-zero (off by default — unsupported on NI 9208/9212; opt-in per channel)
 
     # RTD specific
     rtd_type: str = "Pt100"          # Pt100, Pt500, Pt1000, custom

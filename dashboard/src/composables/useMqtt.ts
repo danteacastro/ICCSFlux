@@ -45,6 +45,7 @@ interface MqttBatchChannelPayload {
   alarm?: string[] // channels over limit (DAQ service only)
   warn?: string[]  // channels over warning threshold (DAQ service only)
   stale?: string[] // channels with stale values (cRIO only)
+  open?: string[]  // open thermocouples — shown as "OPEN" (DAQ service only)
 }
 
 /** System status payload from backend — partial SystemStatus with extra node fields */
@@ -966,6 +967,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     const alarmSet = new Set(payload.alarm || [])
     const warnSet = new Set(payload.warn || [])
     const staleSet = new Set(payload.stale || [])
+    const openSet = new Set(payload.open || [])
 
     // Use cached reverse lookup (rebuilt only when channelConfigs changes, not every batch)
     const physicalToTag = physicalToTagCache.value
@@ -998,6 +1000,8 @@ export function useMqtt(prefix: string = 'nisystem') {
           ? 'stale'
           : 'good'
 
+      const isOpenTc = openSet.has(rawName)
+
       const cv: ChannelValue = {
         name: channelName,
         value: scaledValue,
@@ -1006,6 +1010,11 @@ export function useMqtt(prefix: string = 'nisystem') {
         warning: warnSet.has(rawName),
         quality,
         disconnected: isDisconnected,
+        // Open thermocouple: distinct from a generic disconnect so the UI shows
+        // "OPEN" instead of "NaN" (status is checked before quality in getCurrentValue).
+        openThermocouple: isOpenTc || undefined,
+        status: isOpenTc ? 'open_thermocouple' : undefined,
+        valueString: isOpenTc ? 'OPEN' : undefined,
         nodeId: effectiveNodeId
       }
 
@@ -1165,6 +1174,8 @@ export function useMqtt(prefix: string = 'nisystem') {
           thermocouple_type: ch.thermocouple_type,
           cjc_source: ch.cjc_source,
           cjc_value: ch.cjc_value,
+          open_detect: ch.open_detect,
+          auto_zero: ch.auto_zero,
           // RTD-specific
           rtd_type: ch.rtd_type,
           rtd_wiring: ch.rtd_wiring,
@@ -1222,6 +1233,9 @@ export function useMqtt(prefix: string = 'nisystem') {
           chassis_name: ch.hardware_source_display || ch.chassis_name || '',
           // Module/chassis ref — for Modbus channels this is the device (chassis) name
           module: ch.module,
+          // NI module model (e.g. "NI 9207") — lets the UI limit options (DIFF-only
+          // modules, etc.) without a live discovery scan.
+          module_type: ch.module_type,
         }
       })
     }

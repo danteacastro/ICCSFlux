@@ -461,12 +461,15 @@ class _TaskReader:
                 # Apply per-channel transforms in place — both the
                 # dashboard cache (last sample) and the chunk emission
                 # (full chunk) consume the transformed buffer.
+                open_tc_now = {}  # name -> bool (TC channels only): is the LAST sample open?
                 for i, name in enumerate(tg.channel_names):
                     ch_type = tg.channel_types.get(name, tg.channel_type)
                     if ch_type == ChannelType.CURRENT_INPUT:
                         buffer[i, :] *= 1000.0
                     elif ch_type == ChannelType.THERMOCOUPLE:
                         mask = np.abs(buffer[i, :]) > 1e9
+                        # latest_values uses the last sample, so flag open on that sample.
+                        open_tc_now[name] = bool(mask[-1]) if mask.size else False
                         if mask.any():
                             if name not in parent._logged_open_tc:
                                 raw_sample = float(buffer[i, mask][0])
@@ -481,6 +484,11 @@ class _TaskReader:
                     for i, name in enumerate(tg.channel_names):
                         parent.latest_values[name] = float(buffer[i, -1])
                         parent.value_timestamps[name] = now
+                        if name in open_tc_now:
+                            if open_tc_now[name]:
+                                parent.open_tc_channels.add(name)
+                            else:
+                                parent.open_tc_channels.discard(name)
 
                 # Signal first-sample event (per-task and parent-wide).
                 self.first_sample_event.set()
@@ -549,6 +557,7 @@ class _TaskReader:
                 with parent.lock:
                     for name in tg.channel_names:
                         parent.latest_values[name] = float('nan')
+                        parent.open_tc_channels.discard(name)  # read error != open TC
 
                 # Per-task recovery: on a sustained error burst, restart
                 # THIS task only (don't touch siblings).
@@ -748,6 +757,11 @@ class _SlowPollThread:
                 for name, task in parent.counter_tasks.items():
                     try:
                         value = task.read(timeout=0.1)
+                        # Counters are grouped one task per module: a multi-counter
+                        # task's on-demand read() returns a list — pick this
+                        # channel's slot.
+                        if isinstance(value, list):
+                            value = value[parent._counter_channel_index.get(name, 0)]
                         actual_mode = getattr(parent, '_counter_actual_mode', {}).get(name)
                         channel = parent.config.channels.get(name)
                         mode = actual_mode or (channel.counter_mode if channel else "count")
@@ -829,7 +843,9 @@ class HardwareReader:
 
         self.tasks: Dict[str, TaskGroup] = {}  # task_name -> TaskGroup
         self.output_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
-        self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task
+        self.counter_tasks: Dict[str, Any] = {}  # channel_name -> nidaqmx.Task (shared per module)
+        self._counter_channel_index: Dict[str, int] = {}  # channel_name -> index within its shared task's read() list
+        self._counter_actual_mode: Dict[str, str] = {}  # channel_name -> mode actually configured (may differ after fallback)
         self._counter_rollover: Dict[str, Dict] = {}  # rollover tracking for edge count mode
         self._momentary_timers: Dict[str, threading.Timer] = {}  # Relay momentary pulse timers
 
@@ -873,6 +889,11 @@ class HardwareReader:
         self._slow_poll_thread: Optional[_SlowPollThread] = None
         self._error_callback: Optional[callable] = None  # Callback when reader dies
         self._logged_open_tc: set = set()  # Channels with open TC already logged (rate-limit warnings)
+        # Channels whose latest sample is an open thermocouple. The sentinel is
+        # masked to NaN before downstream sees it, so a generic NaN can't be told
+        # apart from a disconnect — this set carries the open/disconnect distinction
+        # through to the publisher so the dashboard can show "OPEN". Guarded by self.lock.
+        self.open_tc_channels: set = set()
 
         # Software watchdog for output safety
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -1054,7 +1075,9 @@ class HardwareReader:
             except Exception:
                 pass
         self.output_tasks.clear()
-        for t in list(self.counter_tasks.values()):
+        # Counter tasks are shared per module (multiple channel names -> one task),
+        # so close each unique task object once.
+        for t in {id(x): x for x in self.counter_tasks.values()}.values():
             try:
                 t.stop()
             except Exception:
@@ -1064,6 +1087,8 @@ class HardwareReader:
             except Exception:
                 pass
         self.counter_tasks.clear()
+        self._counter_channel_index.clear()
+        self._counter_actual_mode.clear()
 
     def _create_tasks(self):
         """
@@ -1143,7 +1168,16 @@ class HardwareReader:
                 module_channels[module_key] = []
             module_channels[module_key].append(channel)
 
-        # Create tasks for each module
+        # Analog inputs are grouped by module TYPE (ADC family) and combined into
+        # ONE task per type — identical modules (e.g. two NI 9212s) share a single
+        # hardware-timed task. cDAQ Gen II (STC3) allows only 3 concurrent
+        # hardware-timed AI tasks chassis-wide; one task per physical module blows
+        # that budget once the chassis is populated (counter + 3 AI = 4 -> -200022).
+        # Grouping by type is conservative: only IDENTICAL modules merge, which
+        # DAQmx always allows (same ADC timing). Other I/O stays per-module.
+        analog_groups: Dict[str, List[ChannelConfig]] = {}
+        analog_group_label: Dict[str, str] = {}  # group key -> task-name label
+
         for module_name, channels in module_channels.items():
             # For direct-path modules, skip the module config check
             if module_name not in direct_path_modules:
@@ -1163,12 +1197,19 @@ class HardwareReader:
             pulse_out_channels = [c for c in channels if c.channel_type in (
                 ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT)]
 
-            # Create ONE continuous task for ALL analog inputs on this module
+            # Accumulate analog inputs into a per-module-TYPE group so identical
+            # modules combine into one task. Unknown module type -> key on the
+            # module name so it still gets its own task (never merged wrongly).
             if analog_channels:
-                try:
-                    self._create_combined_analog_task(module_name, analog_channels)
-                except Exception as e:
-                    logger.error(f"Failed to create analog task for {module_name}: {e}")
+                mod_type = self._lookup_module_type(module_name)
+                if mod_type:
+                    group_key = f"type:{mod_type}"
+                    label = str(mod_type).replace(' ', '_').replace('/', '_')
+                else:
+                    group_key = f"mod:{module_name}"
+                    label = str(module_name)
+                analog_groups.setdefault(group_key, []).extend(analog_channels)
+                analog_group_label.setdefault(group_key, label)
 
             # Digital inputs (not continuous, separate task OK)
             if digital_in_channels:
@@ -1190,13 +1231,25 @@ class HardwareReader:
             if current_out_channels:
                 self._create_current_output_tasks(current_out_channels)
 
-            # Counters (individual tasks per channel)
+            # Counters (grouped per device inside _create_counter_tasks)
             if counter_channels:
                 self._create_counter_tasks(counter_channels)
 
             # Pulse/counter outputs (individual tasks per channel)
             if pulse_out_channels:
                 self._create_pulse_output_tasks(pulse_out_channels)
+
+        # Create ONE combined analog task per module-type group. Identical modules
+        # (e.g. two NI 9212s) now share a single task, so a fully-populated chassis
+        # stays within the 3 hardware-timed AI task limit.
+        for group_key, group_channels in analog_groups.items():
+            label = analog_group_label.get(group_key, group_key)
+            try:
+                self._create_combined_analog_task(label, group_channels)
+                logger.info(f"Combined analog task '{label}_analog': {len(group_channels)} "
+                            f"channel(s) across module type group {group_key}")
+            except Exception as e:
+                logger.error(f"Failed to create combined analog task for {label}: {e}")
 
     def _create_combined_analog_task(self, module_name: str, channels: List[ChannelConfig]):
         """
@@ -2115,186 +2168,215 @@ class HardwareReader:
             except Exception as e:
                 logger.error(f"Failed to create current output task for {channel.name}: {e}")
 
+    def _add_counter_channel(self, task, channel, phys_chan) -> str:
+        """Add ONE counter-input channel to an existing `task`; return the mode used.
+
+        Unlike the old per-channel path, this never recreates the task on a
+        frequency/period failure (the task is shared by the module's other
+        counters) — it falls back to edge counting on the SAME task instead.
+        """
+        min_freq = channel.counter_min_freq
+        max_freq = channel.counter_max_freq
+        min_period = 1.0 / max_freq if max_freq > 0 else 0.001
+        max_period = 1.0 / min_freq if min_freq > 0 else 10.0
+        edge = Edge.RISING if channel.counter_edge == "rising" else Edge.FALLING
+
+        counter_mode = channel.counter_mode
+        if counter_mode in ("count_edges", "edge_count"):
+            counter_mode = "count"
+
+        def _add_count():
+            task.ci_channels.add_ci_count_edges_chan(
+                phys_chan, name_to_assign_to_channel=channel.name,
+                edge=edge, initial_count=0, count_direction=CountDirection.COUNT_UP)
+
+        if counter_mode == "frequency":
+            try:
+                task.ci_channels.add_ci_freq_chan(
+                    phys_chan, name_to_assign_to_channel=channel.name,
+                    min_val=min_freq, max_val=max_freq, units=FrequencyUnits.HZ, edge=edge)
+                actual_mode = "frequency"
+            except Exception as freq_err:
+                logger.warning(f"Counter {channel.name}: frequency mode not supported "
+                               f"({freq_err}), falling back to edge count mode")
+                _add_count()
+                actual_mode = "count"
+        elif counter_mode == "period":
+            try:
+                task.ci_channels.add_ci_period_chan(
+                    phys_chan, name_to_assign_to_channel=channel.name,
+                    min_val=min_period, max_val=max_period, edge=edge)
+                actual_mode = "period"
+            except Exception as period_err:
+                logger.warning(f"Counter {channel.name}: period mode not supported "
+                               f"({period_err}), falling back to edge count mode")
+                _add_count()
+                actual_mode = "count"
+        else:
+            if counter_mode != "count":
+                logger.warning(f"Counter {channel.name}: unknown mode '{counter_mode}', "
+                               f"defaulting to edge count")
+            _add_count()
+            actual_mode = "count"
+
+        # NOTE: input conditioning (threshold/pull-up/terminal) is applied by the
+        # caller AFTER all of a module's counters are added, because the NI 9361
+        # requires a single consistent threshold voltage across the whole module.
+        return actual_mode
+
+    def _apply_counter_conditioning(self, task, channel, actual_mode: str):
+        """Apply NI 9361 per-channel input conditioning (pull-up / terminal).
+
+        Best-effort — silently skips properties the module doesn't expose.
+        The comparator THRESHOLD is intentionally NOT set here: the NI 9361 needs
+        one threshold for the whole module (RSE), so the caller sets it once via
+        _set_module_threshold() (a single collection-level write) — setting it
+        per-channel leaves a transient mismatch that trips -209807.
+        """
+        try:
+            ci_chan = task.ci_channels[channel.name]
+            pullup = bool(getattr(channel, 'pullup_enabled', False))
+            # Internal pull-up: the property is mode-specific (count_edges / freq /
+            # period each have their own); only the active one exists on ci_chan.
+            pullup_val = LogicLvlBehavior.PULL_UP if pullup else LogicLvlBehavior.NONE
+            pullup_applied = False
+            for prop_name in ('ci_count_edges_logic_lvl_behavior',
+                              'ci_freq_logic_lvl_behavior',
+                              'ci_period_logic_lvl_behavior'):
+                if hasattr(ci_chan, prop_name):
+                    try:
+                        setattr(ci_chan, prop_name, pullup_val)
+                        pullup_applied = True
+                        logger.debug(f"Counter {channel.name}: set {prop_name}={pullup_val}")
+                        break
+                    except Exception as set_err:
+                        logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
+                        continue
+            if not pullup_applied:
+                logger.debug(f"Counter {channel.name}: no logic_lvl_behavior property available for mode={actual_mode}")
+
+            # Terminal configuration: CI channels accept RSE or DIFF (mode-specific).
+            term_str = (getattr(channel, 'terminal_config', 'rse') or 'rse').strip().lower()
+            term_val = TerminalConfiguration.RSE if term_str == 'rse' else TerminalConfiguration.DIFF
+            term_applied = False
+            for prop_name in ('ci_count_edges_term_cfg',
+                              'ci_freq_term_cfg',
+                              'ci_period_term_cfg'):
+                if hasattr(ci_chan, prop_name):
+                    try:
+                        setattr(ci_chan, prop_name, term_val)
+                        term_applied = True
+                        logger.debug(f"Counter {channel.name}: set {prop_name}={term_val}")
+                        break
+                    except Exception as set_err:
+                        logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
+                        continue
+            if not term_applied:
+                logger.debug(f"Counter {channel.name}: no term_cfg property available for mode={actual_mode}")
+
+            logger.info(f"Counter {channel.name}: pullup={pullup}, term={term_val.name}")
+        except Exception as cond_err:
+            logger.debug(f"Counter {channel.name}: input conditioning not applied ({cond_err})")
+
+    def _set_module_threshold(self, task, value: float):
+        """Set the comparator threshold uniformly across ALL counters in `task`.
+
+        The NI 9361 requires one threshold for the whole module (RSE). Writing it
+        on the channel COLLECTION applies to every counter in a single DAQmx call,
+        which avoids the transient per-channel mismatch that trips -209807. Falls
+        back to writing each channel object directly if the collection doesn't
+        expose the property. Lets exceptions propagate so the caller surfaces a
+        genuine failure (we never silently drop the operator's threshold).
+        """
+        try:
+            # One atomic write across all CI channels in the task.
+            task.ci_channels.ci_thresh_voltage = value
+            logger.info(f"Counter threshold set to {value}V for all counters (collection-level)")
+            return
+        except Exception as coll_err:
+            logger.debug(f"Collection-level threshold set failed ({coll_err}); writing per-channel")
+        applied = 0
+        for ci in task.ci_channels:
+            if hasattr(ci, 'ci_thresh_voltage'):
+                ci.ci_thresh_voltage = value
+                applied += 1
+        logger.info(f"Counter threshold set to {value}V for {applied} counter(s) (per-channel)")
+
     def _create_counter_tasks(self, channels: List[ChannelConfig]):
-        """Create counter/frequency input tasks"""
+        """Create counter/frequency input tasks — ONE TASK PER MODULE.
+
+        Modules like the NI 9361 reserve the whole module on first counter use, so
+        a separate task per counter makes every counter after the first fail with
+        -50103 ("resource reserved"). Grouping all of a device's counters into a
+        single task lets them coexist. An on-demand read() of a multi-counter task
+        returns a list, which the read loops index via self._counter_channel_index.
+        """
+        # Group channels by device (the prefix before "/ctrN"), preserving order.
+        groups: Dict[str, List] = {}
         for channel in channels:
             try:
                 phys_chan = self._get_physical_channel_path(channel)
-                task = _safe_create_task(f"CTR_{channel.name}")
+            except Exception as e:
+                logger.error(f"Failed to resolve physical channel for {channel.name}: {e}")
+                continue
+            device = phys_chan.split('/')[0]
+            groups.setdefault(device, []).append((channel, phys_chan))
 
-                # Use configured min/max frequency from channel config
-                min_freq = channel.counter_min_freq  # Default 0.1 Hz
-                max_freq = channel.counter_max_freq  # Default 1000.0 Hz
+        logger.info(f"Creating counter tasks: {len(channels)} channel(s) across "
+                    f"{len(groups)} module group(s) [grouped-per-module, uniform-threshold]")
 
-                # Convert frequency to period for period mode
-                min_period = 1.0 / max_freq if max_freq > 0 else 0.001
-                max_period = 1.0 / min_freq if min_freq > 0 else 10.0
+        for device, group in groups.items():
+            # NI 9361 uses ONE threshold for the whole module (RSE). Resolve the
+            # module threshold so "change one counter -> change them all" holds: if
+            # any counter was given a non-default threshold, that value wins for the
+            # whole module; otherwise use the common value.
+            thresholds = [max(1.0, min(4.0, getattr(ch, 'voltage_threshold', 1.5))) for ch, _ in group]
+            if len({round(t, 6) for t in thresholds}) <= 1:
+                module_threshold = thresholds[0] if thresholds else 1.5
+            else:
+                non_default = [t for t in thresholds if abs(t - 1.5) > 1e-6]
+                module_threshold = non_default[0] if non_default else thresholds[0]
+                logger.warning(f"{device}: counters have differing thresholds {thresholds}; "
+                               f"the NI 9361 uses one per module — applying {module_threshold}V to all.")
 
-                edge = Edge.RISING if channel.counter_edge == "rising" else Edge.FALLING
-
-                # Normalize mode — frontend may send 'count_edges' for 'count'
-                counter_mode = channel.counter_mode
-                if counter_mode in ("count_edges", "edge_count"):
-                    counter_mode = "count"
-                actual_mode = counter_mode
-
-                if counter_mode == "frequency":
-                    # Frequency measurement - try default, then DynAvg, then fall back to count
+            task = None
+            try:
+                task = _safe_create_task(f"CTR_{device}")
+                added = []
+                for channel, phys_chan in group:
                     try:
-                        task.ci_channels.add_ci_freq_chan(
-                            phys_chan,
-                            name_to_assign_to_channel=channel.name,
-                            min_val=min_freq,
-                            max_val=max_freq,
-                            units=FrequencyUnits.HZ,
-                            edge=edge
-                        )
-                    except Exception:
-                        task.close()
-                        task = _safe_create_task(f"CTR_{channel.name}")
-                        try:
-                            task.ci_channels.add_ci_freq_chan(
-                                phys_chan,
-                                name_to_assign_to_channel=channel.name,
-                                min_val=min_freq,
-                                max_val=max_freq,
-                                units=FrequencyUnits.HZ,
-                                edge=edge,
-                                meas_method=CounterFrequencyMethod.DYNAMIC_AVERAGING
-                            )
-                            logger.info(f"Counter {channel.name}: using DynAvg measurement method")
-                        except Exception as freq_err:
-                            # Frequency not supported (common on simulated devices) — fall back to edge counting
-                            logger.warning(f"Counter {channel.name}: frequency mode not supported ({freq_err}), "
-                                         f"falling back to edge count mode")
-                            task.close()
-                            task = _safe_create_task(f"CTR_{channel.name}")
-                            task.ci_channels.add_ci_count_edges_chan(
-                                phys_chan,
-                                name_to_assign_to_channel=channel.name,
-                                edge=edge,
-                                initial_count=0,
-                                count_direction=CountDirection.COUNT_UP
-                            )
-                            actual_mode = "count"
-                elif counter_mode == "count":
-                    # Edge counting
-                    task.ci_channels.add_ci_count_edges_chan(
-                        phys_chan,
-                        name_to_assign_to_channel=channel.name,
-                        edge=edge,
-                        initial_count=0,
-                        count_direction=CountDirection.COUNT_UP
-                    )
-                elif counter_mode == "period":
-                    # Period measurement — fall back to count if unsupported
-                    try:
-                        task.ci_channels.add_ci_period_chan(
-                            phys_chan,
-                            name_to_assign_to_channel=channel.name,
-                            min_val=min_period,
-                            max_val=max_period,
-                            edge=edge
-                        )
-                    except Exception as period_err:
-                        logger.warning(f"Counter {channel.name}: period mode not supported ({period_err}), "
-                                     f"falling back to edge count mode")
-                        task.close()
-                        task = _safe_create_task(f"CTR_{channel.name}")
-                        task.ci_channels.add_ci_count_edges_chan(
-                            phys_chan,
-                            name_to_assign_to_channel=channel.name,
-                            edge=edge,
-                            initial_count=0,
-                            count_direction=CountDirection.COUNT_UP
-                        )
-                        actual_mode = "count"
-                else:
-                    # Unknown mode — default to edge counting
-                    logger.warning(f"Counter {channel.name}: unknown mode '{counter_mode}', defaulting to edge count")
-                    task.ci_channels.add_ci_count_edges_chan(
-                        phys_chan,
-                        name_to_assign_to_channel=channel.name,
-                        edge=edge,
-                        initial_count=0,
-                        count_direction=CountDirection.COUNT_UP
-                    )
-                    actual_mode = "count"
-
-                # Apply NI 9361 input conditioning (pull-up + threshold). These
-                # are channel properties exposed by DAQmx after the channel is
-                # added to the task. Best-effort: silently skip if the property
-                # isn't available on this module (older NI modules, simulators,
-                # etc.) — the channel still works at the module's default level.
-                try:
-                    ci_chan = task.ci_channels[channel.name]
-                    threshold_v = max(1.0, min(4.0, getattr(channel, 'voltage_threshold', 1.5)))
-                    pullup = bool(getattr(channel, 'pullup_enabled', False))
-                    # NI 9361 / 9421 / 9423 logic-level threshold
-                    if hasattr(ci_chan, 'ci_thresh_voltage'):
-                        ci_chan.ci_thresh_voltage = threshold_v
-                    # Internal pull-up resistor: DAQmx exposes the setting per
-                    # CI channel type — count_edges, freq, and period each have
-                    # their own `..._logic_lvl_behavior` property. We only added
-                    # one CI channel above (the active mode), so only one of
-                    # these attrs will exist on `ci_chan`; the others get
-                    # skipped silently. PULL_UP = enabled, NONE = disabled.
-                    pullup_val = LogicLvlBehavior.PULL_UP if pullup else LogicLvlBehavior.NONE
-                    pullup_applied = False
-                    for prop_name in ('ci_count_edges_logic_lvl_behavior',
-                                      'ci_freq_logic_lvl_behavior',
-                                      'ci_period_logic_lvl_behavior'):
-                        if hasattr(ci_chan, prop_name):
-                            try:
-                                setattr(ci_chan, prop_name, pullup_val)
-                                pullup_applied = True
-                                logger.debug(f"Counter {channel.name}: set {prop_name}={pullup_val}")
-                                break
-                            except Exception as set_err:
-                                logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
-                                continue
-                    if not pullup_applied:
-                        logger.debug(f"Counter {channel.name}: no logic_lvl_behavior property available for mode={actual_mode}")
-
-                    # Terminal configuration: CI channels accept RSE or DIFF.
-                    # Property is mode-specific like logic_lvl_behavior above.
-                    term_str = (getattr(channel, 'terminal_config', 'rse') or 'rse').strip().lower()
-                    term_val = TerminalConfiguration.RSE if term_str == 'rse' else TerminalConfiguration.DIFF
-                    term_applied = False
-                    for prop_name in ('ci_count_edges_term_cfg',
-                                      'ci_freq_term_cfg',
-                                      'ci_period_term_cfg'):
-                        if hasattr(ci_chan, prop_name):
-                            try:
-                                setattr(ci_chan, prop_name, term_val)
-                                term_applied = True
-                                logger.debug(f"Counter {channel.name}: set {prop_name}={term_val}")
-                                break
-                            except Exception as set_err:
-                                logger.debug(f"Counter {channel.name}: {prop_name} not writable ({set_err})")
-                                continue
-                    if not term_applied:
-                        logger.debug(f"Counter {channel.name}: no term_cfg property available for mode={actual_mode}")
-
-                    logger.info(f"Counter {channel.name}: threshold={threshold_v}V, pullup={pullup}, term={term_val.name}")
-                except Exception as cond_err:
-                    # Don't fail task creation if the module doesn't expose
-                    # these properties — fall back to hardware defaults.
-                    logger.debug(f"Counter {channel.name}: input conditioning not applied ({cond_err})")
-
-                # Start the task — required before read() will return valid data
+                        actual_mode = self._add_counter_channel(task, channel, phys_chan)
+                        added.append((channel, actual_mode))
+                    except Exception as ch_err:
+                        logger.error(f"Failed to add counter {channel.name} to {device} task: {ch_err}")
+                if not added:
+                    task.close()
+                    continue
+                # Per-channel pull-up / terminal config.
+                for channel, actual_mode in added:
+                    self._apply_counter_conditioning(task, channel, actual_mode)
+                # Threshold: ONE operator-controlled value for the whole module,
+                # written in a single collection-level call (no -209807 mismatch).
+                self._set_module_threshold(task, module_threshold)
                 task.start()
-
-                self.counter_tasks[channel.name] = task
-                # Track actual mode for correct read-time processing (may differ from config after fallback)
-                if not hasattr(self, '_counter_actual_mode'):
-                    self._counter_actual_mode = {}
-                self._counter_actual_mode[channel.name] = actual_mode
-                logger.info(f"Added counter channel: {channel.name} -> {phys_chan} "
-                           f"(mode={actual_mode}, freq={min_freq}-{max_freq}Hz)")
+                for idx, (channel, actual_mode) in enumerate(added):
+                    self.counter_tasks[channel.name] = task
+                    self._counter_channel_index[channel.name] = idx
+                    self._counter_actual_mode[channel.name] = actual_mode
+                    logger.info(f"Added counter channel: {channel.name} "
+                               f"(mode={actual_mode}, task=CTR_{device}, idx={idx}, "
+                               f"threshold={module_threshold}V)")
 
             except Exception as e:
-                logger.error(f"Failed to create counter task for {channel.name}: {e}")
+                logger.error(f"Failed to create counter task for device {device}: {e}")
+                # Close the failed task so it can't keep its hardware resources
+                # reserved — an orphaned failed task blocks later tasks AND can
+                # corrupt reads on other modules sharing the chassis.
+                if task is not None:
+                    try:
+                        task.close()
+                    except Exception:
+                        pass
 
     def _create_pulse_output_tasks(self, channels: List[ChannelConfig]):
         """Create pulse/counter output tasks (one per channel)."""
@@ -2362,12 +2444,12 @@ class HardwareReader:
                     logger.error(f"Failed to start task {task_name}: {e}")
 
         if failed_tasks:
-            # Roll back: stop tasks we already started so we leave the system clean
-            for task_name in started_tasks:
-                try:
-                    self.tasks[task_name].task.stop()
-                except Exception:
-                    pass
+            # Roll back: CLOSE every task we built (AI continuous + counter +
+            # output), not just stop() the started ones. stop() leaves the DAQmx
+            # resources RESERVED, so the chassis stays locked and the next start
+            # attempt fails too (and the tasks leak — the DaqResourceWarning).
+            # close() releases the reservations so acquisition can be retried.
+            self._close_all_tasks_silently()
             failures = "; ".join(f"{n}: {e}" for n, e in failed_tasks)
             raise RuntimeError(
                 f"Hardware acquisition failed to start — {len(failed_tasks)} "
@@ -2646,6 +2728,7 @@ class HardwareReader:
                             # the chunk callback (full chunk, for hw-rate recording)
                             # consume the transformed buffer, so they stay in sync
                             # without duplicating transform logic.
+                            open_tc_now = {}  # name -> bool (TC channels only): is the LAST sample open?
                             for i, name in enumerate(task_group.channel_names):
                                 ch_type = task_group.channel_types.get(name, task_group.channel_type)
                                 if ch_type == ChannelType.CURRENT_INPUT:
@@ -2657,6 +2740,8 @@ class HardwareReader:
                                     # (typically ~-1e10). Replace with NaN so the
                                     # dashboard shows "OPEN"/"--" instead of -1e10.
                                     mask = np.abs(buffer[i, :]) > 1e9
+                                    # latest_values uses the last sample, so flag open on that sample.
+                                    open_tc_now[name] = bool(mask[-1]) if mask.size else False
                                     if mask.any():
                                         if name not in self._logged_open_tc:
                                             raw_sample = float(buffer[i, mask][0])
@@ -2669,6 +2754,11 @@ class HardwareReader:
                                 for i, name in enumerate(task_group.channel_names):
                                     self.latest_values[name] = float(buffer[i, -1])
                                     self.value_timestamps[name] = now
+                                    if name in open_tc_now:
+                                        if open_tc_now[name]:
+                                            self.open_tc_channels.add(name)
+                                        else:
+                                            self.open_tc_channels.discard(name)
 
                             self._error_count = 0  # Reset error count on success
                             # Signal first-sample event so _start_continuous_acquisition()
@@ -2767,6 +2857,10 @@ class HardwareReader:
                 for name, task in self.counter_tasks.items():
                     try:
                         value = task.read(timeout=0.1)
+                        # Counters are grouped one task per module: a multi-counter
+                        # task's on-demand read() returns a list — pick this slot.
+                        if isinstance(value, list):
+                            value = value[self._counter_channel_index.get(name, 0)]
                         # Use actual mode (may differ from config after fallback on simulated devices)
                         actual_mode = getattr(self, '_counter_actual_mode', {}).get(name)
                         channel = self.config.channels.get(name)
@@ -3001,6 +3095,16 @@ class HardwareReader:
         """Read a single channel value (returns cached value)"""
         with self.lock:
             return self.latest_values.get(channel_name)
+
+    def get_open_tc_channels(self) -> set:
+        """Snapshot of channels whose latest sample is an open thermocouple.
+
+        Lets the publisher distinguish an open TC (show "OPEN") from a generic
+        NaN/disconnect — the open-TC sentinel is masked to NaN upstream, so the
+        value alone no longer carries that information.
+        """
+        with self.lock:
+            return set(self.open_tc_channels)
 
     def read_all(self) -> Dict[str, float]:
         """
@@ -3292,18 +3396,20 @@ class HardwareReader:
                     logger.error(f"Error closing output task {name}: {e}")
             self.output_tasks.clear()
 
-            # Close counter tasks
-            for name, task in self.counter_tasks.items():
+            # Close counter tasks. They're shared per module (multiple channel
+            # names map to one task), so close each unique task object once.
+            for task in {id(t): t for t in self.counter_tasks.values()}.values():
                 try:
                     task.stop()
                 except Exception:
                     pass
                 try:
                     task.close()
-                    logger.debug(f"Closed counter task: {name}")
                 except Exception as e:
-                    logger.error(f"Error closing counter task {name}: {e}")
+                    logger.error(f"Error closing counter task: {e}")
             self.counter_tasks.clear()
+            self._counter_channel_index.clear()
+            self._counter_actual_mode.clear()
 
             # Cancel momentary pulse timers
             for timer in self._momentary_timers.values():

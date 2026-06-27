@@ -451,6 +451,7 @@ class DAQService:
         # Channel values cache
         self.channel_values: Dict[str, Any] = {}      # Scaled engineering values
         self.channel_raw_values: Dict[str, Any] = {}  # Raw values before scaling
+        self.channel_open_tc: set = set()  # Channels currently reading an open thermocouple
         self.channel_timestamps: Dict[str, float] = {}
         # Units for script-published py.* values, populated by _script_publish_value
         # so the historian and other consumers know what units the script declared.
@@ -12676,6 +12677,10 @@ Unit conversions:
                     # Convert enum to string value if needed
                     tc_type = channel.thermocouple_type
                     ch_dict['thermocouple_type'] = tc_type.value if hasattr(tc_type, 'value') else str(tc_type)
+                    # Send TC detection options so the UI reflects the saved state
+                    # (without these the checkboxes always revert to their defaults).
+                    ch_dict['open_detect'] = getattr(channel, 'open_detect', True)
+                    ch_dict['auto_zero'] = getattr(channel, 'auto_zero', False)
                 if hasattr(channel, 'default_state'):
                     ch_dict['default_state'] = channel.default_state
                 if hasattr(channel, 'invert'):
@@ -12905,6 +12910,10 @@ Unit conversions:
                 if hasattr(channel, 'thermocouple_type') and channel.thermocouple_type:
                     tc_type = channel.thermocouple_type
                     ch_dict['thermocouple_type'] = tc_type.value if hasattr(tc_type, 'value') else str(tc_type)
+                    # Send TC detection options so the UI reflects the saved state
+                    # (without these the checkboxes always revert to their defaults).
+                    ch_dict['open_detect'] = getattr(channel, 'open_detect', True)
+                    ch_dict['auto_zero'] = getattr(channel, 'auto_zero', False)
                 if hasattr(channel, 'default_state'):
                     ch_dict['default_state'] = channel.default_state
                 if hasattr(channel, 'invert'):
@@ -14028,6 +14037,19 @@ Unit conversions:
             channel.low_warning = config_data['low_warning']
         if 'high_warning' in config_data:
             channel.high_warning = config_data['high_warning']
+        # Alarm configuration (ISA-18.2). Without applying these, "Enable Alarm
+        # Checking" and the limit tiers never reach the channel, so they revert.
+        if 'alarm_enabled' in config_data:
+            channel.alarm_enabled = bool(config_data['alarm_enabled'])
+        for _lim in ('hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit'):
+            if _lim in config_data:
+                setattr(channel, _lim, float(config_data[_lim]) if config_data[_lim] is not None else None)
+        if 'alarm_priority' in config_data:
+            channel.alarm_priority = config_data['alarm_priority']
+        if 'alarm_deadband' in config_data:
+            channel.alarm_deadband = float(config_data['alarm_deadband']) if config_data['alarm_deadband'] is not None else 0.0
+        if 'alarm_delay_sec' in config_data:
+            channel.alarm_delay_sec = float(config_data['alarm_delay_sec']) if config_data['alarm_delay_sec'] is not None else 0.0
         if 'log' in config_data:
             channel.log = config_data['log']
         # Enable/disable a channel. A disabled channel stops publishing values
@@ -14107,6 +14129,10 @@ Unit conversions:
                 )
         if 'cjc_value' in config_data:
             channel.cjc_value = float(config_data['cjc_value'])
+        if 'open_detect' in config_data:
+            channel.open_detect = bool(config_data['open_detect'])
+        if 'auto_zero' in config_data:
+            channel.auto_zero = bool(config_data['auto_zero'])
 
         # RTD parameters
         if 'rtd_type' in config_data:
@@ -14166,8 +14192,20 @@ Unit conversions:
         if 'terminal_config' in config_data:
             import terminal_config as _tc
             requested = config_data['terminal_config']
-            mod = self.config.modules.get(channel.module) if channel.module else None
+            # Resolve module type robustly: config.modules, then a live NI query
+            # (covers auto-discovered direct-path channels whose module isn't in
+            # config.modules — without this the 9207 etc. aren't recognized as
+            # DIFF-only and invalid terminal configs slip through uncoerced).
+            mod_key = channel.module or (channel.physical_channel.split('/')[0]
+                                         if '/' in (channel.physical_channel or '') else '')
+            mod = self.config.modules.get(mod_key) if mod_key else None
             mod_type = getattr(mod, 'module_type', None) if mod else None
+            if not mod_type and mod_key:
+                try:
+                    from nidaqmx.system import Device
+                    mod_type = getattr(Device(mod_key), 'product_type', None) or None
+                except Exception:
+                    mod_type = None
             coerced = _tc.coerce(channel.channel_type, requested, mod_type)
             channel.terminal_config = coerced
             if _tc.normalize(requested) != coerced:
@@ -14324,7 +14362,8 @@ Unit conversions:
             'voltage_range', 'current_range_ma', 'ao_range',
             'counter_mode', 'counter_edge', 'counter_min_freq', 'counter_max_freq',
             'pullup_enabled', 'voltage_threshold',
-            'thermocouple_type', 'cjc_source', 'rtd_type', 'rtd_wiring', 'rtd_current',
+            'thermocouple_type', 'cjc_source', 'open_detect', 'auto_zero',
+            'rtd_type', 'rtd_wiring', 'rtd_current',
             'strain_config', 'iepe_coupling', 'resistance_wiring',
             'pulse_frequency', 'pulse_duty_cycle', 'pulse_idle_state',
             # TC/RTD task is created with a specific TemperatureUnits — a unit
@@ -14362,6 +14401,17 @@ Unit conversions:
         # project re-apply / reload (project/current, config/reload) can't revert
         # it — the same staleness that made disabled channels re-enable themselves.
         self._sync_project_data_channel_fields(channel_name, config_data)
+
+        # Re-sync the alarm manager if any alarm-related field changed, so toggling
+        # "Enable Alarm Checking" / editing limits takes effect without a restart.
+        _ALARM_FIELDS = {'alarm_enabled', 'hihi_limit', 'hi_limit', 'lo_limit', 'lolo_limit',
+                         'high_limit', 'low_limit', 'high_warning', 'low_warning',
+                         'alarm_priority', 'alarm_deadband', 'alarm_delay_sec'}
+        if _ALARM_FIELDS.intersection(config_data.keys()):
+            try:
+                self._update_channel_alarm_config(channel_name, channel)
+            except Exception as e:
+                logger.warning(f"Failed to update alarm config for {channel_name}: {e}")
 
         self._publish_channel_config()
         self._publish_config_response(True, f"Updated {channel_name}")
@@ -16042,11 +16092,46 @@ Unit conversions:
             "safety_actions": {}
         }
 
+        # Resolve the NI module type (e.g. "NI 9207") per channel so the dashboard
+        # can limit options (DIFF-only modules, etc.) WITHOUT a fresh discovery
+        # scan. Cached per module key — config.modules is fast; the live NI query
+        # fallback (via hardware_reader) only runs once per unique module.
+        _mtype_cache: Dict[str, Optional[str]] = {}
+
+        def _resolve_module_type(ch) -> Optional[str]:
+            mod_key = ch.module or (ch.physical_channel.split('/')[0]
+                                    if '/' in (ch.physical_channel or '') else '')
+            if not mod_key:
+                return None
+            if mod_key in _mtype_cache:
+                return _mtype_cache[mod_key]
+            mt = None
+            m = self.config.modules.get(mod_key) if hasattr(self.config, 'modules') else None
+            if m is not None:
+                mt = getattr(m, 'module_type', None)
+            if not mt and self.hardware_reader is not None:
+                try:
+                    mt = self.hardware_reader._lookup_module_type(mod_key)
+                except Exception:
+                    mt = None
+            # Direct live NI-DAQmx query — works even when the hardware reader
+            # isn't running (acquisition stopped) and config.modules is empty
+            # (auto-discovered direct-path channels). This is the reliable source.
+            if not mt:
+                try:
+                    from nidaqmx.system import Device
+                    mt = getattr(Device(mod_key), 'product_type', None) or None
+                except Exception:
+                    mt = None
+            _mtype_cache[mod_key] = mt
+            return mt
+
         for name, channel in self.config.channels.items():
             # display_name removed - use name (TAG) everywhere per ISA-5.1
             config_data["channels"][name] = {
                 "name": name,  # TAG is the only identifier
                 "module": channel.module,
+                "module_type": _resolve_module_type(channel),  # e.g. "NI 9207" — drives UI option limiting
                 "physical_channel": channel.physical_channel,
                 "type": channel.channel_type.value,
                 "channel_type": channel.channel_type.value,
@@ -16062,6 +16147,16 @@ Unit conversions:
                 "high_limit": channel.high_limit,
                 "low_warning": channel.low_warning,
                 "high_warning": channel.high_warning,
+                # Alarm config (ISA-18.2) — without these the dashboard's "Enable
+                # Alarm Checking" + limit tiers revert after every config broadcast.
+                "alarm_enabled": getattr(channel, 'alarm_enabled', False),
+                "hihi_limit": getattr(channel, 'hihi_limit', None),
+                "hi_limit": getattr(channel, 'hi_limit', None),
+                "lo_limit": getattr(channel, 'lo_limit', None),
+                "lolo_limit": getattr(channel, 'lolo_limit', None),
+                "alarm_priority": getattr(channel, 'alarm_priority', 'medium'),
+                "alarm_deadband": getattr(channel, 'alarm_deadband', 1.0),
+                "alarm_delay_sec": getattr(channel, 'alarm_delay_sec', 0),
                 "log": channel.log,
                 # Include all config for frontend editing
                 "scale_type": channel.scale_type,
@@ -16093,6 +16188,8 @@ Unit conversions:
                 "thermocouple_type": channel.thermocouple_type.value if channel.thermocouple_type else None,
                 "cjc_source": channel.cjc_source,
                 "cjc_value": getattr(channel, 'cjc_value', 25.0),
+                "open_detect": getattr(channel, 'open_detect', True),
+                "auto_zero": getattr(channel, 'auto_zero', False),
                 "rtd_type": getattr(channel, 'rtd_type', 'Pt100'),
                 "rtd_wiring": getattr(channel, 'rtd_wiring', '4-wire'),
                 "rtd_current": getattr(channel, 'rtd_current', 0.001),
@@ -16349,6 +16446,62 @@ Unit conversions:
         except Exception as e:
             logger.error(f"Error publishing {channel_name}: {e}")
 
+    # Physical measurement range (°C) per IEC 60584 for each thermocouple type.
+    # An open/disconnected TC floats out of this range — the NI 9212 saturates to
+    # ~2300°C rather than returning the DAQmx open sentinel — so a reading beyond
+    # the type's range (with margin) means the sensor is open.
+    _TC_RANGE_C = {
+        'J': (-210.0, 1200.0),
+        'K': (-270.0, 1372.0),
+        'T': (-270.0, 400.0),
+        'E': (-270.0, 1000.0),
+        'N': (-270.0, 1300.0),
+        'R': (-50.0, 1768.0),
+        'S': (-50.0, 1768.0),
+        'B': (0.0, 1820.0),
+    }
+    # Degrees of slack beyond the physical limit before declaring "open" — absorbs
+    # noise near the top of a type's range without masking a genuine open (~2300°C
+    # clears every type's max + this margin).
+    _TC_OPEN_MARGIN_C = 25.0
+
+    def _thermocouple_is_open(self, channel, value) -> bool:
+        """True if a thermocouple reading is physically impossible for its type.
+
+        Some modules (NI 9212) report an open TC as a finite out-of-range
+        temperature instead of the DAQmx sentinel, so we can't rely on a huge
+        magnitude. Comparing against the type's documented range — converted to
+        the channel's display unit — reliably distinguishes an open sensor from a
+        legitimately hot one.
+        """
+        import math
+        if value is None:
+            return False
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return False
+        if math.isnan(v) or math.isinf(v):
+            return False  # NaN/Inf handled elsewhere (disconnect / overflow)
+
+        tc = getattr(channel, 'thermocouple_type', None)
+        tc_key = tc.value if hasattr(tc, 'value') else str(tc or '').strip().upper()
+        rng = self._TC_RANGE_C.get(tc_key)
+        if rng is None:
+            return False  # unknown/unsupported type — don't guess
+        lo_c, hi_c = rng
+
+        # Convert the reading to °C using the channel's configured unit so the
+        # comparison against the (°C) range table is correct.
+        u = str(getattr(channel, 'units', '') or '').strip().lower().lstrip('°').replace('deg', '').strip()
+        if u == 'f':
+            v_c = (v - 32.0) * 5.0 / 9.0
+        elif u == 'k':
+            v_c = v - 273.15
+        else:
+            v_c = v  # 'c' or unspecified
+        return v_c > hi_c + self._TC_OPEN_MARGIN_C or v_c < lo_c - self._TC_OPEN_MARGIN_C
+
     def _publish_channel_value(self, channel_name: str, value: Any):
         """Publish a single channel value with scaling info for validation"""
         import math
@@ -16381,7 +16534,15 @@ Unit conversions:
                         error_string = "Inf"
                     elif abs(raw_value) > 1e300:  # Open thermocouple threshold
                         error_status = "open_thermocouple"
-                        error_string = "Open TC"
+                        error_string = "OPEN"
+            # The open-TC sentinel is masked to NaN in the reader before raw_value
+            # is captured, so the magnitude check above never fires for the live
+            # acquisition path. The reader's side channel is authoritative: if it
+            # flagged this channel as open, report it as such (overrides the
+            # generic "disconnected"/NaN classification).
+            if channel_name in self.channel_open_tc:
+                error_status = "open_thermocouple"
+                error_string = "OPEN"
 
             # Get SOE acquisition timestamp (microseconds since epoch)
             acquisition_ts_us = self.channel_acquisition_ts_us.get(channel_name, 0)
@@ -16471,6 +16632,7 @@ Unit conversions:
             bad = []
             alarm = []
             warn = []
+            open_tc = []  # open thermocouples — shown as "OPEN" rather than generic NaN
 
             for channel_name, value in values.items():
                 if channel_name not in self.config.channels:
@@ -16493,6 +16655,8 @@ Unit conversions:
                 if is_nan:
                     v[channel_name] = None
                     bad.append(channel_name)
+                    if channel_name in self.channel_open_tc:
+                        open_tc.append(channel_name)
                 else:
                     v[channel_name] = value
 
@@ -16516,6 +16680,8 @@ Unit conversions:
                 batch_payload['alarm'] = alarm
             if warn:
                 batch_payload['warn'] = warn
+            if open_tc:
+                batch_payload['open'] = open_tc
 
             self._queue_publish(f"{base}/channels/batch", json.dumps(batch_payload))
 
@@ -17580,8 +17746,17 @@ Unit conversions:
                     # Read from simulator or NI hardware
                     if self.simulator:
                         raw_values.update(self.simulator.read_all())
+                        self.channel_open_tc = set()  # simulator has no open-TC sentinel
                     elif self.hardware_reader:
                         raw_values.update(self.hardware_reader.read_all())
+                        # Open thermocouples are masked to NaN in the reader, so the
+                        # value can't be told apart from a disconnect — pull the
+                        # open/disconnect distinction from the reader's side channel
+                        # so the publisher can report status="open_thermocouple".
+                        try:
+                            self.channel_open_tc = self.hardware_reader.get_open_tc_channels()
+                        except Exception:
+                            self.channel_open_tc = set()
                         # Check hardware reader health
                         if not self.hardware_reader.is_healthy():
                             if not getattr(self, '_reader_degraded_notified', False):
@@ -17661,6 +17836,22 @@ Unit conversions:
                             except (KeyError, RuntimeError):
                                 channel = None  # Channel removed during scan
                             if channel is not None:
+                                # Range-based open thermocouple detection: the NI 9212
+                                # reports an open TC as a finite out-of-range reading
+                                # (~2300°C), not the DAQmx sentinel. Force NaN so the
+                                # bogus value isn't shown, and flag the channel so the
+                                # publisher reports status="open_thermocouple" ("OPEN").
+                                if (channel.channel_type == ChannelType.THERMOCOUPLE
+                                        and getattr(channel, 'open_detect', True) is not False
+                                        and self._thermocouple_is_open(channel, validated_raw)):
+                                    self.channel_open_tc.add(name)
+                                    if name not in self._logged_open_tc:
+                                        logger.warning(
+                                            f"Open thermocouple detected on {name} "
+                                            f"(out-of-range reading {validated_raw:.1f} {channel.units})"
+                                        )
+                                        self._logged_open_tc.add(name)
+                                    validated_raw = float('nan')
                                 # Don't apply scaling to output channels - they store engineering units directly
                                 if channel.channel_type in (ChannelType.DIGITAL_OUTPUT, ChannelType.VOLTAGE_OUTPUT, ChannelType.CURRENT_OUTPUT,
                                                                ChannelType.COUNTER_OUTPUT, ChannelType.PULSE_OUTPUT):
@@ -17690,6 +17881,7 @@ Unit conversions:
                                         if is_valid_value(scaled_value):
                                             self.channel_values[name] = scaled_value
                                             valid_channels.add(name)
+                                            self._logged_open_tc.discard(name)  # recovered → re-log if it opens again
                                         else:
                                             self.channel_values[name] = float('nan')
                                     else:

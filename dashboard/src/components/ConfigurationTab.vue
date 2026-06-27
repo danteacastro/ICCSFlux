@@ -1793,6 +1793,33 @@ function outputCellValue(name: string, config: { output_setpoint?: number }): nu
   return config.output_setpoint ?? 0
 }
 
+// Counter input channel types that share an NI 9361's module-wide threshold.
+const COUNTER_INPUT_TYPES = new Set(['counter', 'counter_input', 'frequency_input'])
+
+// Propagate a counter threshold change to every counter channel on the SAME
+// physical module (the NI 9361 uses one comparator threshold for the whole
+// module). Counters on OTHER cards are left untouched — scoping is by the device
+// prefix of the physical channel (e.g. "cDAQ…Mod1" from "cDAQ…Mod1/ctr0").
+function propagateCounterThreshold(sourceName: string, value: number) {
+  const src = store.channels[sourceName] as any
+  if (!src || !COUNTER_INPUT_TYPES.has(src.channel_type)) return
+  const srcDevice = String(src.physical_channel || '').split('/')[0]
+  if (!srcDevice) return
+  const clamped = Math.max(1.0, Math.min(4.0, value))
+  for (const [name, cfg] of Object.entries(store.channels)) {
+    const c = cfg as any
+    if (!COUNTER_INPUT_TYPES.has(c.channel_type)) continue
+    if (String(c.physical_channel || '').split('/')[0] !== srcDevice) continue
+    // Update the local store immediately (source + siblings) so the UI reflects
+    // the module-wide value, and push siblings to the backend (the source is
+    // already sent by the caller).
+    c.voltage_threshold = clamped
+    if (name !== sourceName) {
+      mqtt.updateChannelConfig(name, { voltage_threshold: clamped })
+    }
+  }
+}
+
 // Update a single channel field inline (for editable table cells)
 function updateChannelField(channelName: string, field: string, value: any) {
   if (!canEdit.value) return
@@ -1829,6 +1856,11 @@ function updateChannelField(channelName: string, field: string, value: any) {
   }
 
   mqtt.updateChannelConfig(channelName, { [field]: coerced })
+  // Threshold is module-wide on the NI 9361 — mirror the change to the other
+  // counters on the SAME card (not other cards).
+  if (field === 'voltage_threshold') {
+    propagateCounterThreshold(channelName, coerced)
+  }
   markDirty()
 }
 
@@ -1839,13 +1871,26 @@ function updateChannelField(channelName: string, field: string, value: any) {
 // Current/TC/RTD/strain/IEPE/resistance channels REQUIRE differential — using
 // RSE/NRSE on these causes wrong readings (e.g., RSE on a current input
 // reads shunt voltage instead of current).
+// Channel types that REQUIRE differential (physically differential by sensor
+// design). NOTE: current inputs are intentionally NOT here — the DAQmx API reads
+// current modules' shunt single-ended (RSE); see _CURRENT_INPUT_RSE_MODULES.
+// Mirrors services/daq_service/terminal_config.py:_DIFFERENTIAL_ONLY_TYPES.
 const _DIFFERENTIAL_ONLY_TYPES = new Set([
-  'current_input', 'current_output', 'current',
+  'current_output',  // legacy; the ao path ignores terminal_config anyway
   'thermocouple', 'rtd',
   'strain', 'strain_input', 'bridge_input',
   'resistance', 'resistance_input',
   'iepe', 'iepe_input',
 ])
+
+// Modules where add_ai_current_chan REQUIRES RSE (DAQmx rejects DIFF with
+// -200077). The current section is physically differential through a built-in
+// shunt, but the API treats it as RSE. Mirrors terminal_config.py.
+const _CURRENT_INPUT_RSE_MODULES = new Set([
+  'NI-9203', 'NI-9207', 'NI-9208', 'NI-9227', 'NI-9246', 'NI-9247', 'NI-9253',
+])
+// Counter/frequency-input channels accept exactly RSE or DIFFERENTIAL.
+const _COUNTER_TERM_TYPES = new Set(['counter', 'counter_input', 'frequency_input'])
 
 // Modules that are DIFF-only by hardware design even though their channel
 // type (e.g., voltage_input) would normally allow RSE/NRSE.
@@ -1865,15 +1910,28 @@ const _DIFFERENTIAL_ONLY_MODULES = new Set([
   'NI-9203', 'NI-9207', 'NI-9208', 'NI-9227', 'NI-9246', 'NI-9247', 'NI-9253',
 ])
 
+// Extract the canonical "NI-####" model key from a DAQmx product type, ignoring
+// connector-variant suffixes ("NI 9207 (DSUB)" / "NI 9207 (BNC)" → "NI-9207")
+// and accepting a bare model number ("9215" → "NI-9215"). Returns '' if none.
+function _moduleModelKey(moduleType: string | undefined | null): string {
+  if (!moduleType) return ''
+  const m = String(moduleType).match(/NI[\s_-]?(\d{3,4})/i)
+  if (m) return `NI-${m[1]}`
+  const n = moduleType.trim().toUpperCase().replace(/\s+/g, '-')
+  return n.startsWith('NI-') ? n : `NI-${n}`
+}
+
 function isModuleDifferentialOnly(moduleType: string | undefined | null): boolean {
   if (!moduleType) return false
-  let normalized = moduleType.trim().toUpperCase()
-  if (_DIFFERENTIAL_ONLY_MODULES.has(normalized)) return true
-  // Also accept bare model number (e.g., '9215' -> 'NI-9215')
-  if (!normalized.startsWith('NI-')) {
-    return _DIFFERENTIAL_ONLY_MODULES.has(`NI-${normalized}`)
-  }
-  return false
+  return _DIFFERENTIAL_ONLY_MODULES.has(_moduleModelKey(moduleType))
+}
+
+// True if this module's CURRENT channels require RSE (e.g. the NI 9207's current
+// section). Distinct from isModuleDifferentialOnly, which governs voltage channels
+// on the same module. Mirrors terminal_config.py:is_module_current_rse.
+function isModuleCurrentRse(moduleType: string | undefined | null): boolean {
+  if (!moduleType) return false
+  return _CURRENT_INPUT_RSE_MODULES.has(_moduleModelKey(moduleType))
 }
 
 /**
@@ -1901,17 +1959,67 @@ function lookupModuleType(physicalChannel: string | undefined): string | null {
   return null
 }
 
-function getAllowedTerminalConfigs(channelType: string | undefined, physicalChannel?: string) {
-  // Per-module override takes precedence: NI-9215 etc. are DIFF-only by hardware
-  const moduleType = lookupModuleType(physicalChannel)
-  if (isModuleDifferentialOnly(moduleType)) {
-    return TERMINAL_CONFIGS.filter(t => t.value === 'differential')
+function getAllowedTerminalConfigs(channelType: string | undefined, physicalChannel?: string, moduleType?: string | null) {
+  // Prefer the module type stored on the channel (from backend config) so limiting
+  // works without a live discovery scan; fall back to the discovery result.
+  // Rule ORDER mirrors terminal_config.py:allowed_for — current is checked BEFORE
+  // the diff-only-module rule because a combo module (NI 9207) needs DIFF for its
+  // voltage section AND RSE for its current section.
+  const mt = moduleType || lookupModuleType(physicalChannel)
+  // TERMINAL_CONFIGS values are inconsistently cased ('differential' but 'RSE'),
+  // so compare case-insensitively.
+  const is = (t: { value: string }, v: string) => t.value.toLowerCase() === v
+
+  // Counter / frequency inputs: RSE or DIFFERENTIAL only.
+  if (channelType && _COUNTER_TERM_TYPES.has(channelType)) {
+    return TERMINAL_CONFIGS.filter(t => is(t, 'rse') || is(t, 'differential'))
   }
-  // Channel-type rule
+  // Current inputs: RSE on known RSE-required modules; permissive otherwise.
+  if (channelType === 'current_input' || channelType === 'current') {
+    if (isModuleCurrentRse(mt)) {
+      return TERMINAL_CONFIGS.filter(t => is(t, 'rse'))
+    }
+    return TERMINAL_CONFIGS
+  }
+  // DIFF-only modules (e.g. the NI 9207 voltage section, NI-9215, …).
+  if (isModuleDifferentialOnly(mt)) {
+    return TERMINAL_CONFIGS.filter(t => is(t, 'differential'))
+  }
+  // DIFF-only channel types (TC, RTD, strain, IEPE, resistance).
   if (channelType && _DIFFERENTIAL_ONLY_TYPES.has(channelType)) {
-    return TERMINAL_CONFIGS.filter(t => t.value === 'differential')
+    return TERMINAL_CONFIGS.filter(t => is(t, 'differential'))
   }
   return TERMINAL_CONFIGS
+}
+
+// Resolve the terminal-config value to show in a <select>. If the stored value
+// isn't an allowed option for this channel/module (e.g. a stale 'rse' on a
+// DIFF-only NI 9207), fall back to the first allowed option so the dropdown shows
+// a valid choice instead of going blank.
+function terminalConfigForDisplay(channelType: string | undefined, physicalChannel: string | undefined, current: string | undefined, moduleType?: string | null): string {
+  const allowed = getAllowedTerminalConfigs(channelType, physicalChannel, moduleType)
+  if (!allowed.length) return current || 'differential'
+  // Match the stored value case-insensitively (terminal configs are stored as
+  // 'rse' but the option value is 'RSE') and return the option's EXACT value so
+  // the <select> highlights it instead of going blank.
+  const match = allowed.find(t => t.value.toLowerCase() === String(current || '').toLowerCase())
+  return match ? match.value : allowed[0].value
+}
+
+// Best-effort module type for a channel, in priority order: the backend-supplied
+// module_type, the live discovery result, then the auto-generated description
+// ("NI 9207 (DSUB) - …"). The description fallback means option-limiting works
+// even before the backend sends module_type (older build / retained config).
+function channelModuleType(config: any): string | null {
+  const NI_MODEL = /\bNI[\s-]?\d{3,4}\b/i
+  // Return the model substring ("NI 9207" out of "NI 9207 (DSUB)") so the
+  // matchers don't choke on connector-variant suffixes. Sources in priority
+  // order: backend module_type, discovery, then the auto-generated description.
+  for (const cand of [config?.module_type, lookupModuleType(config?.physical_channel), config?.description]) {
+    const m = cand ? String(cand).match(NI_MODEL) : null
+    if (m) return m[0]
+  }
+  return config?.module_type || lookupModuleType(config?.physical_channel) || null
 }
 
 // CJC source options — only meaningful for thermocouple channels.
@@ -2297,6 +2405,30 @@ function addNewChannel() {
 
 function closeAddChannelModal() {
   showAddChannelModal.value = false
+}
+
+// Canonicalize any temperature-unit spelling ('degF', 'F', '°F', etc.) to the
+// degree-symbol form, which is the canonical value stored/displayed everywhere
+// (and the value used by the unit <select> options so they highlight correctly).
+function canonicalTempUnit(unit?: string | null): string {
+  const t = String(unit || '').toLowerCase().replace('°', '').replace('deg', '').trim()
+  if (t === 'f') return '°F'
+  if (t === 'k') return 'K'
+  if (t === 'r') return '°R'
+  return '°C'  // 'c', '', or anything unrecognized
+}
+
+// Render a unit for display: map temperature units to their degree symbol
+// (degC -> °C, degF -> °F) while leaving all other units (V, mA, counts…) as-is.
+function formatUnitSymbol(unit?: string | null): string {
+  if (!unit) return ''
+  const raw = String(unit).trim()
+  const t = raw.toLowerCase().replace('°', '').replace('deg', '').trim()
+  if (t === 'c') return '°C'
+  if (t === 'f') return '°F'
+  if (t === 'r') return '°R'
+  if (t === 'k') return 'K'
+  return raw  // non-temperature units pass through unchanged
 }
 
 function getDefaultUnit(channelType: ChannelType): string {
@@ -3890,7 +4022,7 @@ function getCurrentValue(channelName: string): string {
 
   // Check for specific error conditions (from backend validation)
   if (value.status === 'open_thermocouple' || value.openThermocouple) {
-    return value.valueString || 'Open TC'
+    return value.valueString || 'OPEN'
   }
   if (value.status === 'overflow' || value.overflow) {
     return value.valueString || 'Inf'
@@ -4299,11 +4431,15 @@ function openChannelConfig(channelName: string) {
     case 'thermocouple':
       moduleConfig = {
         ...DEFAULT_THERMOCOUPLE_CONFIG,
-        // Load existing thermocouple config from backend
+        // Load existing thermocouple config from backend. These must be read
+        // back explicitly — spreading DEFAULT_THERMOCOUPLE_CONFIG alone would
+        // make a saved open_detect/auto_zero=false silently revert to true.
         tc_type: config.thermocouple_type ?? '',
         cjc_source: config.cjc_source ?? '',
         cjc_value: config.cjc_value ?? 25.0,
-        units: config.unit || 'degC',
+        units: canonicalTempUnit(config.unit),
+        open_detect: config.open_detect ?? DEFAULT_THERMOCOUPLE_CONFIG.open_detect,
+        auto_zero: config.auto_zero ?? DEFAULT_THERMOCOUPLE_CONFIG.auto_zero,
       }
       break
     case 'rtd':
@@ -4313,7 +4449,7 @@ function openChannelConfig(channelName: string) {
         rtd_type: config.rtd_type || DEFAULT_RTD_CONFIG.rtd_type,
         wiring: config.rtd_wiring || DEFAULT_RTD_CONFIG.wiring,
         excitation_current: config.rtd_current ? config.rtd_current * 1e6 : DEFAULT_RTD_CONFIG.excitation_current,
-        units: config.unit || 'C',
+        units: canonicalTempUnit(config.unit),
       }
       break
     case 'voltage_input':
@@ -4481,7 +4617,12 @@ function openChannelConfig(channelName: string) {
   // Ensure color has a valid default (required for type="color" input)
   const configWithDefaults = {
     ...config,
-    color: config.color || '#60a5fa'  // Default blue if not set
+    color: config.color || '#60a5fa',  // Default blue if not set
+    // Canonicalize temp units (legacy '°C'/'C' -> 'degC') so the side-panel
+    // Temperature Units select matches one of its options.
+    ...(config.channel_type === 'thermocouple' || config.channel_type === 'rtd'
+      ? { unit: canonicalTempUnit(config.unit) }
+      : {})
   }
 
   editingConfig.value = {
@@ -4579,10 +4720,12 @@ function saveChannelConfig() {
     config.lolo_limit = lowLim
     config.hi_limit = highWarn
     config.lo_limit = lowWarn
-    // Any limit set => alarms active (otherwise keep whatever the channel had).
-    config.alarm_enabled = (lowLim ?? highLim ?? lowWarn ?? highWarn) != null
-      ? true
-      : (cfg.alarm_enabled ?? false)
+    // The "Enable Alarm Checking" checkbox is authoritative — do NOT auto-derive
+    // from limits. Signal-failure limits (low_limit/high_limit) drive the red
+    // out-of-range display independently of ISA alarm checking, so a channel can
+    // have limits with alarm checking off. (Previously any limit forced this true,
+    // which made disabling alarm checking impossible on channels with limits.)
+    config.alarm_enabled = mc.alarm_enabled ?? false
   }
 
   // Add thermocouple-specific settings
@@ -4815,8 +4958,27 @@ function saveChannelConfig() {
     propagateChannelRename(editingConfig.value.name, editingConfig.value.newName)
   }
 
+  // Mirror EVERY saved field into the local store NOW. The backend's
+  // config/channel/update response only returns {success}, and its async
+  // config/channels broadcast can arrive AFTER the panel is reopened — so without
+  // this, reopening shows stale values (terminal config, ranges, scaling, alarm
+  // limits, TC options…). A comprehensive merge keeps ANY sidebar change sticky.
+  const savedCh = store.channels[editingConfig.value.name] as any
+  if (savedCh) {
+    for (const [k, v] of Object.entries(config)) {
+      if (k === 'new_name') continue                 // rename handled separately below
+      if (k === 'units') { savedCh.unit = v; continue }  // store uses singular `unit`
+      savedCh[k] = v
+    }
+  }
+
   // Send to backend via MQTT (use original name as the key)
   mqtt.updateChannelConfig(editingConfig.value.name, config)
+  // NI 9361 threshold is module-wide — mirror it to the other counters on the
+  // SAME card (other cards untouched).
+  if (COUNTER_INPUT_TYPES.has(channelType) && config.voltage_threshold != null) {
+    propagateCounterThreshold(editingConfig.value.name, config.voltage_threshold)
+  }
   showFeedback('success', isRenaming
     ? `Renamed channel to ${editingConfig.value.newName}`
     : `Configuration saved for ${editingConfig.value.name}`)
@@ -5925,12 +6087,12 @@ watch(
                 </td>
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.unit || 'degC'"
+                    :value="canonicalTempUnit(config.unit)"
                     @change="updateChannelField(name, 'units', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option value="degC">°C</option>
-                    <option value="degF">°F</option>
+                    <option value="°C">°C</option>
+                    <option value="°F">°F</option>
                     <option value="K">K</option>
                   </select>
                 </td>
@@ -5960,12 +6122,12 @@ watch(
                 </td>
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.unit || 'degC'"
+                    :value="canonicalTempUnit(config.unit)"
                     @change="updateChannelField(name, 'units', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option value="degC">°C</option>
-                    <option value="degF">°F</option>
+                    <option value="°C">°C</option>
+                    <option value="°F">°F</option>
                     <option value="K">K</option>
                   </select>
                 </td>
@@ -5973,11 +6135,11 @@ watch(
               <template v-else-if="activeTypeTab === 'voltage_input'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.terminal_config || 'differential'"
+                    :value="terminalConfigForDisplay(config.channel_type, config.physical_channel, config.terminal_config, channelModuleType(config))"
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel, channelModuleType(config))" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -6144,11 +6306,11 @@ watch(
               <template v-else-if="activeTypeTab === 'iepe'">
                 <td class="editable-cell" @click.stop>
                   <select
-                    :value="config.terminal_config || 'differential'"
+                    :value="terminalConfigForDisplay(config.channel_type, config.physical_channel, config.terminal_config, channelModuleType(config))"
                     @change="updateChannelField(name, 'terminal_config', ($event.target as HTMLSelectElement).value)"
                     :disabled="!canEdit"
                   >
-                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel)" :key="t.value" :value="t.value">{{ t.label }}</option>
+                    <option v-for="t in getAllowedTerminalConfigs(config.channel_type, config.physical_channel, channelModuleType(config))" :key="t.value" :value="t.value">{{ t.label }}</option>
                   </select>
                 </td>
                 <td class="editable-cell" @click.stop>
@@ -6600,7 +6762,7 @@ watch(
                 <td class="editable-cell col-numeric" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || '-'"
+                    :value="formatUnitSymbol(config.unit) || '-'"
                     @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
                     class="inline-input"
                     :disabled="!canEdit"
@@ -6611,7 +6773,7 @@ watch(
                 <td class="editable-cell col-numeric" @click.stop>
                   <input
                     type="text"
-                    :value="config.unit || '-'"
+                    :value="formatUnitSymbol(config.unit) || '-'"
                     @change="updateChannelField(name, 'units', ($event.target as HTMLInputElement).value)"
                     class="inline-input"
                     :disabled="!canEdit"
@@ -6696,7 +6858,7 @@ watch(
                 </template>
                 <template v-else>
                   <span class="value">{{ getCurrentValue(name) }}</span>
-                  <span class="unit">{{ config.unit }}</span>
+                  <span class="unit">{{ formatUnitSymbol(config.unit) }}</span>
                 </template>
               </td>
 
@@ -7124,8 +7286,8 @@ watch(
                        in sync (was a separate "C/F/K/R" set on moduleConfig.units
                        that saveChannelConfig never even persisted). -->
                   <select v-model="editingConfig.config.unit">
-                    <option value="degC">Celsius (°C)</option>
-                    <option value="degF">Fahrenheit (°F)</option>
+                    <option value="°C">Celsius (°C)</option>
+                    <option value="°F">Fahrenheit (°F)</option>
                     <option value="K">Kelvin (K)</option>
                   </select>
                 </div>
@@ -7172,7 +7334,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel, channelModuleType(editingConfig.config))" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>
@@ -7355,8 +7517,8 @@ watch(
                        in sync (was a separate "C/F/K/R" set on moduleConfig.units
                        that saveChannelConfig never even persisted). -->
                   <select v-model="editingConfig.config.unit">
-                    <option value="degC">Celsius (°C)</option>
-                    <option value="degF">Fahrenheit (°F)</option>
+                    <option value="°C">Celsius (°C)</option>
+                    <option value="°F">Fahrenheit (°F)</option>
                     <option value="K">Kelvin (K)</option>
                   </select>
                 </div>
@@ -7428,7 +7590,7 @@ watch(
                 <div class="form-row">
                   <label>Terminal Configuration</label>
                   <select v-model="editingConfig.moduleConfig.terminal_config">
-                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel)" :key="t.value" :value="t.value">
+                    <option v-for="t in getAllowedTerminalConfigs(editingConfig.config.channel_type, editingConfig.config.physical_channel, channelModuleType(editingConfig.config))" :key="t.value" :value="t.value">
                       {{ t.label }}
                     </option>
                   </select>

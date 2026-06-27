@@ -162,10 +162,18 @@ _DIFFERENTIAL_ONLY_MODULES: Set[str] = {
 def _normalize_module_key(module_type: Optional[str]) -> Optional[str]:
     """Normalize "NI 9208" / "NI-9208" / "ni 9208" / "9208" → "NI-9208".
 
+    Also strips connector-variant suffixes from the DAQmx product type, e.g.
+    "NI 9207 (DSUB)" / "NI 9207 (BNC)" → "NI-9207" (otherwise the 9207 etc.
+    aren't recognized as DIFF-only / current-RSE).
+
     Returns None for empty/None input.
     """
     if not module_type:
         return None
+    import re
+    m = re.search(r"NI[\s_-]?(\d{3,4})", module_type, re.IGNORECASE)
+    if m:
+        return f"NI-{m.group(1)}"
     n = module_type.strip().upper().replace(" ", "-").replace("_", "-")
     while "--" in n:
         n = n.replace("--", "-")

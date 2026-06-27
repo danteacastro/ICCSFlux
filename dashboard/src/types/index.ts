@@ -107,6 +107,7 @@ export interface ChannelConfig {
   channel_type: ChannelType
   physical_channel?: string  // NI-DAQmx hardware address (e.g., cDAQ1Mod1/ai0)
   module?: string            // Module/chassis ref; for Modbus channels = device (chassis) name
+  module_type?: string       // NI module model (e.g., "NI 9207") — drives UI option limiting (DIFF-only, etc.)
   unit: string
   group: string
   description?: string
@@ -147,6 +148,8 @@ export interface ChannelConfig {
   thermocouple_type?: 'J' | 'K' | 'T' | 'E' | 'N' | 'R' | 'S' | 'B'
   cjc_source?: 'internal' | 'constant' | 'channel'
   cjc_value?: number             // Constant CJC temperature in °C (when cjc_source='constant')
+  open_detect?: boolean          // Open thermocouple detection (default: enabled)
+  auto_zero?: boolean            // Auto-zero for improved accuracy
 
   // RTD-specific
   rtd_type?: 'Pt100' | 'Pt500' | 'Pt1000' | 'custom'
