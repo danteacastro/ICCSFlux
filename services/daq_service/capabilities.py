@@ -356,8 +356,42 @@ STATIC_QUIRKS: Dict[str, ModuleCapabilities] = {
     "NI-9218": ModuleCapabilities(
         product_type="NI-9218",
         is_universal=True,
+        ai_simultaneous=True,
         # 9218 is delta-sigma, no HR-default trap; no override needed.
         notes="2-Ch universal bridge/IEPE/V (delta-sigma)",
+    ),
+
+    # ------ Simultaneous-sampling (delta-sigma) modules ----------------
+    # These own their timing and cannot share a multiplexed scan clock, so
+    # task_topology.plan_analog_tasks gives each its OWN hardware-timed AI
+    # task. On real hardware this is confirmed via
+    # dev.ai_simultaneous_sampling_supported (from_device); these static
+    # entries keep the simulator / pre-open path correct. No HR-default
+    # trap on delta-sigma, so needs_high_speed_adc_override stays False.
+    "NI-9232": ModuleCapabilities(
+        product_type="NI-9232",
+        ai_simultaneous=True,
+        notes="3-Ch ±30 V sound & vibration (delta-sigma, simultaneous)",
+    ),
+    "NI-9234": ModuleCapabilities(
+        product_type="NI-9234",
+        ai_simultaneous=True,
+        notes="4-Ch ±5 V IEPE sound & vibration (delta-sigma, simultaneous)",
+    ),
+    "NI-9250": ModuleCapabilities(
+        product_type="NI-9250",
+        ai_simultaneous=True,
+        notes="2-Ch ±5 V IEPE (delta-sigma, simultaneous)",
+    ),
+    "NI-9236": ModuleCapabilities(
+        product_type="NI-9236",
+        ai_simultaneous=True,
+        notes="4-Ch quarter-bridge strain (delta-sigma, simultaneous)",
+    ),
+    "NI-9237": ModuleCapabilities(
+        product_type="NI-9237",
+        ai_simultaneous=True,
+        notes="4-Ch bridge (delta-sigma, simultaneous)",
     ),
 }
 

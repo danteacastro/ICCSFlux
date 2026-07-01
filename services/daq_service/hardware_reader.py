@@ -32,6 +32,7 @@ from dataclasses import replace as _dc_replace
 import terminal_config as tc_validator
 import cjc_source as cjc_validator
 import capabilities as _capabilities
+import task_topology as _task_topology
 
 def _get_physical_channel_index(physical_channel: str) -> int:
     """
@@ -1051,6 +1052,32 @@ class HardwareReader:
                 pass
         return None
 
+    def _module_is_simultaneous(self, module_name: str) -> bool:
+        """True if the module does simultaneous (delta-sigma) sampling.
+
+        Simultaneous modules own their timing and cannot share the
+        multiplexed scan clock, so task_topology gives each its own
+        hardware-timed AI task. Multiplexed modules (the default) all
+        coalesce into one shared task.
+
+        Prefers live device introspection (dev.ai_simultaneous_sampling_
+        supported — authoritative) and falls back to the static
+        capabilities table for the simulator / pre-open path.
+        """
+        if not module_name:
+            return False
+        # Source 1: live device — authoritative.
+        if NIDAQMX_AVAILABLE:
+            try:
+                from nidaqmx.system import Device
+                cap = _capabilities.ModuleCapabilities.from_device(Device(module_name))
+                return bool(cap.ai_simultaneous)
+            except Exception:
+                pass
+        # Source 2: static table keyed by product type.
+        mod_type = self._lookup_module_type(module_name)
+        return bool(_capabilities.lookup(mod_type).ai_simultaneous)
+
     def _close_all_tasks_silently(self):
         """Close every task we've created so far. Used for rollback when
         _create_tasks() fails partway through, so we don't leave orphaned
@@ -1094,19 +1121,18 @@ class HardwareReader:
         """
         Create nidaqmx tasks for all input channels.
 
-        Topology: ALL analog input channels on the same module go into a SINGLE
-        task, regardless of channel type (voltage, current, thermocouple, etc.).
-        DAQmx supports multiple AI channel types per task via add_ai_voltage_chan,
-        add_ai_current_chan, add_ai_thrmcpl_chan, etc. on the same Task object.
+        AI topology (see task_topology.plan_analog_tasks): a cDAQ chassis has
+        only a few AI timing engines, and a single hardware-timed AI task may
+        span MANY multiplexed modules while using just ONE engine. So ALL
+        multiplexed AI channels — every measurement type (voltage, current,
+        thermocouple, RTD, …) across every multiplexed module — coalesce into
+        ONE combined task, and each simultaneous-sampling (delta-sigma) module
+        gets its own task. This keeps a fully-populated chassis within its
+        engine budget; the old one-task-per-module-type scheme exceeded it and
+        dropped the reader to the simulator (all values bad).
 
-        Note: the *real* chassis-wide limit on a Gen II cDAQ (STC3 controller)
-        is 3 concurrent hardware-timed AI tasks total — not "one per module."
-        Adding a 4th AI task chassis-wide will fail at task reservation. Stage 3
-        rebuild will move topology decisions into a dedicated task_topology.py
-        that respects the 3-engine cap.
-
-        This is valid because NI-DAQmx allows mixing different add_ai_*_chan methods
-        in the same task.
+        Mixing channel types in one task is valid because NI-DAQmx allows
+        different add_ai_*_chan methods on the same Task object.
 
         On failure mid-way, all already-created tasks are closed before re-raising
         so the next acquisition start has a clean slate.
@@ -1168,15 +1194,20 @@ class HardwareReader:
                 module_channels[module_key] = []
             module_channels[module_key].append(channel)
 
-        # Analog inputs are grouped by module TYPE (ADC family) and combined into
-        # ONE task per type — identical modules (e.g. two NI 9212s) share a single
-        # hardware-timed task. cDAQ Gen II (STC3) allows only 3 concurrent
-        # hardware-timed AI tasks chassis-wide; one task per physical module blows
-        # that budget once the chassis is populated (counter + 3 AI = 4 -> -200022).
-        # Grouping by type is conservative: only IDENTICAL modules merge, which
-        # DAQmx always allows (same ADC timing). Other I/O stays per-module.
-        analog_groups: Dict[str, List[ChannelConfig]] = {}
-        analog_group_label: Dict[str, str] = {}  # group key -> task-name label
+        # Analog inputs are combined by ADC COMPATIBILITY, not by module type.
+        # On a cDAQ chassis a single hardware-timed AI task may span MANY
+        # multiplexed modules while consuming only ONE timing engine, so every
+        # multiplexed AI channel (TC, RTD, V-in, I-in — across all modules)
+        # coalesces into one task. Simultaneous-sampling (delta-sigma) modules
+        # own their timing and each need their own task. task_topology decides
+        # the split; here we just collect analog channels per module.
+        #
+        # This replaces the old per-module-TYPE grouping, which spawned one AI
+        # task per distinct module type. A chassis with >3 distinct AI module
+        # types exceeded the engine budget (DAQmx -50103 "resource reserved"),
+        # aborted the reader, and dropped the service to the simulator — the
+        # "all values are bad" symptom on a fully-populated chassis.
+        analog_by_module: Dict[str, List[ChannelConfig]] = {}
 
         for module_name, channels in module_channels.items():
             # For direct-path modules, skip the module config check
@@ -1197,19 +1228,10 @@ class HardwareReader:
             pulse_out_channels = [c for c in channels if c.channel_type in (
                 ChannelType.PULSE_OUTPUT, ChannelType.COUNTER_OUTPUT)]
 
-            # Accumulate analog inputs into a per-module-TYPE group so identical
-            # modules combine into one task. Unknown module type -> key on the
-            # module name so it still gets its own task (never merged wrongly).
+            # Collect analog inputs per module; task_topology decides the
+            # multiplexed-vs-simultaneous split after all modules are seen.
             if analog_channels:
-                mod_type = self._lookup_module_type(module_name)
-                if mod_type:
-                    group_key = f"type:{mod_type}"
-                    label = str(mod_type).replace(' ', '_').replace('/', '_')
-                else:
-                    group_key = f"mod:{module_name}"
-                    label = str(module_name)
-                analog_groups.setdefault(group_key, []).extend(analog_channels)
-                analog_group_label.setdefault(group_key, label)
+                analog_by_module.setdefault(module_name, []).extend(analog_channels)
 
             # Digital inputs (not continuous, separate task OK)
             if digital_in_channels:
@@ -1239,17 +1261,70 @@ class HardwareReader:
             if pulse_out_channels:
                 self._create_pulse_output_tasks(pulse_out_channels)
 
-        # Create ONE combined analog task per module-type group. Identical modules
-        # (e.g. two NI 9212s) now share a single task, so a fully-populated chassis
-        # stays within the 3 hardware-timed AI task limit.
-        for group_key, group_channels in analog_groups.items():
-            label = analog_group_label.get(group_key, group_key)
+        # Plan the AI task topology: all multiplexed modules share ONE task,
+        # each simultaneous (delta-sigma) module gets its own. This keeps a
+        # fully-populated chassis within its AI timing-engine budget.
+        plans = _task_topology.plan_analog_tasks(
+            analog_by_module, self._module_is_simultaneous
+        )
+        logger.info(
+            f"AI task topology: {len(plans)} task(s) planned across "
+            f"{len(analog_by_module)} module(s) "
+            f"[{sum(1 for p in plans if not p.is_simultaneous)} multiplexed, "
+            f"{sum(1 for p in plans if p.is_simultaneous)} simultaneous]"
+        )
+        for plan in plans:
             try:
-                self._create_combined_analog_task(label, group_channels)
-                logger.info(f"Combined analog task '{label}_analog': {len(group_channels)} "
-                            f"channel(s) across module type group {group_key}")
+                self._create_combined_analog_task(plan.label, plan.channels)
+                logger.info(
+                    f"Combined analog task '{plan.label}_analog': "
+                    f"{len(plan.channels)} channel(s) across "
+                    f"module(s) {plan.module_names}"
+                )
             except Exception as e:
-                logger.error(f"Failed to create combined analog task for {label}: {e}")
+                # A merged multiplexed task can be rejected by DAQmx if a
+                # module turns out not to share the scan clock (e.g. a
+                # mis-classified simultaneous module). Rather than lose every
+                # channel in the group, split it per-module and retry — a
+                # build-time topology fallback, surfaced loudly. Simultaneous
+                # single-module tasks have nothing to split, so just report.
+                if not plan.is_simultaneous and len(plan.module_names) > 1:
+                    logger.warning(
+                        f"Merged analog task '{plan.label}_analog' failed "
+                        f"({e}); falling back to one task per module for "
+                        f"{plan.module_names}"
+                    )
+                    self._create_per_module_analog_tasks(plan.channels)
+                else:
+                    logger.error(
+                        f"Failed to create analog task for {plan.label}: {e}"
+                    )
+
+    def _create_per_module_analog_tasks(self, channels: List[ChannelConfig]):
+        """Fallback: build one combined AI task per physical module.
+
+        Used when a merged multiplexed task is rejected by DAQmx. Each
+        module's failure is isolated so one bad module doesn't sink the
+        others. Uses more timing engines than the merged task, which may
+        itself exceed the chassis budget — but that surfaces as a clear
+        per-module error rather than a silent all-values-bad fallback.
+        """
+        per_module: Dict[str, List[ChannelConfig]] = {}
+        for ch in channels:
+            mod = self._extract_module_from_path(ch.physical_channel) or ch.module
+            per_module.setdefault(mod, []).append(ch)
+        for module_name, mod_channels in per_module.items():
+            try:
+                self._create_combined_analog_task(module_name, mod_channels)
+                logger.info(
+                    f"Per-module analog task '{module_name}_analog': "
+                    f"{len(mod_channels)} channel(s)"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to create per-module analog task for "
+                    f"{module_name}: {e}"
+                )
 
     def _create_combined_analog_task(self, module_name: str, channels: List[ChannelConfig]):
         """
@@ -1269,9 +1344,15 @@ class HardwareReader:
         channel_names = []
         channel_types: Dict[str, ChannelType] = {}  # Track type per channel for post-processing
 
-        # CRITICAL: Sort channels by physical index before adding to task
-        # DAQmx returns values in the order channels are added
-        sorted_channels = sorted(channels, key=lambda ch: _get_physical_channel_index(ch.physical_channel))
+        # CRITICAL: Sort channels before adding to task — DAQmx returns values
+        # in add-order and post-processing maps by position. Key on (module,
+        # ai-index) so a merged multi-module task keeps each module's channels
+        # contiguous and index-ordered; for a single-module task the module key
+        # is constant and this reduces to the original ai-index sort.
+        sorted_channels = sorted(channels, key=lambda ch: (
+            self._extract_module_from_path(ch.physical_channel),
+            _get_physical_channel_index(ch.physical_channel),
+        ))
 
         try:
             for channel in sorted_channels:
@@ -3144,11 +3225,17 @@ class HardwareReader:
             return None
         try:
             return task.read()
-        except Exception as e:
+        except Exception:
+            # Write-only output modules (NI 9263/9265/9266, etc.) have no
+            # hardware sense channel, so task.read() raises DaqError -200460.
+            # This is an expected capability limitation, not a fault: we cache
+            # it and fall back to commanded values. Logged once per channel at
+            # DEBUG (not INFO) and without the multi-line driver traceback so
+            # it doesn't flood the console at every acquisition start.
             self._no_readback_outputs.add(channel_name)
-            logger.info(
-                f"{channel_name}: output readback not supported by this "
-                f"module — using commanded values (task.read() raised: {e})"
+            logger.debug(
+                f"{channel_name}: output read-back not supported by this "
+                f"module (write-only) — using commanded value"
             )
             return None
 
