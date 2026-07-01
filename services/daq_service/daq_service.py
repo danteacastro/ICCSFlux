@@ -17818,12 +17818,16 @@ Unit conversions:
                     # Snapshot channel config to prevent race with config updates
                     channel_config_snapshot = dict(self.config.channels)
 
-                    # Periodic scaling diagnostic (every 10 seconds)
-                    _now = time.time()
-                    _diag_scaling = getattr(self, '_diag_scaling_next', 0)
-                    _do_scaling_diag = _now >= _diag_scaling
-                    if _do_scaling_diag:
-                        self._diag_scaling_next = _now + 10.0
+                    # Periodic scaling diagnostic (every 10 seconds). Disabled
+                    # by default — it logs one INFO line per channel and floods
+                    # the console. Re-enable by setting ICCS_SCALING_DIAG=1.
+                    _do_scaling_diag = False
+                    if os.environ.get('ICCS_SCALING_DIAG') == '1':
+                        _now = time.time()
+                        _diag_scaling = getattr(self, '_diag_scaling_next', 0)
+                        _do_scaling_diag = _now >= _diag_scaling
+                        if _do_scaling_diag:
+                            self._diag_scaling_next = _now + 10.0
 
                     with self.values_lock:
                         for name, raw_value in raw_values.items():
@@ -17871,9 +17875,6 @@ Unit conversions:
                                                 f"type={channel.channel_type.value} "
                                                 f"scale_type={channel.scale_type} "
                                                 f"four_twenty={channel.four_twenty_scaling} "
-                                                f"eng_min={channel.eng_units_min} eng_max={channel.eng_units_max} "
-                                                f"pre_min={channel.pre_scaled_min} pre_max={channel.pre_scaled_max} "
-                                                f"sc_min={channel.scaled_min} sc_max={channel.scaled_max} "
                                                 f"slope={channel.scale_slope} offset={channel.scale_offset}"
                                             )
 
