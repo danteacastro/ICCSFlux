@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "daq_service"
 
 from config_parser import (
     ChannelConfig, ChannelType, ThermocoupleType, NISystemConfig,
-    SystemConfig, ChassisConfig, ModuleConfig
+    SystemConfig, ChassisConfig, ModuleConfig, DataViewerConfig
 )
 from simulator import HardwareSimulator, ChannelSimulator
 
@@ -262,6 +262,7 @@ class TestHardwareSimulator:
                 simulation_mode=True,
                 log_directory="./logs"
             ),
+            dataviewer=DataViewerConfig(),
             chassis={
                 "main": ChassisConfig(
                     name="main",
@@ -451,6 +452,7 @@ class TestValveFlowSimulation:
         """Create config with valve and flow channels."""
         return NISystemConfig(
             system=SystemConfig(),
+            dataviewer=DataViewerConfig(),
             chassis={"main": ChassisConfig(name="main", chassis_type="cDAQ-9178")},
             modules={"mod1": ModuleConfig(name="mod1", module_type="NI-9213", chassis="main", slot=1)},
             channels={
