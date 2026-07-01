@@ -7672,8 +7672,9 @@ watch(
                 <div class="form-row checkbox-row">
                   <label>
                     <input type="checkbox" v-model="editingConfig.moduleConfig.reset_on_read" />
-                    Reset on Read (totalizer mode)
+                    Reset on Read (counts since last scan)
                   </label>
+                  <span class="form-hint">On: each sample is the count since the previous scan (per-interval delta). Off: running total that keeps accumulating.</span>
                 </div>
                 <!-- NI 9361 input conditioning -->
                 <div class="form-row">

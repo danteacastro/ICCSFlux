@@ -467,6 +467,10 @@ class HardwareSimulator:
     def __init__(self, config: NISystemConfig):
         self.config = config
         self.channel_simulators: Dict[str, ChannelSimulator] = {}
+        # Reset-on-read (totalizer) counters: accumulated total at last read_all(),
+        # so we can report counts-since-last-read. Mirrors HardwareReader so
+        # simulator and hardware behave identically for this flag.
+        self._counter_read_baseline: Dict[str, float] = {}
         self._initialize_simulators()
 
     def _initialize_simulators(self):
@@ -526,7 +530,31 @@ class HardwareSimulator:
         values = {}
         for name, sim in self.channel_simulators.items():
             values[name] = sim.read()
+        self._apply_counter_reset_on_read(values)
         return values
+
+    def _apply_counter_reset_on_read(self, values: Dict[str, float]) -> None:
+        """Convert reset-on-read counters from running total to per-read delta.
+
+        Matches HardwareReader.read_all() semantics so a totalizer configured
+        with reset_on_read behaves the same in simulation. First read of a
+        channel returns 0 (baseline seeded to current total).
+        """
+        for name, sim in self.channel_simulators.items():
+            ch = sim.channel
+            if ch.channel_type not in (
+                ChannelType.COUNTER, ChannelType.COUNTER_INPUT, ChannelType.FREQUENCY_INPUT):
+                continue
+            if (getattr(ch, 'counter_mode', 'count') or 'count') != 'count':
+                continue  # frequency/period are instantaneous — no delta
+            if not getattr(ch, 'counter_reset_on_read', False):
+                continue
+            accumulated = values.get(name)
+            if accumulated is None or not math.isfinite(accumulated):
+                continue
+            baseline = self._counter_read_baseline.get(name, accumulated)
+            values[name] = accumulated - baseline
+            self._counter_read_baseline[name] = accumulated
 
     def set_temperature_target(self, channel_name: str, target: float):
         """Set target temperature for thermocouple simulation"""

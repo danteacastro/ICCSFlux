@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 import re
+import math
 import itertools
 from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
@@ -848,6 +849,14 @@ class HardwareReader:
         self._counter_channel_index: Dict[str, int] = {}  # channel_name -> index within its shared task's read() list
         self._counter_actual_mode: Dict[str, str] = {}  # channel_name -> mode actually configured (may differ after fallback)
         self._counter_rollover: Dict[str, Dict] = {}  # rollover tracking for edge count mode
+        # Reset-on-read (totalizer) counters: report counts since the previous
+        # read_all() instead of the running total. The delta is computed in
+        # software at the single read_all() consumption point — the hardware
+        # counter keeps free-running, so no edges are lost (we never stop/reset
+        # the physical counter). _counter_read_baseline holds each channel's
+        # accumulated total at its last read_all().
+        self._reset_on_read_counters: Set[str] = set()  # count-mode channels with reset_on_read=True
+        self._counter_read_baseline: Dict[str, float] = {}  # channel_name -> accumulated total at last read
         self._momentary_timers: Dict[str, threading.Timer] = {}  # Relay momentary pulse timers
 
         # Output state cache (for read-back) - preserve values across reinit
@@ -1116,6 +1125,11 @@ class HardwareReader:
         self.counter_tasks.clear()
         self._counter_channel_index.clear()
         self._counter_actual_mode.clear()
+        # Counters restart from 0 on rebuild, so drop reset-on-read baselines —
+        # otherwise the first post-rebuild read would compute a huge/negative
+        # delta against a stale total.
+        self._reset_on_read_counters.clear()
+        self._counter_read_baseline.clear()
 
     def _create_tasks(self):
         """
@@ -2444,9 +2458,16 @@ class HardwareReader:
                     self.counter_tasks[channel.name] = task
                     self._counter_channel_index[channel.name] = idx
                     self._counter_actual_mode[channel.name] = actual_mode
+                    # Reset-on-read only applies to edge-count totals; frequency/
+                    # period are already instantaneous, so a delta is meaningless.
+                    reset_on_read = (actual_mode == "count"
+                                     and getattr(channel, 'counter_reset_on_read', False))
+                    if reset_on_read:
+                        self._reset_on_read_counters.add(channel.name)
                     logger.info(f"Added counter channel: {channel.name} "
                                f"(mode={actual_mode}, task=CTR_{device}, idx={idx}, "
-                               f"threshold={module_threshold}V)")
+                               f"threshold={module_threshold}V, "
+                               f"reset_on_read={reset_on_read})")
 
             except Exception as e:
                 logger.error(f"Failed to create counter task for device {device}: {e}")
@@ -3196,6 +3217,11 @@ class HardwareReader:
         If the reader thread has died, returns NaN for all input channels so
         the scan loop sees the data is bad instead of silently publishing
         stale values for minutes (Bug A in pre-Monday audit).
+
+        Reset-on-read (totalizer) counters are consumed HERE: this is the single
+        production consumption point, so returning "counts since the previous
+        read" is lossless regardless of how often the poll thread refreshed the
+        running total in between. The hardware counter is never touched.
         """
         with self.lock:
             if self._reader_died:
@@ -3203,12 +3229,34 @@ class HardwareReader:
                 values = {name: float('nan') for name in self.latest_values.keys()}
             else:
                 values = dict(self.latest_values)
+                self._apply_counter_reset_on_read(values)
 
             # Output states are always current (we own them)
             for name, value in self.output_values.items():
                 values[name] = value
 
         return values
+
+    def _apply_counter_reset_on_read(self, values: Dict[str, float]) -> None:
+        """Convert reset-on-read counters from running total to per-read delta.
+
+        Must be called while holding self.lock (mutates _counter_read_baseline).
+        For each reset-on-read counter, replace its accumulated total with the
+        increase since the previous read_all(), then rebase. The first read of a
+        channel returns 0 (baseline seeded to the current total) so acquisition
+        start doesn't emit a one-sample spike. A NaN reading (failed counter
+        read) is passed through untouched and does NOT advance the baseline, so
+        the next good read still counts the edges that accrued across the gap.
+        """
+        for name in self._reset_on_read_counters:
+            accumulated = values.get(name)
+            if accumulated is None or not math.isfinite(accumulated):
+                continue  # channel absent or NaN — leave as-is, keep baseline
+            baseline = self._counter_read_baseline.get(name)
+            if baseline is None:
+                baseline = accumulated  # first read → delta 0
+            values[name] = accumulated - baseline
+            self._counter_read_baseline[name] = accumulated
 
     def _try_output_readback(self, channel_name: str, task) -> Optional[Any]:
         """Try to read back the actual output state.
@@ -3497,6 +3545,8 @@ class HardwareReader:
             self.counter_tasks.clear()
             self._counter_channel_index.clear()
             self._counter_actual_mode.clear()
+            self._reset_on_read_counters.clear()
+            self._counter_read_baseline.clear()
 
             # Cancel momentary pulse timers
             for timer in self._momentary_timers.values():
