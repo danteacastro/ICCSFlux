@@ -56,6 +56,9 @@ vi.mock('../stores/dashboard', () => ({
     getLayout: mockGetLayout,
     setChannels: vi.fn(),
     saveLayoutToStorage: vi.fn(),
+    setActiveProject: vi.fn(),
+    readLayoutCache: vi.fn().mockReturnValue(null),
+    activeProjectKey: null,
     systemId: 'test-system'
   })
 }))

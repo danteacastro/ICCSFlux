@@ -70,6 +70,57 @@ const recordingTime = computed(() => {
 
 <template>
   <div class="control-bar">
+    <!-- Edit/P&ID controls sit to the LEFT of the Start/Record/Session cluster so
+         that cluster stays anchored in the same spot on every page (these controls
+         only render on the Overview page via showEditControls). -->
+    <div v-if="showEditControls" class="control-group edit-group">
+      <!-- Add Widget (only in edit mode) -->
+      <button
+        v-if="store.editMode"
+        class="btn btn-add"
+        @click="emit('add-widget')"
+        aria-label="Add widget"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        ADD WIDGET
+      </button>
+
+      <!-- Edit mode toggle -->
+      <button
+        class="btn btn-edit"
+        :class="{ active: store.editMode }"
+        @click="store.toggleEditMode()"
+        :aria-label="store.editMode ? 'Exit edit mode' : 'Enter edit mode'"
+        :aria-pressed="store.editMode"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+        {{ store.editMode ? 'DONE' : 'EDIT' }}
+      </button>
+
+      <!-- P&ID Edit Mode toggle -->
+      <button
+        class="btn btn-pid"
+        :class="{ active: store.pidEditMode }"
+        @click="store.setPidEditMode(!store.pidEditMode)"
+        title="P&ID Drawing Mode - Free-form symbols and pipes"
+        :aria-label="store.pidEditMode ? 'Exit P&ID drawing mode' : 'Enter P&ID drawing mode'"
+        :aria-pressed="store.pidEditMode"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="5" cy="12" r="3"/>
+          <circle cx="19" cy="12" r="3"/>
+          <line x1="8" y1="12" x2="16" y2="12"/>
+          <path d="M12 8v8"/>
+        </svg>
+        {{ store.pidEditMode ? 'EXIT P&ID' : 'P&ID' }}
+      </button>
+    </div>
+
     <div class="control-group">
       <!-- Start/Stop -->
       <button
@@ -162,54 +213,6 @@ const recordingTime = computed(() => {
       <span class="control-error-icon" aria-hidden="true">⚠</span>
       <span class="control-error-text">{{ acquireError || recordingError || sessionError }}</span>
       <button class="control-error-dismiss" @click="dismissError" aria-label="Dismiss error">×</button>
-    </div>
-
-    <div v-if="showEditControls" class="control-group edit-group">
-      <!-- Add Widget (only in edit mode) -->
-      <button
-        v-if="store.editMode"
-        class="btn btn-add"
-        @click="emit('add-widget')"
-        aria-label="Add widget"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        ADD WIDGET
-      </button>
-
-      <!-- Edit mode toggle -->
-      <button
-        class="btn btn-edit"
-        :class="{ active: store.editMode }"
-        @click="store.toggleEditMode()"
-        :aria-label="store.editMode ? 'Exit edit mode' : 'Enter edit mode'"
-        :aria-pressed="store.editMode"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-          <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
-        </svg>
-        {{ store.editMode ? 'DONE' : 'EDIT' }}
-      </button>
-
-      <!-- P&ID Edit Mode toggle -->
-      <button
-        class="btn btn-pid"
-        :class="{ active: store.pidEditMode }"
-        @click="store.setPidEditMode(!store.pidEditMode)"
-        title="P&ID Drawing Mode - Free-form symbols and pipes"
-        :aria-label="store.pidEditMode ? 'Exit P&ID drawing mode' : 'Enter P&ID drawing mode'"
-        :aria-pressed="store.pidEditMode"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <circle cx="5" cy="12" r="3"/>
-          <circle cx="19" cy="12" r="3"/>
-          <line x1="8" y1="12" x2="16" y2="12"/>
-          <path d="M12 8v8"/>
-        </svg>
-        {{ store.pidEditMode ? 'EXIT P&ID' : 'P&ID' }}
-      </button>
     </div>
 
   </div>

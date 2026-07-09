@@ -315,7 +315,8 @@ export function useProjectFiles() {
         }
         try {
           console.debug('[PROJECT LOADING] Applying current project data...')
-          await applyProjectData(payload.project)
+          // Passive sync (boot/reconnect): prefer newer unsaved edits for this project.
+          await applyProjectData(payload.project, { preferCache: true })
           console.debug('[PROJECT LOADING] ✅ Current project applied successfully')
           projectLoadedCallbacks.forEach(cb => cb(payload.project))
         } catch (err) {
@@ -712,13 +713,21 @@ export function useProjectFiles() {
     } as ChannelConfig
   }
 
-  // Apply loaded project data to frontend
-  async function applyProjectData(data: ProjectData) {
+  // Apply loaded project data to frontend.
+  // opts.preferCache: on a passive reconnect/refresh (project/current), prefer a
+  // NEWER project-scoped layout cache over the saved file so unsaved widget/P&ID
+  // edits survive a browser refresh. On an explicit load, the file is authoritative.
+  async function applyProjectData(data: ProjectData, opts: { preferCache?: boolean } = {}) {
     console.debug('[PROJECT LOADING] Starting to apply project data...')
     console.debug('[PROJECT LOADING] Project name:', data.name)
     console.debug('[PROJECT LOADING] Project version:', data.version)
     console.debug('[PROJECT LOADING] Project config:', data.config)
     console.debug('[PROJECT LOADING] Has embedded channels:', !!data.channels)
+
+    // Mark which project is active so its layout is cached under a per-project key
+    // (and so a blank/no-project state never persists anything).
+    const projectKey = currentProject.value || data.name || 'project'
+    store.setActiveProject(projectKey)
 
     // CRITICAL: Clear all safety state FIRST to prevent ghost alarms from previous project
     console.debug('[PROJECT LOADING] Clearing old safety state before loading new project...')
@@ -800,21 +809,37 @@ export function useProjectFiles() {
       }
 
       try {
-        store.setLayout({
+        const fileLayout = {
           system_id: store.systemId,
           widgets: data.layout.widgets || [],      // Legacy single-page
           pages: data.layout.pages,                 // Multi-page support
           currentPageId: data.layout.currentPageId, // Current page ID
           gridColumns: data.layout.gridColumns || 12,
           rowHeight: data.layout.rowHeight || 80
-        })
+        }
+
+        // On a passive reconnect/refresh, restore newer unsaved local edits for
+        // THIS project instead of the saved file, so a browser refresh doesn't
+        // lose work made since the last save. Explicit loads use the file as-is.
+        let restoredFromCache = false
+        if (opts.preferCache) {
+          const cached = store.readLayoutCache(projectKey)
+          const fileModified = Date.parse((data as any).modified || '') || 0
+          if (cached && cached.savedAt > fileModified) {
+            console.debug('[PROJECT LOADING] Restoring newer unsaved layout from cache (savedAt > file modified)')
+            store.setLayout(cached.layout)
+            restoredFromCache = true
+          }
+        }
+        if (!restoredFromCache) {
+          store.setLayout(fileLayout)
+        }
         console.debug('[PROJECT LOADING] ✅ Layout applied successfully')
 
-        // CRITICAL: Save layout to localStorage to prevent old cached layout from loading on next boot
-        // Without this, localStorage has stale layout data that overwrites the project layout
-        console.debug('[PROJECT LOADING] Saving layout to localStorage to prevent cache issues...')
+        // Persist to the project-scoped cache so subsequent edits round-trip and
+        // survive a refresh.
         store.saveLayoutToStorage()
-        console.debug('[PROJECT LOADING] ✅ Layout saved to localStorage')
+        console.debug('[PROJECT LOADING] ✅ Layout saved to localStorage (project-scoped)')
       } catch (error) {
         console.error('[PROJECT LOADING] ❌ Error applying layout:', error)
         throw error
@@ -1015,10 +1040,13 @@ export function useProjectFiles() {
     console.debug('[PROJECT] Clearing all safety state...')
     safety.clearAllSafetyState('new_project')
 
-    // Clear layout from localStorage to prevent stale data
-    const layoutKey = `nisystem-layout-${store.systemId}`
-    localStorage.removeItem(layoutKey)
-    console.debug('[PROJECT] Cleared layout from localStorage')
+    // Clear the project-scoped layout cache and drop the active-project marker so
+    // nothing is restored on the next boot (no project loaded = blank dashboard).
+    if (store.activeProjectKey) {
+      localStorage.removeItem(`nisystem-layout::${store.activeProjectKey}`)
+    }
+    store.setActiveProject(null)
+    console.debug('[PROJECT] Cleared project-scoped layout cache and active project')
 
     // Clear localStorage items - core scripts
     localStorage.removeItem('nisystem-scripts')

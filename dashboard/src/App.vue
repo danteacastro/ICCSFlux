@@ -458,11 +458,11 @@ onMounted(() => {
 
       clearInterval(checkMqttReady)
 
-      // Restore layout from localStorage (includes P&ID data, widget positions, etc.)
-      // This must happen before ensureDefaultPage() so P&ID work is not lost when
-      // there's no backend project loaded.
+      // Restore layout only when a project is already active (its per-project
+      // cache). At a cold boot no project is loaded yet, so this returns false and
+      // we show a blank page — the dashboard stays empty until a project is loaded
+      // (the backend re-pushes an already-open project via project/current below).
       if (!store.loadLayoutFromStorage()) {
-        // No saved layout — create a blank default page
         store.ensureDefaultPage()
       }
 

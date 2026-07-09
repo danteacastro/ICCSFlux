@@ -547,6 +547,100 @@ describe('Dashboard Store', () => {
   })
 
   // ===========================================================================
+  // PROJECT-SCOPED LAYOUT PERSISTENCE
+  // ===========================================================================
+
+  describe('Project-scoped Layout Persistence', () => {
+    it('does not persist layout when no project is loaded', () => {
+      const store = useDashboardStore()
+      store.addWidget({ type: 'numeric', x: 0, y: 0, w: 2, h: 2 })
+
+      store.saveLayoutToStorage()
+
+      const layoutKeys = Object.keys(localStorage).filter(k => k.startsWith('nisystem-layout'))
+      expect(layoutKeys).toHaveLength(0)
+    })
+
+    it('persists layout under a per-project key when a project is active', () => {
+      const store = useDashboardStore()
+      store.setActiveProject('MyProject')
+      store.addWidget({ type: 'numeric', x: 0, y: 0, w: 2, h: 2 })
+
+      store.saveLayoutToStorage()
+
+      const raw = localStorage.getItem('nisystem-layout::MyProject')
+      expect(raw).toBeTruthy()
+      const parsed = JSON.parse(raw!)
+      expect(parsed.layout).toBeTruthy()
+      expect(typeof parsed.savedAt).toBe('number')
+    })
+
+    it('loadLayoutFromStorage returns false with no active project', () => {
+      const store = useDashboardStore()
+      // A cache for some other project must not leak into a no-project boot
+      localStorage.setItem('nisystem-layout::Other', JSON.stringify({ layout: { pages: [] }, savedAt: 1 }))
+
+      expect(store.loadLayoutFromStorage()).toBe(false)
+    })
+
+    it('restores the active project cache via loadLayoutFromStorage', () => {
+      const store = useDashboardStore()
+      store.setActiveProject('MyProject')
+      const cachedLayout: LayoutConfig = {
+        system_id: 'test',
+        gridColumns: 24,
+        rowHeight: 30,
+        pages: [{
+          id: 'p1', name: 'Cached', order: 0,
+          widgets: [{ id: 'w1', type: 'numeric', x: 0, y: 0, w: 2, h: 2 }]
+        }],
+        currentPageId: 'p1'
+      }
+      localStorage.setItem('nisystem-layout::MyProject', JSON.stringify({ layout: cachedLayout, savedAt: 123 }))
+
+      expect(store.loadLayoutFromStorage()).toBe(true)
+      expect(store.pages).toHaveLength(1)
+      expect(store.pages[0]?.name).toBe('Cached')
+      expect(store.widgets).toHaveLength(1)
+    })
+
+    it('readLayoutCache returns null for missing or invalid entries', () => {
+      const store = useDashboardStore()
+      expect(store.readLayoutCache('nope')).toBeNull()
+      localStorage.setItem('nisystem-layout::bad', 'not json')
+      expect(store.readLayoutCache('bad')).toBeNull()
+    })
+
+    it('purges the legacy global layout key on store creation', () => {
+      localStorage.setItem('nisystem-layout-default', JSON.stringify({ pages: [] }))
+      // Re-create pinia + store to trigger the init-time purge
+      setActivePinia(createPinia())
+      useDashboardStore()
+      expect(localStorage.getItem('nisystem-layout-default')).toBeNull()
+    })
+
+    it('renameChannelInWidgets updates every page and persists when a project is active', () => {
+      const store = useDashboardStore()
+      store.setActiveProject('MyProject')
+      store.addWidget({ type: 'numeric', x: 0, y: 0, w: 2, h: 2, channel: 'OLD' })
+      const page2 = store.addPage('Page 2')
+      store.switchPage(page2)
+      store.addWidget({ type: 'chart', x: 0, y: 0, w: 8, h: 6, channels: ['OLD', 'KEEP'] })
+
+      store.renameChannelInWidgets('OLD', 'NEW')
+
+      // Page 2 (current) chart updated
+      expect(store.widgets[0]?.channels).toContain('NEW')
+      expect(store.widgets[0]?.channels).not.toContain('OLD')
+      // Page 1 numeric updated
+      store.switchPage(store.pages[0]!.id)
+      expect(store.widgets[0]?.channel).toBe('NEW')
+      // Persisted to the project-scoped cache
+      expect(localStorage.getItem('nisystem-layout::MyProject')).toBeTruthy()
+    })
+  })
+
+  // ===========================================================================
   // CHANNEL LIFECYCLE
   // ===========================================================================
 

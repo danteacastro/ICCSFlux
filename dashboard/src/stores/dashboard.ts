@@ -214,6 +214,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const systemName = ref<string>('ICCSFlux')
   const mqttPrefix = ref<string>('nisystem')
 
+  // Active project key — identifies the loaded project for layout persistence.
+  // null = no project loaded: the dashboard shows nothing and the layout is NOT
+  // cached, so stale widgets can never resurface on the next boot. Set by the
+  // project-load flow (useProjectFiles.applyProjectData) and cleared by newProject().
+  const activeProjectKey = ref<string | null>(null)
+
   // Channel data
   const channels = ref<Record<string, ChannelConfig>>({})
   const values = shallowRef<Record<string, ChannelValue>>({})
@@ -3620,20 +3626,61 @@ export const useDashboardStore = defineStore('dashboard', () => {
     console.log('[DASHBOARD STORE] Layout version:', layoutVersion.value)
   }
 
+  // Project-scoped layout cache. The key is derived from the active project so
+  // each project keeps its own unsaved-edit buffer. With no active project there
+  // is no key — nothing is persisted and nothing is restored (blank dashboard).
+  const LAYOUT_CACHE_PREFIX = 'nisystem-layout::'
+  // Legacy global key (systemId was permanently 'default'), which used to
+  // resurrect widgets on every boot regardless of project. Purged on init below.
+  const LEGACY_LAYOUT_KEY = 'nisystem-layout-default'
+
+  function projectLayoutKey(key: string): string {
+    return `${LAYOUT_CACHE_PREFIX}${key}`
+  }
+
+  function setActiveProject(key: string | null) {
+    activeProjectKey.value = key
+  }
+
+  /**
+   * Read a project's cached layout without applying it.
+   * Returns { layout, savedAt } or null if absent/invalid.
+   */
+  function readLayoutCache(key: string): { layout: LayoutConfig; savedAt: number } | null {
+    try {
+      const raw = localStorage.getItem(projectLayoutKey(key))
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      if (!parsed || !parsed.layout) return null
+      return { layout: parsed.layout as LayoutConfig, savedAt: parsed.savedAt || 0 }
+    } catch (e) {
+      console.error('[DASHBOARD STORE] Failed to read layout cache:', e)
+      return null
+    }
+  }
+
   function saveLayoutToStorage() {
+    // Only persist when a project is loaded. No project = intentionally blank,
+    // so nothing is cached and the dashboard can't repopulate itself on boot.
+    if (!activeProjectKey.value) return
     try {
       const layout = getLayout()
-      localStorage.setItem(`nisystem-layout-${systemId.value}`, JSON.stringify(layout))
+      localStorage.setItem(
+        projectLayoutKey(activeProjectKey.value),
+        JSON.stringify({ layout, savedAt: Date.now() })
+      )
     } catch (e) {
       console.error('[DASHBOARD STORE] Failed to save layout to localStorage:', e)
     }
   }
 
   function loadLayoutFromStorage(): boolean {
-    const stored = localStorage.getItem(`nisystem-layout-${systemId.value}`)
-    if (stored) {
+    // Nothing to restore without a loaded project.
+    if (!activeProjectKey.value) return false
+    const cache = readLayoutCache(activeProjectKey.value)
+    if (cache) {
       try {
-        const layout = JSON.parse(stored) as LayoutConfig
+        const layout = cache.layout
         // Migration: Remove boolean props that default to true when set to false
         // This fixes checkboxes that saved false instead of leaving undefined
         const migrateWidgets = (widgetList: WidgetConfig[]) => {
@@ -3858,21 +3905,25 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   }
 
-  // Rename channel references in all widgets
+  // Rename channel references in all widgets across every page (not just the
+  // current one), then persist so the project's layout cache stays consistent.
   function renameChannelInWidgets(oldName: string, newName: string) {
-    for (const widget of widgets.value) {
-      // Single-channel widgets
-      if (widget.channel === oldName) {
-        widget.channel = newName
-      }
-      // Multi-channel widgets (charts)
-      if (widget.channels && Array.isArray(widget.channels)) {
-        const idx = widget.channels.indexOf(oldName)
-        if (idx !== -1) {
-          widget.channels[idx] = newName
+    for (const page of pages.value) {
+      for (const widget of page.widgets) {
+        // Single-channel widgets
+        if (widget.channel === oldName) {
+          widget.channel = newName
+        }
+        // Multi-channel widgets (charts)
+        if (widget.channels && Array.isArray(widget.channels)) {
+          const idx = widget.channels.indexOf(oldName)
+          if (idx !== -1) {
+            widget.channels[idx] = newName
+          }
         }
       }
     }
+    saveLayoutToStorage()
   }
 
   // Find widgets that reference non-existent channels
@@ -4048,6 +4099,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Load on store creation
   loadRecordingConfigFromStorage()
 
+  // Purge the legacy global layout cache. It was keyed by systemId (permanently
+  // 'default'), so it acted as a phantom default that repopulated the dashboard
+  // on every boot regardless of which project — if any — was loaded. Layout is
+  // now cached per-project; drop the stale key so it can never resurface.
+  try { localStorage.removeItem(LEGACY_LAYOUT_KEY) } catch { /* ignore */ }
+
   // Ensure there's always a default page (Page 1) even with no project loaded
   ensureDefaultPage()
 
@@ -4056,6 +4113,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     systemId,
     systemName,
     mqttPrefix,
+    activeProjectKey,
     channels,
     values,
     status,
@@ -4121,6 +4179,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
     setLayout,
     saveLayoutToStorage,
     loadLayoutFromStorage,
+    setActiveProject,
+    readLayoutCache,
     generateDefaultLayout,
     loadPresetLayout,
 

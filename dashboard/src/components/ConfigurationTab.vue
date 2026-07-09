@@ -4989,36 +4989,9 @@ function saveChannelConfig() {
 
 // Propagate channel rename to all localStorage references
 function propagateChannelRename(oldName: string, newName: string) {
-  const systemId = store.systemId || 'default'
-
-  // Update dashboard layout (widget channel references)
-  const layoutKey = `nisystem-layout-${systemId}`
-  const layoutData = localStorage.getItem(layoutKey)
-  if (layoutData) {
-    try {
-      const layout = JSON.parse(layoutData)
-      let updated = false
-      for (const widget of layout.widgets || []) {
-        if (widget.channel === oldName) {
-          widget.channel = newName
-          updated = true
-        }
-        if (widget.channels && Array.isArray(widget.channels)) {
-          const idx = widget.channels.indexOf(oldName)
-          if (idx !== -1) {
-            widget.channels[idx] = newName
-            updated = true
-          }
-        }
-      }
-      if (updated) {
-        localStorage.setItem(layoutKey, JSON.stringify(layout))
-        console.log(`Updated layout references: ${oldName} -> ${newName}`)
-      }
-    } catch (e) {
-      console.error('Failed to update layout for channel rename:', e)
-    }
-  }
+  // Dashboard widget references are updated in-memory across all pages and
+  // persisted to the project-scoped cache by store.renameChannelInWidgets()
+  // (called at the end of this function). No direct localStorage layout edit needed.
 
   // Update recording config
   const recConfigKey = 'nisystem-recording-config'

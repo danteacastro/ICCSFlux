@@ -182,6 +182,9 @@ export function useNodeContext() {
 
     // Apply layout
     if (data.layout) {
+      // Mark the swapped-in node's project active so its layout caches under a
+      // per-project key (and edits persist for this node).
+      store.setActiveProject(data.name || 'project')
       store.setLayout({
         system_id: store.systemId,
         widgets: data.layout.widgets || [],
