@@ -86,7 +86,7 @@ watch(() => props.text, (newText) => {
 
 <template>
   <div
-    class="title-label no-drag"
+    class="title-label"
     :class="[fontSizeClass, alignClass]"
     :style="customStyle"
     @dblclick="startEdit"
@@ -104,7 +104,7 @@ watch(() => props.text, (newText) => {
     <!-- Settings button (edit mode only) -->
     <button
       v-if="store.editMode && !isEditing"
-      class="settings-btn"
+      class="settings-btn no-drag"
       @click.stop="openSettings"
       title="Style settings"
     >

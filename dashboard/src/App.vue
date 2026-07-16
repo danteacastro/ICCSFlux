@@ -943,9 +943,12 @@ async function handleManualSave() {
     </header>
 
     <!-- Main content -->
-    <main class="app-main">
-      <!-- P&ID Toolbar (shown when in P&ID edit mode on overview) -->
-      <PidToolbar v-if="activeTab === 'overview' && store.pidEditMode" />
+    <!-- P&ID Toolbar replaces the header in P&ID mode. It's a sibling of
+         .app-main (like .app-header), NOT inside it, so it doesn't add to the
+         scroll height and the P&ID view is exactly as tall as the regular one. -->
+    <PidToolbar v-if="activeTab === 'overview' && store.pidEditMode" />
+
+    <main class="app-main" :class="{ 'app-main--fixed': activeTab === 'overview' }">
       <keep-alive>
         <component :is="activeTabComponent" :key="activeTab" />
       </keep-alive>
@@ -1266,6 +1269,10 @@ async function handleManualSave() {
   height: 100vh;
   background: var(--bg-primary);
   color: var(--text-primary);
+  /* Shared top-bar height so the regular header and the P&ID toolbar (which
+     replaces it in P&ID mode) are exactly the same height and content doesn't
+     jump when toggling P&ID mode. Consumed by .app-header and .pid-toolbar. */
+  --app-header-height: 56px;
 }
 
 .app-header {
@@ -1273,7 +1280,7 @@ async function handleManualSave() {
   justify-content: space-between;
   align-items: center;
   padding: 0 16px;
-  height: 56px;
+  height: var(--app-header-height);
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
@@ -1408,6 +1415,18 @@ async function handleManualSave() {
   flex: 1;
   overflow-y: auto;
 }
+
+/* The dashboard/P&ID (overview) is a single fixed canvas sized to the viewport —
+   no scrolling; a wider window just gives more canvas. Other tabs (Config, Data,
+   Scripts, …) keep their normal scrolling. */
+.app-main.app-main--fixed {
+  overflow: hidden;
+}
+
+/* In P&ID edit mode the page still scrolls (widgets and the P&ID canvas move
+   together, as before). The toolbar replaces the header as a sibling of
+   .app-main (so it never scrolls and adds nothing to the scroll height), and
+   the symbol/properties panels are fixed, offset below it by --app-header-height. */
 
 .tab-placeholder {
   display: flex;
@@ -1580,18 +1599,23 @@ async function handleManualSave() {
   padding: 0 12px;
   border-left: 1px solid var(--border-color);
   margin-left: 8px;
+  /* Keep the project block at its natural size instead of being compressed. */
+  flex-shrink: 0;
 }
 
+/* Single fixed-height line. Previously this was a 2-line clamp with
+   word-break: break-word, so a narrow window shattered the title into stacked
+   fragments ("T" / "e."). Now it stays one line at a stable width and simply
+   ellipsises when the name is too long. */
 .project-status .project-name {
   font-size: 0.7rem;
   color: var(--text-muted);
-  max-width: 100px;
+  width: 100px;
+  flex-shrink: 0;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   line-height: 1.2;
-  word-break: break-word;
 }
 
 .dirty-indicator {

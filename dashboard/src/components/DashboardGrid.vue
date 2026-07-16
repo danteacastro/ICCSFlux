@@ -85,6 +85,29 @@ function onDragEnd() {
   }))
 }
 
+// ========================================================================
+// FIXED PIXEL GRID
+// The widget grid is a fixed pixel plane, exactly like the P&ID canvas: every
+// column is `store.colWidth` px and every row `store.rowHeight` px, always.
+// Nothing here reads the window size, so resizing the window cannot rescale,
+// reflow, or jiggle the widgets — a bigger window simply reveals more of the
+// plane (and a smaller one clips it), which is how the P&ID layer behaves.
+// ========================================================================
+const GRID_MARGIN = 8
+// Columns in the plane. Kept generous (and independent of the window) so there's
+// room to place widgets on wide screens without ever reflowing on resize.
+const PLANE_COLUMNS = 48
+
+const renderColumns = computed(() => Math.max(store.gridColumns, PLANE_COLUMNS))
+
+// Constant pixel width. grid-layout-plus derives its column width from its own
+// root's offsetWidth, so pinning this wrapper to an exact whole-pixel width pins
+// colWidth to store.colWidth precisely (no rounding drift, no jiggle).
+const gridWrapWidth = computed(() => {
+  const cols = renderColumns.value
+  return cols * store.colWidth + GRID_MARGIN * (cols + 1)
+})
+
 // Convert widgets to grid-layout format
 // Use a writable computed for v-model binding with grid-layout-plus
 const layoutItems = computed({
@@ -440,9 +463,12 @@ function handlePidPipeSelect(id: string | null) {
       v-if="store.pidEditMode && store.pidPropertiesPanelOpen"
     />
 
+    <!-- Fixed-width wrapper: pins colWidth to store.colWidth so widgets are a
+         constant pixel size. Independent of the window — no reflow on resize. -->
+    <div class="grid-wrap" :style="{ width: gridWrapWidth + 'px' }">
     <GridLayout
       v-model:layout="layoutItems"
-      :col-num="store.gridColumns"
+      :col-num="renderColumns"
       :row-height="store.rowHeight"
       :is-draggable="store.editMode"
       :is-resizable="store.editMode"
@@ -500,6 +526,7 @@ function handlePidPipeSelect(id: string | null) {
         </div>
       </GridItem>
     </GridLayout>
+    </div>
 
     <!-- Widget config modal -->
     <WidgetConfigModal

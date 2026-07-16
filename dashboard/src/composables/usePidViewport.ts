@@ -19,9 +19,12 @@ export function usePidViewport(
   canvasRef: Ref<HTMLElement | null>,
 ) {
   // ─── Zoom / Pan ──────────────────────────────────────────────
-  const zoom = computed(() => editMode.value ? store.pidZoom : 1)
-  const panX = computed(() => editMode.value ? store.pidPanX : 0)
-  const panY = computed(() => editMode.value ? store.pidPanY : 0)
+  // The P&ID layer shares the dashboard's fixed pixel coordinate system: the
+  // viewport transform is locked to identity (no independent pan/zoom), so P&ID
+  // symbols/pipes line up 1:1 with widget positions and never drift.
+  const zoom = computed(() => 1)
+  const panX = computed(() => 0)
+  const panY = computed(() => 0)
 
   const isPanning = ref(false)
   const panStart = ref({ x: 0, y: 0, panX: 0, panY: 0 })
@@ -36,29 +39,9 @@ export function usePidViewport(
     }
   }
 
-  function onCanvasWheel(event: WheelEvent) {
-    if (!editMode.value) return
-    if (!event.ctrlKey) return
-    event.preventDefault()
-
-    const rect = canvasRef.value?.getBoundingClientRect()
-    if (!rect) return
-
-    const mouseX = event.clientX - rect.left
-    const mouseY = event.clientY - rect.top
-
-    const worldX = (mouseX - panX.value) / zoom.value
-    const worldY = (mouseY - panY.value) / zoom.value
-
-    const delta = event.deltaY > 0 ? -0.1 : 0.1
-    const newZoom = Math.max(0.1, Math.min(5, zoom.value + delta * zoom.value))
-
-    const newPanX = mouseX - worldX * newZoom
-    const newPanY = mouseY - worldY * newZoom
-
-    store.setPidZoom(newZoom)
-    store.setPidPan(newPanX, newPanY)
-  }
+  // Zoom/pan are disabled — the P&ID canvas is locked to the dashboard's fixed
+  // coordinate system, so the wheel and middle/space drag do nothing here.
+  function onCanvasWheel(_event: WheelEvent) {}
 
   function onPanMove(event: MouseEvent) {
     if (!isPanning.value) return
@@ -73,29 +56,14 @@ export function usePidViewport(
     window.removeEventListener('mouseup', onPanEnd)
   }
 
-  function onPanStart(event: MouseEvent) {
-    if (!editMode.value) return
-
-    const isMiddleButton = event.button === 1
-    const isSpaceDrag = spaceHeld.value && event.button === 0
-
-    if (!isMiddleButton && !isSpaceDrag) return
-
-    event.preventDefault()
-    isPanning.value = true
-    panStart.value = {
-      x: event.clientX,
-      y: event.clientY,
-      panX: store.pidPanX,
-      panY: store.pidPanY
-    }
-
-    window.addEventListener('mousemove', onPanMove)
-    window.addEventListener('mouseup', onPanEnd)
+  function onPanStart(_event: MouseEvent) {
+    // Panning disabled — the P&ID canvas is fixed to the dashboard coordinates.
   }
 
   // ─── Minimap ─────────────────────────────────────────────────
-  const showMinimap = computed(() => store.pidShowMinimap)
+  // Removed from this setup — the dashboard/P&ID is a single fixed canvas with
+  // no independent navigation, so there is nothing for a minimap to control.
+  const showMinimap = computed(() => false)
 
   const minimapBounds = computed(() => {
     const layer = getPidLayer()
@@ -147,7 +115,9 @@ export function usePidViewport(
   }
 
   // ─── Rulers & Guides ────────────────────────────────────────
-  const showRulers = computed(() => store.pidShowRulers)
+  // Rulers removed from this setup (fixed coordinate canvas, no pan/zoom to
+  // reference against).
+  const showRulers = computed(() => false)
   const rulerHCanvas = ref<HTMLCanvasElement | null>(null)
   const rulerVCanvas = ref<HTMLCanvasElement | null>(null)
   const draggingGuide = ref<{ axis: 'h' | 'v'; position: number; id?: string } | null>(null)

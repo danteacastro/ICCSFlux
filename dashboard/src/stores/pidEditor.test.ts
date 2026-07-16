@@ -238,12 +238,50 @@ describe('P&ID Editor Store', () => {
       expect(store.pidOperatorNotes).toHaveLength(0)
     })
 
-    it('should persist notes to localStorage', () => {
+    it('should persist notes under the active project key', () => {
       const store = useDashboardStore()
+      store.setActiveProject('ProjA')
       store.pidAddOperatorNote(50, 50, 'Persisted')
-      const saved = JSON.parse(localStorage.getItem('pid-operator-notes') || '[]')
+      const saved = JSON.parse(localStorage.getItem('pid-operator-notes::ProjA') || '[]')
       expect(saved).toHaveLength(1)
       expect(saved[0].text).toBe('Persisted')
+    })
+
+    it('does not persist notes when no project is loaded', () => {
+      const store = useDashboardStore()
+      store.pidAddOperatorNote(50, 50, 'Orphan')
+      const noteKeys = Object.keys(localStorage).filter(k => k.startsWith('pid-operator-notes'))
+      expect(noteKeys).toHaveLength(0)
+    })
+
+    it('scopes notes to their project so they never leak across projects', () => {
+      const store = useDashboardStore()
+      store.setActiveProject('ProjA')
+      store.pidAddOperatorNote(0, 0, 'A note')
+      expect(store.pidOperatorNotes).toHaveLength(1)
+
+      // Switching projects must not carry A's notes over
+      store.setActiveProject('ProjB')
+      expect(store.pidOperatorNotes).toHaveLength(0)
+
+      // ...and coming back restores A's own notes
+      store.setActiveProject('ProjA')
+      expect(store.pidOperatorNotes).toHaveLength(1)
+      expect(store.pidOperatorNotes[0]!.text).toBe('A note')
+    })
+
+    it('clearing notes only drops the active project’s stored notes', () => {
+      const store = useDashboardStore()
+      store.setActiveProject('ProjA')
+      store.pidAddOperatorNote(0, 0, 'A note')
+      store.setActiveProject('ProjB')
+      store.pidAddOperatorNote(0, 0, 'B note')
+
+      store.pidClearOperatorNotes()  // clears B only
+      expect(localStorage.getItem('pid-operator-notes::ProjB')).toBeNull()
+
+      store.setActiveProject('ProjA')
+      expect(store.pidOperatorNotes).toHaveLength(1)
     })
 
     it('should set default color and author', () => {

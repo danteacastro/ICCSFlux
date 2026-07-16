@@ -232,6 +232,9 @@ const recordingTime = computed(() => {
 .control-group {
   display: flex;
   gap: 8px;
+  /* Keep the groups (and therefore the buttons) at their natural size instead of
+     being compressed by the header's flex layout. */
+  flex-shrink: 0;
 }
 
 .btn {
@@ -245,6 +248,10 @@ const recordingTime = computed(() => {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  /* Fixed size: never wrap the label onto a second line and never let flexbox
+     squeeze the button when the window gets narrow. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn:disabled,

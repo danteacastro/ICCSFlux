@@ -417,13 +417,6 @@ function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
-  // M: Toggle minimap
-  if ((e.key === 'm' || e.key === 'M') && !isCtrl) {
-    e.preventDefault()
-    store.pidShowMinimap = !store.pidShowMinimap
-    return
-  }
-
   // [: Toggle symbol panel collapse
   if (e.key === '[' && !isCtrl) {
     e.preventDefault()
@@ -870,14 +863,6 @@ onUnmounted(() => {
               <span class="dropdown-check">{{ store.pidShowGrid ? '\u2713' : '' }}</span>
               Show Grid
             </button>
-            <button class="dropdown-item" @click="store.pidShowRulers = !store.pidShowRulers">
-              <span class="dropdown-check">{{ store.pidShowRulers ? '\u2713' : '' }}</span>
-              Rulers
-            </button>
-            <button class="dropdown-item" @click="store.pidShowMinimap = !store.pidShowMinimap">
-              <span class="dropdown-check">{{ store.pidShowMinimap ? '\u2713' : '' }}</span>
-              Minimap (M)
-            </button>
             <button class="dropdown-item" @click="store.togglePidColorScheme()">
               <span class="dropdown-check">{{ store.pidColorScheme === 'isa101' ? '\u2713' : '' }}</span>
               ISA-101 Grayscale
@@ -1052,7 +1037,13 @@ onUnmounted(() => {
   background: linear-gradient(to right, #1e3a5f, #2a4a6f);
   border-bottom: 1px solid #3b5998;
   flex-wrap: nowrap;
+  /* Replaces .app-header in P&ID mode and sits as a sibling of .app-main (not
+     inside the scroll area), so it stays put while the canvas scrolls and adds
+     nothing to the scroll height. Same height as the header so nothing shifts. */
+  height: var(--app-header-height, 56px);
+  flex-shrink: 0;
   position: relative;
+  z-index: 60;
 }
 
 .pid-toolbar.compact {
@@ -1132,6 +1123,10 @@ button {
   background: #4a5568;
   color: var(--text-primary);
   padding: 6px 8px;
+  /* Positioning context for the validation badge so it anchors to this button
+     (next to the warning triangle) instead of escaping to the toolbar's
+     top-right corner and overflowing the viewport. */
+  position: relative;
 }
 
 .btn-tool:hover:not(:disabled) {

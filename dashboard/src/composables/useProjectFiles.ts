@@ -1040,13 +1040,15 @@ export function useProjectFiles() {
     console.debug('[PROJECT] Clearing all safety state...')
     safety.clearAllSafetyState('new_project')
 
-    // Clear the project-scoped layout cache and drop the active-project marker so
-    // nothing is restored on the next boot (no project loaded = blank dashboard).
+    // Clear the project-scoped caches (layout + operator notes) and drop the
+    // active-project marker so nothing is restored on the next boot (no project
+    // loaded = blank dashboard, no notes).
     if (store.activeProjectKey) {
       localStorage.removeItem(`nisystem-layout::${store.activeProjectKey}`)
     }
+    store.pidClearOperatorNotes()  // drops this project's notes while it's still active
     store.setActiveProject(null)
-    console.debug('[PROJECT] Cleared project-scoped layout cache and active project')
+    console.debug('[PROJECT] Cleared project-scoped layout cache, notes and active project')
 
     // Clear localStorage items - core scripts
     localStorage.removeItem('nisystem-scripts')

@@ -388,7 +388,49 @@ export const useDashboardStore = defineStore('dashboard', () => {
     author: string
     timestamp: number
   }
-  const pidOperatorNotes = ref<PidOperatorNote[]>(JSON.parse(localStorage.getItem('pid-operator-notes') || '[]'))
+  // Notes are browser-local scratch (never written to the project file), but they
+  // are scoped to the active project so they can't bleed from one project onto
+  // another — the same reason the layout cache is keyed per-project. With no
+  // project loaded nothing is stored and nothing is shown.
+  const OPERATOR_NOTES_PREFIX = 'pid-operator-notes::'
+  // Legacy global key — a single bucket shared by every project. Purged on init.
+  const LEGACY_OPERATOR_NOTES_KEY = 'pid-operator-notes'
+
+  const pidOperatorNotes = ref<PidOperatorNote[]>([])
+
+  function operatorNotesKey(key: string): string {
+    return `${OPERATOR_NOTES_PREFIX}${key}`
+  }
+
+  function saveOperatorNotes() {
+    if (!activeProjectKey.value) return
+    try {
+      localStorage.setItem(operatorNotesKey(activeProjectKey.value), JSON.stringify(pidOperatorNotes.value))
+    } catch (e) {
+      console.error('[STORE] Failed to save operator notes:', e)
+    }
+  }
+
+  /** Load the active project's notes (called when the active project changes). */
+  function loadOperatorNotes() {
+    if (!activeProjectKey.value) {
+      pidOperatorNotes.value = []
+      return
+    }
+    try {
+      const raw = localStorage.getItem(operatorNotesKey(activeProjectKey.value))
+      pidOperatorNotes.value = raw ? JSON.parse(raw) : []
+    } catch (e) {
+      console.error('[STORE] Failed to load operator notes:', e)
+      pidOperatorNotes.value = []
+    }
+  }
+
+  /** Drop the active project's notes from storage (used by New Project). */
+  function clearStoredOperatorNotes() {
+    if (!activeProjectKey.value) return
+    localStorage.removeItem(operatorNotesKey(activeProjectKey.value))
+  }
 
   function pidAddOperatorNote(x: number, y: number, text: string, color = '#fbbf24', author = 'Operator') {
     const note: PidOperatorNote = {
@@ -397,7 +439,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
       timestamp: Date.now(),
     }
     pidOperatorNotes.value = [...pidOperatorNotes.value, note]
-    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+    saveOperatorNotes()
     return note.id
   }
 
@@ -405,17 +447,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidOperatorNotes.value = pidOperatorNotes.value.map(n =>
       n.id === id ? { ...n, ...updates } : n
     )
-    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+    saveOperatorNotes()
   }
 
   function pidRemoveOperatorNote(id: string) {
     pidOperatorNotes.value = pidOperatorNotes.value.filter(n => n.id !== id)
-    localStorage.setItem('pid-operator-notes', JSON.stringify(pidOperatorNotes.value))
+    saveOperatorNotes()
   }
 
   function pidClearOperatorNotes() {
     pidOperatorNotes.value = []
-    localStorage.removeItem('pid-operator-notes')
+    clearStoredOperatorNotes()
   }
 
   // P&ID Focus mode
@@ -543,9 +585,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   })
 
-  // Grid settings
+  // Grid settings — a FIXED pixel plane, the same idea as the P&ID canvas.
+  // Both axes are absolute pixels, so widgets never rescale with the window and
+  // stay aligned with the P&ID layer's absolute-pixel coordinates. A larger
+  // window simply reveals more of the plane; it never reflows the grid.
   const gridColumns = ref(24)  // 24 columns for finer control (was 12)
-  const rowHeight = ref(30)    // Smaller row height to match (was 60)
+  const rowHeight = ref(30)    // fixed px per row
+  const colWidth = ref(50)     // fixed px per column
 
   // ========================================================================
   // RECORDING CONFIGURATION (Data tab)
@@ -3640,6 +3686,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   function setActiveProject(key: string | null) {
     activeProjectKey.value = key
+    // Swap in this project's operator notes (or clear them when no project is
+    // loaded) so notes never carry over from a previously-open project.
+    loadOperatorNotes()
   }
 
   /**
@@ -4105,6 +4154,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // now cached per-project; drop the stale key so it can never resurface.
   try { localStorage.removeItem(LEGACY_LAYOUT_KEY) } catch { /* ignore */ }
 
+  // Same story for operator notes: the old global key was one bucket shared by
+  // every project, so notes leaked across projects. They're per-project now.
+  try { localStorage.removeItem(LEGACY_OPERATOR_NOTES_KEY) } catch { /* ignore */ }
+
   // Ensure there's always a default page (Page 1) even with no project loaded
   ensureDefaultPage()
 
@@ -4120,6 +4173,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     widgets,
     gridColumns,
     rowHeight,
+    colWidth,
     editMode,
     maxCharts,
 

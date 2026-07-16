@@ -503,10 +503,20 @@ const noteDragStart = ref<{ x: number; y: number; noteX: number; noteY: number }
 
 const NOTE_COLORS = ['#fbbf24', '#34d399', '#60a5fa', '#f87171', '#c084fc', '#fb923c']
 
-function addOperatorNote(event: MouseEvent) {
+// Approximate note footprint, used to centre it on spawn.
+const NOTE_SPAWN_W = 150
+const NOTE_SPAWN_H = 60
+
+function addOperatorNote() {
   if (props.editMode) return
-  const pt = getCanvasCoords(event)
-  const id = store.pidAddOperatorNote(pt.x, pt.y, 'New note')
+  // Spawn centred on the visible canvas. (Previously it used the click point,
+  // which meant every note appeared under the "+ Note" button itself.)
+  const rect = canvasRef.value?.getBoundingClientRect()
+  const centreX = rect ? rect.width / 2 : 0
+  const centreY = rect ? rect.height / 2 : 0
+  const x = (centreX - panX.value) / zoom.value - NOTE_SPAWN_W / 2
+  const y = (centreY - panY.value) / zoom.value - NOTE_SPAWN_H / 2
+  const id = store.pidAddOperatorNote(Math.round(x), Math.round(y), 'New note')
   editingNoteId.value = id
   editingNoteText.value = 'New note'
 }
@@ -536,6 +546,12 @@ function cycleNoteColor(noteId: string) {
 
 function onNoteMouseDown(event: MouseEvent, note: { id: string; x: number; y: number }) {
   if (event.button !== 0) return
+  // The textarea carries a native resize grabber (resize: vertical) and the
+  // header has a colour button — both sit inside the note, so a mousedown on
+  // them bubbles here and would start a drag too. That's why resizing the note
+  // also dragged the whole box downwards. Let those elements handle themselves.
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.note-edit, .note-color-btn')) return
   draggingNoteId.value = note.id
   noteDragStart.value = { x: event.clientX, y: event.clientY, noteX: note.x, noteY: note.y }
   const onMove = (e: MouseEvent) => {
@@ -3474,6 +3490,7 @@ watchEffect(() => {
         v-for="note in store.pidOperatorNotes"
         :key="note.id"
         class="operator-note"
+        title="Drag to move • Double-click to edit • Right-click to delete"
         :style="{
           left: `${note.x}px`,
           top: `${note.y}px`,
@@ -3496,7 +3513,8 @@ watchEffect(() => {
           v-else
           v-model="editingNoteText"
           class="note-edit"
-          @keydown.enter.prevent="commitNoteEdit"
+          title="Enter to save • Shift+Enter for a new line • Esc to cancel"
+          @keydown.enter.exact.prevent="commitNoteEdit"
           @keydown.escape.prevent="editingNoteId = null"
           @blur="commitNoteEdit"
           @click.stop
@@ -3556,8 +3574,8 @@ watchEffect(() => {
     <button
       v-if="!editMode"
       class="add-note-btn"
-      @click="addOperatorNote($event)"
-      title="Add operator note (double-click to place)"
+      @click="addOperatorNote()"
+      title="Add operator note — drag to move, double-click to edit, right-click to delete"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -4415,6 +4433,9 @@ watchEffect(() => {
   cursor: grab;
   z-index: 60;
   font-size: 11px;
+  /* Runtime-only, and .pid-canvas is pointer-events:none there — opt back in so
+     notes can be dragged, edited, and right-click removed. */
+  pointer-events: auto;
 }
 
 .operator-note:active {
@@ -4484,7 +4505,9 @@ watchEffect(() => {
 .add-note-btn {
   position: absolute;
   bottom: 12px;
-  right: 12px;
+  /* Bottom-left: the bottom-right corner is occupied by the status log panel,
+     which sits above this and made the button unclickable. */
+  left: 12px;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -4497,6 +4520,10 @@ watchEffect(() => {
   cursor: pointer;
   z-index: 50;
   transition: background 0.15s, color 0.15s;
+  /* .pid-canvas is pointer-events:none outside P&ID edit mode (so clicks reach
+     the widgets underneath), and this button only exists in runtime mode — so
+     without opting back in, clicks passed straight through and it did nothing. */
+  pointer-events: auto;
 }
 
 .add-note-btn:hover {

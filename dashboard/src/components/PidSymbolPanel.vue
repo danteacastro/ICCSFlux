@@ -293,10 +293,12 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
 </template>
 
 <style scoped>
-/* Collapse/expand tab handle */
+/* Collapse/expand tab handle.
+   Fixed (not absolute) so it stays pinned to the viewport edge while the page
+   scrolls in P&ID mode — vertically centred in the area below the toolbar. */
 .panel-tab {
-  position: absolute;
-  top: 50%;
+  position: fixed;
+  top: calc(50% + var(--app-header-height, 56px) / 2);
   transform: translateY(-50%);
   width: 24px;
   height: 64px;
@@ -322,12 +324,14 @@ const { isResizing, onMouseDown: onResizeStart } = useResizablePanel({
   border-radius: 0 6px 6px 0;
 }
 
-/* Full panel */
+/* Full panel.
+   Fixed (not absolute) so it stays pinned while the page scrolls in P&ID mode.
+   Offset below the toolbar via --app-header-height (set on .app in App.vue). */
 .pid-symbol-panel {
-  position: absolute;
-  top: 0;
+  position: fixed;
+  top: var(--app-header-height, 56px);
   left: 0;
-  height: 100%;
+  height: calc(100% - var(--app-header-height, 56px));
   background: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
