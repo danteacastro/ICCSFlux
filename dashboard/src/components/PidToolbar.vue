@@ -89,7 +89,8 @@ const pipeAnimated = computed({
 })
 
 // UI state
-const textToolActive = ref(false)
+// Text-tool state lives in the store so the canvas can react to it (click-to-place).
+const textToolActive = computed(() => store.pidTextMode)
 const alignMenuOpen = ref(false)
 const layerPanelOpen = ref(false)
 const viewMenuOpen = ref(false)
@@ -113,32 +114,24 @@ function clearAll() {
   }
 }
 
-// Fit to content
-function fitToContent() {
-  const canvasEl = document.querySelector('.pid-canvas') as HTMLElement | null
-  if (canvasEl) {
-    store.pidFitToContent(canvasEl.clientWidth, canvasEl.clientHeight)
-  }
-}
-
-// Toggle text tool mode
+// Toggle text tool mode. While active, clicking the canvas drops a label there.
 function toggleTextTool() {
-  textToolActive.value = !textToolActive.value
-  if (textToolActive.value) {
-    store.setPidDrawingMode(false)  // Disable pipe drawing when text tool is active
-  }
+  store.setPidTextMode(!store.pidTextMode)
 }
 
-// Add text annotation at center
+// Add a text annotation at the centre of the visible canvas. Color is left unset
+// so it renders in the theme's text color (visible in both light and dark).
 function addTextAnnotation() {
+  const canvasEl = document.querySelector('.pid-canvas') as HTMLElement | null
+  const cx = canvasEl ? Math.round(canvasEl.clientWidth / 2) : 200
+  const cy = canvasEl ? Math.round(canvasEl.clientHeight / 2) : 200
   store.addPidTextAnnotation({
     text: 'New Text',
-    x: 200,
-    y: 200,
+    x: cx - 40,
+    y: cy - 10,
     fontSize: 14,
-    color: '#ffffff'
   })
-  textToolActive.value = false
+  store.setPidTextMode(false)
 }
 
 // Undo/Redo handlers
@@ -335,7 +328,7 @@ function handleKeyDown(e: KeyboardEvent) {
     e.preventDefault()
     store.pidClearSelection()
     store.setPidDrawingMode(false)
-    textToolActive.value = false
+    store.setPidTextMode(false)
     return
   }
 
@@ -435,28 +428,6 @@ function handleKeyDown(e: KeyboardEvent) {
   if (e.key === '\\' && !isCtrl) {
     e.preventDefault()
     store.togglePidFocusMode()
-    return
-  }
-
-  // Zoom: Ctrl+= (zoom in), Ctrl+- (zoom out), Ctrl+0 (reset)
-  if (isCtrl && (e.key === '=' || e.key === '+')) {
-    e.preventDefault()
-    store.setPidZoom(store.pidZoom + 0.1)
-    return
-  }
-  if (isCtrl && e.key === '-') {
-    e.preventDefault()
-    store.setPidZoom(store.pidZoom - 0.1)
-    return
-  }
-  if (isCtrl && e.key === '0') {
-    e.preventDefault()
-    store.pidResetZoom()
-    return
-  }
-  if (isCtrl && isShift && (e.key === 'f' || e.key === 'F')) {
-    e.preventDefault()
-    fitToContent()
     return
   }
 
@@ -602,15 +573,39 @@ function handleClickOutside(e: MouseEvent) {
   }
 }
 
+// ── Toolbar wrap detection ──────────────────────────────────────────────
+// Flexbox can't justify the wrapped (2nd) row differently from the first, so we
+// detect wrapping and switch justification: centered on one row, right-justified
+// once it wraps. Wrapped = some child sits on a lower line than the first.
+const toolsRef = ref<HTMLElement | null>(null)
+const toolsWrapped = ref(false)
+let toolsResizeObserver: ResizeObserver | null = null
+
+function checkToolsWrap() {
+  const el = toolsRef.value
+  if (!el) { toolsWrapped.value = false; return }
+  const children = Array.from(el.children) as HTMLElement[]
+  if (!children.length) { toolsWrapped.value = false; return }
+  const firstTop = children[0]!.offsetTop
+  toolsWrapped.value = children.some(c => c.offsetTop > firstTop + 1)
+}
+
 // Register event listeners
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('click', handleClickOutside)
+  checkToolsWrap()
+  if (toolsRef.value) {
+    toolsResizeObserver = new ResizeObserver(checkToolsWrap)
+    toolsResizeObserver.observe(toolsRef.value)
+  }
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('click', handleClickOutside)
+  toolsResizeObserver?.disconnect()
+  toolsResizeObserver = null
 })
 </script>
 
@@ -661,13 +656,20 @@ onUnmounted(() => {
           </svg>
         </button>
       </div>
-      <span class="zoom-display" @click="store.pidResetZoom()" title="Click to reset to 100%">
-        {{ Math.round(store.pidZoom * 100) }}%
-      </span>
     </template>
 
     <!-- ===== FULL TOOLBAR ===== -->
     <template v-else>
+      <!-- Wrapping tool area (max two rows). While a menu is open we lift the clip
+           so the dropdown (which opens below the bar) isn't cut off. -->
+      <div
+        ref="toolsRef"
+        class="toolbar-tools"
+        :class="{
+          'tools-menu-open': viewMenuOpen || moreMenuOpen || pipeOptionsOpen || showValidationPanel,
+          'tools-wrapped': toolsWrapped,
+        }"
+      >
       <div class="toolbar-section">
         <span class="section-title">P&ID</span>
         <button class="btn-exit" @click="exitEditMode" title="Exit P&ID Edit Mode">
@@ -882,28 +884,6 @@ onUnmounted(() => {
 
       <div class="toolbar-divider" />
 
-      <!-- Zoom Controls -->
-      <div class="toolbar-section zoom-section">
-        <button class="btn-tool" @click="store.setPidZoom(store.pidZoom - 0.1)" :disabled="store.pidZoom <= 0.1" title="Zoom Out">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" />
-          </svg>
-        </button>
-        <span class="zoom-display" @click="store.pidResetZoom()" title="Click to reset to 100%">{{ Math.round(store.pidZoom * 100) }}%</span>
-        <button class="btn-tool" @click="store.setPidZoom(store.pidZoom + 0.1)" :disabled="store.pidZoom >= 5" title="Zoom In">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-          </svg>
-        </button>
-        <button class="btn-tool" @click="fitToContent" title="Fit to Content (Ctrl+Shift+F)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="toolbar-divider" />
-
       <!-- Focus Mode Toggle -->
       <div class="toolbar-section">
         <button class="btn-tool btn-focus" :class="{ active: store.pidFocusMode }" @click="store.togglePidFocusMode()" title="Focus Mode (\\) - Hide panels and chrome">
@@ -966,6 +946,15 @@ onUnmounted(() => {
           <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
         </svg>
       </button>
+
+      </div><!-- /.toolbar-tools -->
+
+      <!-- App chrome (theme toggle + user/sign-out), pinned to the far right.
+           In its own flex slot so the tools wrap against it, not under it.
+           Only in the full toolbar — focus mode stays deliberately minimal. -->
+      <div class="toolbar-chrome">
+        <slot name="chrome" />
+      </div>
     </template>
 
     <!-- Floating Layer Panel -->
@@ -1033,10 +1022,13 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 2px 16px;
   background: linear-gradient(to right, #1e3a5f, #2a4a6f);
   border-bottom: 1px solid #3b5998;
   flex-wrap: nowrap;
+  /* Fixed height (below) holds the bar's size; the tool area wraps to a 2nd row
+     within it. NOT overflow:hidden — the View/More/pipe dropdowns open below the
+     bar and must not be clipped. */
   /* Replaces .app-header in P&ID mode and sits as a sibling of .app-main (not
      inside the scroll area), so it stays put while the canvas scrolls and adds
      nothing to the scroll height. Same height as the header so nothing shifts. */
@@ -1049,7 +1041,8 @@ onUnmounted(() => {
 .pid-toolbar.compact {
   padding: 4px 12px;
   gap: 6px;
-  justify-content: flex-start;
+  /* Keep the compact/focus-mode controls centered, matching the full toolbar
+     (the base .pid-toolbar already centers), instead of jumping to the left. */
 }
 
 .toolbar-section {
@@ -1069,17 +1062,61 @@ onUnmounted(() => {
 
 .toolbar-divider {
   width: 1px;
-  height: 24px;
+  height: 22px;
   background: #3b5998;
   flex-shrink: 0;
 }
 
-/* Base button style */
+/* Wrapping tool area — occupies the width between the left edge and the chrome
+   cluster (which reserves its own space), and centers the buttons within that
+   space. Wraps onto a second row when it runs out of room; capped at two rows via
+   max-height so the bar never grows past its fixed height (a 3rd row is clipped).
+   align-content:flex-start keeps the first row — with Exit — pinned to the top so
+   it's always visible. Nothing slides under the chrome. */
+.toolbar-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  justify-content: center;
+  column-gap: 6px;
+  row-gap: 2px;
+  max-height: 52px;   /* two 24px rows + row-gap; a 3rd row is clipped */
+  overflow: hidden;
+}
+
+/* Once the tools wrap to a second row, right-justify them (the first row is
+   full, so only the shorter second row visibly shifts to the right edge). */
+.toolbar-tools.tools-wrapped {
+  justify-content: flex-end;
+}
+
+/* While a dropdown/popover is open, stop clipping so it isn't cut off (the menus
+   open below the bar). The cap only matters at rest. */
+.toolbar-tools.tools-menu-open {
+  overflow: visible;
+}
+
+/* App chrome (theme + user). In-flow and fixed-width (never shrinks); the tool
+   area's flex-grow pushes it to the right, where its edge lands at the toolbar's
+   16px inset — matching the main header so it doesn't shift when toggling P&ID.
+   Because it reserves space, the tools wrap against it rather than under it. */
+.toolbar-chrome {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+/* Base button style. Vertical padding kept small so two rows of buttons fit
+   inside the fixed-height toolbar when the tools wrap. */
 button {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border: none;
   border-radius: 4px;
   font-size: 12px;
@@ -1091,7 +1128,7 @@ button {
 .btn-exit {
   background: #4a5568;
   color: var(--text-primary);
-  padding: 6px 10px;
+  padding: 4px 10px;
 }
 
 .btn-exit:hover {
@@ -1101,7 +1138,12 @@ button {
 .btn-pipe {
   background: var(--color-accent);
   color: var(--text-primary);
-  padding: 6px 10px;
+  padding: 4px 10px;
+  /* Fixed width so the label toggling between "Pipe" and "Drawing..." doesn't
+     resize the button (and shove its neighbours around). Sized for the wider
+     "Drawing..." label so both states are identical width. */
+  min-width: 104px;
+  justify-content: center;
 }
 
 .btn-pipe:hover {
@@ -1122,7 +1164,7 @@ button {
 .btn-tool {
   background: #4a5568;
   color: var(--text-primary);
-  padding: 6px 8px;
+  padding: 4px 8px;
   /* Positioning context for the validation badge so it anchors to this button
      (next to the warning triangle) instead of escaping to the toolbar's
      top-right corner and overflowing the viewport. */
@@ -1348,10 +1390,13 @@ button {
 .dropdown-select {
   margin: 0 12px 4px;
   padding: 3px 6px;
-  background: #2d3748;
-  border: 1px solid #3b5998;
+  /* Theme-driven so the "px" selector is legible in both modes. Previously the
+     background was hardcoded dark (#2d3748) while the text followed the theme, so
+     in light mode it was dark text on a dark box — unreadable. */
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
-  color: var(--text-primary);
+  color: var(--text-bright);
   font-size: 11px;
   width: calc(100% - 24px);
 }
@@ -1403,26 +1448,6 @@ button {
   margin: 0;
 }
 
-/* Zoom controls */
-.zoom-section {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.zoom-display {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-accent-light);
-  min-width: 40px;
-  text-align: center;
-  cursor: pointer;
-  user-select: none;
-}
-
-.zoom-display:hover {
-  color: #93c5fd;
-}
 
 /* Help button */
 .btn-help {
@@ -1582,4 +1607,46 @@ button {
 .issue-icon { flex-shrink: 0; }
 .issue-text { line-height: 1.3; }
 
+/* ============================================================================
+   LIGHT THEME
+   The P&ID toolbar is dark-blue with dark-grey buttons by default. On a light
+   background that leaves dark text on dark surfaces (unreadable), so lighten the
+   bar, its dividers/borders, and the tool buttons. Disabled buttons stay
+   distinctly greyer than active ones (via a flatter grey + muted text rather
+   than a faint opacity overlay that reads as "just lighter").
+   ============================================================================ */
+[data-theme="light"] .pid-toolbar {
+  background: linear-gradient(to right, #dbeafe, #eff6ff);
+  border-bottom-color: #bfdbfe;
+}
+
+[data-theme="light"] .toolbar-divider,
+[data-theme="light"] .dropdown-divider {
+  background: #bfdbfe;
+}
+
+/* Default (non-toggled) tool buttons. `:not(.active)` leaves the coloured
+   toggle-on states (View open, Focus, tool selections) untouched. */
+[data-theme="light"] .btn-tool:not(.active),
+[data-theme="light"] .btn-exit {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+[data-theme="light"] .btn-tool:not(.active):hover:not(:disabled),
+[data-theme="light"] .btn-exit:hover {
+  background: #cbd5e1;
+}
+
+/* Disabled: clearly greyed out, not just faint. */
+[data-theme="light"] .btn-tool:disabled {
+  background: #eef2f6;
+  color: #aab4c2;
+  opacity: 1;
+}
+
+[data-theme="light"] .dropdown-menu,
+[data-theme="light"] .pipe-popover {
+  border-color: #cbd5e1;
+}
 </style>

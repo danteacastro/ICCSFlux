@@ -278,6 +278,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // P&ID Canvas Layer (free-form, pixel-based)
   const pidEditMode = ref(false)  // Separate edit mode for P&ID layer
   const pidDrawingMode = ref(false)  // Free-form pipe drawing mode
+  const pidTextMode = ref(false)     // Text-placement mode: click canvas to drop a label
   const pidGridSnapEnabled = ref(true)  // Snap to grid toggle (default ON)
   const pidGridSize = ref(10)  // Grid cell size in pixels (finer than widget grid, snaps ports)
   const pidShowGrid = ref(true)  // Show grid overlay (default ON)
@@ -1206,6 +1207,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   function setPidDrawingMode(enabled: boolean) {
     pidDrawingMode.value = enabled
+    if (enabled) pidTextMode.value = false  // pipe + text modes are mutually exclusive
+  }
+
+  function setPidTextMode(enabled: boolean) {
+    pidTextMode.value = enabled
+    if (enabled) pidDrawingMode.value = false
   }
 
   function togglePidSymbolPanelCollapse() {
@@ -4264,11 +4271,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
     pidLayer,
     pidEditMode,
     pidDrawingMode,
+    pidTextMode,
     pidGridSnapEnabled,
     pidGridSize,
     pidShowGrid,
     setPidEditMode,
     setPidDrawingMode,
+    setPidTextMode,
     togglePidGridSnap,
     setPidGridSize,
     pidColorScheme,

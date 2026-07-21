@@ -1557,7 +1557,7 @@ function computeAlignmentSnap(
 }
 
 function onDragMove(event: MouseEvent) {
-  if (!isDragging.value || !dragStart.value || !selectedSymbolId.value) return
+  if (!isDragging.value || !dragStart.value) return
 
   const coords = getCanvasCoords(event)
   let dx = coords.x - dragStart.value.x
@@ -1567,6 +1567,39 @@ function onDragMove(event: MouseEvent) {
   const selectedSymbolIds = store.pidSelectedIds.symbolIds
   const selectedPipeIds = store.pidSelectedIds.pipeIds
   const selectedTextIds = store.pidSelectedIds.textAnnotationIds
+
+  // Symbol-less drag (e.g. dragging a text label): no symbol was grabbed, so the
+  // symbol-centric logic below never ran and the label wouldn't move. Move
+  // whatever is selected by the raw delta instead.
+  if (!selectedSymbolId.value) {
+    if (!selectedTextIds.length && !selectedSymbolIds.length && !selectedPipeIds.length) return
+    let newSymbols = props.pidLayer.symbols.map(s =>
+      selectedSymbolIds.includes(s.id) && !s.locked
+        ? { ...s, x: Math.max(0, s.x + dx), y: Math.max(0, s.y + dy) }
+        : s
+    )
+    let newPipes = props.pidLayer.pipes.map(p =>
+      selectedPipeIds.includes(p.id)
+        ? { ...p, points: p.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }
+        : p
+    )
+    if (selectedSymbolIds.length) {
+      newPipes = rerouteEndpointsOnly(newPipes, newSymbols)
+      debouncedRerouteConnectedPipes(newSymbols)
+    }
+    const newTextAnnotations = (props.pidLayer.textAnnotations || []).map(t =>
+      selectedTextIds.includes(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t
+    )
+    emit('update:pidLayer', {
+      ...props.pidLayer,
+      symbols: newSymbols,
+      pipes: newPipes,
+      textAnnotations: newTextAnnotations,
+    })
+    dragStart.value = { ...dragStart.value, x: coords.x, y: coords.y }
+    return
+  }
+
   const hasMultiSelection = selectedSymbolIds.length > 1 || selectedPipeIds.length > 0 || selectedTextIds.length > 0
 
   // Apply port-based grid snap for multi-selection (based on dragged symbol)
@@ -1784,6 +1817,9 @@ function onCanvasMouseDown(event: MouseEvent) {
     return
   }
 
+  // In text mode a click drops a label (handled in onCanvasClick) — don't marquee.
+  if (store.pidTextMode) return
+
   // Only start marquee if clicking directly on the canvas/viewport (not a symbol/pipe)
   // and not in pipe drawing mode
   if ((event.target !== canvasRef.value && event.target !== viewportRef.value) || props.pipeDrawingMode) return
@@ -1937,6 +1973,21 @@ function onCanvasClick(event: MouseEvent) {
 
   // Don't trigger click actions during pan mode
   if (spaceHeld.value || isPanning.value) return
+
+  // Text tool: drop a label at the click point, then leave text mode.
+  if (store.pidTextMode) {
+    const p = getCanvasCoords(event)
+    const id = store.addPidTextAnnotation({
+      text: 'New Text',
+      x: Math.round(p.x),
+      y: Math.round(p.y),
+      fontSize: 14,
+    })
+    store.setPidTextMode(false)
+    // Select it so it's immediately editable via the properties panel / dbl-click.
+    store.pidSelectItems([], [], [id])
+    return
+  }
 
   // Skip deselect if we just finished a marquee selection
   if (justDidMarquee.value) {
@@ -2806,6 +2857,7 @@ watchEffect(() => {
     :class="{
       'edit-mode': editMode,
       'drawing-mode': pipeDrawingMode,
+      'text-mode': store.pidTextMode,
       'ortho-mode': shiftHeld && pipeDrawingMode,
       'panning': isPanning || spaceHeld
     }"
@@ -3472,7 +3524,7 @@ watchEffect(() => {
         fontSize: `${text.fontSize}px`,
         fontWeight: text.fontWeight || 'normal',
         fontStyle: text.fontStyle || 'normal',
-        color: text.color || '#333',
+        color: text.color || 'var(--text-primary)',
         backgroundColor: text.backgroundColor || 'transparent',
         transform: text.rotation ? `rotate(${text.rotation}deg)` : undefined,
         textAlign: text.textAlign || 'left',
@@ -3699,6 +3751,10 @@ watchEffect(() => {
 
 .pid-canvas.drawing-mode {
   cursor: crosshair;
+}
+
+.pid-canvas.text-mode {
+  cursor: text;
 }
 
 .pid-canvas.panning {
