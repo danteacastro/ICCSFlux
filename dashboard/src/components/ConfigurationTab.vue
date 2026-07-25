@@ -1037,7 +1037,17 @@ const physicalChannelOptionsByName = computed(() => {
   for (const [name, config] of Object.entries(store.channels)) {
     const t = config.channel_type
     if (t === 'modbus_register' || t === 'modbus_coil') continue
-    map[name] = getAvailablePhysicalChannelsForType(config)
+    const opts = getAvailablePhysicalChannelsForType(config)
+    // Drop the redundant self-reference: the channel assigned to THIS row is
+    // labeled "... [USED BY: <thisTag>]", which is pointless in the row's own
+    // select (and shows in the closed box). Other options keep "[USED BY:
+    // <otherTag>]" so the dropdown still tells you which channels are taken.
+    const selfSuffix = ` [USED BY: ${name}]`
+    map[name] = opts.map(o =>
+      o.label.endsWith(selfSuffix)
+        ? { ...o, label: o.label.slice(0, -selfSuffix.length) }
+        : o
+    )
   }
   return map
 })
@@ -2148,14 +2158,40 @@ function colWidthStyle(colKey: string, defaultWidth: string): string {
 //    fixed columns don't grow proportionally / shift per tab).
 //  - 'value' gets a 140px floor so "<number> [age] <unit>" doesn't truncate.
 function colWidthFor(col: { key: string; width: string }): string {
-  if (col.key === 'description') return 'auto'
+  // DESCRIPTION is the flex column: width:100% makes it absorb all spare width in
+  // table-layout:auto (every other column stays at its content size). A manual
+  // resize still wins via the stored percentage.
+  if (col.key === 'description') return colWidthStyle(col.key, '100%')
   // VALUE holds "<number> [age] <unit>" which clips below ~140px. Use a plain
   // 140px default (a CSS max()/calc() here is NOT honored by fixed-table column
   // sizing — the column silently falls back to auto and balloons). Still honors
   // a manual resize via the stored percentage.
   if (col.key === 'value') return colWidthStyle(col.key, '140px')
+  // CHANNEL stays user-resizable (honors the stored width), but the invisible
+  // .channel-sizer sets the column's min-content to the full physical-channel
+  // path — so table-layout:auto refuses to shrink it below the text no matter
+  // how far the user drags the handle in. Drag wider works; drag past the name
+  // just stops at the name.
   return colWidthStyle(col.key, col.width)
 }
+
+// Minimum table width = the sum of every column's floor (with a real minimum for
+// the otherwise-flexible DESCRIPTION column). With this, table-layout:fixed can
+// never crush a column to nothing on a narrow window (which previously buried the
+// description); the container just scrolls horizontally instead. On a wide window
+// the table still fills 100% and DESCRIPTION absorbs the slack.
+const DESCRIPTION_MIN_WIDTH = 200
+const tableMinWidth = computed(() => {
+  const px = (w: string) => { const n = parseFloat(w); return isNaN(n) ? 0 : n }
+  let sum = 26 // select column
+  for (const col of tableColumns.value) {
+    if (col.key === 'description') sum += DESCRIPTION_MIN_WIDTH
+    else if (col.key === 'value') sum += 140
+    else sum += px(col.width)
+  }
+  sum += 120 // combined actions column (alarm + status + configure + delete)
+  return sum
+})
 
 // Handle tag rename from inline edit (wrapper for renameChannel)
 function handleTagRename(oldName: string, newName: string) {
@@ -4038,6 +4074,19 @@ function getCurrentValue(channelName: string): string {
 
   // Show value + age for debugging update rate
   const age = value.timestamp ? Math.round((Date.now() - value.timestamp) / 1000) : '?'
+
+  // Counters in count mode read whole edges: when pulses/unit is 1 the count is a
+  // plain integer, so drop the decimals. Any other pulses/unit means the count is
+  // scaled into fractional engineering units, so keep 4 decimals. Frequency/period
+  // modes are inherently fractional and always keep decimals.
+  const config = store.channels[channelName]
+  if (config && (config.channel_type === 'counter' || config.channel_type === 'counter_input')) {
+    const mode = config.counter_mode || 'count'
+    const pulsesPerUnit = Number(config.pulses_per_unit ?? 1)
+    const digits = (mode === 'count' && pulsesPerUnit === 1) ? 0 : 4
+    return `${value.value.toFixed(digits)} [${age}s]`
+  }
+
   return `${value.value.toFixed(4)} [${age}s]`
 }
 
@@ -5286,7 +5335,7 @@ const tableColumns = computed(() => {
     // CHANNEL/DESCRIPTION sized so wide tabs (CTR, mA-OUT, V-OUT) fit beside
     // the 380px sidebar without clipping. Truncated text still tooltips on
     // hover, and the per-column drag handle lets users widen as needed.
-    { key: 'channel', label: 'CHANNEL', width: '150px' },
+    { key: 'channel', label: 'CHANNEL', width: '200px' },
     // 'auto' makes DESCRIPTION the single flexible column: in table-layout:fixed
     // it soaks up all the leftover container width, so every other column (the
     // select checkbox, EN, TYPE, ...) renders at its exact fixed width on every
@@ -5892,6 +5941,11 @@ watch(
       </div>
 
       <div class="table-container" :class="{ 'with-panel': showConfigPanel }">
+        <!-- Wrapper carries the min-width (a plain block honors it correctly and
+             still fills the container at width:100%). Putting min-width on the
+             <table> itself made Chrome render the table AT that min-width instead
+             of stretching to 100%, leaving the big gap on the right. -->
+        <div class="table-min-wrap" :style="{ minWidth: tableMinWidth + 'px' }">
         <table class="channel-table">
           <!-- colgroup controls column widths. Resize updates the col[data-col-key]
                element directly, decoupling width from Vue's reactive :style on <th>
@@ -5904,9 +5958,8 @@ watch(
               :data-col-key="col.key"
               :style="{ width: colWidthFor(col) }"
             />
-            <col data-col-key="alarm" :style="{ width: colWidthStyle('alarm', '70px') }" />
-            <col data-col-key="status" :style="{ width: '46px' }" />
-            <col data-col-key="config" :style="{ width: '70px' }" />
+            <!-- Single actions column: alarm bell, error/warning icons, configure, delete -->
+            <col data-col-key="actions" :style="{ width: colWidthStyle('actions', '120px') }" />
           </colgroup>
           <thead>
             <!-- Signal Type Header Row -->
@@ -5929,14 +5982,12 @@ watch(
                 v-for="col in tableColumns"
                 :key="col.key"
                 :data-col-key="col.key"
-                :style="`text-align: ${col.align || 'left'}`"
+                :style="`text-align: ${col.key === 'value' ? 'right' : (col.align || 'left')}`"
               >
                 {{ col.label }}
                 <span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span>
               </th>
-              <th class="col-alarm" data-col-key="alarm">ALARM<span class="col-resize-handle" @mousedown="onColResizeStart($event)"></span></th>
-              <th class="col-status-indicators" title="Configuration errors and warnings"></th>
-              <th class="col-actions">CONFIG</th>
+              <th class="col-actions" data-col-key="actions" title="Alarm, configuration errors, configure, delete">ACTIONS</th>
             </tr>
           </thead>
           <tbody>
@@ -5982,6 +6033,10 @@ watch(
                 />
                 <span v-if="config.source_type === 'crio'" class="source-badge crio" title="Remote cRIO node">cRIO</span>
                 <span v-else-if="config.source_type === 'opto22'" class="source-badge opto22" title="Remote Opto22 node">Opto22</span>
+                <!-- Invisible sizer: floors the TAG column at the full tag name so
+                     the width:100% input can never shrink below the text. Column
+                     stays user-resizable (drag wider), but drag stops at the name. -->
+                <span class="tag-sizer" aria-hidden="true">{{ name }}</span>
               </td>
               <!-- CHANNEL - physical channel with dropdown when discovery available -->
               <td class="col-channel editable-cell" @click.stop>
@@ -6016,6 +6071,17 @@ watch(
                     {{ ch.label }}
                   </option>
                 </select>
+                <!-- Invisible sizer: forces the CHANNEL column to always be wide
+                     enough to show the full selected physical-channel path. A
+                     native <select> is width:100% and would otherwise clip to
+                     whatever narrow width the column is squeezed to. This span
+                     (height:0, hidden) contributes only its width to the column's
+                     min-content, so the column can never shrink below the path. -->
+                <span
+                  v-if="config.channel_type !== 'modbus_register' && config.channel_type !== 'modbus_coil'"
+                  class="channel-sizer"
+                  aria-hidden="true"
+                >{{ config.physical_channel || '— Select Channel —' }}</span>
               </td>
               <!-- DESCRIPTION - long text -->
               <td class="col-description editable-cell" @click.stop>
@@ -6851,8 +6917,9 @@ watch(
                 </button>
               </td>
 
-              <!-- ALARM column - shows alarm status and quick access -->
-              <td class="col-alarm" @click.stop>
+              <!-- Actions: alarm bell, config error/warning icons, configure, delete -->
+              <td class="col-actions" @click.stop>
+                <div class="row-actions">
                 <button
                   class="alarm-btn"
                   :class="getAlarmButtonClass(name, config)"
@@ -6866,10 +6933,7 @@ watch(
                   </svg>
                   <span v-if="config.alarm_enabled" class="alarm-indicator"></span>
                 </button>
-              </td>
 
-              <!-- Inline error/warning indicators -->
-              <td class="col-status-indicators" @click.stop>
                 <span
                   v-if="getChannelErrors(name, config).length > 0"
                   class="status-indicator-icon error-icon"
@@ -6892,9 +6956,7 @@ watch(
                     <line x1="12" y1="17" x2="12.01" y2="17"/>
                   </svg>
                 </span>
-              </td>
 
-              <td class="col-actions">
                 <button class="config-btn" @click.stop="openChannelConfig(name)" title="Configure">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="3"/>
@@ -6907,10 +6969,11 @@ watch(
                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                   </svg>
                 </button>
+                </div>
               </td>
             </tr>
             <tr v-if="filteredChannels.length === 0" class="empty-row">
-              <td :colspan="tableColumns.length + 4">
+              <td :colspan="tableColumns.length + 2">
                 <div class="empty-state">
                   <p v-if="searchQuery">No channels matching "{{ searchQuery }}"</p>
                   <p v-else>No channels configured</p>
@@ -6942,10 +7005,13 @@ watch(
             </tr>
           </tbody>
         </table>
+        </div><!-- /.table-min-wrap -->
       </div>
 
-      <!-- Configuration Panel (Sidebar) -->
-      <div class="config-panel" :class="{ visible: showConfigPanel }">
+      <!-- Configuration Panel (Sidebar). Only reserve its 380px slot when it
+           actually has a channel to show — an empty panel must not steal width
+           from the table. -->
+      <div class="config-panel" :class="{ visible: showConfigPanel && !!editingConfig }">
         <template v-if="editingConfig">
           <div class="panel-header">
             <h3>{{ editingConfig.name }}</h3>
@@ -10041,12 +10107,23 @@ watch(
   flex: 1;
 }
 
+/* Fills the scroll container so the table (width:100%) stretches to the window;
+   the inline min-width floors it and triggers horizontal scroll when narrow. */
+.table-min-wrap {
+  width: 100%;
+}
+
 .channel-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 0.75rem;
-  table-layout: fixed;
+  /* auto (not fixed): every column sizes to its own content, so no column is ever
+     narrower than the text inside it. DESCRIPTION is the flex column (width:100%)
+     that soaks up spare width, and shrinks/scrolls first when the window narrows.
+     The wrapper's min-width keeps columns comfortably wide and forces horizontal
+     scroll instead of crushing anything. */
+  table-layout: auto;
 }
 
 .channel-table thead th {
@@ -10106,9 +10183,11 @@ watch(
 
 /* CONFIG column - normal column like the others */
 .column-headers-row th.col-actions {
-  text-align: center;
-  width: 70px;
-  min-width: 70px;
+  /* Right-justified so the label sits over the action buttons, which are
+     grouped to the right of the cell (.row-actions justify-content: flex-end). */
+  text-align: right;
+  width: 120px;
+  min-width: 120px;
 }
 
 .channel-table td {
@@ -10120,11 +10199,19 @@ watch(
   white-space: nowrap;
 }
 
-/* CONFIG data cells - normal column like the others */
+/* Combined actions cell (alarm + status icons + configure + delete) */
 .channel-table td.col-actions {
   text-align: center;
-  width: 70px;
-  min-width: 70px;
+  width: 120px;
+  min-width: 120px;
+}
+
+/* Group all the row's action buttons/icons together on the right. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
 }
 
 .channel-row {
@@ -10305,7 +10392,7 @@ watch(
 
 /* Value Cell */
 .channel-table td.col-value {
-  text-align: center;
+  text-align: right;
 }
 .col-value .value {
   font-family: 'JetBrains Mono', monospace;
@@ -10581,6 +10668,37 @@ watch(
   font-size: 0.7rem;
 }
 
+/* Invisible width-sizer for the CHANNEL column. Zero height + hidden so it never
+   shows, but its (nowrap) text width sets the column's min-content, guaranteeing
+   the full physical-channel path is always visible in the select. Must mirror the
+   select's font exactly, and reserve room for the select's padding + dropdown
+   arrow so the visible text isn't clipped by the control chrome. */
+.channel-sizer {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  padding-right: 38px;
+}
+
+/* Same width-sizer trick for the TAG column (see .channel-sizer). Mirrors the
+   tag input's font (monospace .75rem/600) and reserves the input's padding so
+   the column can never shrink below the full tag name. */
+.tag-sizer {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding-right: 16px;
+}
+
 /* Channel input - monospace for cDAQ paths */
 .col-channel .inline-input {
   font-family: 'JetBrains Mono', monospace;
@@ -10600,7 +10718,11 @@ watch(
 
 /* Description input - full width */
 .col-description .inline-input {
-  min-width: 280px;
+  /* Description is the flex column: keep the input's own floor small so the
+     column can shrink and absorb the window scrunch. The real floor (where
+     horizontal scroll kicks in) lives on .table-min-wrap, not here. */
+  min-width: 60px;
+  width: 100%;
 }
 
 /* Tag input - monospace for tag names */
@@ -10646,7 +10768,9 @@ watch(
 .config-panel {
   width: 0;
   flex-shrink: 0;
-  margin-left: auto;
+  /* NOTE: no `margin-left: auto` — an auto margin on a flex sibling eats the free
+     space, stopping .table-container (flex:1) from growing to fill the width. The
+     panel is the last child and flex-shrink:0, so it stays docked right anyway. */
   overflow: hidden;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-color);
@@ -11955,9 +12079,9 @@ input[type="checkbox"] {
 /* Alarm column styling — left-justified so the header lines up with the
    bell icon and matches the rest of the column layout. */
 .col-alarm {
-  text-align: left;
-  width: 50px;
-  min-width: 50px;
+  text-align: center;
+  width: 44px;
+  min-width: 44px;
 }
 
 .channel-table th.col-alarm {
@@ -11967,8 +12091,8 @@ input[type="checkbox"] {
 /* Inline error/warning status indicators */
 .col-status-indicators {
   text-align: center;
-  width: 46px;
-  min-width: 46px;
+  width: 40px;
+  min-width: 40px;
   padding: 0 2px;
 }
 
