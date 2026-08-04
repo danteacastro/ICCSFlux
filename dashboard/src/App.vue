@@ -658,10 +658,14 @@ async function handleRecordStart() {
   const result = await mqtt.startRecording()
   if (result.success) {
     // Confirm to the operator that the header button actually started a file —
-    // no Data tab visit required. The filename arrives slightly after the ack via
-    // status, so fall back to a generic message if it isn't populated yet.
+    // no Data tab visit required. Show the FULL path so they know exactly where
+    // it's being written; fall back to the bare filename, then a generic message,
+    // since the path/filename arrive slightly after the ack via status.
+    const fullPath = store.status?.recording_path
     const fname = store.status?.recording_filename
-    safety.showSafetyFeedback('success', fname ? `Recording started → ${fname}` : 'Recording started', 4000)
+    const target = fullPath || fname
+    // 10s (vs the usual 4s) so the operator has time to read/copy the full path.
+    safety.showSafetyFeedback('success', target ? `Recording started → ${target}` : 'Recording started', 10000)
   } else {
     // Previously this only console.error'd, so a failed start (e.g. a dropped
     // first click) looked identical to "nothing happened" and the operator just

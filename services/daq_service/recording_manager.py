@@ -71,12 +71,50 @@ CRITICAL_FREE_DISK_BYTES = 50 * 1024 * 1024
 # Check disk space every N samples (avoid calling shutil.disk_usage() on every write)
 DISK_CHECK_INTERVAL_SAMPLES = 100
 
+# Fixed width reserved for the header "Duration" VALUE. The Duration line is
+# written as a placeholder when the file opens and rewritten in place when
+# recording stops; keeping the value field a constant width means the rewrite is
+# the exact same byte length, so nothing after it shifts.
+DURATION_VALUE_WIDTH = 24
+
 def _get_default_data_path() -> str:
     """Get platform-appropriate default data path relative to project root"""
     # Default to 'data' folder relative to daq_service location
     service_dir = Path(__file__).parent
     project_root = service_dir.parent.parent
     return str(project_root / "data")
+
+# Row-timestamp column names. New recordings split the timestamp into two columns
+# (date + time); older files used a single 'timestamp' column. Readers accept both.
+_TS_SINGLE = 'timestamp'
+_TS_DATE = 'date'
+_TS_TIME = 'time'
+
+def _resolve_timestamp_columns(columns: List[str]):
+    """Given parsed header columns, return (kind, indices, data_columns).
+
+    kind:    'split' (date+time), 'single' (legacy timestamp), or None (neither).
+    indices: (date_idx, time_idx) for split, (ts_idx,) for single, () otherwise.
+    """
+    if _TS_DATE in columns and _TS_TIME in columns:
+        return 'split', (columns.index(_TS_DATE), columns.index(_TS_TIME)), \
+            [c for c in columns if c not in (_TS_DATE, _TS_TIME)]
+    if _TS_SINGLE in columns:
+        return 'single', (columns.index(_TS_SINGLE),), \
+            [c for c in columns if c != _TS_SINGLE]
+    return None, (), [c for c in columns if c not in (_TS_SINGLE, _TS_DATE, _TS_TIME)]
+
+def _combine_row_timestamp(kind: Optional[str], indices, row: List[str]) -> str:
+    """Reconstruct one 'YYYY-MM-DD HH:MM:SS.mmm' string from a data row for either
+    schema (so the read APIs keep returning a single 'timestamp' field)."""
+    try:
+        if kind == 'split':
+            return f"{row[indices[0]]} {row[indices[1]]}"
+        if kind == 'single':
+            return row[indices[0]]
+    except IndexError:
+        pass
+    return ''
 
 @dataclass
 class RecordingConfig:
@@ -388,6 +426,10 @@ class RecordingManager:
         self.current_file: Optional[Path] = None
         self.current_file_handle = None
         self.csv_writer = None
+        # File offset of the header "Duration:" placeholder line, so stop() can
+        # seek back and fill in the real duration. None => nothing to backfill
+        # (no header written yet, or append/reuse mode where we can't rewrite).
+        self._duration_offset: Optional[int] = None
 
         # Statistics
         self.bytes_written: int = 0
@@ -523,16 +565,20 @@ class RecordingManager:
                     self.current_file_handle = open(self.current_file, 'a', newline='')
                     _lock_file(self.current_file_handle)
                     # Write a resume marker so the file shows stop/start boundaries
-                    self.current_file_handle.write(f"# Resumed: {datetime.now().isoformat()}\n")
+                    self.current_file_handle.write(f"# Resumed: {datetime.now().isoformat(sep=' ', timespec='milliseconds')}\n")
                     # Keep existing column_order — skip header rewrite on next write_sample
                     self._resuming_file = True
                     self.csv_writer = None
+                    # Append mode writes always go to EOF, so the original header's
+                    # Duration can't be rewritten — don't try.
+                    self._duration_offset = None
                 else:
                     self.current_file_handle = open(self.current_file, 'w', newline='')
                     _lock_file(self.current_file_handle)
                     self._resuming_file = False
                     self.csv_writer = None  # Will be initialized on first write
                     self.column_order = []
+                    self._duration_offset = None  # set when the header is written
 
                 self.recording = True
                 self.recording_start_time = datetime.now()
@@ -971,15 +1017,19 @@ class RecordingManager:
 
     def _write_row(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Write a row to the CSV file"""
-        timestamp = datetime.now().isoformat()
+        # Timestamp split across two columns: date, then time with millisecond
+        # (3-decimal) precision.
+        now = datetime.now()
+        date_str = now.strftime('%Y-%m-%d')
+        time_str = f"{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}"
 
         # Initialize CSV writer with headers on first write
         if self.csv_writer is None:
             self._init_csv_writer(values, channel_configs)
 
-        # Build row in column order
-        row = [timestamp]
-        for col in self.column_order[1:]:  # Skip timestamp
+        # Build row in column order (first two columns are date, time)
+        row = [date_str, time_str]
+        for col in self.column_order[2:]:  # Skip date, time
             value = values.get(col, '')
             if isinstance(value, float):
                 row.append(f"{value:.6f}")
@@ -1027,10 +1077,27 @@ class RecordingManager:
         except Exception as e:
             logger.error(f"Unexpected error writing sample: {e}")
 
+    def _format_duration_line(self, duration_seconds: float) -> str:
+        """The header 'Duration' line, value left-justified in a fixed-width field
+        so the placeholder written at open can be overwritten in place at close."""
+        value = f"{duration_seconds:.1f}s"
+        return f"# Duration: {value:<{DURATION_VALUE_WIDTH}}\n"
+
+    def _absolute_recording_path(self) -> Optional[str]:
+        """Full absolute path (from the drive root, e.g. C:\\...) of the active
+        recording file. base_path is frequently relative ('./data'), so resolve
+        it before surfacing to the dashboard."""
+        if not self.current_file:
+            return None
+        try:
+            return str(self.current_file.resolve())
+        except OSError:
+            return str(self.current_file.absolute())
+
     def _init_csv_writer(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Initialize CSV writer with headers"""
-        # Build column order: timestamp first, then channels sorted
-        new_columns = ['timestamp'] + sorted(values.keys())
+        # Build column order: date + time first, then channels sorted
+        new_columns = ['date', 'time'] + sorted(values.keys())
 
         # If resuming an existing file, reuse previous column order and skip headers
         if self._resuming_file and self.column_order:
@@ -1042,8 +1109,8 @@ class RecordingManager:
         self.column_order = new_columns
 
         # Add units row as comment
-        header_row = ['timestamp']
-        units_row = ['ISO8601']
+        header_row = ['date', 'time']
+        units_row = ['YYYY-MM-DD', 'HH:MM:SS.mmm']
 
         for col in sorted(values.keys()):
             header_row.append(col)
@@ -1058,14 +1125,19 @@ class RecordingManager:
         # Write metadata header
         effective_rate = self.config.effective_sample_rate_hz
         self.current_file_handle.write(f"# NISystem Data Recording\n")
-        self.current_file_handle.write(f"# Started: {self.recording_start_time.isoformat()}\n")
+        self.current_file_handle.write(f"# Started: {self.recording_start_time.isoformat(sep=' ', timespec='milliseconds')}\n")
         self.current_file_handle.write(f"# Mode: {self.config.mode}\n")
         self.current_file_handle.write(f"# Interval: {self.config.sample_interval} {self.config.sample_interval_unit}\n")
         self.current_file_handle.write(f"# Effective Rate: {effective_rate:.3f} Hz (decimation: {self.config.decimation})\n")
+        # Duration lives in the HEADER, right after Effective Rate. It isn't known
+        # until stop(), so reserve a fixed-width placeholder now and remember its
+        # offset — _close_current_file seeks back here and rewrites it in place.
+        self.current_file_handle.flush()
+        self._duration_offset = self.current_file_handle.tell()
+        self.current_file_handle.write(self._format_duration_line(0.0))
         self.current_file_handle.write(f"# Rotation: {self.config.rotation_mode}\n")
         self.current_file_handle.write(f"# Write Mode: {self.config.write_mode}\n")
         self.current_file_handle.write(f"# Units: {','.join(units_row)}\n")
-        self.current_file_handle.write(f"#\n")
 
         self.csv_writer = csv.writer(self.current_file_handle)
         self.csv_writer.writerow(header_row)
@@ -1280,6 +1352,7 @@ class RecordingManager:
 
         self.current_file_handle = open(self.current_file, 'w', newline='')
         self.csv_writer = None  # Will reinitialize with headers
+        self._duration_offset = None  # set when the new file's header is written
         self.current_file_samples = 0
         self.write_buffer = []
         self.last_flush_time = datetime.now()
@@ -1312,13 +1385,20 @@ class RecordingManager:
             if self.write_buffer:
                 self._flush_buffer()
 
-            # Write footer
-            duration = (datetime.now() - self.recording_start_time).total_seconds() if self.recording_start_time else 0
-            self.current_file_handle.write(f"\n# Stopped: {datetime.now().isoformat()}\n")
-            self.current_file_handle.write(f"# Duration: {duration:.1f}s\n")
-            self.current_file_handle.write(f"# Total Samples: {self.samples_written}\n")
-            self.current_file_handle.write(f"# File Samples: {self.current_file_samples}\n")
-            self.current_file_handle.write(f"# File Count: {self.file_count}\n")
+            # No footer: instead of appending a stop/duration summary, backfill the
+            # Duration into the reserved placeholder in the HEADER. The rewrite is
+            # the same byte length, so every following byte stays put and the file
+            # still ends on its last data row. (Skipped in append/reuse mode, where
+            # _duration_offset is None because writes can't target the header.)
+            if self._duration_offset is not None:
+                try:
+                    duration = (datetime.now() - self.recording_start_time).total_seconds() if self.recording_start_time else 0.0
+                    self.current_file_handle.flush()
+                    self.current_file_handle.seek(self._duration_offset)
+                    self.current_file_handle.write(self._format_duration_line(duration))
+                    self.current_file_handle.seek(0, 2)  # back to EOF before close
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Could not backfill Duration into header: {e}")
             self.current_file_handle.flush()
             try:
                 os.fsync(self.current_file_handle.fileno())
@@ -1429,7 +1509,9 @@ class RecordingManager:
             return {
                 "recording": self.recording,
                 "recording_filename": self.current_file.name if self.current_file else None,
-                "recording_path": str(self.current_file) if self.current_file else None,
+                # Absolute path (base_path is often relative like "./data", which
+                # would otherwise surface as "data\..." in the dashboard banner).
+                "recording_path": self._absolute_recording_path(),
                 "recording_start_time": self.recording_start_time.isoformat() if self.recording_start_time else None,
                 "recording_duration": duration,
                 "recording_bytes": self.bytes_written,
@@ -1466,23 +1548,26 @@ class RecordingManager:
             try:
                 stat = f.stat()
 
-                # Try to extract duration from file footer
+                # Duration and channel list both come from the leading comment
+                # header (Duration sits right after "Effective Rate"). Read line by
+                # line and stop at the channel-name row — never load the whole
+                # (potentially huge) recording into memory.
                 duration = 0.0
                 sample_count = 0
                 channels = []
 
                 try:
                     with open(f, 'r') as fp:
-                        # Read first few lines for header info
-                        lines = fp.readlines()
-                        for line in lines:
+                        for line in fp:
                             if line.startswith('# Duration:'):
-                                duration = float(line.split(':')[1].strip().rstrip('s'))
-                            elif line.startswith('# Samples:'):
-                                sample_count = int(line.split(':')[1].strip())
+                                # "# Duration: 123.4s   " -> 123.4 (placeholder 0.0s
+                                # for a file that was never cleanly closed)
+                                duration = float(line.split(':', 1)[1].strip().rstrip('s'))
                             elif not line.startswith('#') and ',' in line:
-                                # Header row
-                                channels = [c.strip() for c in line.split(',')[1:]]  # Skip timestamp
+                                # First non-comment line is the channel-name header row.
+                                # Drop the timestamp columns (date/time, or legacy timestamp).
+                                channels = [c.strip() for c in line.split(',')
+                                            if c.strip() not in ('date', 'time', 'timestamp')]
                                 break
                 except (OSError, ValueError) as e:
                     logger.warning(f"Failed to read recording file header for {f.name}: {e}")
@@ -1615,14 +1700,13 @@ class RecordingManager:
                     result["error"] = "No header found in file"
                     return result
 
-                # Parse header
+                # Parse header. Supports the split date/time schema and legacy
+                # single-'timestamp' files; rows are recombined into one timestamp.
                 all_columns = [col.strip() for col in header_line.split(',')]
-                if 'timestamp' not in all_columns:
-                    result["error"] = "Missing timestamp column"
+                ts_kind, ts_indices, data_columns = _resolve_timestamp_columns(all_columns)
+                if ts_kind is None:
+                    result["error"] = "Missing timestamp column(s)"
                     return result
-
-                timestamp_idx = all_columns.index('timestamp')
-                data_columns = [c for c in all_columns if c != 'timestamp']
 
                 # Filter channels if specified
                 if channels:
@@ -1650,9 +1734,9 @@ class RecordingManager:
 
                     total_samples += 1
 
-                    # Parse timestamp
+                    # Parse timestamp (recombined from date+time, or legacy single col)
                     try:
-                        ts_str = row[timestamp_idx]
+                        ts_str = _combine_row_timestamp(ts_kind, ts_indices, row)
                         ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                     except (ValueError, IndexError):
                         continue
@@ -1762,8 +1846,7 @@ class RecordingManager:
                     return result
 
                 all_columns = [col.strip() for col in header_line.split(',')]
-                timestamp_idx = all_columns.index('timestamp') if 'timestamp' in all_columns else 0
-                data_columns = [c for c in all_columns if c != 'timestamp']
+                ts_kind, ts_indices, data_columns = _resolve_timestamp_columns(all_columns)
 
                 if channels:
                     selected_columns = [c for c in data_columns if c in channels]
@@ -1791,8 +1874,8 @@ class RecordingManager:
                     if end_sample is not None and sample_idx >= end_sample:
                         break
 
-                    # Build row data
-                    ts_str = row[timestamp_idx] if len(row) > timestamp_idx else ""
+                    # Build row data (recombine timestamp from date+time / legacy col)
+                    ts_str = _combine_row_timestamp(ts_kind, ts_indices, row)
                     values = {}
                     for col, idx in col_indices.items():
                         try:
@@ -1902,13 +1985,14 @@ class RecordingManager:
 
                 if header_line:
                     columns = [col.strip() for col in header_line.split(',')]
-                    result["channels"] = [c for c in columns if c != 'timestamp']
+                    ts_kind, ts_indices, data_columns = _resolve_timestamp_columns(columns)
+                    result["channels"] = data_columns
 
-                    # Read first data row for start_time
+                    # Read first data row for start_time (recombine date+time)
                     reader = csv.reader(f)
                     for row in reader:
                         if row and not row[0].startswith('#'):
-                            first_data_ts = row[0]
+                            first_data_ts = _combine_row_timestamp(ts_kind, ts_indices, row)
                             break
 
                     # Read last few rows for end_time (seek to near end for efficiency)
@@ -1924,7 +2008,7 @@ class RecordingManager:
                         if line.strip() and not line.startswith('#'):
                             parts = line.strip().split(',')
                             if parts:
-                                last_data_ts = parts[0]
+                                last_data_ts = _combine_row_timestamp(ts_kind, ts_indices, parts)
 
                 result["start_time"] = first_data_ts
                 result["end_time"] = last_data_ts

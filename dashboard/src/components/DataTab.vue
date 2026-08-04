@@ -59,6 +59,22 @@ const selectAllChannels = computed({
   set: (val) => store.setSelectAllRecordingChannels(val)
 })
 
+// "Dirty" tracking for the Save Configuration button — it lights up when the
+// current UI config differs from what was last pushed to the backend (via Save
+// or Start). The baseline is (re)set on mount, project load, save, and start.
+const currentConfigSignature = computed(() => JSON.stringify({
+  config: recordingConfig.value,
+  channels: [...selectedChannels.value].sort(),
+  all: selectAllChannels.value,
+}))
+const savedConfigSignature = ref('')
+const configDirty = computed(() =>
+  savedConfigSignature.value !== '' && savedConfigSignature.value !== currentConfigSignature.value
+)
+function markConfigSaved() {
+  savedConfigSignature.value = currentConfigSignature.value
+}
+
 // Recording State (from backend)
 const isRecording = computed(() => store.status?.recording || false)
 const recordingFile = computed(() => store.status?.recording_filename || '')
@@ -486,12 +502,17 @@ const isRecordingOp = ref(false)
 // while waiting on the backend round-trip ("STARTING…" vs "STOPPING…").
 const recordingOpKind = ref<'start' | 'stop' | null>(null)
 let recordingOpTimeoutId: ReturnType<typeof setTimeout> | null = null
+// Count of config-save acks we're expecting on the recording/response channel so
+// the handler can swallow the backend's "configuration updated" echo (start and
+// the Save button show their own, cleaner feedback instead of that duplicate).
+let pendingConfigResponses = 0
 
 function setRecordingOp(kind: 'start' | 'stop') {
   isRecordingOp.value = true
   recordingOpKind.value = kind
   if (recordingOpTimeoutId) clearTimeout(recordingOpTimeoutId)
-  // Fallback timeout — reset if no response within 10s
+  // Fallback safety net only — the awaited command ack normally clears the op via
+  // finishRecordingOp() first. This fires only if the ack never resolves.
   recordingOpTimeoutId = setTimeout(() => {
     isRecordingOp.value = false
     recordingOpKind.value = null
@@ -503,19 +524,20 @@ function setRecordingOp(kind: 'start' | 'stop') {
   }, 10000)
 }
 
-function startRecording() {
-  if (isRecordingOp.value) return
-  if (!requireEditPermission()) return
-  if (!mqtt.connected.value) {
-    showFeedback('error', 'Not connected to MQTT broker')
-    return
-  }
+function finishRecordingOp() {
+  isRecordingOp.value = false
+  recordingOpKind.value = null
+  if (recordingOpTimeoutId) { clearTimeout(recordingOpTimeoutId); recordingOpTimeoutId = null }
+}
 
+// Validate the current UI selections and build the backend recording config.
+// Returns null (after showing the reason) if it isn't valid to record with.
+function buildValidatedConfig() {
   // Validate channel selection
   const channelCount = selectAllChannels.value ? allChannelNames.value.length : selectedChannels.value.length
   if (channelCount === 0) {
     showFeedback('error', 'Select at least one tag to record')
-    return
+    return null
   }
 
   // Validate triggered mode — the trigger channel must currently exist in
@@ -526,11 +548,11 @@ function startRecording() {
     const trig = recordingConfig.value.triggerChannel
     if (!trig) {
       showFeedback('error', 'Select a trigger tag for triggered recording mode')
-      return
+      return null
     }
     if (!allChannelNames.value.includes(trig)) {
       showFeedback('error', `Trigger tag "${trig}" no longer exists. Pick a different tag.`)
-      return
+      return null
     }
   }
 
@@ -538,32 +560,73 @@ function startRecording() {
   if (recordingConfig.value.mode === 'scheduled') {
     if (!recordingConfig.value.scheduleStart || !recordingConfig.value.scheduleEnd) {
       showFeedback('error', 'Set start and end times for scheduled recording')
-      return
+      return null
     }
     if (recordingConfig.value.scheduleDays.length === 0) {
       showFeedback('error', 'Select at least one day for scheduled recording')
-      return
+      return null
     }
   }
 
   // Convert frontend config (camelCase) to backend format (snake_case)
-  const config = toBackendRecordingConfig(
+  return toBackendRecordingConfig(
     recordingConfig.value,
     selectedChannels.value,
     selectAllChannels.value,
   )
+}
 
-  // Update config then start recording
+// Save the recording configuration WITHOUT starting a recording.
+function saveConfiguration() {
+  if (!requireEditPermission()) return
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  const config = buildValidatedConfig()
+  if (!config) return
+  // Swallow the backend's "configuration updated" echo (see onRecordingResponse)
+  // and show one clean confirmation here.
+  pendingConfigResponses++
   mqtt.updateRecordingConfig(config)
+  markConfigSaved()
+  showFeedback('success', 'Configuration saved')
+}
 
-  // Use the system command to start recording
+async function startRecording() {
+  if (isRecordingOp.value) return
+  if (!requireEditPermission()) return
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  const config = buildValidatedConfig()
+  if (!config) return
+
+  // Apply the current UI settings, then start. The op guard and feedback are
+  // driven by the AWAITED start ack (not the recording/response channel), exactly
+  // like the header Record button — so this never hangs on a response that the
+  // stop/start commands don't emit.
   setRecordingOp('start')
-  mqtt.startRecording()
-  showFeedback('info', 'Starting recording...')
+  pendingConfigResponses++
+  mqtt.updateRecordingConfig(config)
+  markConfigSaved()
+  const result = await mqtt.startRecording()
+  finishRecordingOp()
+
+  if (result.success) {
+    // Show the FULL path, matching the header banner. Path/filename land via a
+    // status update a beat after the ack, so fall back gracefully.
+    const target = store.status?.recording_path || store.status?.recording_filename
+    showFeedback('success', target ? `Recording started → ${target}` : 'Recording started', 10000)
+    mqtt.listRecordedFiles()
+  } else {
+    showFeedback('error', `Recording failed to start: ${result.error || 'unknown error'}`, 8000)
+  }
 }
 
 // Stop Recording
-function stopRecording() {
+async function stopRecording() {
   if (isRecordingOp.value) return
   if (!requireEditPermission()) return
   // Confirm: stopping finalizes the file. A new run starts a new file.
@@ -571,8 +634,16 @@ function stopRecording() {
     return
   }
   setRecordingOp('stop')
-  mqtt.stopRecording()
-  showFeedback('info', 'Stopping recording...')
+  const result = await mqtt.stopRecording()
+  finishRecordingOp()
+
+  if (result.success) {
+    showFeedback('success', 'Recording stopped')
+  } else {
+    showFeedback('error', `Recording failed to stop: ${result.error || 'unknown error'}`, 8000)
+  }
+  // Refresh so the finalized file shows in the list
+  mqtt.listRecordedFiles()
 }
 
 // Load recorded files list
@@ -855,6 +926,9 @@ onMounted(() => {
     azureIot.refreshConfig()
   }
 
+  // Baseline the dirty tracker to the freshly-loaded config (not dirty on open).
+  markConfigSaved()
+
   // Subscribe to project loaded events - reload config when a new project is loaded
   unsubscribeProjectLoaded = projectFiles.onProjectLoaded(() => {
     console.log('[DataTab] Project loaded, reloading recording config from store...')
@@ -864,6 +938,8 @@ onMounted(() => {
       store.setSelectAllRecordingChannels(true)
       store.setSelectedRecordingChannels(allChannelNames.value)
     }
+    // The loaded project's config is the new "saved" baseline.
+    markConfigSaved()
   })
 
   // Reconcile user-variable `log` flags with the current selection so
@@ -877,18 +953,28 @@ onMounted(() => {
     // Skip if a DB connection test is in progress — its own listener handles the response
     if (dbTestStatus.value.testing) return
 
-    // Reset recording op guard on any response (replaces blind timeout)
-    if (isRecordingOp.value) {
-      isRecordingOp.value = false
-      recordingOpKind.value = null
-      if (recordingOpTimeoutId) { clearTimeout(recordingOpTimeoutId); recordingOpTimeoutId = null }
-    }
+    // NOTE: start/stop are driven by their AWAITED command acks (see start/stop
+    // Recording); this channel only carries config-save and delete responses, so
+    // it no longer touches the op guard (that was the source of the stop hang —
+    // stop never emits on this channel).
     if (response.success) {
-      showFeedback('success', response.message)
+      // Config saves WE initiated already show their own feedback (the full path
+      // on start, "Configuration saved" from the Save button), so swallow the
+      // backend's duplicate "configuration updated" echo. Match on the message so
+      // unrelated successes (e.g. "Deleted: X") always surface even if a config
+      // save is in flight at the same moment.
+      const isConfigEcho = /config/i.test(response.message || '')
+      if (isConfigEcho && pendingConfigResponses > 0) {
+        pendingConfigResponses--
+      } else {
+        showFeedback('success', response.message)
+      }
       // Always refresh file list after any successful recording operation
       // (covers delete, stop, rotation, etc.)
       mqtt.listRecordedFiles()
     } else {
+      // Always surface failures (e.g. "Cannot change config while recording").
+      pendingConfigResponses = 0
       showFeedback('error', response.message || 'Recording operation failed')
       // Refresh file list on failure too so the user can see ground-truth
       // recording state — previously stale state was a silent confusion.
@@ -975,6 +1061,19 @@ const scheduleDayLabels = [
         </template>
       </div>
       <div class="status-right">
+        <button
+          class="record-btn save-config"
+          :class="{ dirty: configDirty }"
+          @click="saveConfiguration"
+          :disabled="!mqtt.connected.value || isRecording || isRecordingOp"
+          :title="isRecording
+            ? 'Stop recording to change the configuration'
+            : (configDirty
+                ? 'You have unsaved configuration changes — click to save'
+                : 'Save the recording configuration without starting a recording')"
+        >
+          Save Configuration
+        </button>
         <button
           v-if="!isRecording"
           class="record-btn start"
@@ -1114,7 +1213,10 @@ const scheduleDayLabels = [
           <div class="form-row">
             <div class="form-group" style="flex: 2;">
               <label>Sample Interval</label>
-              <input type="number" v-model.number="recordingConfig.sampleInterval" min="0.001" step="0.1" :disabled="configLocked" />
+              <!-- min must be a multiple of step (0.1) so the spinner grid lands on
+                   clean values (1.5 -> 1.6), not 0.001-offset ones (1.5 -> 1.501).
+                   Finer values can still be typed. -->
+              <input type="number" v-model.number="recordingConfig.sampleInterval" min="0.1" step="0.1" :disabled="configLocked" />
             </div>
             <div class="form-group" style="flex: 1;">
               <label>Unit</label>
@@ -2499,6 +2601,39 @@ const scheduleDayLabels = [
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+}
+
+/* Recording action buttons (Save Configuration + Start/Stop) sit in a row,
+   Save Configuration first so it renders to the LEFT of Start Recording. */
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.record-btn.save-config {
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
+}
+
+.record-btn.save-config:hover:not(:disabled) {
+  background: var(--btn-secondary-hover);
+}
+
+.record-btn.save-config:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* "Active" state — unsaved config changes exist. Accent color draws the eye so
+   the operator knows there's something to save before recording. */
+.record-btn.save-config.dirty:not(:disabled) {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.record-btn.save-config.dirty:not(:disabled):hover {
+  filter: brightness(1.1);
 }
 
 .record-btn.start {

@@ -6790,6 +6790,9 @@ Unit conversions:
             "system_mode": self._system_mode,
             "recording": rec_status.get('recording', self.recording),
             "recording_filename": rec_status.get('recording_filename', self.recording_filename),
+            # Full absolute path of the active recording file (for the dashboard's
+            # start-record status banner). Filename alone is kept for compact widgets.
+            "recording_path": rec_status.get('recording_path'),
             "recording_duration": recording_duration_str,
             "recording_duration_seconds": recording_duration,
             "recording_start_time": rec_status.get('recording_start_time'),

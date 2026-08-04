@@ -433,6 +433,7 @@ export interface SystemStatus {
   acquisition_state?: 'stopped' | 'initializing' | 'running'
   recording: boolean
   recording_filename?: string
+  recording_path?: string // Full absolute path of the active recording file
   recording_duration?: string // HH:MM:SS format
   recording_duration_seconds?: number
   recording_start_time?: string

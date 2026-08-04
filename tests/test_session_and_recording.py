@@ -638,8 +638,9 @@ class TestRecordingALCOAIntegrity:
         assert any('Started:' in line for line in lines[:10])
         assert any('Mode:' in line for line in lines[:10])
 
-    def test_csv_footer_on_stop(self, rec, data_dir, channel_values, channel_configs):
-        """CSV file ends with footer comments (stop time, duration, sample count)"""
+    def test_no_footer_on_stop(self, rec, data_dir, channel_values, channel_configs):
+        """Stopping just stops writing — no stop/duration/sample-count footer is
+        appended, and the file ends on the last data row."""
         rec.configure({
             'sample_interval': 0.001,
             'base_path': str(data_dir),
@@ -649,12 +650,57 @@ class TestRecordingALCOAIntegrity:
         rec.stop()
 
         content = rec.current_file.read_text()
-        lines = content.splitlines()
+        lines = [ln for ln in content.splitlines() if ln.strip()]
 
-        # Last lines should be footer
-        assert any('Stopped:' in line for line in lines[-6:])
-        assert any('Duration:' in line for line in lines[-6:])
-        assert any('Total Samples:' in line for line in lines[-6:])
+        # None of the old footer summary lines should be present anywhere
+        assert not any('Stopped:' in line for line in lines)
+        assert not any('Total Samples:' in line for line in lines)
+        assert not any('File Count:' in line for line in lines)
+
+        # File ends on a data row (not a comment), i.e. writing simply stopped
+        assert not lines[-1].startswith('#')
+
+    def test_duration_in_header_and_timestamp_format(self, rec, data_dir, channel_values, channel_configs):
+        """Duration is backfilled into the HEADER (right after Effective Rate),
+        there's no blank comment row before the channel header, data-row timestamps
+        use a space separator with millisecond precision, and list_files() reads
+        the header duration for display."""
+        import time
+        rec.configure({
+            'sample_interval': 0.001,
+            'base_path': str(data_dir),
+        })
+        rec.start()
+        rec.write_sample(channel_values, channel_configs)
+        time.sleep(0.3)  # make the recorded duration measurable
+        rec.write_sample(channel_values, channel_configs)
+        rec.stop()
+
+        lines = rec.current_file.read_text().splitlines()
+
+        # Duration lives in the header, immediately after Effective Rate
+        rate_idx = next(i for i, ln in enumerate(lines) if ln.startswith('# Effective Rate:'))
+        assert lines[rate_idx + 1].startswith('# Duration:'), "Duration must follow Effective Rate"
+        dur_value = float(lines[rate_idx + 1].split(':', 1)[1].strip().rstrip('s'))
+        assert dur_value >= 0.2, f"Header duration should reflect elapsed time, got {dur_value}"
+
+        # No blank '#' row between Units and the header row, and the timestamp is
+        # split into two leading columns: date, then time.
+        units_idx = next(i for i, ln in enumerate(lines) if ln.startswith('# Units:'))
+        assert lines[units_idx + 1].startswith('date,time,'), "date,time header must directly follow Units"
+
+        # Data rows: col 0 = 'YYYY-MM-DD', col 1 = 'HH:MM:SS.mmm' (exactly 3 decimals)
+        data_rows = [ln for ln in lines if ln and not ln.startswith('#') and not ln.startswith('date,time')]
+        cols = data_rows[0].split(',')
+        date_str, time_str = cols[0], cols[1]
+        import re
+        assert re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_str), f"Bad date column: {date_str!r}"
+        assert re.fullmatch(r'\d{2}:\d{2}:\d{2}\.\d{3}', time_str), f"Bad time column: {time_str!r}"
+
+        # list_files() surfaces the header duration for display
+        listed = {f['name']: f for f in rec.list_files()}
+        assert rec.current_file.name in listed
+        assert listed[rec.current_file.name]['duration'] >= 0.2
 
     def test_sha256_hash_is_correct(self, rec, data_dir, channel_values, channel_configs):
         """Manually verify the SHA-256 hash in the integrity file matches the data file"""
