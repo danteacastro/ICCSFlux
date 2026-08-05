@@ -503,6 +503,9 @@ export interface BackendRecordingConfig {
   sample_interval: number
   sample_interval_unit: 'seconds' | 'milliseconds'
   decimation: number
+  // Timestamp column layout + precision
+  timestamp_format: 'split' | 'iso'
+  timestamp_precision: 'seconds' | 'milliseconds'
   // File rotation
   rotation_mode: 'single' | 'time' | 'size' | 'samples' | 'session'
   max_file_size_mb: number

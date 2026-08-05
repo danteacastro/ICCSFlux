@@ -755,6 +755,8 @@ describe('toBackendRecordingConfig', () => {
     sampleInterval: 1,
     sampleIntervalUnit: 'seconds' as const,
     decimation: 1,
+    timestampFormat: 'split' as const,
+    timestampPrecision: 'milliseconds' as const,
     rotationMode: 'time' as const,
     maxFileSize: 100,
     maxFileDuration: 3600,
@@ -812,6 +814,8 @@ describe('toBackendRecordingConfig', () => {
     expect(config.buffer_size).toBe(100)
     expect(config.flush_interval_s).toBe(5.0)
     expect(config.directory_structure).toBe('daily')
+    expect(config.timestamp_format).toBe('split')
+    expect(config.timestamp_precision).toBe('milliseconds')
   })
 
   it('should map all data integrity fields', () => {

@@ -75,6 +75,16 @@ function markConfigSaved() {
   savedConfigSignature.value = currentConfigSignature.value
 }
 
+// Human-readable preview of the CSV timestamp column layout for the config UI.
+const timestampPreview = computed(() => {
+  const subsecond = recordingConfig.value.timestampPrecision !== 'seconds'
+  const date = '2026-08-04'
+  const time = subsecond ? '15:55:44.943' : '15:55:44'
+  return recordingConfig.value.timestampFormat === 'iso'
+    ? `timestamp → ${date}T${time}`
+    : `date, time → ${date}, ${time}`
+})
+
 // Recording State (from backend)
 const isRecording = computed(() => store.status?.recording || false)
 const recordingFile = computed(() => store.status?.recording_filename || '')
@@ -1237,6 +1247,66 @@ const scheduleDayLabels = [
               <span>Est. file size:</span>
               <strong v-if="(selectAllChannels ? allChannelNames.length : selectedChannels.length) > 0">~{{ estimatedSizePerHour.toFixed(1) }} MB/hour</strong>
               <strong v-else class="rate-detail">Select tags to estimate</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Timestamp Section -->
+        <div class="settings-section">
+          <h3>Timestamp</h3>
+
+          <div class="form-group">
+            <label>Column format</label>
+            <div class="rotation-selector">
+              <button
+                class="rotation-btn"
+                :class="{ active: recordingConfig.timestampFormat === 'split' }"
+                :disabled="configLocked"
+                @click="recordingConfig.timestampFormat = 'split'"
+                title="Two columns: Date (YYYY-MM-DD) and Time (HH:MM:SS)"
+              >
+                Two Columns (Date + Time)
+              </button>
+              <button
+                class="rotation-btn"
+                :class="{ active: recordingConfig.timestampFormat === 'iso' }"
+                :disabled="configLocked"
+                @click="recordingConfig.timestampFormat = 'iso'"
+                title="One ISO 8601 column with a 'T' between date and time (e.g. 2026-08-04T15:55:44)"
+              >
+                Single ISO 8601 Column
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Precision</label>
+            <div class="rotation-selector">
+              <button
+                class="rotation-btn"
+                :class="{ active: recordingConfig.timestampPrecision === 'seconds' }"
+                :disabled="configLocked"
+                @click="recordingConfig.timestampPrecision = 'seconds'"
+                title="Whole seconds"
+              >
+                Seconds
+              </button>
+              <button
+                class="rotation-btn"
+                :class="{ active: recordingConfig.timestampPrecision === 'milliseconds' }"
+                :disabled="configLocked"
+                @click="recordingConfig.timestampPrecision = 'milliseconds'"
+                title="Subsecond — milliseconds (3 decimals)"
+              >
+                Subsecond (ms)
+              </button>
+            </div>
+          </div>
+
+          <div class="rate-info">
+            <div class="rate-row">
+              <span>Preview:</span>
+              <strong>{{ timestampPreview }}</strong>
             </div>
           </div>
         </div>

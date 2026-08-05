@@ -129,6 +129,12 @@ class RecordingConfig:
     sample_interval_unit: str = "seconds"  # 'seconds' or 'milliseconds'
     decimation: int = 1  # Log every Nth sample
 
+    # Timestamp column(s) in the CSV
+    # 'split' => two columns (date + time); 'iso' => one ISO-8601 'T' string column
+    timestamp_format: str = "split"
+    # 'seconds' (whole seconds) or 'milliseconds' (subsecond, 3 decimals)
+    timestamp_precision: str = "milliseconds"
+
     # File Rotation Strategy
     rotation_mode: str = "single"  # 'single', 'time', 'size', 'samples', 'session'
     max_file_size_mb: float = 100.0
@@ -565,7 +571,7 @@ class RecordingManager:
                     self.current_file_handle = open(self.current_file, 'a', newline='')
                     _lock_file(self.current_file_handle)
                     # Write a resume marker so the file shows stop/start boundaries
-                    self.current_file_handle.write(f"# Resumed: {datetime.now().isoformat(sep=' ', timespec='milliseconds')}\n")
+                    self.current_file_handle.write(f"# Resumed: {self._format_timestamp_meta(datetime.now())}\n")
                     # Keep existing column_order — skip header rewrite on next write_sample
                     self._resuming_file = True
                     self.csv_writer = None
@@ -1017,19 +1023,16 @@ class RecordingManager:
 
     def _write_row(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Write a row to the CSV file"""
-        # Timestamp split across two columns: date, then time with millisecond
-        # (3-decimal) precision.
-        now = datetime.now()
-        date_str = now.strftime('%Y-%m-%d')
-        time_str = f"{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}"
+        # Timestamp column(s) per config: one ISO 'T' string, or [date, time].
+        ts_cells = self._format_timestamp_cells(datetime.now())
 
         # Initialize CSV writer with headers on first write
         if self.csv_writer is None:
             self._init_csv_writer(values, channel_configs)
 
-        # Build row in column order (first two columns are date, time)
-        row = [date_str, time_str]
-        for col in self.column_order[2:]:  # Skip date, time
+        # Build row in column order (leading columns are the timestamp cells)
+        row = list(ts_cells)
+        for col in self.column_order[len(ts_cells):]:  # Skip timestamp column(s)
             value = values.get(col, '')
             if isinstance(value, float):
                 row.append(f"{value:.6f}")
@@ -1083,6 +1086,34 @@ class RecordingManager:
         value = f"{duration_seconds:.1f}s"
         return f"# Duration: {value:<{DURATION_VALUE_WIDTH}}\n"
 
+    def _timestamp_columns(self) -> List[str]:
+        """CSV column name(s) for the timestamp, per config."""
+        return ['timestamp'] if self.config.timestamp_format == 'iso' else ['date', 'time']
+
+    def _timestamp_units(self) -> List[str]:
+        """Units-row label(s) for the timestamp column(s), per config."""
+        subsecond = self.config.timestamp_precision != 'seconds'
+        if self.config.timestamp_format == 'iso':
+            return ['ISO8601']
+        return ['YYYY-MM-DD', 'HH:MM:SS.mmm' if subsecond else 'HH:MM:SS']
+
+    def _format_timestamp_cells(self, now: datetime) -> List[str]:
+        """The timestamp value(s) for one data row: one ISO string, or [date, time]."""
+        subsecond = self.config.timestamp_precision != 'seconds'
+        if self.config.timestamp_format == 'iso':
+            return [now.isoformat(timespec='milliseconds' if subsecond else 'seconds')]
+        date_str = now.strftime('%Y-%m-%d')
+        time_str = (f"{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}"
+                    if subsecond else now.strftime('%H:%M:%S'))
+        return [date_str, time_str]
+
+    def _format_timestamp_meta(self, now: datetime) -> str:
+        """A single timestamp string for header metadata (# Started / # Resumed),
+        matching the configured separator ('T' vs space) and precision."""
+        subsecond = self.config.timestamp_precision != 'seconds'
+        sep = 'T' if self.config.timestamp_format == 'iso' else ' '
+        return now.isoformat(sep=sep, timespec='milliseconds' if subsecond else 'seconds')
+
     def _absolute_recording_path(self) -> Optional[str]:
         """Full absolute path (from the drive root, e.g. C:\\...) of the active
         recording file. base_path is frequently relative ('./data'), so resolve
@@ -1096,8 +1127,9 @@ class RecordingManager:
 
     def _init_csv_writer(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Initialize CSV writer with headers"""
-        # Build column order: date + time first, then channels sorted
-        new_columns = ['date', 'time'] + sorted(values.keys())
+        # Build column order: timestamp column(s) first, then channels sorted
+        ts_columns = self._timestamp_columns()
+        new_columns = ts_columns + sorted(values.keys())
 
         # If resuming an existing file, reuse previous column order and skip headers
         if self._resuming_file and self.column_order:
@@ -1109,8 +1141,8 @@ class RecordingManager:
         self.column_order = new_columns
 
         # Add units row as comment
-        header_row = ['date', 'time']
-        units_row = ['YYYY-MM-DD', 'HH:MM:SS.mmm']
+        header_row = list(ts_columns)
+        units_row = self._timestamp_units()
 
         for col in sorted(values.keys()):
             header_row.append(col)
@@ -1125,7 +1157,7 @@ class RecordingManager:
         # Write metadata header
         effective_rate = self.config.effective_sample_rate_hz
         self.current_file_handle.write(f"# NISystem Data Recording\n")
-        self.current_file_handle.write(f"# Started: {self.recording_start_time.isoformat(sep=' ', timespec='milliseconds')}\n")
+        self.current_file_handle.write(f"# Started: {self._format_timestamp_meta(self.recording_start_time)}\n")
         self.current_file_handle.write(f"# Mode: {self.config.mode}\n")
         self.current_file_handle.write(f"# Interval: {self.config.sample_interval} {self.config.sample_interval_unit}\n")
         self.current_file_handle.write(f"# Effective Rate: {effective_rate:.3f} Hz (decimation: {self.config.decimation})\n")

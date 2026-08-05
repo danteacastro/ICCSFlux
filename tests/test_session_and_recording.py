@@ -702,6 +702,39 @@ class TestRecordingALCOAIntegrity:
         assert rec.current_file.name in listed
         assert listed[rec.current_file.name]['duration'] >= 0.2
 
+    def test_iso_single_column_seconds_precision(self, rec, data_dir, channel_values, channel_configs):
+        """timestamp_format='iso' writes ONE ISO 'T' column; precision='seconds'
+        drops the decimals. read_file still parses it back."""
+        rec.configure({
+            'sample_interval': 0.001,
+            'base_path': str(data_dir),
+            'timestamp_format': 'iso',
+            'timestamp_precision': 'seconds',
+        })
+        rec.start()
+        rec.write_sample(channel_values, channel_configs)
+        rec.stop()
+
+        lines = rec.current_file.read_text().splitlines()
+
+        # Single 'timestamp' column, ISO8601 unit label, no date/time split
+        units_idx = next(i for i, ln in enumerate(lines) if ln.startswith('# Units:'))
+        header = lines[units_idx + 1]
+        assert header.startswith('timestamp,')
+        assert 'date,time' not in header
+        assert '# Units: ISO8601,' in lines[units_idx]
+
+        # Data row: 'YYYY-MM-DDTHH:MM:SS' — 'T' separator, whole seconds
+        data_rows = [ln for ln in lines if ln and not ln.startswith('#') and not ln.startswith('timestamp')]
+        ts = data_rows[0].split(',')[0]
+        import re
+        assert re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', ts), f"Bad ISO/seconds ts: {ts!r}"
+
+        # Round-trips through the reader
+        result = rec.read_file(rec.current_file.name)
+        assert result['success']
+        assert len(result['data']) == 1
+
     def test_sha256_hash_is_correct(self, rec, data_dir, channel_values, channel_configs):
         """Manually verify the SHA-256 hash in the integrity file matches the data file"""
         rec.configure({

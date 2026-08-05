@@ -34,6 +34,9 @@ export interface RecordingConfig {
   sampleInterval: number
   sampleIntervalUnit: 'seconds' | 'milliseconds'
   decimation: number
+  // Timestamp column layout + precision in the CSV
+  timestampFormat: 'split' | 'iso'          // two columns (date+time) vs one ISO 'T' string
+  timestampPrecision: 'seconds' | 'milliseconds'  // whole seconds vs subsecond
   rotationMode: 'single' | 'time' | 'size' | 'samples' | 'session'
   maxFileSize: number
   maxFileDuration: number
@@ -93,6 +96,8 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   sampleInterval: 1,
   sampleIntervalUnit: 'seconds',
   decimation: 1,
+  timestampFormat: 'split',
+  timestampPrecision: 'milliseconds',
   rotationMode: 'single',
   maxFileSize: 100,
   maxFileDuration: 3600,
@@ -162,6 +167,8 @@ export function toBackendRecordingConfig(
     sample_interval: cfg.sampleInterval,
     sample_interval_unit: cfg.sampleIntervalUnit,
     decimation: 1,  // Decimation handled by sample interval — always send 1
+    timestamp_format: cfg.timestampFormat,
+    timestamp_precision: cfg.timestampPrecision,
     rotation_mode: cfg.rotationMode,
     max_file_size_mb: cfg.maxFileSize,
     max_file_duration_s: cfg.maxFileDuration,
