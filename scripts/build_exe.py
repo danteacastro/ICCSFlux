@@ -111,40 +111,66 @@ _BUILD_LOCKING_EXES = [
     "AzureUploader.exe", "ModbusTool.exe",
 ]
 
-def remove_tree_best_effort(path):
-    """Delete as much of `path` as possible, clearing read-only bits along the way.
-
-    Returns the list of paths that could NOT be removed (locked or access-denied).
-    Unlike rmtree, one stubborn file (e.g. a mosquitto_passwd held open by a
-    running broker) does not abort the whole delete — everything else still goes.
-    """
+def _clear_readonly(p):
+    """Clear the read-only attribute so a file/dir can be deleted. Windows refuses
+    to delete read-only files AND refuses to rmdir read-only DIRECTORIES."""
     import stat
+    try:
+        os.chmod(p, stat.S_IWRITE)
+    except OSError:
+        pass
+
+def _remove_tree_pass(path):
+    """One bottom-up delete pass. Returns the paths that could NOT be removed."""
     failed = []
-    if not path.exists():
-        return failed
     # Bottom-up so files go before the dirs that contain them.
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
             p = Path(root) / name
             try:
-                try:
-                    os.chmod(p, stat.S_IWRITE)
-                except OSError:
-                    pass
+                _clear_readonly(p)
                 p.unlink()
             except OSError:
                 failed.append(p)
         for name in dirs:
             p = Path(root) / name
             try:
+                # Clear read-only FIRST: Windows returns Access Denied on rmdir of a
+                # read-only directory (the config/data archive folders are marked
+                # read-only for data integrity — ALCOA+ append-only). This, not a
+                # lock, is what left them undeletable.
+                _clear_readonly(p)
                 p.rmdir()  # only succeeds if now empty
             except OSError:
                 failed.append(p)
     try:
+        _clear_readonly(path)
         path.rmdir()
     except OSError:
         if path.exists():
             failed.append(path)
+    return failed
+
+def remove_tree_best_effort(path, attempts=5, delay=0.25):
+    """Delete as much of `path` as possible, clearing read-only bits along the way.
+
+    Returns the list of paths that could NOT be removed after `attempts` passes.
+    Unlike rmtree, one stubborn file doesn't abort the whole delete. Retries with a
+    short backoff because most build-tree "locks" on Windows are TRANSIENT — a
+    real-time antivirus scan (Defender) or a file-watcher grabbing a file for a
+    split second right as we delete it. A second pass a moment later usually
+    succeeds (this is what rimraf/git do on Windows).
+    """
+    import time
+    if not path.exists():
+        return []
+    failed = []
+    for attempt in range(attempts):
+        failed = _remove_tree_pass(path)
+        if not failed or not path.exists():
+            return failed
+        if attempt < attempts - 1:
+            time.sleep(delay)  # let a transient scanner/watcher release its handle
     return failed
 
 def _running_build_lockers():
@@ -156,9 +182,9 @@ def _running_build_lockers():
     return [name for name in _BUILD_LOCKING_EXES if name.lower() in out]
 
 def _warn_locked_files(failed):
-    """Explain WHY files in the build tree are locked and how to get a clean wipe."""
+    """Explain WHY items in the build tree are locked and how to get a clean wipe."""
     shown = ", ".join(p.name for p in failed[:4])
-    log(f"Could not remove {len(failed)} file(s) still in use: {shown}", "WARN")
+    log(f"Could not remove {len(failed)} item(s) still in use: {shown}", "WARN")
     running = _running_build_lockers()
     if running:
         log("Held open by running process(es): " + ", ".join(running), "WARN")
@@ -168,8 +194,18 @@ def _warn_locked_files(failed):
         log("The build continues by overlaying fresh files. For a fully-clean wipe, "
             "stop them first — e.g.  net stop mosquitto  (this is NOT a OneDrive issue).", "WARN")
     else:
-        log("No known ICCSFlux/Mosquitto process is running now — the lock was likely "
-            "transient (a broker that had the file open momentarily). Safe to ignore.", "WARN")
+        # No ICCSFlux/broker process, and we already retried several times — so a
+        # handle is being held by something else. On Windows the usual culprits are
+        # a real-time AV scan, a file-watcher, an open Explorer window, or a terminal
+        # whose current directory is inside the build tree.
+        log("No ICCSFlux/Mosquitto process is running and the delete was already "
+            "retried — so something else briefly held these. Usual causes: antivirus "
+            "(Defender) scanning files as they're deleted, VSCode's file watcher, an "
+            "open File Explorer window, or a terminal sitting in dist\\ICCSFlux-Portable "
+            "(e.g. config\\). Add an AV exclusion for dist\\ or close the window/terminal, "
+            "then rebuild for a fully clean output.", "WARN")
+        log("Administrator does NOT help here — this is a file-in-use lock, not a "
+            "permissions problem. The build continues by overlaying fresh files.", "WARN")
 
 def _is_admin():
     """True if the current process has Administrator rights."""
