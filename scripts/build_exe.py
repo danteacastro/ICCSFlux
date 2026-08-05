@@ -206,8 +206,21 @@ def stop_conflicting_broker():
     svc_running = _service_running("mosquitto")
     proc_running = "mosquitto.exe" in _running_build_lockers()
     if not svc_running and not proc_running:
-        log("No conflicting Mosquitto broker running.", "OK")
+        # Nothing to stop — a plain build needs no elevation.
+        log("No conflicting Mosquitto broker running (no admin needed).", "OK")
         return True
+
+    # A broker IS running and must be stopped — which needs Administrator. Rather
+    # than half-build and fail at runtime, stop now with a clear message.
+    if not _is_admin():
+        log("A Mosquitto broker is already running and must be stopped before "
+            "building.", "ERROR")
+        log("Otherwise the portable attaches to this external broker with the "
+            "wrong config and the dashboard shows 'Connection Lost'.", "ERROR")
+        log("Stopping it requires Administrator.", "ERROR")
+        log(">> Re-run build.bat from an elevated terminal (Run as administrator),", "ERROR")
+        log("   or pass  --keep-broker  to build without touching the broker.", "ERROR")
+        return False
 
     log("A Mosquitto broker is already running — stopping it so the portable "
         "build can own port 1883 (not attach to this external broker)...", "WARN")
@@ -1495,9 +1508,12 @@ def main():
     # Stop any already-running Mosquitto broker BEFORE cleaning: it frees the file
     # lock on config\mosquitto_passwd and, crucially, leaves port 1883 free so the
     # portable build you run next starts its OWN broker instead of attaching to a
-    # mis-configured external one. Opt out with --keep-broker.
+    # mis-configured external one. Admin is required ONLY when a broker is actually
+    # running (stopping a service needs it) — a plain build needs no elevation.
+    # Opt out with --keep-broker.
     if not args.keep_broker:
-        stop_conflicting_broker()
+        if not stop_conflicting_broker():
+            return 1
 
     clean_build()
 
