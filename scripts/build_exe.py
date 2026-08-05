@@ -103,6 +103,163 @@ def robust_rmtree(path):
     else:
         shutil.rmtree(path, onerror=lambda func, p, exc: _rm_onerror(func, p, exc))
 
+# Executables that, when running, hold open files inside the build tree (the
+# Mosquitto broker in particular keeps config\mosquitto_passwd open because
+# config/mosquitto.conf sets `password_file config/mosquitto_passwd`).
+_BUILD_LOCKING_EXES = [
+    "mosquitto.exe", "ICCSFlux.exe", "DAQService.exe",
+    "AzureUploader.exe", "ModbusTool.exe",
+]
+
+def remove_tree_best_effort(path):
+    """Delete as much of `path` as possible, clearing read-only bits along the way.
+
+    Returns the list of paths that could NOT be removed (locked or access-denied).
+    Unlike rmtree, one stubborn file (e.g. a mosquitto_passwd held open by a
+    running broker) does not abort the whole delete — everything else still goes.
+    """
+    import stat
+    failed = []
+    if not path.exists():
+        return failed
+    # Bottom-up so files go before the dirs that contain them.
+    for root, dirs, files in os.walk(path, topdown=False):
+        for name in files:
+            p = Path(root) / name
+            try:
+                try:
+                    os.chmod(p, stat.S_IWRITE)
+                except OSError:
+                    pass
+                p.unlink()
+            except OSError:
+                failed.append(p)
+        for name in dirs:
+            p = Path(root) / name
+            try:
+                p.rmdir()  # only succeeds if now empty
+            except OSError:
+                failed.append(p)
+    try:
+        path.rmdir()
+    except OSError:
+        if path.exists():
+            failed.append(path)
+    return failed
+
+def _running_build_lockers():
+    """Return the subset of _BUILD_LOCKING_EXES currently running (best effort)."""
+    try:
+        out = subprocess.run(["tasklist"], capture_output=True, text=True).stdout.lower()
+    except Exception:
+        return []
+    return [name for name in _BUILD_LOCKING_EXES if name.lower() in out]
+
+def _warn_locked_files(failed):
+    """Explain WHY files in the build tree are locked and how to get a clean wipe."""
+    shown = ", ".join(p.name for p in failed[:4])
+    log(f"Could not remove {len(failed)} file(s) still in use: {shown}", "WARN")
+    running = _running_build_lockers()
+    if running:
+        log("Held open by running process(es): " + ", ".join(running), "WARN")
+        if "mosquitto.exe" in running:
+            log("A running Mosquitto broker keeps config\\mosquitto_passwd open "
+                "(config/mosquitto.conf sets `password_file config/mosquitto_passwd`).", "WARN")
+        log("The build continues by overlaying fresh files. For a fully-clean wipe, "
+            "stop them first — e.g.  net stop mosquitto  (this is NOT a OneDrive issue).", "WARN")
+    else:
+        log("No known ICCSFlux/Mosquitto process is running now — the lock was likely "
+            "transient (a broker that had the file open momentarily). Safe to ignore.", "WARN")
+
+def _is_admin():
+    """True if the current process has Administrator rights."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def _service_running(service_name):
+    """True if a Windows service by this name exists and is RUNNING."""
+    try:
+        out = subprocess.run(["sc", "query", service_name],
+                             capture_output=True, text=True)
+        return out.returncode == 0 and "RUNNING" in out.stdout.upper()
+    except Exception:
+        return False
+
+def stop_conflicting_broker():
+    """Stop any Mosquitto broker that is already running.
+
+    Two reasons this matters:
+      1. A broker launched from the dist folder holds config\\mosquitto_passwd
+         open, which blocks a clean wipe of the build tree.
+      2. More importantly, when you RUN the freshly-built portable, its Service
+         Manager tries to start its OWN broker on port 1883. If a system-wide
+         Mosquitto service is already on that port, the portable attaches to it
+         as 'ext' — with the wrong config/credentials — and the dashboard can't
+         authenticate ("Connection Lost").
+
+    So we proactively stop the service and any stray process. Requires
+    Administrator to touch a Windows service; degrades to a clear message.
+    """
+    svc_running = _service_running("mosquitto")
+    proc_running = "mosquitto.exe" in _running_build_lockers()
+    if not svc_running and not proc_running:
+        log("No conflicting Mosquitto broker running.", "OK")
+        return True
+
+    log("A Mosquitto broker is already running — stopping it so the portable "
+        "build can own port 1883 (not attach to this external broker)...", "WARN")
+    ok = True
+
+    # 1) Stop the Windows service (the usual culprit: the system installer's
+    #    'mosquitto' service). Needs Administrator.
+    if svc_running:
+        res = subprocess.run(["net", "stop", "mosquitto"],
+                             capture_output=True, text=True)
+        if res.returncode == 0 and not _service_running("mosquitto"):
+            log("  Stopped Windows service 'mosquitto'.", "OK")
+            # Prevent it auto-returning on the next boot and re-conflicting. This is
+            # safe: the portable ships its own broker, and dev's start_services.py
+            # launches mosquitto.exe as a plain process (not via this service).
+            cfg = subprocess.run(["sc", "config", "mosquitto", "start=", "disabled"],
+                                 capture_output=True, text=True)
+            if cfg.returncode == 0:
+                log("  Disabled 'mosquitto' service auto-start (won't return on boot). "
+                    "Re-enable any time with:  sc config mosquitto start= auto", "OK")
+            else:
+                log("  Stopped it, but could not disable auto-start (it may return on "
+                    "reboot). Run as admin:  sc config mosquitto start= disabled", "WARN")
+        else:
+            ok = False
+            blob = (res.stdout + res.stderr).lower()
+            if "access is denied" in blob or res.returncode == 2:
+                log("  Cannot stop the 'mosquitto' service — needs Administrator.", "ERROR")
+                log("  Re-run build.bat as Administrator, or manually run:  net stop mosquitto", "ERROR")
+            else:
+                log(f"  Failed to stop 'mosquitto' service: "
+                    f"{(res.stdout or res.stderr).strip()}", "ERROR")
+
+    # 2) Kill any stray (non-service) mosquitto.exe still holding the port.
+    if "mosquitto.exe" in _running_build_lockers():
+        subprocess.run(["taskkill", "/F", "/IM", "mosquitto.exe"],
+                       capture_output=True, text=True)
+        if "mosquitto.exe" in _running_build_lockers():
+            ok = False
+            log("  A mosquitto.exe is still running (likely a SYSTEM service — "
+                "needs Administrator to stop).", "WARN")
+        else:
+            log("  Stopped stray mosquitto.exe process(es).", "OK")
+
+    if ok:
+        log("Mosquitto broker stopped — port 1883 is free for the portable build.", "OK")
+    else:
+        log("A Mosquitto broker is STILL running. The portable will attach to it as "
+            "external and may fail to authenticate. Stop it as Administrator "
+            "(net stop mosquitto) before running the distro.", "WARN")
+    return ok
+
 def get_build_version() -> dict:
     """Capture build version info from git and system metadata."""
     version = {
@@ -232,18 +389,13 @@ def clean_build():
     log("Cleaning previous build...")
 
     if BUILD_DIR.exists():
-        try:
-            robust_rmtree(BUILD_DIR)
-        except PermissionError as e:
-            log(f"Could not fully clean build dir: {e}", "WARN")
-            log("Trying to clean individual files...", "WARN")
-            # Try to at least clean what we can
-            for item in BUILD_DIR.iterdir():
-                if item.is_file():
-                    try:
-                        item.unlink()
-                    except PermissionError:
-                        pass
+        # Best-effort recursive delete: a single locked file (typically a
+        # runtime-generated mosquitto_passwd held open by a running broker) no
+        # longer aborts the clean — everything else is still removed, and the
+        # later copy_* steps overlay fresh files on top of whatever remained.
+        failed = remove_tree_best_effort(BUILD_DIR)
+        if failed:
+            _warn_locked_files(failed)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
 def build_dashboard():
@@ -619,14 +771,16 @@ def copy_config():
     config_src = PROJECT_ROOT / "config"
     config_dest = BUILD_DIR / "config"
 
+    # Remove the old config as far as we can. If something is still locked (almost
+    # always the runtime-generated mosquitto_passwd, held open by a running
+    # Mosquitto), don't fail the build — that file is in the ignore list below and
+    # is never shipped anyway, so we just overlay the fresh config on top of it.
+    overlay = False
     if config_dest.exists():
-        try:
-            robust_rmtree(config_dest)
-        except PermissionError as e:
-            log(f"Could not remove old config dir: {e}", "ERROR")
-            log("A file is locked — pause OneDrive sync (or exclude dist\\ from "
-                "OneDrive) and rebuild.", "ERROR")
-            return False
+        failed = remove_tree_best_effort(config_dest)
+        if failed:
+            overlay = True
+            _warn_locked_files(failed)
 
     shutil.copytree(
         config_src,
@@ -638,7 +792,8 @@ def copy_config():
             'mosquitto_secure.conf',  # Superseded by mosquitto.conf
             'projects',              # Dev projects — portable starts clean
             'nisystem_settings.json', # Contains dev machine paths
-        )
+        ),
+        dirs_exist_ok=overlay,  # merge over whatever couldn't be deleted
     )
 
     # Create empty projects directory (with backups subdir)
@@ -1315,6 +1470,9 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Skip recompilation if executables exist")
     parser.add_argument("--sign", action="store_true", help="Sign executables (requires CODE_SIGN_PFX env var)")
     parser.add_argument("--no-sbom", action="store_true", help="Skip SBOM generation and vulnerability audit")
+    parser.add_argument("--keep-broker", action="store_true",
+                        help="Do NOT stop a running Mosquitto broker (default: stop it so the "
+                             "built portable can own port 1883)")
     args = parser.parse_args()
 
     print()
@@ -1333,6 +1491,13 @@ def main():
 
     # Set reproducible build environment (fixes hash randomization + PE timestamps)
     setup_reproducible_env()
+
+    # Stop any already-running Mosquitto broker BEFORE cleaning: it frees the file
+    # lock on config\mosquitto_passwd and, crucially, leaves port 1883 free so the
+    # portable build you run next starts its OWN broker instead of attaching to a
+    # mis-configured external one. Opt out with --keep-broker.
+    if not args.keep_broker:
+        stop_conflicting_broker()
 
     clean_build()
 

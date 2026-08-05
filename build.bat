@@ -2,6 +2,23 @@
 title ICCSFlux Build
 cd /d "%~dp0"
 
+REM ── Auto-elevate to stop a running Mosquitto service ─────────────────────────
+REM  Stopping a Windows service needs Administrator. Only elevate when it's
+REM  actually needed: a 'mosquitto' service is RUNNING, the caller didn't pass
+REM  --keep-broker, and we're not already elevated. (build_exe.py does the stop.)
+echo %* | find /i "--keep-broker" >nul && goto :after_elevate
+sc query mosquitto 2>nul | find /i "RUNNING" >nul || goto :after_elevate
+net session >nul 2>&1 && goto :after_elevate
+echo [BUILD] A Mosquitto service is running - elevating to Administrator to stop it...
+set "ELEV_ARGS=%*"
+if defined ELEV_ARGS (
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%ELEV_ARGS%' -Verb RunAs"
+) else (
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+)
+exit /b
+:after_elevate
+
 echo.
 echo ========================================
 echo   ICCSFlux Portable Build (EXE Edition)
