@@ -2202,6 +2202,33 @@ function handleTagRename(oldName: string, newName: string) {
   renameChannel(oldName, newName)
 }
 
+// Inline tag-name editing buffer. The grid re-renders constantly (the VALUE
+// column ticks at the scan rate), and binding the input straight to `name`
+// let each re-render reset the field mid-type. So while a tag cell is focused
+// we hold the in-progress text here and bind the input to it; the value is only
+// committed (renamed) on blur/enter.
+const tagDraft = ref<{ name: string; value: string } | null>(null)
+
+function tagInputValue(name: string): string {
+  return tagDraft.value && tagDraft.value.name === name ? tagDraft.value.value : name
+}
+function onTagFocus(name: string) {
+  tagDraft.value = { name, value: name }
+}
+function onTagInput(name: string, e: Event) {
+  if (tagDraft.value && tagDraft.value.name === name) {
+    tagDraft.value.value = (e.target as HTMLInputElement).value
+  }
+}
+function commitTagEdit(name: string) {
+  const draft = tagDraft.value
+  tagDraft.value = null
+  if (draft && draft.name === name) handleTagRename(name, draft.value)
+}
+function cancelTagEdit() {
+  tagDraft.value = null
+}
+
 // Add new channel
 function openAddChannelModal() {
   // Default source_type based on project_mode
@@ -2515,7 +2542,7 @@ function deleteChannel(channelName: string, event?: Event, opts?: { skipConfirm?
 
     if (refs.length > 0) {
       const refSummary = refs.map(r => `  - ${r.type}: ${r.name} (${r.location})`).join('\n')
-      confirmMessage = `WARNING: "${channelName}" is referenced in ${refs.length} place(s):\n\n${refSummary}\n\nDeleting this tag will break these references!\n\nDelete anyway?`
+      confirmMessage = `"${channelName}" is referenced in ${refs.length} place(s):\n\n${refSummary}\n\nThese (alarm, recording, widgets, interlocks) will be cleaned up automatically. This cannot be undone.\n\nDelete channel?`
     }
 
     if (!confirm(confirmMessage)) {
@@ -2590,9 +2617,11 @@ function cascadeChannelDelete(channelName: string) {
     store.setRecordingConfig({ triggerChannel: '' })
   }
 
-  // 4. Alarm config — backend stores the per-channel alarm; tell it to clean
-  // up too. Now actually wired in the backend (was a dead command before).
+  // 4. Alarm config — drop the frontend alarm now (so the display updates
+  // immediately and the debounced sync doesn't re-push it) AND tell the backend
+  // to clean up its per-channel alarm.
   try {
+    safety.deleteAlarmConfig(channelName)
     mqtt.sendNodeCommand('safety/alarm/delete', { channel: channelName })
     removedAlarm = true
   } catch (e) {
@@ -2653,11 +2682,19 @@ function renameChannel(oldName: string, newName: string) {
     return false
   }
 
-  // Create new channel with same config
-  mqtt.createChannel(newName, { ...config })
+  // Atomic backend rename via the update command's new_name field. Send ONLY
+  // new_name (not the full config): the backend renames by moving the existing
+  // channel object, preserving all its config, and a new_name-only payload
+  // carries no "structural" fields — so it isn't rejected the way the old
+  // create+delete was (that briefly double-bound the physical channel and the
+  // grid cell snapped back to the original tag).
+  mqtt.updateChannelConfig(oldName, { new_name: newName })
 
-  // Delete old channel
-  mqtt.sendNodeCommand('config/channel/delete', { channel: oldName })
+  // Optimistically move the entry locally so the grid reflects the new tag
+  // immediately instead of waiting on (and appearing to "revert" before) the
+  // backend's config broadcast, which then reconciles idempotently.
+  store.channels[newName] = { ...config }
+  delete store.channels[oldName]
 
   // Update local enabled state
   if (channelEnabled.value[oldName] !== undefined) {
@@ -3927,6 +3964,11 @@ const activeTypeFullName = computed(() => {
 
 const activeTypeTab = ref('all')
 const searchQuery = ref('')
+// Grid sort order. 'chassis' keeps the hardware-grouped default (by module # then
+// signal type/index — see moduleSort); the others sort alphabetically
+// (natural/numeric so tag_2 precedes tag_10). sortDir flips A–Z / Z–A.
+const sortMode = ref<'chassis' | 'tag' | 'channel' | 'description'>('chassis')
+const sortDir = ref<'asc' | 'desc'>('asc')
 const selectedChannel = ref<string | null>(null)
 const showConfigPanel = ref(false)
 
@@ -4036,8 +4078,22 @@ const filteredChannels = computed(() => {
     )
   }
 
-  // Sort by module first, then by channel index
-  return channels.sort(moduleSort)
+  // Sort: alphabetical (natural) by tag / channel / description, else the
+  // default hardware-module grouping.
+  const dir = sortDir.value === 'desc' ? -1 : 1
+  const natural = (x?: string, y?: string) =>
+    dir * (x || '').localeCompare(y || '', undefined, { numeric: true, sensitivity: 'base' })
+  if (sortMode.value === 'tag') {
+    return channels.sort(([a], [b]) => natural(a, b))
+  }
+  if (sortMode.value === 'channel') {
+    return channels.sort(([, a], [, b]) => natural(a.physical_channel, b.physical_channel))
+  }
+  if (sortMode.value === 'description') {
+    return channels.sort(([, a], [, b]) => natural(a.description, b.description))
+  }
+  // Default hardware-module grouping — direction still applies so Z–A reverses it.
+  return channels.sort((a, b) => dir * moduleSort(a, b))
 })
 
 // Get current value for a channel (shows error strings for problematic channels)
@@ -4983,7 +5039,7 @@ function saveChannelConfig() {
   // Include new_name if renaming the channel
   const isRenaming = editingConfig.value.newName !== editingConfig.value.name
   if (isRenaming) {
-    // Validate rename and check dependencies
+    // Validate the new name (format / collision). Invalid names still block.
     const validation = tagDeps.validateTagRename(editingConfig.value.name, editingConfig.value.newName)
 
     if (!validation.valid) {
@@ -4991,19 +5047,9 @@ function saveChannelConfig() {
       return
     }
 
-    // Warn about affected references
-    if (validation.affectedReferences.length > 0) {
-      const refSummary = validation.affectedReferences
-        .map(r => `  - ${r.type}: ${r.name}`)
-        .join('\n')
-      const proceed = confirm(
-        `Renaming "${editingConfig.value.name}" to "${editingConfig.value.newName}" will affect ${validation.affectedReferences.length} reference(s):\n\n${refSummary}\n\nNote: Python scripts must be updated manually.\n\nProceed with rename?`
-      )
-      if (!proceed) return
-    }
-
     config.new_name = editingConfig.value.newName
-    // Propagate rename to all localStorage references
+    // Auto-update every reference (widgets, alarms, recording, scripts, …) —
+    // no confirmation prompt; a detected reference is fixed, not just flagged.
     propagateChannelRename(editingConfig.value.name, editingConfig.value.newName)
   }
 
@@ -5081,6 +5127,15 @@ function propagateChannelRename(oldName: string, newName: string) {
   updateStorageArrayReferences('nisystem-alarms', oldName, newName)
   updateStorageArrayReferences('nisystem-transformations', oldName, newName)
   updateStorageArrayReferences('nisystem-triggers', oldName, newName)
+
+  // Move the live alarm config to the new tag (the reactive/backend-synced one,
+  // not just the localStorage array above) so a renamed channel keeps its alarm
+  // instead of leaving a dangling reference. No prompt — just fix it.
+  if (safety.renameAlarmChannel(oldName, newName)) {
+    // Drop the stale backend alarm keyed to the old channel; the debounced
+    // alarm-config sync will (re)create it under the new channel.
+    try { mqtt.sendNodeCommand('safety/alarm/delete', { channel: oldName }) } catch { /* non-fatal */ }
+  }
 
   // Update the dashboard store's widgets
   store.renameChannelInWidgets(oldName, newName)
@@ -5754,6 +5809,26 @@ watch(
           />
         </div>
 
+        <!-- Sort -->
+        <div class="sort-box" title="Sort the channel list">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h13M3 12h9M3 18h5M17 8V4m0 0l-3 3m3-3l3 3M17 16v4m0 0l-3-3m3 3l3-3"/>
+          </svg>
+          <select v-model="sortMode" class="sort-select">
+            <option value="chassis">Sort: Chassis</option>
+            <option value="tag">Sort: Tag name</option>
+            <option value="channel">Sort: Channel</option>
+            <option value="description">Sort: Description</option>
+          </select>
+          <button
+            class="sort-dir-btn"
+            @click="sortDir = sortDir === 'asc' ? 'desc' : 'asc'"
+            :title="sortDir === 'asc' ? 'Ascending (A→Z) — click for Z→A' : 'Descending (Z→A) — click for A→Z'"
+          >
+            {{ sortDir === 'asc' ? 'A→Z' : 'Z→A' }}
+          </button>
+        </div>
+
         <div class="toolbar-divider"></div>
 
         <!-- Group 2: View/Mode Toggles -->
@@ -6023,10 +6098,12 @@ watch(
               <td class="col-tag editable-cell" @click.stop>
                 <input
                   type="text"
-                  :value="name"
-                  @blur="handleTagRename(name, ($event.target as HTMLInputElement).value)"
+                  :value="tagInputValue(name)"
+                  @focus="onTagFocus(name)"
+                  @input="onTagInput(name, $event)"
+                  @blur="commitTagEdit(name)"
                   @keyup.enter="($event.target as HTMLInputElement).blur()"
-                  @keyup.escape="($event.target as HTMLInputElement).value = name; ($event.target as HTMLInputElement).blur()"
+                  @keyup.escape="cancelTagEdit(); ($event.target as HTMLInputElement).blur()"
                   class="inline-input tag-input"
                   placeholder="tag_name"
                   :disabled="!canEdit"
@@ -10059,6 +10136,48 @@ watch(
 
 .search-input::placeholder {
   color: var(--text-dim);
+}
+
+.sort-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-widget);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+.sort-select {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  outline: none;
+  cursor: pointer;
+}
+
+.sort-select option {
+  background: var(--bg-widget);
+  color: var(--text-primary);
+}
+
+.sort-dir-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sort-dir-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 /* Main Content */

@@ -2647,6 +2647,31 @@ export function useSafety() {
     },
     getAlarmConfig: (channel: string) => alarmConfigs.value[channel],
 
+    // Move an alarm's config to a renamed channel so the alarm stays attached to
+    // the tag. Returns true if an alarm existed and was moved. The deep watcher
+    // debounce-syncs the updated set to the backend; the caller also drops the
+    // stale backend alarm for the old channel.
+    renameAlarmChannel: (oldChannel: string, newChannel: string): boolean => {
+      const cfg = alarmConfigs.value[oldChannel]
+      if (!cfg || oldChannel === newChannel) return false
+      alarmConfigs.value[newChannel] = {
+        ...cfg,
+        channel: newChannel,
+        id: `alarm-${newChannel}`,
+        name: (!cfg.name || cfg.name === oldChannel) ? newChannel : cfg.name,
+      }
+      delete alarmConfigs.value[oldChannel]
+      return true
+    },
+
+    // Drop an alarm config for a deleted channel (frontend side; the caller sends
+    // the backend safety/alarm/delete separately).
+    deleteAlarmConfig: (channel: string): boolean => {
+      if (!alarmConfigs.value[channel]) return false
+      delete alarmConfigs.value[channel]
+      return true
+    },
+
     // Alarm actions
     triggerAlarm,
     acknowledgeAlarm,
