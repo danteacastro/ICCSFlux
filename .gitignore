@@ -114,6 +114,10 @@ config/nisystem_settings.json
 # Listed explicitly so future project files with different names are
 # still tracked normally.
 mike.py
+mike2.py
+data/_scaling_diag.py
+# Vendored prod dashboard bundle — generated artifact, not source
+vendor/
 config/projects/ICCSFlux_export_*.json
 config/projects/beef5.json
 config/projects/bingpot2.json
@@ -124,3 +128,26 @@ config/projects/bobo1.json
 config/projects/bunghole1.json
 config/projects/jok.json
 config/projects/nnn.json
+config/projects/Test_Real_715.json
+config/projects/aio1.json
+config/projects/bad1.json
+config/projects/beef.json
+config/projects/bhbhb.json
+config/projects/billboby6.json
+config/projects/bing8.json
+config/projects/boof1.json
+config/projects/boop9.json
+config/projects/buhhb5.json
+config/projects/ddd.json
+config/projects/gih.json
+config/projects/kkk.json
+config/projects/ko8.json
+config/projects/kol.json
+config/projects/mike_build8.json
+config/projects/miketest-6-26-26.json
+config/projects/miketest1.json
+config/projects/oihoih6.json
+config/projects/peep1.json
+config/projects/sfadadsfasd.json
+config/projects/tery.json
+config/projects/tim2.json
