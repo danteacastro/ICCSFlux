@@ -1366,14 +1366,32 @@ class DAQService:
 
             chunk_set = set(channel_names)
 
-            # Snapshot other-task hardware values from the reader cache.
-            # Held lock is fine-grained — copy out and release.
+            # Snapshot every OTHER channel's current value so the recording
+            # includes ALL configured channels — not just whichever task's
+            # chunk happened to fire first. channel_values is seeded with every
+            # channel at config load (inputs, counters, and output setpoints),
+            # so starting from it guarantees a complete, deterministic header.
+            # Then overlay the reader cache, whose hardware read-backs are the
+            # freshest values for other input tasks.
+            #
+            # Previously this used ONLY hardware_reader.latest_values, which
+            # holds hardware read-backs alone: output setpoints were absent and
+            # any input on a task that hadn't completed its first read when the
+            # first chunk locked the header was dropped for the whole file
+            # (observed: current/digital outputs and a late-starting counter).
             other_hw: Dict[str, Any] = {}
+            try:
+                with self.values_lock:
+                    for n, v in self.channel_values.items():
+                        if n not in chunk_set:
+                            other_hw[n] = v
+            except Exception:
+                pass  # snapshot best-effort
             try:
                 with self.hardware_reader.lock:
                     for n, v in self.hardware_reader.latest_values.items():
                         if n not in chunk_set:
-                            other_hw[n] = v
+                            other_hw[n] = v  # fresher HW read-back wins
             except Exception:
                 pass  # cache best-effort; chunk channels still get written
 

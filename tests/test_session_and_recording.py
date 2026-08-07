@@ -735,6 +735,51 @@ class TestRecordingALCOAIntegrity:
         assert result['success']
         assert len(result['data']) == 1
 
+    def test_columns_natural_sorted_not_lexicographic(self, rec, data_dir):
+        """Channel columns order numerically (tag_2 before tag_10), not
+        lexicographically (tag_10 before tag_2). Regression for the CSV whose
+        header read tag_1, tag_10, tag_100, tag_11, ... tag_2."""
+        vals = {f'tag_{n}': float(n) for n in (0, 1, 2, 3, 10, 11, 100, 101, 20)}
+        cfgs = {n: {'units': 'x'} for n in vals}
+        rec.configure({'sample_interval': 0.001, 'base_path': str(data_dir)})
+        rec.start()
+        rec.write_sample(vals, cfgs)
+        rec.stop()
+
+        lines = rec.current_file.read_text().splitlines()
+        units_idx = next(i for i, ln in enumerate(lines) if ln.startswith('# Units:'))
+        header = lines[units_idx + 1].split(',')
+        tagnums = [int(c[4:]) for c in header if c.startswith('tag_')]
+        assert tagnums == sorted(tagnums), f"columns not natural-sorted: {tagnums}"
+
+    def test_write_chunk_header_includes_all_channels(self, rec, data_dir):
+        """A hardware chunk carries only its own task's channels; every OTHER
+        configured channel arrives via extra_row_values. The header must still
+        include them ALL (in natural order), so channels whose task fires after
+        the first chunk — plus output setpoints — are never dropped. Regression
+        for a file that recorded 87 of 108 configured channels."""
+        import numpy as np
+        rec.configure({'sample_interval': 0.0, 'base_path': str(data_dir), 'mode': 'manual'})
+        rec.start()
+        chunk_ch = ['tag_0', 'tag_1', 'tag_2']
+        samples = np.array([[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]])
+        extras = {
+            'sys.acquiring': 1.0, 'sys.recording': 1.0,
+            'tag_87': 7.0,                       # late-starting input (counter)
+            'tag_16': 0.5, 'tag_88': 1.0,        # output setpoints
+            'tag_10': 5.0, 'tag_100': 9.0,
+        }
+        cfgs = {n: {'units': 'x', 'description': ''} for n in list(chunk_ch) + list(extras)}
+        rec.write_chunk('taskA', chunk_ch, samples, 1000.0, 100.0, cfgs, extra_row_values=extras)
+        rec.stop()
+
+        lines = rec.current_file.read_text().splitlines()
+        header = next(ln for ln in lines if ln.startswith('date,time,')).split(',')
+        for expected in ('tag_87', 'tag_16', 'tag_88', 'tag_100'):
+            assert expected in header, f"{expected} dropped from chunk header"
+        tagnums = [int(c[4:]) for c in header if c.startswith('tag_')]
+        assert tagnums == sorted(tagnums), f"chunk columns not natural-sorted: {tagnums}"
+
     def test_sha256_hash_is_correct(self, rec, data_dir, channel_values, channel_configs):
         """Manually verify the SHA-256 hash in the integrity file matches the data file"""
         rec.configure({

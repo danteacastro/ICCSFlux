@@ -7,6 +7,7 @@ Handles data recording with configurable options, triggered recording, and scrip
 import csv
 import json
 import os
+import re
 import shutil
 import stat
 import hashlib
@@ -89,6 +90,15 @@ def _get_default_data_path() -> str:
 _TS_SINGLE = 'timestamp'
 _TS_DATE = 'date'
 _TS_TIME = 'time'
+
+
+def _natural_sort_key(name: str):
+    """Sort key that orders embedded numbers numerically, so tag_2 comes before
+    tag_10 (not the lexicographic tag_10 < tag_2). Non-numeric text compares
+    case-insensitively. Used to order channel columns in recorded files."""
+    return [int(chunk) if chunk.isdigit() else chunk.lower()
+            for chunk in re.split(r'(\d+)', name)]
+
 
 def _resolve_timestamp_columns(columns: List[str]):
     """Given parsed header columns, return (kind, indices, data_columns).
@@ -1127,9 +1137,11 @@ class RecordingManager:
 
     def _init_csv_writer(self, values: Dict[str, Any], channel_configs: Dict[str, Any]):
         """Initialize CSV writer with headers"""
-        # Build column order: timestamp column(s) first, then channels sorted
+        # Build column order: timestamp column(s) first, then channels in
+        # natural order (tag_2 before tag_10, not lexicographic tag_10 before tag_2).
         ts_columns = self._timestamp_columns()
-        new_columns = ts_columns + sorted(values.keys())
+        sorted_channels = sorted(values.keys(), key=_natural_sort_key)
+        new_columns = ts_columns + sorted_channels
 
         # If resuming an existing file, reuse previous column order and skip headers
         if self._resuming_file and self.column_order:
@@ -1144,7 +1156,7 @@ class RecordingManager:
         header_row = list(ts_columns)
         units_row = self._timestamp_units()
 
-        for col in sorted(values.keys()):
+        for col in sorted_channels:
             header_row.append(col)
             # Get units from config or use empty
             if col.startswith('script:'):
