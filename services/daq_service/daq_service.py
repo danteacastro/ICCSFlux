@@ -17497,6 +17497,20 @@ Unit conversions:
                     source_node_id = 'crio-001'  # Default cRIO node ID
                 logger.debug(f"Auto-detected cRIO channel {channel_name} -> {source_node_id}")
 
+            # SAFETY: outputs must not actuate hardware unless acquisition is
+            # running. Local DAQ output tasks only exist while acquiring, so a
+            # manual/MQTT write outside acquisition would (re)create a task and
+            # drive the physical channel — exactly the unexpected actuation the
+            # operator hit. Modbus is connection-based (no acquisition concept) and
+            # stays allowed; cRIO forwards to its node, which gates on its own
+            # state. Internal writers (safe-state, scripts, sequences, watchdogs)
+            # go through _set_output_value, not this handler, so they're unaffected.
+            if source_type == 'local' and not is_modbus and not self.acquiring:
+                logger.warning(f"[OUTPUT] Rejected write to {channel_name}: acquisition is not running")
+                self._publish_output_response(False, channel=channel_name, value=value,
+                                              error="Start acquisition before controlling outputs")
+                return
+
             # Serialize the entire write+cache update under output_write_lock
             # so this MQTT-driven write can't interleave with concurrent writes
             # from scripts, triggers, watchdogs, or safe-state.
