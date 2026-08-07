@@ -68,6 +68,13 @@ SPEC_FILES = {
     "ICCSFlux": SPEC_DIR / "iccsflux.spec",
 }
 
+# Exes built as ONEDIR (exe + _internal folder) rather than onefile. ICCSFlux is
+# the windowed launcher: onefile self-extracts to _runtime\_MEI#### each launch
+# and pops a "Failed to remove temporary directory" warning when exit-cleanup is
+# blocked. Onedir avoids the extraction entirely. Its output is a folder
+# (EXE_DIR/<name>/), handled specially in copy_executables().
+ONEDIR_EXES = {"ICCSFlux"}
+
 # Standalone tool specs (built from main venv, deployed to tools/ subfolder)
 TOOL_SPEC_FILES = {
     "ModbusTool": SPEC_DIR / "modbus_tool.spec",
@@ -120,6 +127,41 @@ def _clear_readonly(p):
     except OSError:
         pass
 
+def _grant_full_control(p):
+    """Rewrite a file/dir ACL to grant the current user full control.
+
+    Used when a delete hits 'Access is denied' (WinError 5) NOT because of a lock
+    or the read-only bit, but because the object has a restrictive ACL with no
+    Delete right. config\\mosquitto_passwd is created exactly this way: Mosquitto
+    writes it with an owner-only Read/Write ACL (no Delete) and inheritance broken,
+    so os.unlink() can't remove it. As the OWNER we always hold WRITE_DAC, so this
+    grant succeeds and the subsequent delete works.
+    """
+    import getpass
+    try:
+        subprocess.run(["icacls", str(p), "/grant", f"{getpass.getuser()}:F", "/Q"],
+                       capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+def _try_remove(p, remove):
+    """Remove p via `remove` (unlink or rmdir), clearing the read-only bit first
+    and — on Access Denied — granting the current user rights and retrying.
+    Returns True if the object is gone."""
+    try:
+        _clear_readonly(p)
+        remove(p)
+        return True
+    except OSError:
+        pass
+    # Fall back to fixing the ACL (delete-less/restrictive) then retry.
+    _grant_full_control(p)
+    try:
+        remove(p)
+        return True
+    except OSError:
+        return False
+
 def _remove_tree_pass(path):
     """One bottom-up delete pass. Returns the paths that could NOT be removed."""
     failed = []
@@ -127,39 +169,28 @@ def _remove_tree_pass(path):
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
             p = Path(root) / name
-            try:
-                _clear_readonly(p)
-                p.unlink()
-            except OSError:
+            if not _try_remove(p, lambda x: x.unlink()):
                 failed.append(p)
         for name in dirs:
             p = Path(root) / name
-            try:
-                # Clear read-only FIRST: Windows returns Access Denied on rmdir of a
-                # read-only directory (the config/data archive folders are marked
-                # read-only for data integrity — ALCOA+ append-only). This, not a
-                # lock, is what left them undeletable.
-                _clear_readonly(p)
-                p.rmdir()  # only succeeds if now empty
-            except OSError:
+            if not _try_remove(p, lambda x: x.rmdir()):  # succeeds only if now empty
                 failed.append(p)
-    try:
-        _clear_readonly(path)
-        path.rmdir()
-    except OSError:
+    if not _try_remove(path, lambda x: x.rmdir()):
         if path.exists():
             failed.append(path)
     return failed
 
-def remove_tree_best_effort(path, attempts=5, delay=0.25):
+def remove_tree_best_effort(path, attempts=6, delay=0.3):
     """Delete as much of `path` as possible, clearing read-only bits along the way.
 
     Returns the list of paths that could NOT be removed after `attempts` passes.
-    Unlike rmtree, one stubborn file doesn't abort the whole delete. Retries with a
-    short backoff because most build-tree "locks" on Windows are TRANSIENT — a
+    Unlike rmtree, one stubborn file doesn't abort the whole delete. Retries with an
+    ESCALATING backoff because most build-tree "locks" on Windows are TRANSIENT — a
     real-time antivirus scan (Defender) or a file-watcher grabbing a file for a
-    split second right as we delete it. A second pass a moment later usually
-    succeeds (this is what rimraf/git do on Windows).
+    split second right as we delete it, and a delete attempt can itself re-trigger
+    the scan. Growing the wait (0.3s, 0.6s, 0.9s, …) gives the scanner time to fully
+    release before the next pass. A clean tree returns on pass 1 with no delay, so
+    the extra time is only spent when something is actually contended.
     """
     import time
     if not path.exists():
@@ -170,7 +201,7 @@ def remove_tree_best_effort(path, attempts=5, delay=0.25):
         if not failed or not path.exists():
             return failed
         if attempt < attempts - 1:
-            time.sleep(delay)  # let a transient scanner/watcher release its handle
+            time.sleep(delay * (attempt + 1))  # 0.3, 0.6, 0.9, 1.2, 1.5 → ~4.5s max
     return failed
 
 def _running_build_lockers():
@@ -793,13 +824,29 @@ def copy_executables():
 
     # Core executables (required)
     for name in SPEC_FILES.keys():
-        exe_src = EXE_DIR / f"{name}.exe"
-        if exe_src.exists():
-            shutil.copy2(exe_src, BUILD_DIR / f"{name}.exe")
-            log(f"  Copied {name}.exe")
+        if name in ONEDIR_EXES:
+            # onedir: PyInstaller emits EXE_DIR/<name>/{<name>.exe, _internal/}.
+            # Copy the folder's CONTENTS so <name>.exe lands at the portable root
+            # with its _internal alongside (no runtime self-extraction / _MEI popup).
+            src_dir = EXE_DIR / name
+            if not (src_dir / f"{name}.exe").exists():
+                log(f"  {name}.exe not found (onedir output missing)!", "ERROR")
+                return False
+            for item in src_dir.iterdir():
+                dest = BUILD_DIR / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+            log(f"  Copied {name}.exe (+ _internal)")
         else:
-            log(f"  {name}.exe not found!", "ERROR")
-            return False
+            exe_src = EXE_DIR / f"{name}.exe"
+            if exe_src.exists():
+                shutil.copy2(exe_src, BUILD_DIR / f"{name}.exe")
+                log(f"  Copied {name}.exe")
+            else:
+                log(f"  {name}.exe not found!", "ERROR")
+                return False
 
     # Azure executable (optional -- build continues without it)
     azure_name = AZURE_SPEC[0]
@@ -1627,6 +1674,13 @@ def main():
 
     size_mb = get_build_size()
     dirty = " (dirty)" if version["git_dirty"] else ""
+
+    # Remove the intermediate PyInstaller exe output (dist/exe) now that everything
+    # is assembled into the portable folder — keeps dist/ to just the deliverable.
+    # Skipped under --quick, which reuses those exes as a recompile cache.
+    if not args.quick and EXE_DIR.exists():
+        remove_tree_best_effort(EXE_DIR)
+        log(f"Removed intermediate build output: {EXE_DIR.relative_to(PROJECT_ROOT)}", "OK")
 
     print()
     print("=" * 60)

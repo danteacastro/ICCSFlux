@@ -59,20 +59,25 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# Windowed native app (tkinter — no console window)
+# Windowed native app (tkinter — no console window).
+#
+# Built as ONEDIR (exclude_binaries + COLLECT), not onefile: a onefile windowed
+# exe self-extracts to _runtime\_MEI#### on every launch and tries to delete it
+# on exit — and when a DLL is briefly held it fails, popping a "Failed to remove
+# temporary directory" warning. Onedir keeps the dependencies in an _internal
+# folder next to the exe, so there is no per-launch extraction, no cleanup step,
+# no popup, and faster startup. (The portable is already a folder, so this fits.)
 exe_windowed = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='ICCSFlux',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir='_runtime',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -80,4 +85,14 @@ exe_windowed = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(PROJECT_ROOT / 'assets' / 'icons' / 'iccsflux.ico'),
+)
+
+coll = COLLECT(
+    exe_windowed,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='ICCSFlux',
 )

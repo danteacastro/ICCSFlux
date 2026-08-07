@@ -62,6 +62,32 @@ def _import_tkinter():
     ttk = _ttk
     messagebox = _mb
 
+def _open_browser(url):
+    """Open a URL in the default browser WITHOUT this frozen exe's own bundle
+    directory on the child's PATH.
+
+    PyInstaller puts the exe's bundle dir (onefile _MEIPASS, onedir _internal) on
+    PATH so the app finds its own DLLs. A browser we spawn inherits that PATH and,
+    via the DLL search order, can load VCRUNTIME140.dll from our bundle instead of
+    the system copy — which pins that file so a later build can't clean it. We
+    strip the bundle dirs from PATH just for the launch, then restore it, so the
+    browser uses its own runtime DLLs.
+    """
+    def _norm(p):
+        return os.path.normcase(os.path.normpath(p)) if p else p
+    saved = os.environ.get("PATH", "")
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        drop = {_norm(exe_dir), _norm(os.path.join(exe_dir, "_internal"))}
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            drop.add(_norm(meipass))
+        kept = [d for d in saved.split(os.pathsep) if d and _norm(d) not in drop]
+        os.environ["PATH"] = os.pathsep.join(kept)
+        webbrowser.open(url)
+    finally:
+        os.environ["PATH"] = saved
+
 # Get the directory where this executable/script is located
 if getattr(sys, 'frozen', False):
     ROOT = Path(sys.executable).parent.resolve()
@@ -1643,7 +1669,7 @@ class LauncherUI:
                 text=f"Ready — http://localhost:{_dashboard_port}", foreground="#15803d")
             if not self._dashboard_opened:
                 self._dashboard_opened = True
-                webbrowser.open(f"http://localhost:{_dashboard_port}")
+                _open_browser(f"http://localhost:{_dashboard_port}")
 
         # Subtitle
         parts = []
@@ -1808,7 +1834,7 @@ class LauncherUI:
 
     def _open_dashboard(self):
         if _dashboard_port:
-            webbrowser.open(f"http://localhost:{_dashboard_port}")
+            _open_browser(f"http://localhost:{_dashboard_port}")
 
     def _open_logs(self):
         logs_dir = DATA / "logs"
