@@ -808,7 +808,7 @@ function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string
             const chType = ch.channel_type || ch.type || ch.category || ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${chType})${usageLabel}`,
+              label: `${ch.name}${usageLabel}`,
               type: chType,
               inUse: !!assignedTo
             })
@@ -825,7 +825,7 @@ function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string
           const chType = ch.channel_type || ch.type || ch.category || ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${chType})${usageLabel}`,
+            label: `${ch.name}${usageLabel}`,
             type: chType,
             inUse: !!assignedTo
           })
@@ -845,7 +845,7 @@ function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string
           : (ch.in_use ? ' [IN USE]' : '')
         channels.push({
           value: ch.physical_channel,
-          label: `${ch.physical_channel} (${ch.channel_type})${usageLabel}`,
+          label: `${ch.physical_channel}${usageLabel}`,
           type: ch.channel_type,
           inUse: isUsed
         })
@@ -861,7 +861,7 @@ function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string
             const chType = ch.channel_type || ch.type || ch.category || ''
             channels.push({
               value: ch.name,
-              label: `${ch.name} (${chType})${usageLabel}`,
+              label: `${ch.name}${usageLabel}`,
               type: chType,
               inUse: !!assignedTo
             })
@@ -880,7 +880,7 @@ function getAvailablePhysicalChannels(sourceTypeArg?: string, nodeIdArg?: string
           const chType = ch.channel_type || ch.type || ch.category || ''
           channels.push({
             value: ch.name,
-            label: `${ch.name} (${chType})${usageLabel}`,
+            label: `${ch.name}${usageLabel}`,
             type: chType,
             inUse: !!assignedTo
           })
@@ -925,7 +925,12 @@ function augmentPhysicalChannelOptions(
     else byValue.set(cur, { value: cur, label: cur, type: rowType || '', inUse: false })
   }
 
-  return Array.from(byValue.values())
+  // Sort by physical-channel name (natural/numeric: ai2 before ai10, Mod1 before
+  // Mod2) so the list reads in hardware order and the currently-selected channel
+  // sits in its natural position among its siblings — not tacked on at the end.
+  return Array.from(byValue.values()).sort((a, b) =>
+    a.value.localeCompare(b.value, undefined, { numeric: true, sensitivity: 'base' })
+  )
 }
 
 // Get available physical channels filtered by channel type (for inline editing and add modal)
@@ -1051,6 +1056,18 @@ const physicalChannelOptionsByName = computed(() => {
   }
   return map
 })
+
+// The text the channel <select> actually shows for its selected value — the
+// matching option's label, which includes the discovery suffix like " (di)" /
+// " (ai)". Used by the invisible .channel-sizer so the CHANNEL column's min-width
+// accounts for that suffix (and grows with a longer chassis/device name), not
+// just the bare physical_channel path.
+function channelSelectLabel(name: string, config: any): string {
+  const pc = config?.physical_channel
+  if (!pc) return '— Select Channel —'
+  const match = (physicalChannelOptionsByName.value[name] || []).find(o => o.value === pc)
+  return match?.label || pc
+}
 
 // Check if we have discovery data for the current source type
 function hasDiscoveryData(): boolean {
@@ -1729,6 +1746,13 @@ function triggerModbusWrite(channel: string) {
 function toggleDigitalOutput(channel: string) {
   if (!mqtt.connected.value) {
     showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  // Don't actuate hardware unless acquisition is running — the DAQ output task
+  // only exists while acquiring. (The backend also rejects this, but gate here
+  // so we never send the command and the button reflects it.)
+  if (!store.isAcquiring) {
+    showFeedback('warning', 'Start acquisition before controlling outputs')
     return
   }
   const current = !!store.values[channel]?.value
@@ -6158,7 +6182,7 @@ watch(
                   v-if="config.channel_type !== 'modbus_register' && config.channel_type !== 'modbus_coil'"
                   class="channel-sizer"
                   aria-hidden="true"
-                >{{ config.physical_channel || '— Select Channel —' }}</span>
+                >{{ channelSelectLabel(name, config) }}</span>
               </td>
               <!-- DESCRIPTION - long text -->
               <td class="col-description editable-cell" @click.stop>
@@ -6942,7 +6966,10 @@ watch(
                     class="do-toggle-btn"
                     :class="{ on: store.values[name]?.value }"
                     @click.stop="toggleDigitalOutput(name)"
-                    :title="store.values[name]?.value ? `${name} is ON — click to turn OFF` : `${name} is OFF — click to turn ON`"
+                    :disabled="!store.isAcquiring"
+                    :title="!store.isAcquiring
+                      ? 'Start acquisition to control this output'
+                      : (store.values[name]?.value ? `${name} is ON — click to turn OFF` : `${name} is OFF — click to turn ON`)"
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
                       <path d="M9 18h6M10 22h4M12 3a6 6 0 0 0-4 10.5c.5.7 1 1.5 1 2.5v2h6v-2c0-1 .5-1.8 1-2.5A6 6 0 0 0 12 3z"/>
@@ -10594,6 +10621,11 @@ watch(
 }
 
 .digital-state {
+  /* Fixed width sized for the wider "OFF" so the badge doesn't shrink on "ON". */
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 40px;
+  text-align: center;
   padding: 2px 8px;
   border-radius: 3px;
   font-weight: 600;
@@ -10621,7 +10653,11 @@ watch(
   align-items: center;
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.do-toggle-btn:hover { background: var(--bg-hover); }
+.do-toggle-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.do-toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .do-toggle-btn.on {
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.12);
@@ -10634,7 +10670,7 @@ watch(
 /* Digital state cell: center the DI badge / DO toggle under the VALUE column,
    matching the analog value cells (was left-justified). */
 .channel-table td.col-value.col-value-digital {
-  text-align: center;
+  text-align: right;
 }
 
 /* Config Button */

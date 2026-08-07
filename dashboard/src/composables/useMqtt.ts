@@ -214,8 +214,29 @@ const physicalToTagCache = computed<Record<string, string>>(() => {
   return map
 })
 
-// Discovery state (shared)
-const discoveryResult = ref<any>(null)
+// Persist the discovery result so the physical-channel dropdowns still know the
+// hardware's channels after a page reload. Without this the ref resets to null on
+// load, the dropdowns fall back to config-only (assigned channels), and any unused
+// or just-deleted channel (e.g. a freed ctr7) vanishes until Auto Discovery is
+// re-run. Machine-scoped: discovery reflects the connected hardware, not a project.
+const DISCOVERY_CACHE_KEY = 'nisystem-discovery-result'
+function _loadDiscoveryCache(): any {
+  try {
+    const raw = localStorage.getItem(DISCOVERY_CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function _saveDiscoveryCache(result: any): void {
+  try {
+    if (result) localStorage.setItem(DISCOVERY_CACHE_KEY, JSON.stringify(result))
+  } catch { /* quota/serialization — non-fatal */ }
+}
+
+// Discovery state (shared) — seeded from the persisted cache so dropdowns work
+// immediately on load, then refreshed whenever a new scan completes.
+const discoveryResult = ref<any>(_loadDiscoveryCache())
 const discoveryChannels = ref<any[]>([])
 const crioDiscoveryChannels = ref<Record<string, any[]>>({}) // nodeId -> channels
 const cfpDiscoveryResult = ref<any>(null) // CFP slot probe results
@@ -1360,6 +1381,7 @@ export function useMqtt(prefix: string = 'nisystem') {
       ...payload
     } as DiscoveryCallbackPayload
     discoveryResult.value = result
+    _saveDiscoveryCache(result)  // persist so dropdowns survive page refreshes
     isScanning.value = false
     console.debug('[MQTT] handleDiscoveryResult - chassis count:', result.chassis?.length, 'total channels:', result.total_channels)
     console.debug('[MQTT] discoveryResult.value now set, callbacks:', discoveryCallbacks.length)
