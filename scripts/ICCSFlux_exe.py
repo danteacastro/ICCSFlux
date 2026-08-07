@@ -63,30 +63,38 @@ def _import_tkinter():
     messagebox = _mb
 
 def _open_browser(url):
-    """Open a URL in the default browser WITHOUT this frozen exe's own bundle
-    directory on the child's PATH.
+    """Open a URL in the default browser WITHOUT the browser inheriting this frozen
+    exe's process context.
 
-    PyInstaller puts the exe's bundle dir (onefile _MEIPASS, onedir _internal) on
-    PATH so the app finds its own DLLs. A browser we spawn inherits that PATH and,
-    via the DLL search order, can load VCRUNTIME140.dll from our bundle instead of
-    the system copy — which pins that file so a later build can't clean it. We
-    strip the bundle dirs from PATH just for the launch, then restore it, so the
-    browser uses its own runtime DLLs.
+    PyInstaller runs the app from dist\\ICCSFlux-Portable\\ with its private DLLs in
+    _internal\\. On Windows, webbrowser.open() launches chrome.exe as a DIRECT CHILD
+    of this process, so the browser inherits our working directory / DLL-search
+    context and its early load can pick up _internal\\VCRUNTIME140.dll ahead of the
+    system copy. That pins the file: a later rebuild can't cleanly wipe dist\\ while
+    the browser is alive — and the browser outlives this app, so it keeps the lock.
+
+    Evidence: a Chrome network-service subprocess was caught holding
+    dist\\...\\_internal\\VCRUNTIME140.dll; its browser-process parent had been
+    spawned directly by ICCSFlux.exe. (Stripping PATH did NOT fix it — System32 has
+    VCRUNTIME140.dll and is searched before PATH anyway; the leak came through
+    child-process inheritance, not PATH.)
+
+    Fix: hand the URL to Explorer, which opens it via the SHELL's default-browser
+    handler. The browser is launched by the shell — not parented to us — so it
+    inherits none of our environment/CWD/DLL context and loads its runtime DLLs
+    from the system as usual. Falls back to webbrowser.open on non-Windows or if
+    Explorer is unavailable.
     """
-    def _norm(p):
-        return os.path.normcase(os.path.normpath(p)) if p else p
-    saved = os.environ.get("PATH", "")
-    try:
-        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        drop = {_norm(exe_dir), _norm(os.path.join(exe_dir, "_internal"))}
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            drop.add(_norm(meipass))
-        kept = [d for d in saved.split(os.pathsep) if d and _norm(d) not in drop]
-        os.environ["PATH"] = os.pathsep.join(kept)
-        webbrowser.open(url)
-    finally:
-        os.environ["PATH"] = saved
+    if sys.platform == "win32":
+        try:
+            # 'explorer <url>' delegates to the shell's URL handler; the resulting
+            # browser is not our child. explorer.exe frequently returns exit code 1
+            # even on success, so we intentionally don't check the return code.
+            subprocess.Popen(["explorer", url], close_fds=True)
+            return
+        except Exception:
+            pass  # fall through to webbrowser as a last resort
+    webbrowser.open(url)
 
 # Get the directory where this executable/script is located
 if getattr(sys, 'frozen', False):
