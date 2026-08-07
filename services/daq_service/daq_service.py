@@ -4100,6 +4100,7 @@ Unit conversions:
             client.subscribe(f"{base}/recording/read-range")
             client.subscribe(f"{base}/recording/file-info")
             client.subscribe(f"{base}/recording/db-test")
+            client.subscribe(f"{base}/recording/open-folder")
 
             # Subscribe to historian topics
             client.subscribe(f"{base}/historian/query")
@@ -4960,6 +4961,8 @@ Unit conversions:
             self._handle_recording_file_info(payload)
         elif topic == f"{base}/recording/db-test":
             self._handle_recording_db_test(payload)
+        elif topic == f"{base}/recording/open-folder":
+            self._handle_recording_open_folder()
 
         # === HISTORIAN ===
         elif topic == f"{base}/historian/query":
@@ -6128,6 +6131,28 @@ Unit conversions:
                 "timestamp": datetime.now().isoformat()
             })
         )
+
+    def _handle_recording_open_folder(self):
+        """Open the recording output directory in the OS file browser.
+
+        The dashboard is a web app and can't open a local folder itself, so it
+        asks the service (which runs on the DAQ machine) to do it. Opens the
+        configured recording base path (creating it if needed) via the shell.
+        """
+        try:
+            base_path = Path(self.recording_manager.config.base_path).resolve()
+            base_path.mkdir(parents=True, exist_ok=True)
+            if hasattr(os, 'startfile'):
+                os.startfile(str(base_path))  # Windows: opens Explorer on the desktop
+            else:
+                # Cross-platform fallback (dev on non-Windows).
+                import subprocess
+                opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+                subprocess.Popen([opener, str(base_path)])
+            self._publish_recording_response(True, f"Opened recording folder: {base_path}")
+        except Exception as e:
+            logger.warning(f"Could not open recording folder: {e}")
+            self._publish_recording_response(False, f"Could not open recording folder: {e}")
 
     def _handle_recording_delete(self, payload: Any):
         """Delete a recorded file"""

@@ -59,21 +59,15 @@ const selectAllChannels = computed({
   set: (val) => store.setSelectAllRecordingChannels(val)
 })
 
-// "Dirty" tracking for the Save Configuration button — it lights up when the
-// current UI config differs from what was last pushed to the backend (via Save
-// or Start). The baseline is (re)set on mount, project load, save, and start.
+// Recording config is AUTO-SAVED: every change is pushed to the DAQ service (and
+// to localStorage via the store), so any "begin" — Start Recording or auto-start
+// on acquire — always uses the current settings. No Save button, no dirty state.
+// This signature drives the debounced auto-save watcher (defined below).
 const currentConfigSignature = computed(() => JSON.stringify({
   config: recordingConfig.value,
   channels: [...selectedChannels.value].sort(),
   all: selectAllChannels.value,
 }))
-const savedConfigSignature = ref('')
-const configDirty = computed(() =>
-  savedConfigSignature.value !== '' && savedConfigSignature.value !== currentConfigSignature.value
-)
-function markConfigSaved() {
-  savedConfigSignature.value = currentConfigSignature.value
-}
 
 // Human-readable preview of the CSV timestamp column layout for the config UI.
 const timestampPreview = computed(() => {
@@ -586,22 +580,32 @@ function buildValidatedConfig() {
   )
 }
 
-// Save the recording configuration WITHOUT starting a recording.
-function saveConfiguration() {
-  if (!requireEditPermission()) return
-  if (!mqtt.connected.value) {
-    showFeedback('error', 'Not connected to MQTT broker')
-    return
-  }
-  const config = buildValidatedConfig()
-  if (!config) return
-  // Swallow the backend's "configuration updated" echo (see onRecordingResponse)
-  // and show one clean confirmation here.
+// Push the current recording config to the DAQ service. Called on every change
+// (debounced, below) so the service always has the latest settings — no manual
+// Save. Uses the raw config (not buildValidatedConfig) so auto-save never pops
+// validation errors while you're mid-edit. pendingConfigResponses lets
+// onRecordingResponse swallow the backend's "configuration updated" echo, keeping
+// auto-save silent.
+function pushRecordingConfig() {
+  if (!mqtt.connected.value) return
+  const config = toBackendRecordingConfig(
+    recordingConfig.value,
+    selectedChannels.value,
+    selectAllChannels.value,
+  )
   pendingConfigResponses++
   mqtt.updateRecordingConfig(config)
-  markConfigSaved()
-  showFeedback('success', 'Configuration saved')
 }
+
+// Auto-save: whenever any recording setting or the tag selection changes, push it
+// to the service (debounced so typing doesn't spam it). This also covers toggling
+// "auto-start on acquire" — the service has the config ready before acquisition
+// starts a recording.
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+watch(currentConfigSignature, () => {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer)
+  autoSaveTimer = setTimeout(pushRecordingConfig, 400)
+})
 
 async function startRecording() {
   if (isRecordingOp.value) return
@@ -620,7 +624,6 @@ async function startRecording() {
   setRecordingOp('start')
   pendingConfigResponses++
   mqtt.updateRecordingConfig(config)
-  markConfigSaved()
   const result = await mqtt.startRecording()
   finishRecordingOp()
 
@@ -660,6 +663,18 @@ async function stopRecording() {
 function loadRecordedFiles() {
   mqtt.listRecordedFiles()
   showFileBrowser.value = true
+}
+
+// Ask the DAQ service to open the recording folder in its OS file browser.
+// (The dashboard is a web app and can't open a local folder itself.) The
+// success/failure message comes back on the recording response channel.
+function openRecordingFolder() {
+  if (!mqtt.connected.value) {
+    showFeedback('error', 'Not connected to MQTT broker')
+    return
+  }
+  mqtt.openRecordingFolder()
+  showFeedback('info', 'Opening recording folder on the DAQ machine…')
 }
 
 // Delete recorded file
@@ -934,10 +949,11 @@ onMounted(() => {
     mqtt.getRecordingConfig()
     mqtt.listRecordedFiles()
     azureIot.refreshConfig()
+    // Sync the website's (localStorage) recording config to the service up front,
+    // so a Start / auto-start-on-acquire uses the current settings even if nothing
+    // was edited this session.
+    pushRecordingConfig()
   }
-
-  // Baseline the dirty tracker to the freshly-loaded config (not dirty on open).
-  markConfigSaved()
 
   // Subscribe to project loaded events - reload config when a new project is loaded
   unsubscribeProjectLoaded = projectFiles.onProjectLoaded(() => {
@@ -948,8 +964,7 @@ onMounted(() => {
       store.setSelectAllRecordingChannels(true)
       store.setSelectedRecordingChannels(allChannelNames.value)
     }
-    // The loaded project's config is the new "saved" baseline.
-    markConfigSaved()
+    // (Auto-save watcher will push the loaded config to the service.)
   })
 
   // Reconcile user-variable `log` flags with the current selection so
@@ -1072,17 +1087,26 @@ const scheduleDayLabels = [
       </div>
       <div class="status-right">
         <button
-          class="record-btn save-config"
-          :class="{ dirty: configDirty }"
-          @click="saveConfiguration"
-          :disabled="!mqtt.connected.value || isRecording || isRecordingOp"
-          :title="isRecording
-            ? 'Stop recording to change the configuration'
-            : (configDirty
-                ? 'You have unsaved configuration changes — click to save'
-                : 'Save the recording configuration without starting a recording')"
+          class="record-btn util-btn"
+          @click="loadRecordedFiles"
+          :disabled="!mqtt.connected.value"
+          title="Browse recorded files"
         >
-          Save Configuration
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Browse Files
+        </button>
+        <button
+          class="record-btn util-btn"
+          @click="openRecordingFolder"
+          :disabled="!mqtt.connected.value"
+          title="Open the recording folder in the file browser on the DAQ machine"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+          </svg>
+          Open Location
         </button>
         <button
           v-if="!isRecording"
@@ -1928,12 +1952,6 @@ const scheduleDayLabels = [
         </div>
 
         <div class="settings-actions">
-          <button class="btn btn-secondary" @click="loadRecordedFiles">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-            Browse Files
-          </button>
           <span class="auto-save-indicator">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="20 6 9 17 4 12"/>
@@ -2673,37 +2691,11 @@ const scheduleDayLabels = [
   transition: all 0.2s;
 }
 
-/* Recording action buttons (Save Configuration + Start/Stop) sit in a row,
-   Save Configuration first so it renders to the LEFT of Start Recording. */
+/* Top status-bar action buttons (Browse Files / Open Location / Start-Stop). */
 .status-right {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.record-btn.save-config {
-  background: var(--btn-secondary-bg);
-  color: var(--text-primary);
-}
-
-.record-btn.save-config:hover:not(:disabled) {
-  background: var(--btn-secondary-hover);
-}
-
-.record-btn.save-config:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* "Active" state — unsaved config changes exist. Accent color draws the eye so
-   the operator knows there's something to save before recording. */
-.record-btn.save-config.dirty:not(:disabled) {
-  background: var(--color-accent);
-  color: #fff;
-}
-
-.record-btn.save-config.dirty:not(:disabled):hover {
-  filter: brightness(1.1);
 }
 
 .record-btn.start {
@@ -3034,6 +3026,19 @@ const scheduleDayLabels = [
 .path-input {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem !important;
+}
+
+/* Neutral utility buttons in the top status bar (Browse Files / Open Location). */
+.record-btn.util-btn {
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
+}
+.record-btn.util-btn:hover:not(:disabled) {
+  background: var(--btn-secondary-hover);
+}
+.record-btn.util-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .form-row {

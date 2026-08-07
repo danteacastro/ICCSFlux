@@ -2473,6 +2473,16 @@ export function useMqtt(prefix: string = 'nisystem') {
     sendLocalCommand('recording/list', {})
   }
 
+  // Ask the service (which runs on the DAQ machine) to open the recording output
+  // folder in the OS file browser — the web dashboard can't open a local folder.
+  function openRecordingFolder() {
+    if (!client.value || !connected.value) {
+      console.error('MQTT not connected')
+      return
+    }
+    sendLocalCommand('recording/open-folder', {})
+  }
+
   function deleteRecordedFile(filename: string) {
     if (!client.value || !connected.value) {
       console.error('MQTT not connected')
@@ -2874,6 +2884,7 @@ export function useMqtt(prefix: string = 'nisystem') {
     updateRecordingConfig,
     getRecordingConfig,
     listRecordedFiles,
+    openRecordingFolder,
     deleteRecordedFile,
     readRecordingFile,
     onRecordingRead,
