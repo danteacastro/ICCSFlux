@@ -97,7 +97,7 @@ const DEFAULT_RECORDING_CONFIG: RecordingConfig = {
   sampleIntervalUnit: 'seconds',
   decimation: 1,
   timestampFormat: 'split',
-  timestampPrecision: 'milliseconds',
+  timestampPrecision: 'seconds',
   rotationMode: 'single',
   maxFileSize: 100,
   maxFileDuration: 3600,

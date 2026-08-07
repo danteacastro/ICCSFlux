@@ -143,7 +143,7 @@ class RecordingConfig:
     # 'split' => two columns (date + time); 'iso' => one ISO-8601 'T' string column
     timestamp_format: str = "split"
     # 'seconds' (whole seconds) or 'milliseconds' (subsecond, 3 decimals)
-    timestamp_precision: str = "milliseconds"
+    timestamp_precision: str = "seconds"
 
     # File Rotation Strategy
     rotation_mode: str = "single"  # 'single', 'time', 'size', 'samples', 'session'

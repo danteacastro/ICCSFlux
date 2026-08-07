@@ -669,6 +669,7 @@ class TestRecordingALCOAIntegrity:
         rec.configure({
             'sample_interval': 0.001,
             'base_path': str(data_dir),
+            'timestamp_precision': 'milliseconds',  # explicit: this test checks ms formatting
         })
         rec.start()
         rec.write_sample(channel_values, channel_configs)
