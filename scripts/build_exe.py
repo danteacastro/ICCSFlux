@@ -212,10 +212,126 @@ def _running_build_lockers():
         return []
     return [name for name in _BUILD_LOCKING_EXES if name.lower() in out]
 
+def _processes_locking(paths):
+    """Ask Windows which processes hold a handle on any of ``paths``.
+
+    Uses the Restart Manager API (rstrtmgr.dll): register the files as resources,
+    then RmGetList returns every process with an open handle to them. This is the
+    same mechanism the Windows installer uses for "the following apps are using
+    this file" — so it names the ACTUAL locker (image name + PID) instead of us
+    guessing from a hardcoded process list.
+
+    Returns a list of "name.exe (PID n)" strings, or [] on any failure / non-
+    Windows. Best-effort diagnostics only: never raises.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return []
+
+    # Only real, existing files can be registered. Directories aren't valid RM
+    # resources; register the files inside them so the handle-holder still shows.
+    files = []
+    for p in paths:
+        try:
+            if p.is_file():
+                files.append(str(p))
+            elif p.is_dir():
+                for sub in p.rglob("*"):
+                    if sub.is_file():
+                        files.append(str(sub))
+                        if len(files) >= 64:  # cap: enough to find the culprit
+                            break
+        except OSError:
+            continue
+    if not files:
+        return []
+
+    RM_SESSION_KEY_LEN = 32  # sizeof(GUID) as hex chars
+    CCH_RM_SESSION_KEY = RM_SESSION_KEY_LEN * 2
+
+    class RM_UNIQUE_PROCESS(ctypes.Structure):
+        _fields_ = [("dwProcessId", wintypes.DWORD),
+                    ("ProcessStartTime", wintypes.FILETIME)]
+
+    RM_APP_TYPE = ctypes.c_int
+    CCH_RM_MAX_APP_NAME = 255
+    CCH_RM_MAX_SVC_NAME = 63
+
+    class RM_PROCESS_INFO(ctypes.Structure):
+        _fields_ = [
+            ("Process", RM_UNIQUE_PROCESS),
+            ("strAppName", wintypes.WCHAR * (CCH_RM_MAX_APP_NAME + 1)),
+            ("strServiceShortName", wintypes.WCHAR * (CCH_RM_MAX_SVC_NAME + 1)),
+            ("ApplicationType", RM_APP_TYPE),
+            ("AppStatus", wintypes.ULONG),
+            ("TSSessionId", wintypes.DWORD),
+            ("bRestartable", wintypes.BOOL),
+        ]
+
+    try:
+        rm = ctypes.WinDLL("rstrtmgr")
+    except Exception:
+        return []
+
+    session = wintypes.DWORD(0)
+    key = ctypes.create_unicode_buffer(CCH_RM_SESSION_KEY + 1)
+    if rm.RmStartSession(ctypes.byref(session), 0, key) != 0:
+        return []
+    try:
+        arr = (ctypes.c_wchar_p * len(files))(*files)
+        if rm.RmRegisterResources(session, len(files), arr,
+                                  0, None, 0, None) != 0:
+            return []
+        results = []
+        # RmGetList: call once to learn the count, then again with a buffer.
+        n_needed = wintypes.UINT(0)
+        n_have = wintypes.UINT(0)
+        reason = wintypes.DWORD(0)
+        ERROR_MORE_DATA = 234
+        rc = rm.RmGetList(session, ctypes.byref(n_needed), ctypes.byref(n_have),
+                          None, ctypes.byref(reason))
+        if rc not in (0, ERROR_MORE_DATA) or n_needed.value == 0:
+            return []
+        count = n_needed.value
+        infos = (RM_PROCESS_INFO * count)()
+        n_have = wintypes.UINT(count)
+        rc = rm.RmGetList(session, ctypes.byref(n_needed), ctypes.byref(n_have),
+                          infos, ctypes.byref(reason))
+        if rc != 0:
+            return []
+        seen = set()
+        for i in range(n_have.value):
+            pi = infos[i]
+            pid = pi.Process.dwProcessId
+            name = pi.strAppName or "unknown"
+            tag = f"{name} (PID {pid})"
+            if tag not in seen:
+                seen.add(tag)
+                results.append(tag)
+        return results
+    finally:
+        try:
+            rm.RmEndSession(session)
+        except Exception:
+            pass
+
 def _warn_locked_files(failed):
     """Explain WHY items in the build tree are locked and how to get a clean wipe."""
     shown = ", ".join(p.name for p in failed[:4])
     log(f"Could not remove {len(failed)} item(s) still in use: {shown}", "WARN")
+
+    # Ask the OS who actually holds the handle — real evidence, not a guess.
+    holders = _processes_locking(failed)
+    if holders:
+        log("Locked by (Restart Manager): " + ", ".join(holders), "WARN")
+        log("Close the process(es) above (or exclude dist\\ from AV) and rebuild "
+            "for a fully-clean wipe. The build continues by overlaying fresh files.", "WARN")
+        return
+
     running = _running_build_lockers()
     if running:
         log("Held open by running process(es): " + ", ".join(running), "WARN")
